@@ -27,6 +27,7 @@ from agentflow.utils.background_task_manager import BackgroundTaskManager
 from agentflow.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
+from .remote_tool import RemoteToolConfig
 from .utils.invoke_handler import InvokeHandler
 from .utils.stream_handler import StreamHandler
 
@@ -507,9 +508,9 @@ class CompiledGraph[StateT: AgentState]:
 
     def attach_remote_tools(
         self,
-        tools: list[dict],
-        node_name: str,
-    ):
+        tools: list[dict | RemoteToolConfig],
+        node_name: str | None = None,
+    ) -> None:
         """Attach remote tools to a ToolNode in the graph.
 
         Remote tools are executed by the client, not the server. The graph only
@@ -517,11 +518,11 @@ class CompiledGraph[StateT: AgentState]:
         when one is called.
 
         Args:
-            tools: List of tool schemas in OpenAI function-calling format. Each
-                entry must be ``{"type": "function", "function": {...}}`` with a
-                ``name`` inside ``function`` -- the name is read from there to
-                route calls back to the client.
-            node_name: Name of the ToolNode to attach tools to.
+            tools: Either a list of :class:`RemoteToolConfig` values (or their
+                flat dictionary form), or OpenAI function-calling schemas when
+                ``node_name`` is supplied.
+            node_name: ToolNode name for OpenAI-schema input. Omit this when
+                each tool carries its own ``node``/``node_name`` value.
 
         Raises:
             GraphError: If the specified node is not a ToolNode.
@@ -539,10 +540,41 @@ class CompiledGraph[StateT: AgentState]:
             ... ]
             >>> graph.attach_remote_tools(tool_configs, "tool_node")
         """
+        if node_name is None:
+            configs = [
+                tool
+                if isinstance(tool, RemoteToolConfig)
+                else RemoteToolConfig.model_validate(tool)
+                for tool in tools
+            ]
+            seen: set[str] = set()
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for config in configs:
+                if config.name in seen:
+                    raise ValueError(f"Duplicate remote tool name '{config.name}'")
+                seen.add(config.name)
+                grouped.setdefault(config.node_name, []).append(config.to_tool_schema())
+
+            for configured_node, schemas in grouped.items():
+                self.attach_remote_tools(schemas, configured_node)
+            return
+
+        normalized_tools: list[dict] = []
+        for tool in tools:
+            if isinstance(tool, RemoteToolConfig):
+                if tool.node_name != node_name:
+                    raise ValueError(
+                        f"Remote tool '{tool.name}' targets node '{tool.node_name}', "
+                        f"not '{node_name}'"
+                    )
+                normalized_tools.append(tool.to_tool_schema())
+            else:
+                normalized_tools.append(tool)
+
         logger.debug(
             "Attaching remote tools to node '%s': %s",
             node_name,
-            tools,
+            normalized_tools,
         )
         node: Node | None = self._state_graph.nodes.get(node_name)
         if not node:
@@ -562,10 +594,10 @@ class CompiledGraph[StateT: AgentState]:
             )
 
         tool_node: ToolNode = node.func
-        tool_node.set_remote_tool(tools)
+        tool_node.set_remote_tool(normalized_tools)
         logger.info(
             "Attached %d remote tools to ToolNode '%s'",
-            len(tools),
+            len(normalized_tools),
             node_name,
         )
 

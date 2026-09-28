@@ -128,6 +128,7 @@ from .base_agent import BaseAgent
 from .compiled_graph import CompiledGraph
 from .edge import Edge
 from .node import Node
+from .remote_tool import RemoteToolConfig
 from .state_graph import StateGraph
 from .tool_node import ToolNode
 
@@ -138,6 +139,7 @@ __all__ = [
     "CompiledGraph",
     "Edge",
     "Node",
+    "RemoteToolConfig",
     "RetryConfig",
     "StateGraph",
     "ToolNode",

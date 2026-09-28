@@ -46,6 +46,7 @@ _GRAPH_EXPORTS = frozenset(
         "Edge",
         "Node",
         "RetryConfig",
+        "RemoteToolConfig",
         "StateGraph",
         "ToolNode",
     }
@@ -59,6 +60,7 @@ if _t.TYPE_CHECKING:
         CompiledGraph,
         Edge,
         Node,
+        RemoteToolConfig,
         RetryConfig,
         StateGraph,
         ToolNode,
@@ -148,6 +150,7 @@ __all__ = [
     "Node",
     "NodeError",
     "ReasoningBlock",
+    "RemoteToolConfig",
     "ResourceNotFoundError",
     "RetryConfig",
     "SchemaVersionError",
