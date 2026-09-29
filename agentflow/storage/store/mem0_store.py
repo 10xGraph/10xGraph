@@ -191,11 +191,12 @@ class Mem0Store(BaseStore):
 
         user_id, app_id = self._extract_ids(config)
 
+        # memory_type and category come from the arguments; caller metadata cannot replace them.
         mem_meta = {
-            "memory_type": memory_type.value,
-            "category": category,
             "created_at": datetime.now().isoformat(),
             **(metadata or {}),
+            "memory_type": memory_type.value,
+            "category": category,
         }
 
         infer = kwargs.get("infer", True)

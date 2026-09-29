@@ -1,30 +1,50 @@
-"""Comprehensive tests for the Agentflow Skills system.
+"""Tests for the Agentflow Skills system (Agent Skills specification support).
 
 Covers:
-- SkillMeta / SkillConfig validation (models)
-- discover_skills, load_skill_content, load_resource, _parse_frontmatter (loader)
-- SkillsRegistry CRUD, tag filtering, hot-reload, trigger table (registry)
-- make_set_skill_tool / set_skill tool error paths (activation)
+- SkillMeta / SkillConfig models
+- SKILL.md parsing, malformed-YAML fallback and lenient discovery (loader)
+- Spec validation (validation)
+- SkillsRegistry lookup, shadowing, hot reload, catalog (registry)
+- activate_skill / read_skill_resource tools and prompts (activation)
 - AgentSkillsMixin._setup_skills and _build_skill_prompts (agent integration)
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from textwrap import dedent
 
 import pytest
 from pydantic import ValidationError
 
-from agentflow.core.skills.activation import make_set_skill_tool
-from agentflow.core.skills.loader import (
-    _parse_frontmatter,
-    discover_skills,
-    load_resource,
-    load_skill_content,
+from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
+from agentflow.core.graph.tool_node import ToolNode
+from agentflow.core.skills import (
+    SkillConfig,
+    SkillMeta,
+    SkillResourceError,
+    SkillsRegistry,
+    validate_skill,
 )
-from agentflow.core.skills.models import SkillConfig, SkillMeta
-from agentflow.core.skills.registry import SkillsRegistry
+from agentflow.core.skills.activation import (
+    ACTIVE_SKILLS_KEY,
+    build_catalog_prompt,
+    get_active_skills,
+    make_activate_skill_tool,
+    make_read_skill_resource_tool,
+    mark_skill_active,
+    skill_content_marker,
+)
+from agentflow.core.skills.loader import (
+    discover_skills,
+    iter_skill_dirs,
+    load_skill,
+    load_skill_content,
+    parse_skill_file,
+    read_skill_file,
+    split_frontmatter,
+)
+from agentflow.core.state import AgentState, Message, ToolResult
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -32,992 +52,812 @@ from agentflow.core.skills.registry import SkillsRegistry
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _make_skill_dir(
-    tmp_path: Path,
+def _write_skill(
+    root: Path,
     name: str,
     *,
-    description: str = "A test skill",
-    triggers: list[str] | None = None,
-    resources: dict[str, str] | None = None,
-    tags: list[str] | None = None,
-    priority: int = 0,
+    frontmatter: str | None = None,
+    description: str = "A test skill. Use when testing.",
+    metadata: str = "",
     body: str = "# Skill body\nSome instructions.",
-    use_metadata_block: bool = True,
-    extra_yaml: str = "",
+    files: dict[str, str | bytes] | None = None,
+    dir_name: str | None = None,
 ) -> Path:
-    """Create a skill directory with a SKILL.md file.
-
-    Returns the path to the skill *subdirectory* (not the parent).
-    """
-    skill_dir = tmp_path / name
+    """Create ``root/<dir_name or name>/SKILL.md`` plus bundled *files*."""
+    skill_dir = root / (dir_name or name)
     skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Build YAML frontmatter
-    yaml_lines = [f"name: {name}", f"description: {description}"]
-
-    if use_metadata_block:
-        yaml_lines.append("metadata:")
-        if triggers:
-            yaml_lines.append("  triggers:")
-            for t in triggers:
-                yaml_lines.append(f"    - {t}")
-        if resources:
-            yaml_lines.append("  resources:")
-            for r in resources:
-                yaml_lines.append(f"    - {r}")
-        if tags:
-            yaml_lines.append("  tags:")
-            for t in tags:
-                yaml_lines.append(f"    - {t}")
-        if priority:
-            yaml_lines.append(f"  priority: {priority}")
-    else:
-        if triggers:
-            yaml_lines.append("triggers:")
-            for t in triggers:
-                yaml_lines.append(f"  - {t}")
-        if resources:
-            yaml_lines.append("resources:")
-            for r in resources:
-                yaml_lines.append(f"  - {r}")
-        if tags:
-            yaml_lines.append("tags:")
-            for t in tags:
-                yaml_lines.append(f"  - {t}")
-        if priority:
-            yaml_lines.append(f"priority: {priority}")
-
-    if extra_yaml:
-        yaml_lines.append(extra_yaml)
-
-    yaml_section = "\n".join(yaml_lines)
-    content = f"---\n{yaml_section}\n---\n{body}"
-    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
-
-    # Create resource files
-    if resources:
-        for rel_path, text in resources.items():
-            res_file = skill_dir / rel_path
-            res_file.parent.mkdir(parents=True, exist_ok=True)
-            res_file.write_text(text, encoding="utf-8")
-
+    if frontmatter is None:
+        frontmatter = f"name: {name}\ndescription: {description}\n{metadata}"
+    (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}\n---\n{body}", encoding="utf-8")
+    for rel_path, content in (files or {}).items():
+        target = skill_dir / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8")
     return skill_dir
 
 
-def _quick_meta(name: str = "test-skill", **kwargs) -> SkillMeta:
-    """Create a SkillMeta with sensible defaults."""
-    defaults = {
-        "description": f"{name} description",
-        "triggers": [],
-        "resources": [],
-        "tags": set(),
-        "priority": 0,
-        "skill_dir": ".",
-        "skill_file": "",
-    }
-    defaults.update(kwargs)
-    return SkillMeta(name=name, **defaults)
+def _registry(root: Path) -> SkillsRegistry:
+    registry = SkillsRegistry()
+    registry.discover(str(root))
+    return registry
+
+
+def _text(result: str | ToolResult) -> str:
+    return result.message if isinstance(result, ToolResult) else result
+
+
+def _mixin(tool_node: ToolNode | None = None) -> AgentSkillsMixin:
+    mixin = AgentSkillsMixin()
+    mixin._tool_node = tool_node
+    return mixin
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 1. SkillMeta Validation
+# 1. Models
 # ════════════════════════════════════════════════════════════════════════════
 
 
-class TestSkillMetaValidation:
-    """Validate SkillMeta Pydantic model constraints."""
+class TestSkillMeta:
+    def test_valid(self):
+        meta = SkillMeta(name="pdf-processing", description="Handles PDFs")
+        assert meta.name == "pdf-processing"
+        assert meta.allowed_tools == []
+        assert meta.metadata == {}
 
-    # -- name ---------------------------------------------------------------
+    def test_name_kept_as_authored(self):
+        # Spec-level naming problems are diagnostics, not model errors.
+        assert SkillMeta(name="My_Skill", description="d").name == "My_Skill"
 
-    def test_valid_name(self):
-        meta = _quick_meta("my-skill-01")
-        assert meta.name == "my-skill-01"
+    @pytest.mark.parametrize("name", ["", "   ", "has space", "a/b", "a\\b", "tab\there"])
+    def test_unusable_names_rejected(self, name: str):
+        with pytest.raises(ValidationError):
+            SkillMeta(name=name, description="d")
 
-    def test_name_lowercased(self):
-        meta = _quick_meta("My-Skill")
-        assert meta.name == "my-skill"
-
-    def test_name_empty_raises(self):
-        with pytest.raises(ValidationError, match="empty"):
-            _quick_meta("")
-
-    def test_name_whitespace_only_raises(self):
-        with pytest.raises(ValidationError, match="empty"):
-            _quick_meta("   ")
-
-    def test_name_with_spaces_raises(self):
-        with pytest.raises(ValidationError, match="Invalid skill name"):
-            _quick_meta("my skill")
-
-    def test_name_with_special_chars_raises(self):
-        with pytest.raises(ValidationError, match="Invalid skill name"):
-            _quick_meta("my@skill!")
-
-    def test_name_too_long_raises(self):
-        with pytest.raises(ValidationError, match="exceeds"):
-            _quick_meta("a" * 200)
-
-    def test_name_with_slash_raises(self):
-        with pytest.raises(ValidationError, match="Invalid skill name"):
-            _quick_meta("my/skill")
-
-    def test_name_underscore_allowed(self):
-        meta = _quick_meta("my_skill")
-        assert meta.name == "my_skill"
-
-    def test_name_starts_with_digit(self):
-        meta = _quick_meta("1skill")
-        assert meta.name == "1skill"
-
-    # -- description --------------------------------------------------------
-
-    def test_description_empty_raises(self):
-        with pytest.raises(ValidationError, match="empty"):
-            SkillMeta(name="valid", description="", skill_dir=".", skill_file="")
-
-    def test_description_whitespace_only_raises(self):
-        with pytest.raises(ValidationError, match="empty"):
-            SkillMeta(name="valid", description="   ", skill_dir=".", skill_file="")
-
-    def test_description_too_long_raises(self):
-        with pytest.raises(ValidationError, match="exceeds"):
-            SkillMeta(name="valid", description="x" * 3000, skill_dir=".", skill_file="")
+    def test_description_required(self):
+        with pytest.raises(ValidationError):
+            SkillMeta(name="x", description="  ")
 
     def test_description_stripped(self):
-        meta = _quick_meta(description="  hello world  ")
-        assert meta.description == "hello world"
+        assert SkillMeta(name="x", description="  hi  ").description == "hi"
 
-    # -- priority -----------------------------------------------------------
-
-    def test_priority_negative_raises(self):
-        with pytest.raises(ValidationError, match="non-negative"):
-            _quick_meta(priority=-1)
-
-    def test_priority_too_high_raises(self):
-        with pytest.raises(ValidationError, match="exceeds maximum"):
-            _quick_meta(priority=9999)
-
-    def test_priority_zero_ok(self):
-        meta = _quick_meta(priority=0)
-        assert meta.priority == 0
-
-    def test_priority_max_ok(self):
-        meta = _quick_meta(priority=1000)
-        assert meta.priority == 1000
-
-    # -- triggers -----------------------------------------------------------
-
-    def test_triggers_empty_ok(self):
-        meta = _quick_meta(triggers=[])
-        assert meta.triggers == []
-
-    def test_triggers_stripped(self):
-        meta = _quick_meta(triggers=["  hello  ", "  world  "])
-        assert meta.triggers == ["hello", "world"]
-
-    def test_triggers_empty_strings_dropped(self):
-        meta = _quick_meta(triggers=["valid", "", "  ", "also-valid"])
-        assert meta.triggers == ["valid", "also-valid"]
-
-    def test_triggers_too_many_raises(self):
-        with pytest.raises(ValidationError, match="Too many triggers"):
-            _quick_meta(triggers=["t"] * 51)
-
-    def test_trigger_too_long_raises(self):
-        with pytest.raises(ValidationError, match="exceeds"):
-            _quick_meta(triggers=["x" * 600])
-
-    # -- resources ----------------------------------------------------------
-
-    def test_resources_path_traversal_raises(self):
-        with pytest.raises(ValidationError, match="cannot contain"):
-            _quick_meta(resources=["../../../etc/passwd"])
-
-    def test_resources_absolute_path_raises(self):
-        with pytest.raises(ValidationError, match="cannot contain"):
-            _quick_meta(resources=["/etc/passwd"])
-
-    def test_resources_backslash_absolute_raises(self):
-        with pytest.raises(ValidationError, match="cannot contain"):
-            _quick_meta(resources=["\\Windows\\system32"])
-
-    def test_resources_empty_string_raises(self):
-        with pytest.raises(ValidationError, match="empty"):
-            _quick_meta(resources=[""])
-
-    def test_resources_valid_relative_path(self):
-        meta = _quick_meta(resources=["docs/guide.md", "config.yaml"])
-        assert meta.resources == ["docs/guide.md", "config.yaml"]
-
-    def test_resources_too_many_raises(self):
-        with pytest.raises(ValidationError, match="Too many resources"):
-            _quick_meta(resources=[f"file{i}.md" for i in range(101)])
-
-    # -- tags ---------------------------------------------------------------
-
-    def test_tags_lowercased(self):
-        meta = _quick_meta(tags={"Engineering", "MEDICAL"})
-        assert meta.tags == {"engineering", "medical"}
-
-    def test_tags_empty_strings_filtered(self):
-        meta = _quick_meta(tags={"valid", "", "  "})
-        assert meta.tags == {"valid"}
-
-    def test_tags_too_many_raises(self):
-        with pytest.raises(ValidationError, match="Too many tags"):
-            _quick_meta(tags={f"tag{i}" for i in range(51)})
+    def test_triggers_and_tags_cleaned(self):
+        meta = SkillMeta(name="x", description="d", triggers=[" a ", ""], tags={" Dev ", ""})
+        assert meta.triggers == ["a"]
+        assert meta.tags == {"dev"}
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# 2. SkillConfig Validation
-# ════════════════════════════════════════════════════════════════════════════
-
-
-class TestSkillConfigValidation:
-    def test_default_config(self):
+class TestSkillConfig:
+    def test_defaults(self):
         cfg = SkillConfig()
         assert cfg.skills_dir is None
-        assert cfg.inject_trigger_table is True
+        assert cfg.skill_dirs == []
+        assert cfg.inject_catalog is True
         assert cfg.hot_reload is True
+        assert cfg.include_skill_path is False
+        assert cfg.mode == "on-demand"
 
-    def test_skills_dir_none_ok(self):
-        cfg = SkillConfig(skills_dir=None)
-        assert cfg.skills_dir is None
+    def test_single_dir(self):
+        assert SkillConfig(skills_dir=" ./skills ").skill_dirs == ["./skills"]
 
-    def test_skills_dir_empty_string_raises(self):
-        with pytest.raises(ValidationError, match="empty string"):
-            SkillConfig(skills_dir="")
+    def test_path_object(self, tmp_path: Path):
+        assert SkillConfig(skills_dir=tmp_path).skill_dirs == [str(tmp_path)]
 
-    def test_skills_dir_whitespace_raises(self):
-        with pytest.raises(ValidationError, match="empty string"):
-            SkillConfig(skills_dir="   ")
+    def test_list_of_dirs(self, tmp_path: Path):
+        cfg = SkillConfig(skills_dir=["./a", tmp_path])
+        assert cfg.skill_dirs == ["./a", str(tmp_path)]
 
-    def test_skills_dir_valid_path(self):
-        cfg = SkillConfig(skills_dir="/some/path")
-        assert cfg.skills_dir == "/some/path"
+    @pytest.mark.parametrize("bad", ["", "   ", [], ["ok", ""], 5])
+    def test_invalid_dirs(self, bad):
+        with pytest.raises(ValidationError):
+            SkillConfig(skills_dir=bad)
 
-    def test_flags_can_be_disabled(self):
-        cfg = SkillConfig(inject_trigger_table=False, hot_reload=False)
-        assert cfg.inject_trigger_table is False
-        assert cfg.hot_reload is False
+    def test_max_resource_bytes_positive(self):
+        with pytest.raises(ValidationError):
+            SkillConfig(max_resource_bytes=0)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 3. Loader — _parse_frontmatter
+# 2. Parsing
 # ════════════════════════════════════════════════════════════════════════════
 
 
-class TestParseFrontmatter:
-    def test_valid_frontmatter(self, tmp_path: Path):
-        f = tmp_path / "SKILL.md"
-        f.write_text("---\nname: test\ndescription: hi\n---\nBody", encoding="utf-8")
-        result = _parse_frontmatter(str(f))
-        assert result == {"name": "test", "description": "hi"}
+class TestParsing:
+    def test_split_frontmatter(self):
+        raw, body = split_frontmatter("---\nname: x\n---\n\n# Body\n")
+        assert raw == "name: x\n"
+        assert body == "# Body"
+
+    def test_split_handles_bom_crlf_and_trailing_spaces(self):
+        raw, body = split_frontmatter("\ufeff---  \r\nname: x\r\n---\r\nBody\r\n")
+        assert raw is not None and "name: x" in raw
+        assert body == "Body"
+
+    def test_closing_delimiter_must_be_its_own_line(self):
+        # "----" or "---foo" do not close the frontmatter.
+        raw, _ = split_frontmatter("---\nname: x\n----\nmore: 1\n---\nBody")
+        assert raw is not None and "more: 1" in raw
 
     def test_no_frontmatter(self, tmp_path: Path):
-        f = tmp_path / "SKILL.md"
-        f.write_text("Just plain markdown", encoding="utf-8")
-        assert _parse_frontmatter(str(f)) is None
+        path = tmp_path / "SKILL.md"
+        path.write_text("# Just markdown")
+        parsed = parse_skill_file(path)
+        assert parsed.frontmatter is None
+        assert parsed.diagnostics[0].level == "error"
 
     def test_unclosed_frontmatter(self, tmp_path: Path):
-        f = tmp_path / "SKILL.md"
-        f.write_text("---\nname: test\nno closing marker", encoding="utf-8")
-        assert _parse_frontmatter(str(f)) is None
+        path = tmp_path / "SKILL.md"
+        path.write_text("---\nname: x\n")
+        assert parse_skill_file(path).frontmatter is None
 
-    def test_invalid_yaml(self, tmp_path: Path):
-        f = tmp_path / "SKILL.md"
-        f.write_text("---\n: - : invalid\n  [\n---\nBody", encoding="utf-8")
-        assert _parse_frontmatter(str(f)) is None
+    def test_colon_in_value_is_recovered(self, tmp_path: Path):
+        path = tmp_path / "SKILL.md"
+        path.write_text("---\nname: x\ndescription: Use this when: the user asks\n---\nBody")
+        parsed = parse_skill_file(path)
+        assert parsed.frontmatter == {"name": "x", "description": "Use this when: the user asks"}
+        assert any("loaded after quoting" in d.message for d in parsed.diagnostics)
 
-    def test_empty_frontmatter(self, tmp_path: Path):
-        f = tmp_path / "SKILL.md"
-        f.write_text("---\n\n---\nBody", encoding="utf-8")
-        result = _parse_frontmatter(str(f))
-        assert result == {}
+    def test_unrecoverable_yaml(self, tmp_path: Path):
+        path = tmp_path / "SKILL.md"
+        path.write_text("---\nname: [unclosed\n---\nBody")
+        parsed = parse_skill_file(path)
+        assert parsed.frontmatter is None
+        assert "Invalid YAML" in parsed.diagnostics[0].message
 
-    def test_non_dict_frontmatter(self, tmp_path: Path):
-        """Frontmatter that parses to a list instead of a dict should be rejected."""
-        f = tmp_path / "SKILL.md"
-        f.write_text("---\n- item1\n- item2\n---\nBody", encoding="utf-8")
-        assert _parse_frontmatter(str(f)) is None
+    def test_non_mapping_frontmatter(self, tmp_path: Path):
+        path = tmp_path / "SKILL.md"
+        path.write_text("---\n- a\n- b\n---\nBody")
+        assert parse_skill_file(path).frontmatter is None
 
-    def test_nonexistent_file(self):
-        assert _parse_frontmatter("/nonexistent/SKILL.md") is None
+    def test_missing_file(self, tmp_path: Path):
+        parsed = parse_skill_file(tmp_path / "nope" / "SKILL.md")
+        assert parsed.frontmatter is None
+        assert "Cannot read" in parsed.diagnostics[0].message
 
-    def test_scalar_frontmatter_rejected(self, tmp_path: Path):
-        """Frontmatter that parses to a string should be rejected."""
-        f = tmp_path / "SKILL.md"
-        f.write_text("---\njust a string\n---\nBody", encoding="utf-8")
-        # yaml.safe_load("just a string") returns a string, not a dict
-        assert _parse_frontmatter(str(f)) is None
+    def test_load_skill_content_strips_frontmatter(self, tmp_path: Path):
+        skill_dir = _write_skill(tmp_path, "x", body="Hello body")
+        meta, _ = load_skill(skill_dir)
+        assert meta is not None
+        assert load_skill_content(meta) == "Hello body"
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 4. Loader — discover_skills
+# 3. Loading & discovery
 # ════════════════════════════════════════════════════════════════════════════
 
 
-class TestDiscoverSkills:
-    def test_discover_single_skill(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "triage", description="Medical triage skill")
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].name == "triage"
-        assert results[0].description == "Medical triage skill"
-
-    def test_discover_multiple_skills(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "alpha")
-        _make_skill_dir(tmp_path, "beta")
-        _make_skill_dir(tmp_path, "gamma")
-        results = discover_skills(str(tmp_path))
-        names = [s.name for s in results]
-        assert sorted(names) == ["alpha", "beta", "gamma"]
-
-    def test_discover_nonexistent_dir_returns_empty(self):
-        results = discover_skills("/nonexistent/skills/dir")
-        assert results == []
-
-    def test_discover_empty_dir(self, tmp_path: Path):
-        results = discover_skills(str(tmp_path))
-        assert results == []
-
-    def test_discover_skips_dir_without_skill_md(self, tmp_path: Path):
-        (tmp_path / "no-skill").mkdir()
-        (tmp_path / "no-skill" / "README.md").write_text("Not a skill", encoding="utf-8")
-        results = discover_skills(str(tmp_path))
-        assert results == []
-
-    def test_discover_skips_missing_name(self, tmp_path: Path):
-        skill_dir = tmp_path / "bad"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\ndescription: no name\n---\nBody", encoding="utf-8"
-        )
-        results = discover_skills(str(tmp_path))
-        assert results == []
-
-    def test_discover_skips_missing_description(self, tmp_path: Path):
-        skill_dir = tmp_path / "bad"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: bad\n---\nBody", encoding="utf-8"
-        )
-        results = discover_skills(str(tmp_path))
-        assert results == []
-
-    def test_discover_with_metadata_block(self, tmp_path: Path):
-        _make_skill_dir(
+class TestLoadSkill:
+    def test_all_spec_fields(self, tmp_path: Path):
+        skill_dir = _write_skill(
             tmp_path,
-            "triage",
-            triggers=["help me"],
-            tags=["medical"],
-            priority=5,
-            use_metadata_block=True,
+            "pdf-processing",
+            frontmatter=(
+                "name: pdf-processing\n"
+                "description: Extract PDF text. Use when handling PDFs.\n"
+                "license: Apache-2.0\n"
+                "compatibility: Requires python3\n"
+                "allowed-tools: Bash(git:*) Read\n"
+                "metadata:\n"
+                "  author: example-org\n"
+                '  version: "1.0"\n'
+            ),
         )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].triggers == ["help me"]
-        assert results[0].tags == {"medical"}
-        assert results[0].priority == 5
+        meta, diagnostics = load_skill(skill_dir)
+        assert diagnostics == []
+        assert meta is not None
+        assert meta.license == "Apache-2.0"
+        assert meta.compatibility == "Requires python3"
+        assert meta.allowed_tools == ["Bash(git:*)", "Read"]
+        assert meta.metadata == {"author": "example-org", "version": "1.0"}
+        assert meta.skill_dir == str(skill_dir.resolve())
+        assert meta.skill_file == str((skill_dir / "SKILL.md").resolve())
 
-    def test_discover_with_top_level_fields(self, tmp_path: Path):
-        _make_skill_dir(
-            tmp_path,
-            "triage",
-            triggers=["help me"],
-            tags=["medical"],
-            priority=5,
-            use_metadata_block=False,
-        )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].triggers == ["help me"]
-        assert results[0].tags == {"medical"}
-        assert results[0].priority == 5
-
-    def test_discover_with_resources(self, tmp_path: Path):
-        _make_skill_dir(
+    def test_agentflow_extensions_as_strings(self, tmp_path: Path):
+        skill_dir = _write_skill(
             tmp_path,
             "review",
-            resources={"style.md": "Style guide content"},
+            metadata=(
+                "metadata:\n"
+                '  triggers: "review my code; find bugs"\n'
+                '  tags: "engineering, dev"\n'
+                '  priority: "10"\n'
+            ),
         )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].resources == ["style.md"]
+        meta, diagnostics = load_skill(skill_dir)
+        assert diagnostics == []
+        assert meta is not None
+        assert meta.triggers == ["review my code", "find bugs"]
+        assert meta.tags == {"engineering", "dev"}
+        assert meta.priority == 10
 
-    def test_discover_skips_missing_resource_file(self, tmp_path: Path):
-        """Resource declared in YAML but file doesn't exist should be excluded."""
-        skill_dir = tmp_path / "review"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: review\ndescription: d\nmetadata:\n  resources:\n    - missing.md\n---\nBody",
-            encoding="utf-8",
-        )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].resources == []
-
-    def test_discover_invalid_priority_defaults_to_zero(self, tmp_path: Path):
-        skill_dir = tmp_path / "badpri"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: badpri\ndescription: d\npriority: not-a-number\n---\nBody",
-            encoding="utf-8",
-        )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].priority == 0
-
-    def test_discover_path_traversal_resource_skipped(self, tmp_path: Path):
-        """Resources with '..' should be silently skipped."""
-        skill_dir = tmp_path / "evil"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: evil\ndescription: d\nmetadata:\n"
-            "  resources:\n    - ../../../etc/passwd\n---\nBody",
-            encoding="utf-8",
-        )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].resources == []
-
-    def test_discover_skips_files_not_dirs(self, tmp_path: Path):
-        """Files directly in skills_dir should be ignored (only subdirs matter)."""
-        (tmp_path / "README.md").write_text("Not a skill", encoding="utf-8")
-        _make_skill_dir(tmp_path, "valid")
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].name == "valid"
-
-    def test_discover_invalid_name_format_skipped(self, tmp_path: Path):
-        """A SKILL.md with a name that fails validation should be skipped."""
-        skill_dir = tmp_path / "badname"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: 'my bad name!'\ndescription: d\n---\nBody",
-            encoding="utf-8",
-        )
-        results = discover_skills(str(tmp_path))
-        assert results == []
-
-    def test_discover_triggers_as_single_string(self, tmp_path: Path):
-        """Single string trigger (not a list) should be wrapped in a list."""
-        skill_dir = tmp_path / "single"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: single\ndescription: d\ntriggers: help me\n---\nBody",
-            encoding="utf-8",
-        )
-        results = discover_skills(str(tmp_path))
-        assert len(results) == 1
-        assert results[0].triggers == ["help me"]
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# 5. Loader — load_skill_content / load_resource
-# ════════════════════════════════════════════════════════════════════════════
-
-
-class TestLoadSkillContent:
-    def test_load_content_strips_frontmatter(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "test", body="Hello world!")
-        meta = _quick_meta(skill_file=str(skill_dir / "SKILL.md"), skill_dir=str(skill_dir))
-        content = load_skill_content(meta)
-        assert "Hello world!" in content
-        assert "---" not in content
-        assert "name:" not in content
-
-    def test_load_content_no_frontmatter(self, tmp_path: Path):
-        f = tmp_path / "skill" / "SKILL.md"
-        f.parent.mkdir()
-        f.write_text("Just markdown, no frontmatter", encoding="utf-8")
-        meta = _quick_meta(skill_file=str(f), skill_dir=str(f.parent))
-        content = load_skill_content(meta)
-        assert "Just markdown" in content
-
-    def test_load_content_missing_file(self):
-        meta = _quick_meta(skill_file="/nonexistent/SKILL.md")
-        assert load_skill_content(meta) == ""
-
-
-class TestLoadResource:
-    def test_load_valid_resource(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(
+    def test_agentflow_extensions_as_lists_load_with_diagnostic(self, tmp_path: Path):
+        skill_dir = _write_skill(
             tmp_path,
             "review",
-            resources={"guide.md": "Guide content here"},
+            metadata="metadata:\n  triggers:\n    - a\n    - b\n  priority: 3\n",
         )
-        meta = _quick_meta(
-            skill_dir=str(skill_dir),
-            skill_file=str(skill_dir / "SKILL.md"),
-            resources=["guide.md"],
+        meta, diagnostics = load_skill(skill_dir)
+        assert meta is not None
+        assert meta.triggers == ["a", "b"]
+        assert meta.priority == 3
+        assert meta.metadata["triggers"] == "a; b"
+        assert any("Metadata values must be strings" in d.message for d in diagnostics)
+
+    def test_invalid_priority_defaults_to_zero(self, tmp_path: Path):
+        skill_dir = _write_skill(tmp_path, "x", metadata='metadata:\n  priority: "high"\n')
+        meta, diagnostics = load_skill(skill_dir)
+        assert meta is not None and meta.priority == 0
+        assert any("priority" in d.message for d in diagnostics)
+
+    def test_top_level_extension_fields_are_flagged_not_used(self, tmp_path: Path):
+        skill_dir = _write_skill(
+            tmp_path, "x", frontmatter="name: x\ndescription: d\ntriggers:\n  - a\n"
         )
-        content = load_resource(meta, "guide.md")
-        assert content == "Guide content here"
+        meta, diagnostics = load_skill(skill_dir)
+        assert meta is not None
+        assert meta.triggers == []
+        assert any("Move triggers under 'metadata'" in d.message for d in diagnostics)
 
-    def test_load_missing_resource(self, tmp_path: Path):
-        skill_dir = tmp_path / "empty"
-        skill_dir.mkdir()
-        meta = _quick_meta(skill_dir=str(skill_dir))
-        assert load_resource(meta, "nonexistent.md") is None
+    @pytest.mark.parametrize(
+        ("name", "dir_name", "expected"),
+        [
+            ("my_tool", None, "invalid characters"),
+            ("Upper", None, "must be lowercase"),
+            ("a--b", None, "consecutive hyphens"),
+            ("-a", None, "start or end with a hyphen"),
+            ("x" * 70, None, "exceeds 64"),
+            ("other", "dir-name", "must match skill name"),
+        ],
+    )
+    def test_spec_name_violations_still_load(self, tmp_path, name, dir_name, expected):
+        skill_dir = _write_skill(tmp_path, name, dir_name=dir_name)
+        meta, diagnostics = load_skill(skill_dir)
+        assert meta is not None
+        assert meta.name == name
+        assert any(expected in d.message for d in diagnostics)
+        assert all(d.path.endswith("SKILL.md") for d in diagnostics)
 
-    def test_load_resource_path_traversal_blocked(self, tmp_path: Path):
-        skill_dir = tmp_path / "safe"
-        skill_dir.mkdir()
-        meta = _quick_meta(skill_dir=str(skill_dir))
-        assert load_resource(meta, "../../etc/passwd") is None
+    def test_long_description_still_loads(self, tmp_path: Path):
+        skill_dir = _write_skill(tmp_path, "x", description="d" * 1100)
+        meta, diagnostics = load_skill(skill_dir)
+        assert meta is not None
+        assert any("exceeds 1024" in d.message for d in diagnostics)
 
-    def test_load_resource_absolute_path_blocked(self, tmp_path: Path):
-        skill_dir = tmp_path / "safe"
-        skill_dir.mkdir()
-        meta = _quick_meta(skill_dir=str(skill_dir))
-        assert load_resource(meta, "/etc/passwd") is None
+    @pytest.mark.parametrize(
+        "frontmatter",
+        ["description: no name", "name: x", "name: x\ndescription: ''", "name: a b\ndescription: d"],
+    )
+    def test_unloadable_skills_are_skipped(self, tmp_path: Path, frontmatter: str):
+        skill_dir = _write_skill(tmp_path, "x", frontmatter=frontmatter)
+        meta, diagnostics = load_skill(skill_dir)
+        assert meta is None
+        assert any(d.message.startswith("Skipped") for d in diagnostics)
+
+
+class TestDiscovery:
+    def test_folder_of_skills(self, tmp_path: Path):
+        _write_skill(tmp_path, "beta")
+        _write_skill(tmp_path, "alpha")
+        (tmp_path / "README.md").write_text("not a skill")
+        (tmp_path / "no-skill-md").mkdir()
+        skills, _ = discover_skills(tmp_path)
+        assert [s.name for s in skills] == ["alpha", "beta"]
+
+    def test_single_skill_directory(self, tmp_path: Path):
+        skill_dir = _write_skill(tmp_path, "solo")
+        skills, _ = discover_skills(skill_dir)
+        assert [s.name for s in skills] == ["solo"]
+
+    def test_hidden_and_ignored_dirs_skipped(self, tmp_path: Path):
+        _write_skill(tmp_path, ".hidden")
+        _write_skill(tmp_path, "node_modules")
+        _write_skill(tmp_path, "visible")
+        assert [p.name for p in iter_skill_dirs(tmp_path)] == ["visible"]
+
+    def test_missing_dir_reports_warning(self, tmp_path: Path):
+        skills, diagnostics = discover_skills(tmp_path / "missing")
+        assert skills == []
+        assert diagnostics[0].level == "warning"
+        assert "not found" in diagnostics[0].message
+
+    def test_multiple_dirs(self, tmp_path: Path):
+        _write_skill(tmp_path / "a", "one")
+        _write_skill(tmp_path / "b", "two")
+        skills, _ = discover_skills([tmp_path / "a", tmp_path / "b"])
+        assert [s.name for s in skills] == ["one", "two"]
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 6. SkillsRegistry
+# 4. Validation
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestValidateSkill:
+    def test_conforming_skill(self, tmp_path: Path):
+        skill_dir = _write_skill(
+            tmp_path,
+            "pdf",
+            body="See [guide](references/guide.md) and run scripts/run.py.",
+            files={"references/guide.md": "g", "scripts/run.py": "print(1)"},
+        )
+        assert validate_skill(skill_dir) == []
+
+    def test_not_a_directory(self, tmp_path: Path):
+        issues = validate_skill(tmp_path / "missing")
+        assert issues[0].message == "Not a directory"
+
+    def test_missing_skill_md(self, tmp_path: Path):
+        issues = validate_skill(tmp_path)
+        assert "Missing required file: SKILL.md" in issues[0].message
+
+    def test_unknown_field_is_error(self, tmp_path: Path):
+        skill_dir = _write_skill(tmp_path, "x", frontmatter="name: x\ndescription: d\nfoo: 1")
+        issues = validate_skill(skill_dir)
+        assert [i.level for i in issues] == ["error"]
+        assert "Unexpected frontmatter fields: foo" in issues[0].message
+
+    def test_optional_field_types(self, tmp_path: Path):
+        skill_dir = _write_skill(
+            tmp_path,
+            "x",
+            frontmatter=(
+                "name: x\ndescription: d\nlicense: 5\ncompatibility: ''\n"
+                "allowed-tools: [Read]\nmetadata: not-a-map"
+            ),
+        )
+        messages = " | ".join(i.message for i in validate_skill(skill_dir))
+        assert "'license' must be a string" in messages
+        assert "'compatibility' must be a non-empty string" in messages
+        assert "'allowed-tools' must be a space-separated string" in messages
+        assert "'metadata' must be a mapping" in messages
+
+    def test_compatibility_too_long(self, tmp_path: Path):
+        skill_dir = _write_skill(
+            tmp_path, "x", frontmatter=f"name: x\ndescription: d\ncompatibility: {'c' * 501}"
+        )
+        assert any("Compatibility exceeds 500" in i.message for i in validate_skill(skill_dir))
+
+    def test_body_recommendations_are_warnings(self, tmp_path: Path):
+        body = "\n".join(["line"] * 501) + "\nsee references/missing.md"
+        skill_dir = _write_skill(tmp_path, "x", body=body)
+        issues = validate_skill(skill_dir)
+        assert {i.level for i in issues} == {"warning"}
+        messages = " | ".join(i.message for i in issues)
+        assert "keep it under 500" in messages
+        assert "references/missing.md" in messages
+
+    def test_diagnostic_str(self, tmp_path: Path):
+        skill_dir = _write_skill(tmp_path, "x", frontmatter="name: x\ndescription: d\nfoo: 1")
+        assert str(validate_skill(skill_dir)[0]).startswith("error: ")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 5. Registry
 # ════════════════════════════════════════════════════════════════════════════
 
 
 class TestSkillsRegistry:
-    def test_register_and_get(self):
-        registry = SkillsRegistry()
-        meta = _quick_meta("alpha")
-        registry.register(meta)
-        assert registry.get("alpha") is meta
-
-    def test_get_nonexistent_returns_none(self):
-        assert SkillsRegistry().get("nope") is None
-
-    def test_register_duplicate_same_file_idempotent(self, tmp_path: Path):
-        registry = SkillsRegistry()
-        f = tmp_path / "SKILL.md"
-        f.write_text("x", encoding="utf-8")
-        meta = _quick_meta("dup", skill_file=str(f))
-        registry.register(meta)
-        registry.register(meta)  # no error
-        assert len(registry) == 1
-
-    def test_register_duplicate_different_file_raises(self, tmp_path: Path):
-        registry = SkillsRegistry()
-        f1 = tmp_path / "a" / "SKILL.md"
-        f2 = tmp_path / "b" / "SKILL.md"
-        f1.parent.mkdir()
-        f2.parent.mkdir()
-        f1.write_text("x", encoding="utf-8")
-        f2.write_text("y", encoding="utf-8")
-        registry.register(_quick_meta("clash", skill_file=str(f1)))
-        with pytest.raises(ValueError, match="Duplicate skill name"):
-            registry.register(_quick_meta("clash", skill_file=str(f2)))
-
-    def test_names_sorted(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("zebra"))
-        registry.register(_quick_meta("alpha"))
-        registry.register(_quick_meta("mid"))
-        assert registry.names() == ["alpha", "mid", "zebra"]
-
-    def test_len(self):
-        registry = SkillsRegistry()
-        assert len(registry) == 0
-        registry.register(_quick_meta("one"))
-        assert len(registry) == 1
-        registry.register(_quick_meta("two"))
-        assert len(registry) == 2
-
-    def test_contains(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("present"))
-        assert "present" in registry
-        assert "absent" not in registry
-
-    def test_unregister(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("temp"))
-        assert registry.unregister("temp") is True
-        assert "temp" not in registry
-        assert len(registry) == 0
-
-    def test_unregister_nonexistent_returns_false(self):
-        assert SkillsRegistry().unregister("nope") is False
-
-    def test_get_all_no_filter(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("a"))
-        registry.register(_quick_meta("b"))
-        assert len(registry.get_all()) == 2
-
-    def test_get_all_with_tag_filter(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("med", tags={"medical", "health"}))
-        registry.register(_quick_meta("eng", tags={"engineering"}))
-        registry.register(_quick_meta("both", tags={"medical", "engineering"}))
-
-        medical = registry.get_all(tags={"medical"})
-        assert {s.name for s in medical} == {"med", "both"}
-
-        engineering = registry.get_all(tags={"engineering"})
-        assert {s.name for s in engineering} == {"eng", "both"}
-
-    def test_get_all_no_matching_tags(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("a", tags={"x"}))
-        assert registry.get_all(tags={"nonexistent"}) == []
-
-    def test_discover_integration(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "alpha", description="Alpha skill")
-        _make_skill_dir(tmp_path, "beta", description="Beta skill")
-
-        registry = SkillsRegistry()
-        found = registry.discover(str(tmp_path))
-
-        assert len(found) == 2
+    def test_discover_and_lookup(self, tmp_path: Path):
+        _write_skill(tmp_path, "alpha")
+        _write_skill(tmp_path, "beta")
+        registry = _registry(tmp_path)
+        assert registry.names() == ["alpha", "beta"]
         assert len(registry) == 2
         assert "alpha" in registry
-        assert "beta" in registry
+        assert registry.get("alpha") is not None
+        assert registry.get("nope") is None
 
-    def test_load_content(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "review", body="Review instructions here.")
+    def test_register_duplicate_file_is_idempotent(self, tmp_path: Path):
+        meta, _ = load_skill(_write_skill(tmp_path, "x"))
         registry = SkillsRegistry()
-        registry.register(
-            _quick_meta(
-                "review",
-                skill_dir=str(skill_dir),
-                skill_file=str(skill_dir / "SKILL.md"),
-            )
-        )
-        content = registry.load_content("review")
-        assert "Review instructions here." in content
+        registry.register(meta)
+        registry.register(meta)
+        assert len(registry) == 1
 
-    def test_load_content_nonexistent_skill(self):
-        assert SkillsRegistry().load_content("nope") == ""
+    def test_register_conflict_raises_unless_replace(self, tmp_path: Path):
+        first, _ = load_skill(_write_skill(tmp_path / "a", "x"))
+        second, _ = load_skill(_write_skill(tmp_path / "b", "x"))
+        registry = SkillsRegistry()
+        registry.register(first)
+        with pytest.raises(ValueError, match="Duplicate skill name"):
+            registry.register(second)
+        registry.register(second, replace=True)
+        assert registry.get("x").skill_file == second.skill_file
+
+    def test_earlier_directory_wins_and_later_is_shadowed(self, tmp_path: Path):
+        _write_skill(tmp_path / "project", "shared", body="project version")
+        _write_skill(tmp_path / "user", "shared", body="user version")
+        registry = SkillsRegistry()
+        registry.discover([tmp_path / "project", tmp_path / "user"])
+        assert registry.load_content("shared") == "project version"
+        assert any("shadowed" in d.message for d in registry.diagnostics)
+
+    def test_unregister(self, tmp_path: Path):
+        _write_skill(tmp_path, "x")
+        registry = _registry(tmp_path)
+        assert registry.unregister("x") is True
+        assert registry.unregister("x") is False
+
+    def test_tag_filter(self, tmp_path: Path):
+        _write_skill(tmp_path, "a", metadata='metadata:\n  tags: "medical"\n')
+        _write_skill(tmp_path, "b", metadata='metadata:\n  tags: "legal"\n')
+        registry = _registry(tmp_path)
+        assert [s.name for s in registry.get_all(tags={"medical"})] == ["a"]
 
     def test_load_content_hot_reload(self, tmp_path: Path):
-        """Content updates when hot_reload is enabled and file changes."""
-        skill_dir = _make_skill_dir(tmp_path, "hot", body="Version 1")
-        registry = SkillsRegistry()
-        registry.register(
-            _quick_meta(
-                "hot",
-                skill_dir=str(skill_dir),
-                skill_file=str(skill_dir / "SKILL.md"),
-            )
-        )
+        skill_dir = _write_skill(tmp_path, "x", body="v1")
+        registry = _registry(tmp_path)
+        assert registry.load_content("x") == "v1"
 
-        content_v1 = registry.load_content("hot", hot_reload=True)
-        assert "Version 1" in content_v1
-
-        # Update the file
         skill_file = skill_dir / "SKILL.md"
-        skill_file.write_text("---\nname: hot\ndescription: d\n---\nVersion 2", encoding="utf-8")
+        skill_file.write_text("---\nname: x\ndescription: d\n---\nv2")
+        stat = skill_file.stat()
+        os.utime(skill_file, (stat.st_atime, stat.st_mtime + 10))
 
-        content_v2 = registry.load_content("hot", hot_reload=True)
-        assert "Version 2" in content_v2
+        assert registry.load_content("x", hot_reload=False) == "v1"
+        assert registry.load_content("x", hot_reload=True) == "v2"
 
-    def test_load_resources(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(
+    def test_load_content_unknown(self):
+        assert SkillsRegistry().load_content("nope") == ""
+
+    def test_list_files(self, tmp_path: Path):
+        _write_skill(
             tmp_path,
-            "review",
-            resources={"style.md": "Style guide", "api.md": "API docs"},
+            "x",
+            files={
+                "scripts/run.py": "",
+                "references/a.md": "",
+                ".hidden": "",
+                "__pycache__/c.pyc": "",
+                "scripts/cache.pyc": "",
+                ".agentflow-skill.json": "{}",
+            },
         )
-        registry = SkillsRegistry()
-        registry.register(
-            _quick_meta(
-                "review",
-                skill_dir=str(skill_dir),
-                skill_file=str(skill_dir / "SKILL.md"),
-                resources=["style.md", "api.md"],
-            )
-        )
-        res = registry.load_resources("review")
-        assert res == {"style.md": "Style guide", "api.md": "API docs"}
+        registry = _registry(tmp_path)
+        assert registry.list_files("x") == (["references/a.md", "scripts/run.py"], False)
+        assert registry.list_files("x", limit=1) == (["references/a.md"], True)
+        assert registry.list_files("nope") == ([], False)
 
-    def test_load_resources_nonexistent_skill(self):
-        assert SkillsRegistry().load_resources("nope") == {}
+    def test_read_file_unknown_skill(self):
+        with pytest.raises(KeyError):
+            SkillsRegistry().read_file("nope", "a.md", 100)
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# 7. Trigger Table
-# ════════════════════════════════════════════════════════════════════════════
-
-
-class TestTriggerTable:
-    def test_empty_registry_returns_empty(self):
-        assert SkillsRegistry().build_trigger_table() == ""
-
-    def test_table_has_all_skills(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("alpha", priority=1))
-        registry.register(_quick_meta("beta", priority=2))
-
-        table = registry.build_trigger_table()
-        assert "`alpha`" in table
-        assert "`beta`" in table
-        assert "## Available Skills" in table
-
-    def test_table_ordered_by_priority_desc(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("low", priority=1))
-        registry.register(_quick_meta("high", priority=10))
-
-        table = registry.build_trigger_table()
-        assert table.index("`high`") < table.index("`low`")
-
-    def test_table_sanitizes_pipes_and_newlines(self):
-        registry = SkillsRegistry()
-        registry.register(
-            _quick_meta("x", triggers=["a | b", "line\nbreak"])
-        )
-        table = registry.build_trigger_table()
-        assert "a \\| b" in table
-        assert "line break" in table
-
-    def test_table_respects_tag_filter(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("med", tags={"medical"}))
-        registry.register(_quick_meta("eng", tags={"engineering"}))
-
-        table = registry.build_trigger_table(tags={"medical"})
-        assert "`med`" in table
-        assert "`eng`" not in table
-
-    def test_table_uses_description_when_no_triggers(self):
-        registry = SkillsRegistry()
-        registry.register(_quick_meta("nodesc", description="Use for everything", triggers=[]))
-        table = registry.build_trigger_table()
-        assert "Use for everything" in table
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# 8. Activation — set_skill tool
-# ════════════════════════════════════════════════════════════════════════════
-
-
-class TestSetSkillTool:
-    def _setup_registry(self, tmp_path: Path) -> tuple[SkillsRegistry, str]:
-        """Create a registry with one skill and return (registry, skill_name)."""
-        skill_dir = _make_skill_dir(
+    def test_catalog(self, tmp_path: Path):
+        _write_skill(tmp_path, "low", description="Low <priority> & stuff")
+        _write_skill(
             tmp_path,
-            "review",
-            body="## Review Instructions\nDo the review.",
-            resources={"guide.md": "The guide"},
+            "high",
+            metadata='metadata:\n  priority: "5"\n  triggers: "review code"\n',
         )
-        registry = SkillsRegistry()
-        registry.register(
-            _quick_meta(
-                "review",
-                skill_dir=str(skill_dir),
-                skill_file=str(skill_dir / "SKILL.md"),
-                resources=["guide.md"],
-            )
-        )
-        return registry, "review"
+        catalog = _registry(tmp_path).build_catalog()
+        assert catalog.startswith("<available_skills>")
+        assert catalog.index("<name>high</name>") < catalog.index("<name>low</name>")
+        assert "Low &lt;priority&gt; &amp; stuff" in catalog
+        assert "<triggers>review code</triggers>" in catalog
+        # The description is always shown, even when triggers exist.
+        assert catalog.count("<description>") == 2
 
-    def test_load_skill_content(self, tmp_path: Path):
-        registry, name = self._setup_registry(tmp_path)
-        set_skill = make_set_skill_tool(registry)
-        result = set_skill(name)
-        assert "## SKILL: REVIEW" in result
-        assert "Review Instructions" in result
-
-    def test_load_skill_resource(self, tmp_path: Path):
-        registry, name = self._setup_registry(tmp_path)
-        set_skill = make_set_skill_tool(registry)
-        result = set_skill(name, "guide.md")
-        assert "## Resource: guide.md" in result
-        assert "The guide" in result
-
-    def test_unknown_skill_error(self, tmp_path: Path):
-        registry, _ = self._setup_registry(tmp_path)
-        set_skill = make_set_skill_tool(registry)
-        result = set_skill("nonexistent")
-        assert result.startswith("ERROR: Unknown skill")
-        assert "review" in result  # lists available skills
-
-    def test_nonexistent_resource_error(self, tmp_path: Path):
-        registry, name = self._setup_registry(tmp_path)
-        set_skill = make_set_skill_tool(registry)
-        result = set_skill(name, "missing.md")
-        assert result.startswith("ERROR: Resource 'missing.md' not found")
-
-    def test_no_resources_error(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "bare", body="Bare skill")
-        registry = SkillsRegistry()
-        registry.register(
-            _quick_meta(
-                "bare",
-                skill_dir=str(skill_dir),
-                skill_file=str(skill_dir / "SKILL.md"),
-                resources=[],
-            )
-        )
-        set_skill = make_set_skill_tool(registry)
-        result = set_skill("bare", "anything.md")
-        assert "ERROR: Skill 'bare' has no resources" in result
-
-    def test_tool_docstring_lists_skills(self, tmp_path: Path):
-        registry, _ = self._setup_registry(tmp_path)
-        set_skill = make_set_skill_tool(registry)
-        assert "review" in set_skill.__doc__
-
-    def test_empty_content_returns_error(self, tmp_path: Path):
-        """Skill file exists but has no body (only frontmatter) → error."""
-        skill_dir = tmp_path / "empty-body"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: empty-body\ndescription: d\n---\n", encoding="utf-8"
-        )
-        registry = SkillsRegistry()
-        registry.register(
-            _quick_meta(
-                "empty-body",
-                skill_dir=str(skill_dir),
-                skill_file=str(skill_dir / "SKILL.md"),
-            )
-        )
-        set_skill = make_set_skill_tool(registry)
-        result = set_skill("empty-body")
-        assert "ERROR" in result
+    def test_catalog_empty(self):
+        assert SkillsRegistry().build_catalog() == ""
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 9. AgentSkillsMixin (unit-level, no real LLM calls)
+# 6. Reading bundled files
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestReadSkillFile:
+    @pytest.fixture
+    def meta(self, tmp_path: Path) -> SkillMeta:
+        skill_dir = _write_skill(
+            tmp_path / "skills",
+            "x",
+            files={
+                "scripts/run.py": "print('hi')\n",
+                "scripts/deploy": "#!/bin/sh\necho deploy\n",
+                "scripts/latin.sh": b"caf\xe9\n",
+                "assets/logo.png": b"\x89PNG\x00\x00binary",
+                "references/big.md": "x" * 100,
+            },
+        )
+        (tmp_path / "secret.txt").write_text("secret")
+        meta, _ = load_skill(skill_dir)
+        assert meta is not None
+        return meta
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("scripts/run.py", "print('hi')"),
+            ("scripts/deploy", "echo deploy"),
+            ("./scripts/run.py", "print('hi')"),
+            ("scripts\\run.py", "print('hi')"),
+            ("SKILL.md", "name: x"),
+        ],
+    )
+    def test_reads_any_text_file(self, meta, path, expected):
+        assert expected in read_skill_file(meta, path, 10_000)
+
+    def test_invalid_utf8_is_replaced(self, meta):
+        assert read_skill_file(meta, "scripts/latin.sh", 10_000) == "caf\ufffd\n"
+
+    def test_binary_file_described(self, meta):
+        text = read_skill_file(meta, "assets/logo.png", 10_000)
+        assert "binary file" in text
+
+    def test_truncation(self, meta):
+        text = read_skill_file(meta, "references/big.md", 10)
+        assert text.startswith("x" * 10)
+        assert "truncated: showing the first 10 of 100 bytes" in text
+
+    def test_directory_listing(self, meta):
+        text = read_skill_file(meta, "scripts", 10_000)
+        assert "scripts/run.py" in text and "scripts/deploy" in text
+
+    @pytest.mark.parametrize(
+        ("path", "message"),
+        [
+            ("", "must not be empty"),
+            ("/etc/passwd", "must be relative"),
+            ("C:/Windows", "must be relative"),
+            ("../../secret.txt", "outside the skill directory"),
+            ("scripts/../../../secret.txt", "outside the skill directory"),
+            ("missing.md", "not found"),
+        ],
+    )
+    def test_rejected_paths(self, meta, path, message):
+        with pytest.raises(SkillResourceError, match=message):
+            read_skill_file(meta, path, 10_000)
+
+    def test_symlink_escape_blocked(self, meta, tmp_path: Path):
+        link = Path(meta.skill_dir) / "link.txt"
+        try:
+            link.symlink_to(tmp_path / "secret.txt")
+        except OSError:
+            pytest.skip("symlinks not supported")
+        with pytest.raises(SkillResourceError, match="outside the skill directory"):
+            read_skill_file(meta, "link.txt", 10_000)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 7. Activation tools
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestActivateSkillTool:
+    @pytest.fixture
+    def registry(self, tmp_path: Path) -> SkillsRegistry:
+        _write_skill(
+            tmp_path,
+            "pdf",
+            frontmatter="name: pdf\ndescription: PDFs\ncompatibility: Needs pypdf",
+            body="Use scripts/extract.py",
+            files={"scripts/extract.py": "print(1)"},
+        )
+        _write_skill(tmp_path, "plain", body="Plain body")
+        return _registry(tmp_path)
+
+    def test_returns_wrapped_content_with_resources(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=True
+        )
+        result = tool("pdf")
+        assert isinstance(result, str)
+        assert result.startswith(skill_content_marker("pdf"))
+        assert result.rstrip().endswith("</skill_content>")
+        assert "Use scripts/extract.py" in result
+        assert "Compatibility: Needs pypdf" in result
+        assert "<file>scripts/extract.py</file>" in result
+        assert 'read_skill_resource(skill_name="pdf"' in result
+        assert "Skill directory:" not in result
+
+    def test_include_skill_path(self, registry):
+        tool = make_activate_skill_tool(
+            registry,
+            SkillConfig(include_skill_path=True),
+            embed_catalog=False,
+            can_read_files=True,
+        )
+        assert f"Skill directory: {registry.get('pdf').skill_dir}" in tool("pdf")
+
+    def test_no_resources_section_without_files(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=True
+        )
+        assert "<skill_resources>" not in tool("plain")
+
+    def test_unknown_skill_is_error(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=False
+        )
+        result = tool("nope")
+        assert isinstance(result, ToolResult) and result.is_error
+        assert "Available skills: pdf, plain" in result.message
+
+    def test_empty_body_is_error(self, tmp_path: Path):
+        _write_skill(tmp_path, "empty", body="")
+        registry = _registry(tmp_path)
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=False
+        )
+        result = tool("empty")
+        assert isinstance(result, ToolResult) and result.is_error
+
+    def test_records_activation_and_deduplicates(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=False
+        )
+        state = AgentState()
+        content = tool("plain", state=state)
+        assert get_active_skills(state) == ["plain"]
+        assert state.execution_meta.internal_data[ACTIVE_SKILLS_KEY] == ["plain"]
+
+        state.context.append(Message.text_message(content, role="tool"))
+        again = tool("plain", state=state)
+        assert "already active" in again
+        assert get_active_skills(state) == ["plain"]
+
+    def test_reloads_when_content_left_context(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=False
+        )
+        state = AgentState()
+        mark_skill_active(state, "plain")
+        assert tool("plain", state=state).startswith(skill_content_marker("plain"))
+
+    def test_schema_uses_enum_and_hides_state(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=False, can_read_files=False
+        )
+        spec = ToolNode([tool]).get_local_tool()[0]["function"]
+        assert spec["name"] == "activate_skill"
+        assert spec["parameters"]["properties"] == {
+            "skill_name": {"type": "string", "enum": ["pdf", "plain"]}
+        }
+        assert spec["parameters"]["required"] == ["skill_name"]
+        assert "Available skills" not in spec["description"]
+
+    def test_embedded_catalog(self, registry):
+        tool = make_activate_skill_tool(
+            registry, SkillConfig(), embed_catalog=True, can_read_files=False
+        )
+        assert "- pdf: PDFs" in tool.__doc__
+
+
+class TestReadSkillResourceTool:
+    @pytest.fixture
+    def tool(self, tmp_path: Path):
+        _write_skill(tmp_path, "pdf", files={"scripts/extract.py": "print(1)"})
+        registry = _registry(tmp_path)
+        return make_read_skill_resource_tool(registry, SkillConfig(max_resource_bytes=1000))
+
+    def test_reads_script(self, tool):
+        result = tool("pdf", "scripts/extract.py")
+        assert result == (
+            '<skill_resource skill="pdf" path="scripts/extract.py">\nprint(1)\n</skill_resource>'
+        )
+
+    def test_missing_file_lists_bundled_files(self, tool):
+        result = tool("pdf", "nope.md")
+        assert isinstance(result, ToolResult) and result.is_error
+        assert "Bundled files: scripts/extract.py" in result.message
+
+    def test_unknown_skill(self, tool):
+        result = tool("nope", "a.md")
+        assert isinstance(result, ToolResult) and result.is_error
+
+    def test_schema(self, tool):
+        spec = ToolNode([tool]).get_local_tool()[0]["function"]
+        assert spec["name"] == "read_skill_resource"
+        assert spec["parameters"]["properties"]["skill_name"]["enum"] == ["pdf"]
+        assert spec["parameters"]["required"] == ["skill_name", "path"]
+
+
+class TestCatalogPrompt:
+    def test_mentions_tools(self, tmp_path: Path):
+        _write_skill(tmp_path, "x")
+        registry = _registry(tmp_path)
+        with_files = build_catalog_prompt(registry, can_read_files=True)
+        assert "`activate_skill`" in with_files
+        assert "`read_skill_resource`" in with_files
+        assert "<available_skills>" in with_files
+        assert "`read_skill_resource`" not in build_catalog_prompt(
+            registry, can_read_files=False
+        )
+
+    def test_empty_registry(self):
+        assert build_catalog_prompt(SkillsRegistry(), can_read_files=True) == ""
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. AgentSkillsMixin
 # ════════════════════════════════════════════════════════════════════════════
 
 
 class TestAgentSkillsMixin:
-    def test_setup_skills_none(self):
-        """When skills=None, all skill attributes should be None/empty."""
-        from agentflow.core.skills.models import SkillConfig as SC
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = None
+    def test_setup_none(self):
+        mixin = _mixin()
         mixin._setup_skills(None)
-
         assert mixin._skills_config is None
         assert mixin._skills_registry is None
-        assert mixin._trigger_table_prompt is None
+        assert mixin._skill_catalog_prompt is None
 
-    def test_setup_skills_invalid_type_raises(self):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = None
+    def test_invalid_type(self):
         with pytest.raises(TypeError, match="Expected SkillConfig"):
-            mixin._setup_skills("not-a-config")
+            _mixin()._setup_skills("not-a-config")
 
-    def test_setup_skills_requires_existing_tool_node(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-
-        _make_skill_dir(tmp_path, "alpha")
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = None
+    def test_requires_tool_node(self, tmp_path: Path):
+        _write_skill(tmp_path, "alpha")
         with pytest.raises(RuntimeError, match="Skills require an existing ToolNode"):
-            mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
+            _mixin()._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
 
-    def test_setup_skills_defers_to_named_tool_node(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
+    def test_no_skills_registers_nothing(self, tmp_path: Path):
+        mixin = _mixin()  # no ToolNode needed when nothing was found
+        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
+        assert mixin._skill_catalog_prompt is None
+        assert mixin._build_skill_prompts(AgentState(), []) == []
 
-        _make_skill_dir(tmp_path, "alpha")
+    def test_registers_only_activate_without_files(self, tmp_path: Path):
+        _write_skill(tmp_path, "alpha")
+        node = ToolNode([])
+        _mixin(node)._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
+        assert set(node._funcs) == {"activate_skill"}
 
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = None
+    def test_registers_both_tools_with_files(self, tmp_path: Path):
+        _write_skill(tmp_path, "alpha", files={"references/a.md": "a"})
+        node = ToolNode([])
+        _mixin(node)._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
+        assert set(node._funcs) == {"activate_skill", "read_skill_resource"}
+
+    def test_defers_to_named_tool_node(self, tmp_path: Path):
+        _write_skill(tmp_path, "alpha", files={"references/a.md": "a"})
+        mixin = _mixin()
         mixin.tool_node_name = "TOOL"
         mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
+        assert [t.__name__ for t in mixin._extra_tools] == [
+            "activate_skill",
+            "read_skill_resource",
+        ]
 
-        assert mixin._skills_config is not None
-        assert mixin._skills_registry is not None
-        assert getattr(mixin, "_extra_tools", None) is not None
-        assert len(mixin._extra_tools) == 1
-
-    def test_setup_skills_creates_registry_with_existing_tool_node(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-        from agentflow.core.graph.tool_node import ToolNode
-
-        _make_skill_dir(tmp_path, "alpha")
-        _make_skill_dir(tmp_path, "beta")
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = ToolNode([])
+    def test_catalog_prompt(self, tmp_path: Path):
+        _write_skill(tmp_path, "review")
+        mixin = _mixin(ToolNode([]))
         mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
-
-        assert mixin._skills_registry is not None
-        assert len(mixin._skills_registry) == 2
-        assert mixin._tool_node is not None
-
-    def test_setup_skills_adds_tool_to_existing_toolnode(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-        from agentflow.core.graph.tool_node import ToolNode
-
-        def dummy_tool():
-            """A dummy tool."""
-            return "dummy"
-
-        _make_skill_dir(tmp_path, "alpha")
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = ToolNode([dummy_tool])
-        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
-
-        # Tool node should still be the same object, with set_skill added
-        assert mixin._tool_node is not None
-
-    def test_build_skill_prompts_no_skills(self):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = None
-        mixin._setup_skills(None)
-
         base = [{"role": "system", "content": "Be helpful"}]
-        result = mixin._build_skill_prompts(None, base)
-        assert result == base
-
-    def test_build_skill_prompts_appends_trigger_table(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-        from agentflow.core.graph.tool_node import ToolNode
-
-        _make_skill_dir(tmp_path, "review", triggers=["review code"])
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = ToolNode([])
-        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path), inject_trigger_table=True))
-
-        base = [{"role": "system", "content": "Be helpful"}]
-        result = mixin._build_skill_prompts(None, base)
-
-        assert len(result) == 2
+        result = mixin._build_skill_prompts(AgentState(), base)
         assert result[0] == base[0]
-        assert "Available Skills" in result[1]["content"]
-        assert "review" in result[1]["content"]
+        assert "<name>review</name>" in result[1]["content"]
+        assert len(base) == 1  # not mutated
 
-    def test_build_skill_prompts_no_trigger_table_when_disabled(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-        from agentflow.core.graph.tool_node import ToolNode
+    def test_catalog_disabled_moves_it_to_tool(self, tmp_path: Path):
+        _write_skill(tmp_path, "review")
+        node = ToolNode([])
+        mixin = _mixin(node)
+        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path), inject_catalog=False))
+        assert mixin._build_skill_prompts(AgentState(), []) == []
+        assert "- review:" in node._funcs["activate_skill"].__doc__
 
-        _make_skill_dir(tmp_path, "review")
+    def test_reinjects_active_skill_missing_from_context(self, tmp_path: Path):
+        _write_skill(tmp_path, "review", body="Review rules")
+        mixin = _mixin(ToolNode([]))
+        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
 
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = ToolNode([])
-        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path), inject_trigger_table=False))
+        state = AgentState()
+        mark_skill_active(state, "review")
+        prompts = mixin._build_skill_prompts(state, [])
+        assert prompts[-1]["content"].startswith(skill_content_marker("review"))
+        assert "Review rules" in prompts[-1]["content"]
 
-        base = [{"role": "system", "content": "Be helpful"}]
-        result = mixin._build_skill_prompts(None, base)
-        assert len(result) == 1
+        # Once the content is back in the conversation it is not duplicated.
+        state.context.append(Message.text_message(prompts[-1]["content"], role="tool"))
+        assert len(mixin._build_skill_prompts(state, [])) == 1
 
-    def test_build_skill_prompts_does_not_mutate_original(self, tmp_path: Path):
-        from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-        from agentflow.core.graph.tool_node import ToolNode
-
-        _make_skill_dir(tmp_path, "review")
-
-        mixin = AgentSkillsMixin()
-        mixin._tool_node = ToolNode([])
-        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path), inject_trigger_table=True))
-
-        base = [{"role": "system", "content": "Be helpful"}]
-        original_len = len(base)
-        mixin._build_skill_prompts(None, base)
-        assert len(base) == original_len  # original list not mutated
+    def test_ignores_active_skills_from_other_registries(self, tmp_path: Path):
+        _write_skill(tmp_path, "review")
+        mixin = _mixin(ToolNode([]))
+        mixin._setup_skills(SkillConfig(skills_dir=str(tmp_path)))
+        state = AgentState()
+        mark_skill_active(state, "someone-elses-skill")
+        assert len(mixin._build_skill_prompts(state, [])) == 1

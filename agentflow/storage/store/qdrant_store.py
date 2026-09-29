@@ -35,6 +35,12 @@ except ImportError:
 
 logger = logging.getLogger("agentflow.store")
 
+# Payload fields the store owns. Caller metadata is stored alongside them but can never
+# replace them -- in particular ``user_id``, which every read filters on.
+_SYSTEM_PAYLOAD_KEYS = frozenset(
+    {"content", "user_id", "thread_id", "memory_type", "category", "timestamp"}
+)
+
 # Default collection name used when none is specified via config or constructor.
 # Centralised here so factory functions and the class share the same value
 # without duplicating the magic string.
@@ -355,6 +361,29 @@ class QdrantStore(BaseStore):
 
     # --- BaseStore abstract method implementations ---
 
+    async def _ensure_can_write_id(
+        self,
+        config: dict[str, Any],
+        collection: str,
+        user_id: str | None,
+        memory_id: str,
+    ) -> None:
+        """Refuse a caller-chosen ``memory_id`` that already belongs to another user.
+
+        ``astore`` upserts, so without this check a chosen id would silently replace another
+        user's memory. Reusing one of your own ids (an intentional overwrite) is still
+        allowed, as is any id when isolation is off (``scope="none"``).
+        """
+        scoped_user_id = self._scope_user_id(config, user_id)
+        if not scoped_user_id:
+            return
+        points = await self.client.retrieve(collection_name=collection, ids=[memory_id])
+        if not points:
+            return
+        owner = (getattr(points[0], "payload", None) or {}).get("user_id")
+        if owner != scoped_user_id:
+            raise PermissionError(f"memory_id '{memory_id}' belongs to another user")
+
     async def astore(
         self,
         config: dict[str, Any],
@@ -380,7 +409,10 @@ class QdrantStore(BaseStore):
             category=category,
             metadata=metadata,
         )
-        record.id = kwargs.get("memory_id") or await self.generate_framework_id()
+        requested_id = kwargs.get("memory_id")
+        if requested_id:
+            await self._ensure_can_write_id(config, collection, user_id, requested_id)
+        record.id = requested_id or await self.generate_framework_id()
 
         # Generate embedding
         text_content = self._prepare_content(content)
@@ -390,13 +422,13 @@ class QdrantStore(BaseStore):
 
         # Prepare payload
         payload = {
+            **{k: v for k, v in record.metadata.items() if k not in _SYSTEM_PAYLOAD_KEYS},
             "content": record.content,
             "user_id": record.user_id,
             "thread_id": record.thread_id,
             "memory_type": record.memory_type.value,
             "category": record.category,
             "timestamp": record.timestamp.isoformat() if record.timestamp else None,
-            **record.metadata,
         }
 
         # Create point
@@ -578,15 +610,9 @@ class QdrantStore(BaseStore):
         # Strip system fields from metadata so they don't overwrite the
         # explicit values we set below (existing.metadata mirrors the full
         # Qdrant payload, including "content").
-        _system_keys = {
-            "content",
-            "user_id",
-            "thread_id",
-            "memory_type",
-            "category",
-            "timestamp",
+        extra_metadata = {
+            k: v for k, v in updated_metadata.items() if k not in _SYSTEM_PAYLOAD_KEYS
         }
-        extra_metadata = {k: v for k, v in updated_metadata.items() if k not in _system_keys}
 
         updated_payload = {
             **extra_metadata,

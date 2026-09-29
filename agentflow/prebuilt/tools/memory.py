@@ -39,6 +39,7 @@ from agentflow.storage.store.long_term_memory import (
 )
 from agentflow.utils.background_task_manager import BackgroundTaskManager
 from agentflow.utils.decorators import tool
+from agentflow.utils.injection import fresh
 
 
 logger = logging.getLogger("agentflow.prebuilt.tools.memory")
@@ -167,6 +168,8 @@ async def memory_tool(  # noqa: PLR0911, PLR0913
     task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
 ) -> str:
     """Search, store, update, or delete long-term memories."""
+    store = fresh(store)
+    task_manager = fresh(task_manager)
     if store is None:
         return json.dumps({"error": "no memory store configured"})
 
@@ -266,6 +269,8 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
         store: BaseStore | None = Inject[BaseStore],
         task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
     ) -> str:
+        store = fresh(store)
+        task_manager = fresh(task_manager)
         if user_config is None or not user_config.enabled:
             return json.dumps({"error": "user memory is disabled"})
         resolved_store = _memory_scope_store(memory_config, user_config, store)
@@ -345,6 +350,8 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
         store: BaseStore | None = Inject[BaseStore],
         task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
     ) -> str:
+        store = fresh(store)
+        task_manager = fresh(task_manager)
         if agent_config is None or not agent_config.enabled:
             return json.dumps({"error": "agent memory is disabled"})
         resolved_store = _memory_scope_store(memory_config, agent_config, store)

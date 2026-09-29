@@ -26,6 +26,7 @@ from injectq import Inject
 from agentflow.core.state import AgentState, ExecutionStatus
 from agentflow.core.state.execution_state import StopRequestStatus
 from agentflow.core.state.message import Message
+from agentflow.core.state.message_block import RemoteToolCallBlock
 from agentflow.runtime.publisher.events import EventModel, EventType
 from agentflow.runtime.publisher.publish import publish_event
 from agentflow.storage.checkpointer import BaseCheckpointer
@@ -33,6 +34,14 @@ from agentflow.utils import (
     START,
 )
 from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
+from agentflow.utils.injection import fresh
+from agentflow.utils.interrupt import (
+    RESUME_KEY,
+    Interrupt,
+    pause_at,
+    pending_interrupt,
+    record_resume,
+)
 
 from .utils import reload_state, sync_data
 
@@ -48,6 +57,20 @@ async def check_interrupted[StateT: AgentState](
     config: dict[str, Any],
     callback_mgr: CallbackManager = Inject[CallbackManager],
 ) -> tuple[StateT, dict[str, Any]]:
+    callback_mgr = fresh(callback_mgr)
+    request = pending_interrupt(state)
+    if request is not None:
+        # Paused by interrupt(): the retried node needs the answer, and a plain new message
+        # cannot stand in for it.
+        if RESUME_KEY not in input_data:
+            raise ValueError(
+                f"Thread is paused at interrupt '{request.id}' in node '{request.node}'. "
+                f"Resume it with {{'{RESUME_KEY}': value}}."
+            )
+        record_resume(state, input_data[RESUME_KEY])
+    elif RESUME_KEY in input_data:
+        raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
+
     if state.is_interrupted():
         logger.info(
             "Resuming from interrupted state at node '%s'", state.execution_meta.current_node
@@ -65,6 +88,10 @@ async def check_interrupted[StateT: AgentState](
             )
             if modified is not None and modified is not state:
                 state = modified  # type: ignore[assignment]
+
+        # Paused for a client-side tool: the resumed run continues after that node.
+        if state.execution_meta.interrupt_reason == REMOTE_TOOL_REASON:
+            config[RESUME_AFTER_NODE_KEY] = state.execution_meta.interrupted_node
 
         # Save the interrupted node info before clearing so we don't re-interrupt
         config["_skip_interrupt_at"] = {
@@ -114,6 +141,7 @@ async def check_and_handle_interrupt[StateT: AgentState](
     callback_mgr: CallbackManager = Inject[CallbackManager],
 ) -> bool:
     """Check for interrupts and save state if needed. Returns True if interrupted."""
+    callback_mgr = fresh(callback_mgr)
     interrupt_nodes: list[str] = (
         interrupt_before if interrupt_type == "before" else interrupt_after
     ) or []
@@ -175,17 +203,55 @@ async def check_and_handle_interrupt[StateT: AgentState](
     return False
 
 
+# ``execution_meta.interrupt_reason`` while a tool call waits for the client to run it.
+REMOTE_TOOL_REASON = "remote_tool_call"
+
+# Run-config key telling the loop to continue after the node that paused for a client tool.
+RESUME_AFTER_NODE_KEY = "_resume_after_node"
+
+
+def is_remote_tool_marker(item: Any) -> bool:
+    """Whether ``item`` is the placeholder a ToolNode returns for a client-executed call."""
+    return isinstance(item, Message) and any(
+        isinstance(block, RemoteToolCallBlock) for block in item.content or []
+    )
+
+
+def split_remote_calls(result: Any) -> tuple[list[Message], Any]:
+    """Separate client-tool placeholders from a node result.
+
+    Returns the placeholders and the result without them, so the rest (for example parallel
+    server tools that finished) is merged into the state as usual.
+    """
+    if is_remote_tool_marker(result):
+        return [result], []
+    if isinstance(result, list):
+        markers = [item for item in result if is_remote_tool_marker(item)]
+        return markers, [item for item in result if not is_remote_tool_marker(item)]
+    if isinstance(result, dict) and isinstance(result.get("messages"), list):
+        markers = [m for m in result["messages"] if is_remote_tool_marker(m)]
+        if markers:
+            kept = [m for m in result["messages"] if not is_remote_tool_marker(m)]
+            return markers, {**result, "messages": kept}
+    return [], result
+
+
 async def interrupt_graph[StateT: AgentState](
     current_node: str,
     state: StateT,
     config: dict[str, Any],
     callback_mgr: CallbackManager = Inject[CallbackManager],
 ) -> bool:
-    """Check for interrupts and save state if needed. Returns True if interrupted."""
+    """Pause after ``current_node`` until the client sends the results of its tool calls.
+
+    ``current_node`` stays put: which node comes next can depend on those results, so the
+    resumed run works it out once they are in the context (see ``RESUME_AFTER_NODE_KEY``).
+    """
+    callback_mgr = fresh(callback_mgr)
     status = ExecutionStatus.INTERRUPTED_AFTER
     state.set_interrupt(
         current_node,
-        f"interrupt_after: {current_node}",
+        REMOTE_TOOL_REASON,
         status,
     )
 
@@ -210,6 +276,38 @@ async def interrupt_graph[StateT: AgentState](
     return True
 
 
+async def pause_for_interrupt[StateT: AgentState](
+    current_node: str,
+    state: StateT,
+    config: dict[str, Any],
+    request: Interrupt,
+    callback_mgr: CallbackManager = Inject[CallbackManager],
+) -> None:
+    """Save ``state`` paused before ``current_node`` because it called ``interrupt()``.
+
+    Resuming re-runs the node, and ``interrupt()`` then returns the resume value.
+    """
+    callback_mgr = fresh(callback_mgr)
+    pause_at(state, request)
+
+    if callback_mgr and callback_mgr._lifecycle_hooks:
+        context = GraphLifecycleContext(config=config)
+        await callback_mgr.fire_on_interrupt(
+            context,
+            interrupted_node=current_node,
+            interrupt_type="interrupt",
+            state=state,
+        )
+
+    await sync_data(
+        state=state,
+        config=config,
+        messages=[],
+        trim=False,
+    )
+    logger.info("Node '%s' paused at interrupt '%s'", current_node, request.id)
+
+
 async def check_stop_requested[StateT: AgentState](
     state: StateT,
     current_node: str,
@@ -220,6 +318,8 @@ async def check_stop_requested[StateT: AgentState](
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
 ) -> bool:
     """Check if a stop has been requested externally."""
+    callback_mgr = fresh(callback_mgr)
+    checkpointer = fresh(checkpointer)
     state = await reload_state(config, state)  # type: ignore
 
     # A stop request lives in its own checkpointer key, NOT in the cached state.

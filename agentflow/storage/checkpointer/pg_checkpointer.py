@@ -44,6 +44,17 @@ from .base_checkpointer import BaseCheckpointer
 
 logger = logging.getLogger("agentflow.checkpointer.pg")
 
+
+def _rows_affected(status: Any) -> int | None:
+    """Row count from an asyncpg command tag such as ``"INSERT 0 1"``, or None if unknown."""
+    if not isinstance(status, str):
+        return None
+    try:
+        return int(status.rsplit(" ", 1)[-1])
+    except ValueError:
+        return None
+
+
 StateT = TypeVar("StateT", bound="AgentState")
 
 # Default TTL for Redis cache (24 hours)
@@ -708,7 +719,22 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if not thread_id:
             raise ValueError("Both thread_id must be provided in config")
 
-        return thread_id, user_id
+        return self._db_thread_id(thread_id), user_id
+
+    def _db_thread_id(self, thread_id: str | int) -> str | int:
+        """``thread_id`` in the column's type.
+
+        Callers (the API in particular) pass thread ids as strings. An ``int``/``bigint``
+        column needs an int, or asyncpg rejects every query for that thread.
+        """
+        if self.id_type in ("int", "bigint") and not isinstance(thread_id, int):
+            try:
+                return int(str(thread_id).strip())
+            except ValueError:
+                raise ValueError(
+                    f"thread_id must be an integer for id_type={self.id_type!r}: {thread_id!r}"
+                ) from None
+        return thread_id
 
     def _get_thread_key(
         self,
@@ -1744,11 +1770,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         Shared by :meth:`aput_messages` (standalone) and :meth:`aput_checkpoint`
         (atomic with the state write) so both use identical insert semantics.
+
+        ``message_id`` is the primary key on its own, so the conflict also fires for a
+        message stored in a *different* thread. The ``WHERE`` guard limits the update to
+        rows in this thread; when the id belongs to another thread no row is written and
+        :class:`StorageError` is raised, rolling back the surrounding transaction.
         """
+        messages_table = self._get_table_name("messages")
         for message in messages:
-            await conn.execute(
+            status = await conn.execute(
                 f"""
-                    INSERT INTO {self._get_table_name("messages")} (
+                    INSERT INTO {messages_table} (
                         message_id, thread_id, role, content, tool_calls,
                         tool_call_id, reasoning, total_tokens, usages, meta
                     )
@@ -1758,6 +1790,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                         reasoning = EXCLUDED.reasoning,
                         usages = EXCLUDED.usages,
                         updated_at = NOW()
+                    WHERE {messages_table}.thread_id = EXCLUDED.thread_id
                     """,  # noqa: S608
                 message.message_id,
                 thread_id,
@@ -1770,6 +1803,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 json.dumps(message.usages.model_dump()) if message.usages else None,
                 json.dumps({**(metadata or {}), **(message.metadata or {})}),
             )
+            if _rows_affected(status) == 0:
+                raise StorageError(
+                    message="Message id already belongs to another thread",
+                    error_code="STORAGE_FORBIDDEN_002",
+                    context={"thread_id": thread_id, "message_id": message.message_id},
+                )
 
     async def aput_messages(
         self,
@@ -2221,6 +2260,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         different user acting on the thread. Returns None if no such thread exists.
         """
 
+        try:
+            thread_id = self._db_thread_id(thread_id)
+        except ValueError:
+            return None  # not a valid id for this table, so no such thread exists
         query = f"""
             SELECT user_id
             FROM {self._get_table_name("threads")}

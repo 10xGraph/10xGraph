@@ -28,7 +28,6 @@ from agentflow.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from agentflow.runtime.publisher.publish import publish_event
 from agentflow.core.state import AgentState, Message
-from agentflow.core.state.message_block import RemoteToolCallBlock
 from agentflow.utils import END, ResponseGranularity, metrics
 from agentflow.utils.logging import bind_log_context_from_config, set_log_context
 from agentflow.core.state.reducers import add_messages
@@ -38,12 +37,22 @@ from .handler_utils import (
     check_and_handle_interrupt,
     check_interrupted,
     check_stop_requested,
+    RESUME_AFTER_NODE_KEY,
     interrupt_graph,
+    pause_for_interrupt,
+    split_remote_calls,
 )
 
 from .handler_mixins import (
     BaseLoggingMixin,
     InterruptConfigMixin,
+)
+from agentflow.utils.injection import fresh
+from agentflow.utils.interrupt import (
+    GraphInterrupt,
+    clear_resume_values,
+    node_scope,
+    resume_values,
 )
 
 
@@ -66,6 +75,7 @@ class InvokeHandler[StateT: AgentState](
         get_node_factory: Callable[[str], Node] | None = None,
         callback_mgr: CallbackManager = Inject[CallbackManager],
     ):
+        callback_mgr = fresh(callback_mgr)
         self.nodes: dict[str, Node] = nodes
         self.edges: list[Edge] = edges
         # Store factory for node lookup - enables override_node after compile
@@ -94,6 +104,7 @@ class InvokeHandler[StateT: AgentState](
         task we can actually cancel -- on the deadline, or as soon as a stop
         request shows up.
         """
+        checkpointer = fresh(checkpointer)
         timeout = resolve_timeout(config, "node_timeout", DEFAULT_NODE_TIMEOUT_SECONDS)
 
         stop_check = None
@@ -169,6 +180,10 @@ class InvokeHandler[StateT: AgentState](
         # Get current execution info from state
         current_node = state.execution_meta.current_node
         step = state.execution_meta.step
+        # Paused for client-side tools whose results are now in the context: move past
+        # that node (the next node can depend on those results).
+        if config.pop(RESUME_AFTER_NODE_KEY, None) == current_node:
+            current_node = get_next_node(current_node, state, self.edges)
 
         # Build lifecycle context (shared across all hooks in this execution)
         lifecycle_context = GraphLifecycleContext(config=config)
@@ -253,7 +268,19 @@ class InvokeHandler[StateT: AgentState](
                 # Narrow the correlation context to the node now executing.
                 set_log_context(node=current_node)
                 try:
-                    result = await self._execute_node_guarded(node, current_node, config, state)
+                    with node_scope(config, current_node, resume_values(state)):
+                        result = await self._execute_node_guarded(node, current_node, config, state)
+                except GraphInterrupt as paused:
+                    # interrupt() inside the node: save the pause and end the run. Resuming
+                    # with {"resume": value} re-runs this node.
+                    await pause_for_interrupt(current_node, state, config, paused.interrupt)
+                    event.event_type = EventType.INTERRUPTED
+                    event.metadata["interrupted"] = "Interrupt"
+                    event.metadata["status"] = "Graph execution paused by interrupt()"
+                    event.data["interrupted"] = "Interrupt"
+                    event.data["interrupt"] = paused.interrupt.model_dump(mode="json")
+                    publish_event(event)
+                    return state, messages
                 except GraphStopRequested:
                     # The node was cancelled mid-flight because a stop arrived.
                     # Hand off to the normal stop path so the run is marked
@@ -274,16 +301,8 @@ class InvokeHandler[StateT: AgentState](
 
                 next_node = None
 
-                # check frontend nodes
-                if isinstance(result, Message) and RemoteToolCallBlock in result.content:
-                    # now interrupt the graph
-                    await interrupt_graph(
-                        current_node,
-                        state,
-                        config,
-                    )
-                    messages.append(result)
-                    return state, messages
+                # Tool calls the client runs: merge the rest of the result as usual, then pause.
+                remote_calls, result = split_remote_calls(result)
 
                 # Process result and get next node
                 if isinstance(result, list):
@@ -322,6 +341,13 @@ class InvokeHandler[StateT: AgentState](
                 node_event.data["messages"] = [m.model_dump() for m in messages] if messages else []
                 node_event.content_type = [ContentType.MESSAGE]
                 publish_event(node_event)
+
+                if remote_calls:
+                    # The run resumes after this node once the client sends the results. The
+                    # placeholders are returned (clients read them) but kept out of the context.
+                    await interrupt_graph(current_node, state, config)
+                    messages.extend(remote_calls)
+                    return state, messages
 
                 # Check stop again after node execution
                 res = await check_stop_requested(
@@ -388,6 +414,9 @@ class InvokeHandler[StateT: AgentState](
                 else:
                     current_node = next_node
                     logger.debug("Next node determined by command: '%s'", current_node)
+
+                # The node finished, so answers to its interrupt() calls are spent.
+                clear_resume_values(state)
 
                 # Advance step after successful node execution
                 step += 1

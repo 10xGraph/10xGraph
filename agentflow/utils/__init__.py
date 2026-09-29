@@ -10,6 +10,7 @@ Main Exports:
     - Callback management (CallbackManager, register_before_invoke, etc.)
     - Validators (PromptInjectionValidator, MessageContentValidator, etc.)
     - Command and callable utilities (Command, call_sync_or_async)
+    - Human-in-the-loop pauses (interrupt, Interrupt, GraphInterrupt, pending_interrupt)
     - Reducers (add_messages, replace_messages, append_items, replace_value)
     - Constants (START, END, ExecutionState, etc.)
     - Converter (convert_messages)
@@ -55,6 +56,7 @@ from .id_generator import (
     TimestampIDGenerator,
     UUIDGenerator,
 )
+from .interrupt import GraphInterrupt, Interrupt, interrupt, pending_interrupt
 from .logging import (
     SecretRedactionFilter,
     install_secret_redaction,
@@ -92,6 +94,10 @@ __all__ = [
     "CallbackContext",
     "CallbackManager",
     "Command",
+    "GraphInterrupt",
+    "Interrupt",
+    "interrupt",
+    "pending_interrupt",
     "DefaultIDGenerator",
     "DelayedKeyboardInterrupt",
     "ExecutionState",

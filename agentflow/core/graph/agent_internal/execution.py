@@ -18,6 +18,7 @@ from agentflow.utils.converter import (
     convert_messages,
     strip_media_blocks,
 )
+from agentflow.utils.injection import fresh
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
@@ -230,6 +231,7 @@ class AgentExecutionMixin:
         context_manager: BaseContextManager | None = Inject[BaseContextManager],
     ) -> AgentState:
         """Trim state context when a context manager is configured."""
+        context_manager = fresh(context_manager)
         if not self.trim_context:
             logger.debug("Context trimming not enabled")
             return state
@@ -613,7 +615,7 @@ class AgentExecutionMixin:
 
         state = await self._trim_context(state)
 
-        # Build effective system prompts (with trigger table if skills configured)
+        # Build effective system prompts (with the skill catalog if skills configured)
         effective_system_prompt = list(self.system_prompt)
 
         if hasattr(self, "_build_skill_prompts") and callable(self._build_skill_prompts):
@@ -646,7 +648,7 @@ class AgentExecutionMixin:
 
         # Always resolve tools - even after tool results, the model may want to call
         # additional tools (e.g., Gemini 2.5+ with sequential tool calls)
-        tools = await self._resolve_tools(container)
+        tools = await self._resolve_tools(container, config)
 
         from agentflow.runtime.publisher.events import (
             ContentType,
@@ -860,7 +862,11 @@ class AgentExecutionMixin:
 
         return messages
 
-    async def _resolve_tools(self, container: InjectQ) -> list[dict[str, Any]]:
+    async def _resolve_tools(
+        self,
+        container: InjectQ,
+        config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Resolve tool definitions from inline tools and named ToolNodes.
 
         On the first call when ``tool_node_name`` is set, the named graph node is
@@ -902,7 +908,8 @@ class AgentExecutionMixin:
         if not self._tool_node:
             return []
 
-        return await self._tool_node.all_tools(tags=self.tools_tags)
+        # The run config can add per-run client tools (``remote_tools``).
+        return await self._tool_node.all_tools(tags=self.tools_tags, config=config)
 
     def _extract_prompt(self, messages: list[dict[Any, Any]]) -> str:
         """Extract the last user message as a plain string for non-chat generation endpoints.

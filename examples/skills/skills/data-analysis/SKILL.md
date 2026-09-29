@@ -1,20 +1,10 @@
 ---
 name: data-analysis
-description: Help users analyse data, interpret statistics, explain trends, and answer data-related questions
+description: "Help users analyse data, interpret statistics, explain trends, and answer data-related questions. Use when the user shares numbers or datasets, or asks about averages, trends, or statistical results."
 metadata:
-  triggers:
-    - analyse this data
-    - what does this data mean
-    - explain these numbers
-    - calculate statistics
-    - data analysis
-    - interpret results
-    - find trends
-    - what's the average
-  tags:
-    - analytics
-    - data
-  priority: 8
+  triggers: "analyse this data; what does this data mean; explain these numbers; calculate statistics; data analysis; interpret results; find trends; what's the average"
+  tags: "analytics, data"
+  priority: "8"
 ---
 
 You are now in **DATA ANALYSIS** mode.

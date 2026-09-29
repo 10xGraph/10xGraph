@@ -8,11 +8,13 @@ How it works
 ------------
 1. Three ``SKILL.md`` files live in ``./skills/``.
 2. ``Agent(skills=SkillConfig(skills_dir=...))`` auto-discovers them,
-   builds a trigger table that is appended to the system prompt, and
-   registers a ``set_skill`` tool the LLM can call.
-3. When the user's message matches a skill's triggers, the LLM calls
-   ``set_skill("<name>")``.  The tool returns the full SKILL.md content
-   directly, which the LLM uses to respond.
+   appends an ``<available_skills>`` catalog (name + description) to the
+   system prompt, and registers an ``activate_skill`` tool the LLM can call.
+   Skills that bundle files (``references/``, ``scripts/``, ...) also get a
+   ``read_skill_resource`` tool.
+3. When the user's message matches a skill's description, the LLM calls
+   ``activate_skill("<name>")``.  The tool returns the SKILL.md instructions
+   wrapped in ``<skill_content>`` tags, which the LLM uses to respond.
 4. Each turn, the LLM can decide which skill (if any) to load based on
    the user's request.
 
@@ -91,8 +93,6 @@ agent = Agent(
                 "You are a smart, multi-skilled assistant.\n"
                 "You have access to specialised skill modes that give you "
                 "deeper expertise in specific domains.\n"
-                "When the user's request clearly matches a skill, call set_skill() "
-                "with that skill name to load its instructions, then use them to respond.\n"
                 "You also have access to a get_weather tool for weather queries."
             ),
         }
@@ -100,8 +100,8 @@ agent = Agent(
     tool_node="TOOL",  # resolved to the ToolNode above at graph.compile() time
     skills=SkillConfig(
         skills_dir=SKILLS_DIR,
-        inject_trigger_table=True,  # auto-appends skill trigger table to system prompt
-        hot_reload=True,  # re-reads SKILL.md on every call (great for dev)
+        inject_catalog=True,  # appends the <available_skills> catalog to the system prompt
+        hot_reload=True,  # re-reads a SKILL.md when it changes on disk (great for dev)
     ),
     trim_context=True,
 )
@@ -146,7 +146,7 @@ graph.set_entry_point("MAIN")
 
 app = graph.compile()
 
-# Print available tools after compile — both get_weather + set_skill are registered
+# Print available tools after compile — get_weather + activate_skill are registered
 print("\n📋 Available tools in ToolNode (resolved at compile time):")
 for tool_name in tool_node._funcs:
     print(f"  - {tool_name}")

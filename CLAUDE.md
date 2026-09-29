@@ -97,6 +97,16 @@ eagerly pull in submodules; import the subpackage you need.
 
 **CompiledGraph execution API:** `invoke` / `ainvoke` (run), `stream` / `astream` (incremental),
 `stop` / `astop` (interrupt), `override_node`, `attach_remote_tools`, `generate_graph`, `aclose`.
+- Pause from inside a node or tool with `agentflow.utils.interrupt(value, message=..., ...)`; the
+  run saves the thread paused before that node. Resume with `invoke({"resume": value}, config)`:
+  the node re-runs and `interrupt()` returns `value`. `GraphInterrupt` is a `BaseException`.
+- Per-run client tools: `config["remote_tools"]` (flat or OpenAI schemas) are offered by the
+  `ToolNode` for that run only and handed to the client like `attach_remote_tools` tools. A
+  client tool call pauses the graph after the tool node; the client's `ToolResultBlock`
+  resumes it after that node.
+- Core functions take DI deps as `Inject[...]` defaults and call `fresh()` (in
+  `agentflow.utils.injection`) at the top: the proxy caches its first resolution for the
+  process otherwise. New code taking an `Inject[...]` default must do the same.
 - Input shape: `{"messages": [Message...]}`.
 - Config keys: `user_id`, `thread_id`, `run_id`, `recursion_limit` (default 25).
 - `response_granularity`: `LOW` (messages only, default), `PARTIAL` (context+summary+messages),
@@ -152,9 +162,12 @@ layer) for production; requires `[pg_checkpoint]`.
 (Qdrant/Mem0) for long-term. `MemoryConfig` / `AgentMemoryConfig` drive it; `memory_tool` and
 `create_memory_preload_node` wire it into a graph.
 
-**Skills.** `SkillConfig(skills_dir=...)` adds dynamic skill injection. Two modes: `on-demand`
-(LLM calls `set_skill()` from a trigger table) and `session` (preload a fixed skill from a state
-field via `preload_from`).
+**Skills.** Implements the Agent Skills spec (agentskills.io): `SkillConfig(skills_dir=...)`
+discovers `<dir>/<name>/SKILL.md` skills. Two modes: `on-demand` (an `<available_skills>` catalog
+in the system prompt; the LLM calls `activate_skill()` and `read_skill_resource()` for bundled
+files) and `session` (preload a fixed skill from a state field via `preload_from`). Activations
+are recorded in `execution_meta.internal_data["active_skills"]` and re-injected after trimming.
+`validate_skill()` / `agentflow skills --validate` check skills against the spec.
 
 **Publishers.** Emit execution events to Console, Redis Pub/Sub, Kafka, RabbitMQ, or OTEL.
 `CompositePublisher` fans out to several. OTEL publisher provides tracing (`setup_tracing`).

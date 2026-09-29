@@ -116,6 +116,39 @@ class TestBranchMerge:
         self.handler._merge_tool_state(target, branch, baseline=baseline)
         assert target.execution_meta.current_node == original_node
 
+    def test_internal_data_writes_from_branches_survive(self):
+        """Tools record data in internal_data; parallel branches must not lose it."""
+        baseline = MultiFieldState()
+        baseline.execution_meta.internal_data["log"] = ["start"]
+        target = baseline.model_copy(deep=True)
+
+        a = baseline.model_copy(deep=True)
+        a.execution_meta.internal_data["log"].append("from_a")
+        a.execution_meta.internal_data["new_list"] = ["a"]
+        a.execution_meta.internal_data["flag"] = "a"
+        b = baseline.model_copy(deep=True)
+        b.execution_meta.internal_data["log"].append("from_b")
+        b.execution_meta.internal_data["new_list"] = ["b"]
+
+        self.handler._merge_tool_state(target, a, baseline=baseline)
+        self.handler._merge_tool_state(target, b, baseline=baseline)
+
+        data = target.execution_meta.internal_data
+        assert data["log"] == ["start", "from_a", "from_b"]
+        assert data["new_list"] == ["a", "b"]
+        assert data["flag"] == "a"
+
+    def test_internal_data_replaced_list_is_written(self):
+        baseline = MultiFieldState()
+        baseline.execution_meta.internal_data["items"] = ["x", "y"]
+        target = baseline.model_copy(deep=True)
+
+        branch = baseline.model_copy(deep=True)
+        branch.execution_meta.internal_data["items"] = ["z"]
+
+        self.handler._merge_tool_state(target, branch, baseline=baseline)
+        assert target.execution_meta.internal_data["items"] == ["z"]
+
 
 class TestSingleToolFastPath:
     @pytest.mark.asyncio

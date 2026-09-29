@@ -2156,7 +2156,7 @@ class TestAgentInit:
                 model="gpt-4o",
                 provider="openai",
                 tool_node="TOOL",
-                skills=SkillConfig(skills_dir=str(tmp_path), inject_trigger_table=False),
+                skills=SkillConfig(skills_dir=str(tmp_path), inject_catalog=False),
                 reasoning_config=None,
             )
 

@@ -23,7 +23,6 @@ from agentflow.core.graph.node import Node
 from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from agentflow.runtime.publisher.publish import publish_event
 from agentflow.core.state import AgentState, Message, ErrorBlock
-from agentflow.core.state.message_block import RemoteToolCallBlock
 from agentflow.core.state.stream_chunks import StreamChunk, StreamEvent
 from agentflow.utils import END, ResponseGranularity, add_messages
 from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
@@ -31,7 +30,10 @@ from .handler_utils import (
     check_and_handle_interrupt,
     check_interrupted,
     check_stop_requested,
+    RESUME_AFTER_NODE_KEY,
     interrupt_graph,
+    is_remote_tool_marker,
+    pause_for_interrupt,
 )
 
 from .handler_mixins import (
@@ -45,6 +47,13 @@ from .utils import (
     load_or_create_state,
     process_node_result,
     sync_data,
+)
+from agentflow.utils.injection import fresh
+from agentflow.utils.interrupt import (
+    GraphInterrupt,
+    clear_resume_values,
+    node_scope,
+    resume_values,
 )
 
 
@@ -88,6 +97,7 @@ class StreamHandler[StateT: AgentState](
         get_node_factory: Callable[[str], Node] | None = None,
         callback_mgr: CallbackManager = Inject[CallbackManager],
     ):
+        callback_mgr = fresh(callback_mgr)
         self.nodes: dict[str, Node] = nodes
         self.edges: list[Edge] = edges
         # Store factory for node lookup - enables override_node after compile
@@ -142,6 +152,10 @@ class StreamHandler[StateT: AgentState](
         # Get current execution info from state
         current_node = state.execution_meta.current_node
         step = state.execution_meta.step
+        # Paused for client-side tools whose results are now in the context: move past
+        # that node (the next node can depend on those results).
+        if config.pop(RESUME_AFTER_NODE_KEY, None) == current_node:
+            current_node = get_next_node(current_node, state, self.edges)
 
         # Build lifecycle context (shared across all hooks in this execution)
         lifecycle_context = GraphLifecycleContext(config=config)
@@ -310,82 +324,99 @@ class StreamHandler[StateT: AgentState](
                 # From Here message no need to stream its already streamed
                 # from execute node function, only stream updates and state
                 next_node = None
-                async for rs in result:
-                    # Allow stop to break inner result loop as well
-                    if isinstance(rs, StreamChunk):
-                        yield rs
+                remote_pending = False
+                try:
+                    with node_scope(config, current_node, resume_values(state)):
+                        async for rs in result:
+                            # Allow stop to break inner result loop as well
+                            if isinstance(rs, StreamChunk):
+                                yield rs
 
-                    # if message and remote tool call then yield immediately
-                    elif isinstance(rs, Message) and RemoteToolCallBlock in rs.content:
-                        # now interrupt the graph
-                        await interrupt_graph(
-                            current_node,
-                            state,
-                            config,
-                        )
-                        yield StreamChunk(
-                            event=StreamEvent.UPDATES,
-                            data={
-                                "status": "node_invoked",
-                                "node": current_node,
-                                "step": step,
-                                "max_steps": max_steps,
-                                "reason": "Remote tool call - graph interrupted",
-                            },
-                            thread_id=config.get("thread_id"),
-                            run_id=config.get("run_id"),
-                        )
-                        return
+                            # A tool call the client runs. Keep draining, so parallel server
+                            # tools finish and are saved, then pause after this node.
+                            elif is_remote_tool_marker(rs):
+                                remote_pending = True
 
-                    elif isinstance(rs, Message) and not rs.delta:
-                        if rs.message_id not in messages_ids:
-                            messages.append(rs)
-                            messages_ids.add(rs.message_id)
+                            elif isinstance(rs, Message) and not rs.delta:
+                                if rs.message_id not in messages_ids:
+                                    messages.append(rs)
+                                    messages_ids.add(rs.message_id)
 
-                    elif isinstance(rs, dict) and "is_non_streaming" in rs:
-                        if rs["is_non_streaming"]:
-                            new_state = rs.get("state", None)
-                            if new_state:
-                                state = new_state
-                                yield StreamChunk(
-                                    event=StreamEvent.STATE,
-                                    state=state,
-                                    metadata={
-                                        "node": current_node,
-                                        "step": step,
-                                    },
-                                    thread_id=config.get("thread_id"),
-                                    run_id=config.get("run_id"),
-                                )
+                            elif isinstance(rs, dict) and "is_non_streaming" in rs:
+                                if rs["is_non_streaming"]:
+                                    new_state = rs.get("state", None)
+                                    if new_state:
+                                        state = new_state
+                                        yield StreamChunk(
+                                            event=StreamEvent.STATE,
+                                            state=state,
+                                            metadata={
+                                                "node": current_node,
+                                                "step": step,
+                                            },
+                                            thread_id=config.get("thread_id"),
+                                            run_id=config.get("run_id"),
+                                        )
 
-                            new_messages = rs.get("messages", [])
-                            for m in new_messages:
-                                if m.message_id not in messages_ids and not m.delta:
-                                    messages.append(m)
-                                    messages_ids.add(m.message_id)
-                            next_node = rs.get("next_node", next_node)
-                        else:
-                            # Streaming path completed: ensure any collected messages are persisted
-                            new_messages = rs.get("messages", [])
-                            for m in new_messages:
-                                if m.message_id not in messages_ids and not m.delta:
-                                    messages.append(m)
-                                    messages_ids.add(m.message_id)
-                            next_node = rs.get("next_node", next_node)
-                    else:
-                        # Process as node result (non-streaming path)
-                        try:
-                            state, new_messages, next_node = await process_node_result(
-                                rs,
-                                state,
-                                [],
-                            )
-                            for m in new_messages:
-                                if m.message_id not in messages_ids and not m.delta:
-                                    messages.append(m)
-                                    messages_ids.add(m.message_id)
-                        except Exception as e:
-                            logger.error("Failed to process node result: %s", e)
+                                    new_messages = rs.get("messages", [])
+                                    for m in new_messages:
+                                        if is_remote_tool_marker(m):
+                                            remote_pending = True
+                                            continue
+                                        if m.message_id not in messages_ids and not m.delta:
+                                            messages.append(m)
+                                            messages_ids.add(m.message_id)
+                                    next_node = rs.get("next_node", next_node)
+                                else:
+                                    # Streaming path completed: ensure any collected
+                                    # messages are persisted
+                                    new_messages = rs.get("messages", [])
+                                    for m in new_messages:
+                                        if is_remote_tool_marker(m):
+                                            remote_pending = True
+                                            continue
+                                        if m.message_id not in messages_ids and not m.delta:
+                                            messages.append(m)
+                                            messages_ids.add(m.message_id)
+                                    next_node = rs.get("next_node", next_node)
+                            else:
+                                # Process as node result (non-streaming path)
+                                try:
+                                    state, new_messages, next_node = await process_node_result(
+                                        rs,
+                                        state,
+                                        [],
+                                    )
+                                    for m in new_messages:
+                                        if m.message_id not in messages_ids and not m.delta:
+                                            messages.append(m)
+                                            messages_ids.add(m.message_id)
+                                except Exception as e:
+                                    logger.error("Failed to process node result: %s", e)
+                except GraphInterrupt as paused:
+                    # interrupt() inside the node: save the pause and end the run. Resuming with
+                    # {"resume": value} re-runs this node.
+                    await pause_for_interrupt(current_node, state, config, paused.interrupt)
+                    event.event_type = EventType.INTERRUPTED
+                    event.metadata["interrupted"] = "Interrupt"
+                    event.metadata["status"] = "Graph execution paused by interrupt()"
+                    event.data["interrupted"] = "Interrupt"
+                    event.data["interrupt"] = paused.interrupt.model_dump(mode="json")
+                    publish_event(event)
+                    yield StreamChunk(
+                        event=StreamEvent.UPDATES,
+                        data={
+                            "status": "interrupted",
+                            "node": current_node,
+                            "step": step,
+                            "max_steps": max_steps,
+                            "reason": "Graph execution paused by interrupt()",
+                            "interrupt": paused.interrupt.model_dump(mode="json"),
+                        },
+                        thread_id=config.get("thread_id"),
+                        run_id=config.get("run_id"),
+                    )
+                    return
 
                 logger.debug(
                     "Node result processed, next_node=%s, total_messages=%d",
@@ -436,6 +467,24 @@ class StreamHandler[StateT: AgentState](
                 event.content_type = [ContentType.STATE, ContentType.MESSAGE]
                 publish_event(event)
 
+                if remote_pending:
+                    # The client runs this node's remaining tool calls. Pause; the run
+                    # resumes after this node once their results arrive.
+                    await interrupt_graph(current_node, state, config)
+                    yield StreamChunk(
+                        event=StreamEvent.UPDATES,
+                        data={
+                            "status": "node_invoked",
+                            "node": current_node,
+                            "step": step,
+                            "max_steps": max_steps,
+                            "reason": "Remote tool call - graph interrupted",
+                        },
+                        thread_id=config.get("thread_id"),
+                        run_id=config.get("run_id"),
+                    )
+                    return
+
                 is_interrupted_requested = False
 
                 # Check for interrupt_after
@@ -483,6 +532,8 @@ class StreamHandler[StateT: AgentState](
                     logger.debug("Next node determined by command: '%s'", current_node)
 
                 # Advance step after successful node execution
+                # The node finished, so answers to its interrupt() calls are spent.
+                clear_resume_values(state)
                 step += 1
                 state.advance_step()
                 await call_realtime_sync(state, config)

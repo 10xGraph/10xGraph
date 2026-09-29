@@ -34,9 +34,11 @@ from agentflow.core.state.stream_emitter import StreamEmitter
 from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from agentflow.runtime.publisher.publish import publish_event
 from agentflow.utils import CallbackManager
+from agentflow.utils.injection import fresh
 
 from . import deps
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
+from .run_tools import run_remote_tools, tool_name
 from .schema import SchemaMixin
 
 
@@ -191,18 +193,51 @@ class ToolNode(
     async def _all_tools_async(
         self,
         tags: set[str] | None = None,
+        config: dict[str, t.Any] | None = None,
     ) -> list[dict]:
         tools: list[dict] = self.get_local_tool(tags=tags)
         tools.extend(await self._get_mcp_tool(tags=tags))
         tools.extend(self.remote_tools)
+        tools.extend(self._run_remote_tools(config, taken={tool_name(x) for x in tools}))
         return tools
+
+    def _run_remote_tools(
+        self,
+        config: dict[str, t.Any] | None,
+        taken: set[str] | None = None,
+    ) -> list[dict]:
+        """Per-run client tools from ``config`` that do not shadow one of this node's tools."""
+        taken = set(taken or ()) | set(self._funcs) | set(self.mcp_tools)
+        taken |= set(self.remote_tool_names)
+        tools = []
+        for schema in run_remote_tools(config):
+            name = tool_name(schema)
+            if name in taken:
+                logger.warning(
+                    "Ignoring per-run client tool '%s': the ToolNode already has a tool "
+                    "with that name",
+                    name,
+                )
+                continue
+            tools.append(schema)
+        return tools
+
+    def _is_remote_call(self, name: str, config: dict[str, t.Any] | None) -> bool:
+        """Whether a call to ``name`` runs on the client (configured or per-run remote tool)."""
+        if name in self.remote_tool_names:
+            return True
+        return any(tool_name(x) == name for x in self._run_remote_tools(config))
 
     def set_remote_tool(self, tool_names: list[dict]) -> None:
         # already validated tool names
         self.remote_tools = tool_names
         self.remote_tool_names = [tool.get("function", {}).get("name") for tool in tool_names]
 
-    async def all_tools(self, tags: set[str] | None = None) -> list[dict]:
+    async def all_tools(
+        self,
+        tags: set[str] | None = None,
+        config: dict[str, t.Any] | None = None,
+    ) -> list[dict]:
         """Get all available tools from all configured providers.
 
         Retrieves and combines tool definitions from local functions, MCP client,
@@ -212,6 +247,8 @@ class ToolNode(
         Args:
             tags: Optional set of tags to filter tools. Only tools matching
                 the specified tags will be included in the result.
+            config: The run config. Client tools it carries under ``remote_tools``
+                are added for this run (see ``run_tools``).
 
         Returns:
             List of tool definitions in OpenAI function calling format. Each dict
@@ -242,11 +279,13 @@ class ToolNode(
         """
         return await self._all_tools_async(
             tags=tags,
+            config=config,
         )
 
     def all_tools_sync(
         self,
         tags: set[str] | None = None,
+        config: dict[str, t.Any] | None = None,
     ) -> list[dict]:
         """Synchronously get all available tools from all configured providers.
 
@@ -271,6 +310,7 @@ class ToolNode(
         # Must mirror ``_all_tools_async``: dropping remote tools here makes
         # client-side tools silently invisible to the model.
         tools.extend(self.remote_tools)
+        tools.extend(self._run_remote_tools(config, taken={tool_name(x) for x in tools}))
 
         return tools
 
@@ -327,6 +367,7 @@ class ToolNode(
             monitoring and debugging purposes. Tool execution is routed based
             on tool provider precedence: MCP → Local.
         """
+        callback_manager = fresh(callback_manager)
         logger.info("Executing tool '%s' with %d arguments", name, len(args))
         logger.debug("Tool arguments: %s", args)
 
@@ -341,7 +382,7 @@ class ToolNode(
         event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
         publish_event(event)
         # Check this is available in remote tools
-        if name in self.remote_tool_names:
+        if self._is_remote_call(name, config):
             event.metadata["is_remote"] = True
             publish_event(event)
             # This tool in remote tools, so we can not execute it locally
@@ -477,6 +518,7 @@ class ToolNode(
             may provide true streaming responses. Currently, it provides a
             consistent async iterator interface over tool results.
         """
+        callback_manager = fresh(callback_manager)
         logger.info("Executing tool '%s' with %d arguments", name, len(args))
         logger.debug("Tool arguments: %s", args)
         event = EventModel.default(
@@ -488,7 +530,7 @@ class ToolNode(
         event.node_name = "ToolNode"
         event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
 
-        if name in self.remote_tool_names:
+        if self._is_remote_call(name, config):
             event.metadata["is_remote"] = True
             publish_event(event)
             # This tool in remote tools, so we can not execute it locally

@@ -40,6 +40,7 @@ from agentflow.utils import (
     add_messages,
 )
 from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
+from agentflow.utils.injection import fresh
 
 
 StateT = TypeVar("StateT", bound=AgentState)
@@ -133,6 +134,7 @@ async def validate_message_content(
     Raises:
         ValidationError: If any validator fails.
     """
+    callback_mgr = fresh(callback_mgr)
     # Require callback manager to be provided
     if not callback_mgr:
         logger.debug("No callback manager provided, skipping validation")
@@ -158,6 +160,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     a new state from the `StateGraph`'s prototype state and merges any
     incoming messages. Supports partial state update via 'state' in input_data.
     """
+    checkpointer = fresh(checkpointer)
     logger.debug("Loading or creating state with thread_id=%s", config.get("thread_id", "default"))
 
     # Try to load existing state if checkpointer is available
@@ -313,6 +316,7 @@ async def reload_state[StateT: AgentState](
     a new state from the `StateGraph`'s prototype state and merges any
     incoming messages. Supports partial state update via 'state' in input_data.
     """
+    checkpointer = fresh(checkpointer)
     logger.debug("Loading or creating state with thread_id=%s", config.get("thread_id", "default"))
 
     if not checkpointer:
@@ -356,6 +360,7 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
     result: Any,
     state: StateT,
     messages: list[Message],
+    seen_message_ids: set[str] | None = None,
 ) -> tuple[StateT, list[Message], str | None]:
     """
     Processes the result from a node execution, updating the agent state, message list,
@@ -373,6 +378,10 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
             list, str, dict, ModelResponse, or other types.
         state (StateT): The current agent state.
         messages (list[Message]): The list of messages accumulated so far.
+        seen_message_ids (set[str] | None): Ids of the messages in ``state.context`` before the
+            node ran. A node that appends to ``state.context`` and returns the same state
+            object leaves nothing to compare against, so without this snapshot its new
+            messages would never be reported (or streamed). Defaults to the ids in ``state``.
 
     Returns:
         tuple[StateT, list[Message], str | None]:
@@ -415,15 +424,16 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
 
     def handle_state_message(old_state: StateT, new_state: StateT) -> None:
         """Handle state messages by updating the context."""
-        old_messages = {}
-        if old_state.context:
-            old_messages = {msg.message_id: msg for msg in old_state.context}
+        if seen_message_ids is not None:
+            old_ids = seen_message_ids
+        else:
+            old_ids = {msg.message_id for msg in old_state.context or []}
 
         if not new_state.context:
             return
         # now save all the new messages
         for msg in new_state.context:
-            if msg.message_id in old_messages:
+            if msg.message_id in old_ids:
                 continue
             # otherwise save it
             add_unique_message(msg)
@@ -565,6 +575,7 @@ async def call_realtime_sync(
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],  # will be auto-injected
 ) -> None:
     """Call the realtime state sync hook if provided."""
+    checkpointer = fresh(checkpointer)
     if checkpointer:
         logger.debug("Calling realtime state sync hook")
         # await call_sync_or_async(checkpointer.a, config, state)
@@ -581,6 +592,9 @@ async def sync_data(
     callback_mgr: CallbackManager = Inject[CallbackManager],  # will be auto-injected
 ) -> bool:
     """Sync the current state and messages to the checkpointer."""
+    checkpointer = fresh(checkpointer)
+    context_manager = fresh(context_manager)
+    callback_mgr = fresh(callback_mgr)
     is_context_trimmed = False
 
     new_state = copy.deepcopy(state)
