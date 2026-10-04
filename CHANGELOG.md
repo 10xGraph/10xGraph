@@ -161,6 +161,16 @@ Starting from this release:
   lists that several branches appended to keep every branch's items.
 - **Reading a non-UTF-8 skill resource crashed the tool** with an uncaught
   `UnicodeDecodeError`.
+- **Checkpointers no longer import a class named by stored data.** `PgCheckpointer` and
+  `SqliteCheckpointer` saved the state's module path (`__class_path__`) in every row and
+  imported it on load. A row could choose which module got imported, renaming or moving a
+  state class broke every stored thread, and `PgCheckpointer` fell back to `AgentState` on a
+  failed import, silently dropping custom fields. Rows now hold
+  `model_dump(mode="json")` plus a `{"__state_meta__": {"format": 1, "class": "<Name>"}}`
+  header, and are rebuilt into the state class bound by `StateGraph.compile()`
+  (`BaseCheckpointer.bind_state_type()`, `state_type`). Old rows still load: the class path
+  is ignored, never imported. A stored class name that differs from the bound class logs a
+  warning.
 
 ### Breaking
 
@@ -194,6 +204,13 @@ Starting from this release:
     `replace=True`.
   - With no skills discovered, no tool or catalog is registered and a `ToolNode`
     is no longer required.
+- **One checkpointer instance serves one state class.** `compile()` binds the graph's state
+  class to the checkpointer, and binding a different class raises `ValueError`. A checkpointer
+  created with an explicit type (`PgCheckpointer[MyState](...)`) also raises if the graph's
+  state class does not subclass that type. A checkpointer used without `compile()` restores
+  plain `AgentState`. **Migration:** give each graph with its own state class its own
+  checkpointer instance; call `checkpointer.bind_state_type(MyState)` when reading threads
+  outside a compiled graph.
 
 ## [1.0.0] - 2026-07-19
 
