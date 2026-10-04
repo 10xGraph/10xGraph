@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, get_args
 
 from agentflow.core.state import AgentState, Message
 from agentflow.utils import run_coroutine
@@ -31,6 +31,16 @@ STOP_REQUEST_NAMESPACE = "stop_request"
 # forever if the run dies before consuming it.
 STOP_REQUEST_TTL_SECONDS = 3600
 
+# Key holding the storage header inside a persisted state row. ``format`` versions
+# the row layout itself; ``class`` is the state class name, kept only for
+# diagnostics. Neither is ever used to import code.
+STATE_META_KEY = "__state_meta__"
+STATE_FORMAT_VERSION = 1
+
+# Rows written before the state class was bound by the graph carried a module path
+# under this key. It is dropped on read and never imported.
+_LEGACY_CLASS_PATH_KEY = "__class_path__"
+
 
 class BaseCheckpointer[StateT: AgentState](ABC):
     """
@@ -50,6 +60,79 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     Type Args:
         StateT: Type of agent state (must inherit from AgentState).
     """
+
+    # The class persisted rows are rebuilt into. ``StateGraph.compile()`` binds the
+    # graph's own state class; a checkpointer used on its own restores plain
+    # ``AgentState``. A class attribute, so subclasses that never call
+    # ``super().__init__()`` still get the default.
+    _state_type: type[AgentState] = AgentState
+    _state_type_bound: bool = False
+
+    @property
+    def state_type(self) -> type[AgentState]:
+        """The state class persisted rows are restored into."""
+        return self._state_type
+
+    def bind_state_type(self, state_type: type[AgentState]) -> None:
+        """Set the state class this checkpointer restores rows into.
+
+        Called by ``StateGraph.compile()``. Binding the same class again is a no-op.
+
+        Raises:
+            TypeError: If ``state_type`` is not an ``AgentState`` subclass.
+            ValueError: If a different class is already bound, or if the instance
+                was created with an explicit type (``PgCheckpointer[MyState](...)``)
+                that ``state_type`` does not subclass. One checkpointer instance
+                serves one state class; restoring another graph's rows into the
+                wrong class would silently drop its custom fields.
+        """
+        if not (isinstance(state_type, type) and issubclass(state_type, AgentState)):
+            raise TypeError(f"State type must be an AgentState subclass, got {state_type!r}")
+        # ``__orig_class__`` exists only on explicitly parametrized instances, and
+        # a TypeVar argument (not a class) carries no constraint worth checking.
+        declared = get_args(getattr(self, "__orig_class__", None))
+        if declared and isinstance(declared[0], type) and not issubclass(state_type, declared[0]):
+            raise ValueError(
+                f"{type(self).__name__} was declared for state class "
+                f"'{declared[0].__name__}', but the graph uses '{state_type.__name__}'."
+            )
+        if self._state_type_bound and self._state_type is not state_type:
+            raise ValueError(
+                f"{type(self).__name__} is already bound to state class "
+                f"'{self._state_type.__name__}', cannot rebind it to "
+                f"'{state_type.__name__}'. Use a separate checkpointer instance per "
+                "state class."
+            )
+        self._state_type = state_type
+        self._state_type_bound = True
+
+    def _encode_state(self, state: AgentState) -> dict[str, Any]:
+        """Build the JSON-safe row persisted for a state: its data plus a header."""
+        data = state.model_dump(mode="json")
+        data[STATE_META_KEY] = {
+            "format": STATE_FORMAT_VERSION,
+            "class": type(state).__name__,
+        }
+        return data
+
+    def _decode_state(self, data: dict[str, Any]) -> StateT:
+        """Rebuild a state from a persisted row using the bound state class."""
+        data = dict(data)
+        meta = data.pop(STATE_META_KEY, None) or {}
+        legacy_path = data.pop(_LEGACY_CLASS_PATH_KEY, None)
+        stored_name = meta.get("class") or (
+            legacy_path.rsplit(".", 1)[-1] if isinstance(legacy_path, str) else None
+        )
+        expected = self._state_type.__name__
+        if stored_name and stored_name != expected:
+            logger.warning(
+                "Stored state was written as '%s' but is being restored as '%s'. "
+                "Fields not defined on '%s' are dropped.",
+                stored_name,
+                expected,
+                expected,
+            )
+        return self._state_type.model_validate(data)  # type: ignore[return-value]
 
     ###########################
     #### SETUP ################

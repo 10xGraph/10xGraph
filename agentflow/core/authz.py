@@ -47,10 +47,14 @@ CHECKPOINT_READ = "checkpointer:read"
 CHECKPOINT_WRITE = "checkpointer:write"
 CHECKPOINT_DELETE = "checkpointer:delete"
 
-# memory / long-term store
-MEMORY_READ = "memory:read"
-MEMORY_WRITE = "memory:write"
-MEMORY_DELETE = "memory:delete"
+# memory / long-term store (the API's /v1/store routes)
+STORE_READ = "store:read"
+STORE_WRITE = "store:write"
+STORE_DELETE = "store:delete"
+# Deprecated aliases: these were once "memory:*", a name no route ever checked.
+MEMORY_READ = STORE_READ
+MEMORY_WRITE = STORE_WRITE
+MEMORY_DELETE = STORE_DELETE
 
 # files / media
 FILES_READ = "files:read"
@@ -70,9 +74,9 @@ ALL_SCOPES = frozenset(
         CHECKPOINT_READ,
         CHECKPOINT_WRITE,
         CHECKPOINT_DELETE,
-        MEMORY_READ,
-        MEMORY_WRITE,
-        MEMORY_DELETE,
+        STORE_READ,
+        STORE_WRITE,
+        STORE_DELETE,
         FILES_READ,
         FILES_UPLOAD,
         CONFIG_READ,
@@ -87,21 +91,25 @@ SCOPE_NONE = "none"
 def get_authz(config: Any) -> dict[str, Any] | None:
     """Return the ``authz`` block from config, or None if absent/malformed.
 
-    Looks in two places: a top-level ``config["authz"]`` (convenient for direct SDK calls)
-    and ``config["user"]["authz"]`` -- where the API stamps it, because the trusted ``user``
-    object is copied into ``config["user"]`` on every request, so a single stamp there
-    reaches every downstream call.
+    Looks in two places, in this order:
+
+    1. ``config["user"]["authz"]`` -- where the API stamps it. The trusted ``user`` object is
+       copied into ``config["user"]`` on every request, so a single stamp there reaches every
+       downstream call. It always wins.
+    2. a top-level ``config["authz"]`` -- for direct SDK calls with no API in front. Request
+       config can carry client data, so this is only a fallback: a client-supplied top-level
+       block can never override the policy the API stamped.
     """
     if not isinstance(config, dict):
         return None
-    block = config.get(AUTHZ_KEY)
-    if isinstance(block, dict):
-        return block
     user = config.get("user")
     if isinstance(user, dict):
         block = user.get(AUTHZ_KEY)
         if isinstance(block, dict):
             return block
+    block = config.get(AUTHZ_KEY)
+    if isinstance(block, dict):
+        return block
     return None
 
 

@@ -63,6 +63,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _narrowed_tags(base: list[str] | None, requested: Any) -> list[str] | None:
+    """The requested tags that ``base`` allows, or ``None`` when there are none to apply."""
+    if isinstance(requested, str):
+        requested = [requested]
+    if not isinstance(requested, list | tuple | set):
+        return None
+    tags = [str(tag) for tag in requested if base is None or tag in base]
+    return tags or None
+
+
+def _advertised_tool_names(tools: list[Any] | None) -> frozenset[str]:
+    """Tool names in a session's ``tools``: OpenAI-style dicts, or provider-native objects."""
+    names: set[str] = set()
+
+    def field(item: Any, key: str) -> Any:
+        return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+
+    for tool in tools or []:
+        function = field(tool, "function")
+        for entry in [function, tool, *(field(tool, "function_declarations") or [])]:
+            name = field(entry, "name") if entry is not None else None
+            if isinstance(name, str) and name:
+                names.add(name)
+    return frozenset(names)
+
+
 class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     """Realtime audio agent node. Run via :meth:`arun` (or ``CompiledGraph.arealtime``)."""
 
@@ -126,6 +152,10 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         self._input_transcript_buf = ""
         self._output_transcript_buf = ""
 
+        # Names of the tools advertised to the model this session; a tool call for any
+        # other name is refused. Set in arun() once the session's tools are resolved.
+        self._session_tool_names: frozenset[str] = frozenset()
+
         # Error-driven reconnect backoff (go_away reconnects are immediate; only transient
         # drops back off). Seeded from RealtimeConfig.reconnect; kept as instance attributes
         # so tests can shrink them without rebuilding the config.
@@ -179,6 +209,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         self._output_transcript_buf = ""
         rt = self._session_realtime_config(config)
         rt = await self._resolve_session_tools(rt)
+        self._session_tool_names = _advertised_tool_names(rt.tools)
         rt = await self._resolve_session_system_instruction(rt, state, config)
 
         handle = await self._load_resume_handle(config, checkpointer)
@@ -265,14 +296,24 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
 
         Lets a caller (e.g. the API init frame) pick model/voice/modalities/vad per session
         without rebuilding the agent. Unknown keys are ignored; the result is re-validated.
+
+        ``tools_tags`` can only narrow the agent's own tag filter: the session may drop tags
+        but never add one, and an override that leaves nothing is ignored, since an empty
+        filter would advertise every tool.
         """
         overrides = (config or {}).get("realtime") or {}
         if not overrides:
             return self.realtime_config
         base = self.realtime_config.model_dump()
-        for key, value in overrides.items():
-            if value is not None and key in base:
-                base[key] = value
+        for key, requested in overrides.items():
+            if requested is None or key not in base:
+                continue
+            value = requested
+            if key == "tools_tags":
+                value = _narrowed_tags(base["tools_tags"], requested)
+                if value is None:
+                    continue
+            base[key] = value
         return RealtimeConfig.model_validate(base)
 
     async def _resolve_session_tools(self, rt: RealtimeConfig) -> RealtimeConfig:
@@ -301,13 +342,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
 
         Gemini Live takes a single ``system_instruction`` string fixed at connect time, so
         the per-turn prompt list other agents send must be collapsed once, here. This is what
-        makes ``system_prompt``, the skills trigger table / session-mode content, and the
+        makes ``system_prompt``, the skills catalog / session-mode content, and the
         memory system prompt actually reach the model in realtime (the matching tools are
         advertised separately by :meth:`_resolve_session_tools`).
 
         State-dependent pieces (session-mode skill from a state field, memory preload from the
         latest user query) are therefore a connect-time snapshot, not re-evaluated per turn;
-        dynamic behaviour mid-session goes through ``set_skill`` / memory tools instead.
+        dynamic behaviour mid-session goes through ``activate_skill`` / memory tools instead.
 
         ``{field}`` placeholders in the prompt content are interpolated from ``state`` exactly
         like the turn-based path (via :func:`convert_messages`), so a system prompt that reads
@@ -479,6 +520,10 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         tool_node = self._resolve_tool_node()
         if tool_node is None:
             result: Any = {"error": f"no tools registered for '{event.name}'"}
+        elif event.name not in self._session_tool_names:
+            # Only tools advertised to the model this session may run.
+            logger.warning("realtime tool call for unadvertised tool '%s' refused", event.name)
+            result = {"error": f"tool '{event.name}' is not available in this session"}
         else:
             invoked = await tool_node.invoke(
                 event.name,

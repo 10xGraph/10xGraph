@@ -1,19 +1,10 @@
 ---
 name: humanizer
-description: Remove AI writing patterns and make text sound natural and human-written
+description: "Remove AI writing patterns and make text sound natural and human-written. Use when the user asks to humanize text, make it sound less AI-generated, or rewrite it to read naturally."
 metadata:
-  triggers:
-    - humanize this text
-    - make this sound less AI
-    - remove AI writing patterns
-    - make this more human
-    - fix my writing
-    - this sounds too AI
-    - rewrite this to sound natural
-  tags:
-    - writing
-    - editing
-  priority: 7
+  triggers: "humanize this text; make this sound less AI; remove AI writing patterns; make this more human; fix my writing; this sounds too AI; rewrite this to sound natural"
+  tags: "writing, editing"
+  priority: "7"
 ---
 
 # Humanizer: Remove AI Writing Patterns

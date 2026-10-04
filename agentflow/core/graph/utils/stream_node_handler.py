@@ -36,6 +36,8 @@ from agentflow.utils import (
     call_sync_or_async,
 )
 from agentflow.utils.command import Command
+from agentflow.utils.injection import fresh
+from agentflow.utils.interrupt import activate as activate_interrupts
 
 from .handler_mixins import BaseLoggingMixin
 
@@ -541,11 +543,15 @@ class StreamNodeHandler(BaseLoggingMixin):
                 run_id=config.get("run_id"),
             )
 
+            # Snapshot the context: a node may append to it and return the same state object.
+            seen_message_ids = {msg.message_id for msg in state.context or []}
             # Execute the actual function
-            result = await call_sync_or_async(
-                self.func,  # type: ignore
-                **input_data,
-            )
+            # interrupt() in the node reads the scope the graph loop opened for this node.
+            with activate_interrupts(config):
+                result = await call_sync_or_async(
+                    self.func,  # type: ignore
+                    **input_data,
+                )
             logger.debug("Node '%s' function execution completed", self.name)
 
             logger.debug("Node '%s' executing after_invoke callbacks", self.name)
@@ -597,6 +603,8 @@ class StreamNodeHandler(BaseLoggingMixin):
                 if result.state:
                     state = result.state
                     for msg in state.context:
+                        if msg.message_id in seen_message_ids:
+                            continue  # already streamed in an earlier step
                         yield msg
                         stream_event.message = msg
                         yield stream_event
@@ -609,6 +617,7 @@ class StreamNodeHandler(BaseLoggingMixin):
                     final_result,
                     state,
                     messages,
+                    seen_message_ids,
                 )
                 event.data["state"] = new_state.model_dump()
                 event.event_type = EventType.END
@@ -789,6 +798,7 @@ class StreamNodeHandler(BaseLoggingMixin):
                 print(chunk)
             ```
         """
+        callback_mgr = fresh(callback_mgr)
         logger.info("Executing node '%s'", self.name)
         logger.debug(
             "Node '%s' execution with state context size=%d, config keys=%s",

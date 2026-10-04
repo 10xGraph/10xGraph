@@ -17,10 +17,11 @@ from agentflow.core.state import (
 from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from agentflow.runtime.publisher.publish import publish_event
 from agentflow.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
+from agentflow.utils.interrupt import activate as activate_interrupts
 
 from ._helpers import _extract_block_meta, _safe_serialize
 from .coercion import coerce_tool_argument
-from .constants import INJECTABLE_PARAMS, has_injected_default
+from .constants import INJECTABLE_PARAMS, SKILL_TOOL_ATTR, has_injected_default
 from .schema import _safe_type_hints
 
 
@@ -173,8 +174,14 @@ class LocalExecMixin:
         callback_mgr: CallbackManager,
         emit: StreamEmitter | None = None,
     ) -> dict[str, t.Any] | Message:
+        fn = self._funcs[name]
+        # Skill tools (activate_skill / read_skill_resource) report as SKILL
+        # invocations so callbacks can tell them apart from ordinary tools.
+        invocation_type = (
+            InvocationType.SKILL if getattr(fn, SKILL_TOOL_ATTR, False) else InvocationType.TOOL
+        )
         context = CallbackContext(
-            invocation_type=InvocationType.TOOL,
+            invocation_type=invocation_type,
             node_name="ToolNode",
             function_name=name,
             metadata={
@@ -183,8 +190,6 @@ class LocalExecMixin:
                 "config": config,
             },
         )
-
-        fn = self._funcs[name]
         # The model's raw arguments until they are validated, so an error callback still has
         # what was asked for when validation is what failed.
         input_data: dict[str, t.Any] = dict(args)
@@ -231,7 +236,9 @@ class LocalExecMixin:
             event.metadata["status"] = "before_invoke_complete Invoke internal"
             publish_event(event)
 
-            result = await call_sync_or_async(fn, **input_data)
+            # interrupt() inside the tool is keyed to this call, so parallel calls resume apart.
+            with activate_interrupts(config, tool_call_id):
+                result = await call_sync_or_async(fn, **input_data)
 
             result = await callback_mgr.execute_after_invoke(
                 context,

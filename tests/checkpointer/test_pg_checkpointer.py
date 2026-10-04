@@ -222,10 +222,7 @@ class TestPgCheckpointer:
         mock_redis.eval.assert_called_once()
 
         # Test cache get - hit
-        # Properly serialize with __class_path__
-        data = sample_state.model_dump()
-        data["__class_path__"] = checkpointer._get_full_class_path(sample_state)
-        serialized_state = json.dumps(data)
+        serialized_state = json.dumps(checkpointer._encode_state(sample_state))
         mock_redis.get.return_value = serialized_state.encode()
         cached_state = await checkpointer.aget_state_cache(
             {**sample_config, "state_class": AgentState}

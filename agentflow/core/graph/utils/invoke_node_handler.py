@@ -42,6 +42,9 @@ from agentflow.utils import (
 )
 from agentflow.utils.command import Command
 from agentflow.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
+from agentflow.utils.injection import fresh
+from agentflow.utils.interrupt import GraphInterrupt
+from agentflow.utils.interrupt import activate as activate_interrupts
 
 from .handler_mixins import BaseLoggingMixin
 
@@ -125,6 +128,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
         Returns:
             dict[str, Any]: Resulting data from tool execution.
         """
+        checkpointer = fresh(checkpointer)
         function_name = tool_call.get("function", {}).get("name", "")
         tool_call_id = tool_call.get("id", "")
         raw_args = tool_call.get("function", {}).get("arguments", "{}")
@@ -252,8 +256,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
             recorded = await checkpointer.aget_tool_result(config, tool_call_id)
         except Exception as e:  # a ledger read must never take the run down
             logger.warning(
-                "Node '%s': could not read tool ledger for call %s (%s); "
-                "the tool will run again",
+                "Node '%s': could not read tool ledger for call %s (%s); the tool will run again",
                 self.name,
                 tool_call_id,
                 e,
@@ -311,7 +314,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
                 e,
             )
 
-    async def _call_tools(
+    async def _call_tools(  # noqa: PLR0912
         self,
         last_message: Message,
         state: "AgentState",
@@ -406,6 +409,13 @@ class InvokeNodeHandler(BaseLoggingMixin):
             # messages the model can actually see and react to.
             # gather preserves the order corresponding to the tasks list.
             settled = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # A tool that called interrupt() paused the run; that is not a tool failure.
+            # Siblings that finished are in the tool-result ledger, so resuming does not
+            # run them again.
+            for outcome in settled:
+                if isinstance(outcome, GraphInterrupt):
+                    raise outcome
 
             result = []
             for tool_call, outcome in zip(last_message.tools_calls, settled, strict=True):
@@ -549,6 +559,44 @@ class InvokeNodeHandler(BaseLoggingMixin):
                     )
 
             setattr(target_state, field_name, new_value)
+
+        if baseline is not None:
+            self._merge_internal_data(target_state, tool_state, baseline)
+
+    @staticmethod
+    def _merge_internal_data(
+        target_state: AgentState,
+        tool_state: AgentState,
+        baseline: AgentState,
+    ) -> None:
+        """Fold a parallel branch's ``execution_meta.internal_data`` writes back.
+
+        ``execution_meta`` itself is never merged wholesale (it tracks the run),
+        but tools may record data in ``internal_data`` (for example activated
+        skills). Keys the branch left alone are skipped. A list the branch only
+        appended to has the new items appended to the target, so two branches
+        appending to the same list both survive; any other change is written.
+        """
+        branch_data = tool_state.execution_meta.internal_data
+        base_data = baseline.execution_meta.internal_data
+        target_data = target_state.execution_meta.internal_data
+
+        for key, new_value in branch_data.items():
+            original = base_data.get(key)
+            if new_value == original:
+                continue
+            current = target_data.get(key)
+            if (
+                isinstance(new_value, list)
+                and isinstance(original, list)
+                and isinstance(current, list)
+                and new_value[: len(original)] == original
+            ):
+                current.extend(new_value[len(original) :])
+            elif isinstance(new_value, list) and original is None and isinstance(current, list):
+                current.extend(new_value)
+            else:
+                target_data[key] = new_value
 
     def _extract_tool_messages(self, result_item: dict[str, Any]) -> list[Message]:
         """Extract tool messages from either legacy or normalized payload keys."""
@@ -704,7 +752,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
 
         return input_data
 
-    async def _call_normal_node(
+    async def _call_normal_node(  # noqa: PLR0915
         self,
         state: "AgentState",
         config: dict[str, Any],
@@ -769,11 +817,15 @@ class InvokeNodeHandler(BaseLoggingMixin):
             event.metadata["status"] = "Function execution started"
             publish_event(event)
 
+            # Snapshot the context: a node may append to it and return the same state object.
+            seen_message_ids = {msg.message_id for msg in state.context or []}
             # Execute the actual function
-            result = await call_sync_or_async(
-                self.func,  # type: ignore
-                **input_data,
-            )
+            # interrupt() in the node reads the scope the graph loop opened for this node.
+            with activate_interrupts(config):
+                result = await call_sync_or_async(
+                    self.func,  # type: ignore
+                    **input_data,
+                )
             logger.debug("Node '%s' function execution completed", self.name)
 
             logger.debug("Node '%s' executing after_invoke callbacks", self.name)
@@ -782,7 +834,9 @@ class InvokeNodeHandler(BaseLoggingMixin):
 
             # Process result and publish END event
             messages = []
-            new_state, messages, next_node = await process_node_result(result, state, messages)
+            new_state, messages, next_node = await process_node_result(
+                result, state, messages, seen_message_ids
+            )
             event.data["state"] = new_state.model_dump()
             event.event_type = EventType.END
             event.metadata["status"] = "Function execution completed"
@@ -973,6 +1027,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
         Raises:
             NodeError: If execution fails or context is missing for tool nodes.
         """
+        callback_mgr = fresh(callback_mgr)
         logger.info("Executing node '%s'", self.name)
         logger.debug(
             "Node '%s' execution with state context size=%d, config keys=%s",

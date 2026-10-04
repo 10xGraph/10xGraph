@@ -25,6 +25,7 @@ from agentflow.utils import (
     CallbackManager,
 )
 from agentflow.utils.command import Command
+from agentflow.utils.injection import fresh
 
 from .tool_node import ToolNode
 
@@ -149,6 +150,7 @@ class Node:
             its signature. Common injectable parameters include 'state', 'config',
             'context_manager', 'publisher', and other framework services.
         """
+        callback_mgr = fresh(callback_mgr)
         return await self.invoke_handler.invoke(
             config,
             state,
@@ -196,6 +198,7 @@ class Node:
             this method will yield a single result equivalent to calling execute().
             The streaming capability is determined by the node function's implementation.
         """
+        callback_mgr = fresh(callback_mgr)
         result = self.stream_handler.stream(
             config,
             state,

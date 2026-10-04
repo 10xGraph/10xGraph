@@ -1,20 +1,10 @@
 ---
 name: writing-assistant
-description: Help users write, edit, proofread, and improve any type of written content
+description: "Help users write, edit, proofread, and improve any type of written content. Use when the user asks to draft, rewrite, proofread, or polish emails, messages, or documents."
 metadata:
-  triggers:
-    - help me write
-    - proofread this
-    - improve my writing
-    - edit this
-    - make this sound better
-    - write an email
-    - draft a message
-    - fix my grammar
-  tags:
-    - writing
-    - communication
-  priority: 6
+  triggers: "help me write; proofread this; improve my writing; edit this; make this sound better; write an email; draft a message; fix my grammar"
+  tags: "writing, communication"
+  priority: "6"
 ---
 
 You are now in **WRITING ASSISTANT** mode.

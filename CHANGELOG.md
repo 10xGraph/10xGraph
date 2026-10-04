@@ -26,6 +26,22 @@ Starting from this release:
 
 ### Added
 
+- **`interrupt()`: pause a graph from inside a node or tool.** `from agentflow.utils import
+  interrupt`. The first call stops the run and saves the thread paused before that node
+  (`agentflow.utils.pending_interrupt(state)` returns the request; streaming emits
+  an `UPDATES` chunk with `status="interrupted"`). Resume with `ainvoke({"resume": value},
+  config)`: the node runs again and `interrupt()` returns `value`. Supports `message`, `reason`
+  and `response_schema`, several calls per node (answered in order), and tools, including
+  parallel tool calls (finished siblings are served from the tool-result ledger under
+  `invoke`). `GraphInterrupt` derives from `BaseException`, so tool and node error handling
+  cannot swallow it. A paused thread rejects input without `resume` with `ValueError`.
+- **Per-run client tools (`config["remote_tools"]`).** A run can bring its own client-executed
+  tool schemas (flat `{name, description, parameters}` or OpenAI shape) without mutating the
+  graph. `ToolNode.all_tools(config=...)` lists them for that run and routes calls to them to
+  the client like configured remote tools; a name the node already has is ignored.
+  `Agent` passes its run config when resolving tools.
+- `agentflow.utils.injection.fresh()` resolves `Inject[...]` defaults per call (see Fixed).
+
 - **Native Anthropic provider.** `model="claude-opus-5"` (or `"anthropic/..."`,
   `"claude/..."`) now builds a real Anthropic client instead of silently
   constructing an `AsyncOpenAI` that failed at request time. Covers non-streaming
@@ -74,8 +90,57 @@ Starting from this release:
   `custom_id` throughout, because batch results arrive in any order.
 - **`call_llm` supports Anthropic**, so `SummaryContextManager`, the evaluation
   judge, and `UserSimulator` all work with Claude models.
+- **Skills follow the Agent Skills specification (agentskills.io).** Skills
+  written for Claude Code, Codex or GitHub Copilot load unchanged:
+  - All spec frontmatter is parsed (`license`, `compatibility`, `allowed-tools`,
+    `metadata`) and exposed on `SkillMeta`.
+  - The system prompt gets an `<available_skills>` catalog with each skill's name
+    and description.
+  - `activate_skill(skill_name)` returns the body in `<skill_content>` tags, with
+    a `<skill_resources>` list of bundled files.
+  - `read_skill_resource(skill_name, path)` reads any file in the skill directory
+    as text: references, `.py` / `.sh` scripts, extension-less executables, data.
+    Binary files are described, large files truncated, and paths outside the
+    skill directory rejected.
+  - `skill_name` is an enum of the discovered names.
+  - Loading is lenient: a spec violation is recorded as a `SkillDiagnostic`
+    instead of dropping the skill, and a value containing `: ` that breaks the
+    YAML is recovered.
+  - `SkillConfig.skills_dir` accepts a list of directories (the earlier one wins
+    on name clashes), and a directory that is itself a skill.
+  - New options: `max_resource_bytes`, `include_skill_path`.
+  - New `validate_skill()` checks a skill against the specification.
+- **Activated skills survive context trimming.** Activations are recorded in
+  `execution_meta.internal_data["active_skills"]`. If a context manager drops the
+  tool result that carried a skill's instructions, the agent re-injects them as a
+  system message, and a repeated activation of a skill still in context is not
+  duplicated.
+- **Skill tool calls fire `InvocationType.SKILL` callbacks.** The enum value
+  existed but was never fired. `activate_skill` and `read_skill_resource` now
+  report as `SKILL` instead of `TOOL`, so callbacks registered for `TOOL` no
+  longer see them.
 
 ### Fixed
+
+- **Client-side (remote) tool calls now pause the graph.** The check was
+  `RemoteToolCallBlock in message.content`, a class compared against block instances, so it
+  was never true: a graph whose tool node returned a remote call kept running, and an `Agent`
+  saw the empty placeholder as the tool's result. The graph now pauses after the tool node
+  (after saving any server tool results from the same step) and, when the client sends the
+  results on the same thread, resumes after that node with the next node chosen from the
+  updated context. The placeholder is kept out of the context; `invoke` still returns it in
+  `messages` so clients can read the calls.
+- **Messages a node appends to `state.context` are streamed.** A node that appended to
+  `state.context` and returned the same state object had those messages saved but never
+  streamed or returned in `messages`. `Command(state=...)` also stopped re-streaming messages
+  from earlier steps.
+- **`Inject[...]` defaults no longer pin the first resolved dependency for the whole
+  process.** The core took checkpointer, publisher, store, context manager and callback
+  manager as `Inject[...]` defaults without `@inject`; the proxy caches its first resolution,
+  so the first graph that ran decided which checkpointer every later graph used. They now
+  resolve from the active container on each call. `StateGraph` also checks whether a
+  publisher is bound (`has`) instead of resolving one, which could try to build the abstract
+  `BasePublisher` when a `dict` happened to be bound.
 
 - **`use_vertex_ai=True` hijacked Claude models.** The flag short-circuited
   provider detection to `"google"` before the model name was examined, so
@@ -90,6 +155,22 @@ Starting from this release:
   `detect_provider`, which selects a provider but does not strip the prefix, so
   `call_llm("gemini/gemini-2.5-flash", ...)` passed the full string as the model
   name. It now uses `resolve_provider_and_model`.
+- **Parallel tool calls lost `execution_meta.internal_data` writes.** Each parallel
+  branch runs on its own state copy and `execution_meta` was never merged back, so
+  anything a tool recorded there disappeared. Changed keys are now merged, and
+  lists that several branches appended to keep every branch's items.
+- **Reading a non-UTF-8 skill resource crashed the tool** with an uncaught
+  `UnicodeDecodeError`.
+- **Checkpointers no longer import a class named by stored data.** `PgCheckpointer` and
+  `SqliteCheckpointer` saved the state's module path (`__class_path__`) in every row and
+  imported it on load. A row could choose which module got imported, renaming or moving a
+  state class broke every stored thread, and `PgCheckpointer` fell back to `AgentState` on a
+  failed import, silently dropping custom fields. Rows now hold
+  `model_dump(mode="json")` plus a `{"__state_meta__": {"format": 1, "class": "<Name>"}}`
+  header, and are rebuilt into the state class bound by `StateGraph.compile()`
+  (`BaseCheckpointer.bind_state_type()`, `state_type`). Old rows still load: the class path
+  is ignored, never imported. A stored class name that differs from the bound class logs a
+  warning.
 
 ### Breaking
 
@@ -100,6 +181,36 @@ Starting from this release:
   prefix. **Migration:** pass `provider="openai"` explicitly to keep routing
   through an OpenAI-compatible endpoint:
   `Agent(model="anthropic/claude-3", provider="openai", base_url=...)`.
+- **Skills API reworked around the Agent Skills specification.** **Migration:**
+  - The `set_skill(skill_name, resource)` tool is replaced by
+    `activate_skill(skill_name)` and `read_skill_resource(skill_name, path)`.
+    Prompts or code that mention `set_skill`, or parse its `## SKILL:` header,
+    must use the new names and the `<skill_content name="...">` wrapper.
+  - `SkillConfig.inject_trigger_table` is renamed `inject_catalog`.
+  - `SkillsRegistry.build_trigger_table()` is replaced by `build_catalog()`.
+  - `build_set_skill_tool()` and `load_resources()` are removed. Use
+    `activation.make_activate_skill_tool()` and `SkillsRegistry.read_file()`.
+  - The `resources:` frontmatter list and `SkillMeta.resources` are removed; every
+    file in the skill directory is readable.
+  - `triggers`, `tags` and `priority` are read only from `metadata`, as strings
+    (`triggers: "a; b"`, `tags: "x, y"`, `priority: "10"`). YAML lists inside
+    `metadata` still load, with a diagnostic. Top-level fields are ignored, with a
+    diagnostic.
+  - Skill names are no longer lowercased, and underscores, 128-character names and
+    2000-character descriptions produce diagnostics instead of being accepted
+    silently.
+  - Discovering the same name from two directories no longer raises; the first
+    wins and the second is reported as shadowed. `register()` still raises unless
+    `replace=True`.
+  - With no skills discovered, no tool or catalog is registered and a `ToolNode`
+    is no longer required.
+- **One checkpointer instance serves one state class.** `compile()` binds the graph's state
+  class to the checkpointer, and binding a different class raises `ValueError`. A checkpointer
+  created with an explicit type (`PgCheckpointer[MyState](...)`) also raises if the graph's
+  state class does not subclass that type. A checkpointer used without `compile()` restores
+  plain `AgentState`. **Migration:** give each graph with its own state class its own
+  checkpointer instance; call `checkpointer.bind_state_type(MyState)` when reading threads
+  outside a compiled graph.
 
 ## [1.0.0] - 2026-07-19
 

@@ -11,6 +11,7 @@ The agent will load the appropriate skill based on what you type:
   - "quit" / "exit" / Ctrl-C             → exit
 """
 
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from agentflow.utils.constants import END
 load_dotenv()
 
 SKILLS_DIR = str(Path(__file__).parent / "skills")
+SKILL_CONTENT_RE = re.compile(r'<skill_content name="([^"]+)">')
 
 
 # ── Custom Tools ───────────────────────────────────────────────────────────
@@ -65,13 +67,7 @@ agent = Agent(
             "content": (
                 "You are a smart, multi-skilled assistant.\n"
                 "You have access to specialised skill modes that give you "
-                "deeper expertise in specific domains.\n\n"
-                "Rules for skill usage:\n"
-                "1. When the user's request matches a skill, call set_skill() "
-                "with that skill name to load its instructions.\n"
-                "2. Skills are distinct — each one covers a specific domain. "
-                "Use the available skills table to decide which one fits the request.\n"
-                "3. The skill content will be returned directly — use it to guide your response.\n\n"
+                "deeper expertise in specific domains.\n"
                 "You also have a get_weather tool for weather queries."
             ),
         }
@@ -79,7 +75,7 @@ agent = Agent(
     tools=[get_weather],  # ← Add custom tools here
     skills=SkillConfig(
         skills_dir=SKILLS_DIR,
-        inject_trigger_table=True,
+        inject_catalog=True,
         hot_reload=True,
     ),
     trim_context=True,
@@ -160,15 +156,12 @@ def main() -> None:
             print(f"\n  [error] {exc}\n")
             continue
 
-        # Check if any skill was loaded (look for set_skill tool calls)
+        # Check if any skill was loaded (activate_skill results start with <skill_content>)
         for msg in result["messages"]:
             if msg.role == "tool":
-                text = msg.text() or ""
-                if text.startswith("## SKILL:"):
-                    # Extract skill name from header
-                    skill_line = text.split("\n")[0]
-                    skill_name = skill_line.replace("## SKILL:", "").strip()
-                    print(f"  >> Skill loaded: {skill_name}")
+                match = SKILL_CONTENT_RE.match(msg.text() or "")
+                if match:
+                    print(f"  >> Skill loaded: {match.group(1)}")
 
         # Print the last assistant response
         for msg in reversed(result["messages"]):

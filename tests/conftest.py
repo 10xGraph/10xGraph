@@ -7,6 +7,7 @@ import os
 
 import pytest
 from injectq import InjectQ
+from injectq.core.context import ContainerContext
 
 from agentflow.core.graph.node import Node
 
@@ -61,9 +62,15 @@ def isolate_injectq_container():
 
     Resetting the singleton around each test makes the suite order-independent,
     which is a precondition for the suite meaning anything at all.
+
+    The activated container is cleared too: a graph built with its own container activates
+    it, and ``InjectQ.get_instance()`` returns the active container before the singleton, so
+    without this one test's container stays in force for every later test in the worker.
     """
+    ContainerContext.clear_current()
     InjectQ.reset_instance()
     yield
+    ContainerContext.clear_current()
     InjectQ.reset_instance()
 
 

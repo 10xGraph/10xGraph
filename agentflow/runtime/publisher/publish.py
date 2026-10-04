@@ -5,6 +5,7 @@ from injectq import Inject
 from agentflow.runtime.publisher.base_publisher import BasePublisher
 from agentflow.runtime.publisher.events import EventModel
 from agentflow.utils.background_task_manager import BackgroundTaskManager
+from agentflow.utils.injection import fresh
 
 
 logger = logging.getLogger("agentflow.publisher")
@@ -40,6 +41,8 @@ def publish_event(
         publisher: The publisher instance (injected).
         task_manager: The background task manager (injected).
     """
+    publisher = fresh(publisher)
+    task_manager = fresh(task_manager)
     # No sink bound -> nothing to publish. Spawning a task per event just to
     # discover there is nowhere to send it cost a task and kept the event alive
     # for no reason, on the hot path of every node in every run.

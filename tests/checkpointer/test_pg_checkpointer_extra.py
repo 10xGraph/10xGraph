@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.storage.checkpointer.pg_checkpointer import PgCheckpointer
 from agentflow.core.state import AgentState
+from agentflow.storage.checkpointer.base_checkpointer import STATE_META_KEY
+from agentflow.storage.checkpointer.pg_checkpointer import PgCheckpointer
 
 
 @pytest.fixture
@@ -490,18 +491,35 @@ async def test_aget_state_orders_by_version_and_scopes_user(cp):
     assert "user_id = $2" in sql
 
 
-def test_deserialize_payload_falls_back_on_unknown_class(cp):
-    # A renamed/removed state class must not brick history: fall back to AgentState.
-    data = AgentState().model_dump(mode="json")
+class _CustomState(AgentState):
+    label: str = ""
+
+
+def test_deserialize_payload_ignores_legacy_class_path(cp):
+    # Pre-change rows carry a module path. It is never imported (this one does not
+    # exist); the row is rebuilt into the bound class with its custom fields intact.
+    cp.bind_state_type(_CustomState)
+    data = _CustomState(label="kept").model_dump(mode="json")
     data["__class_path__"] = "some.removed.module.GoneState"
     state = cp._deserialize_state_payload(data)
-    assert isinstance(state, AgentState)
+    assert type(state) is _CustomState
+    assert state.label == "kept"
+
+
+def test_payload_roundtrip_uses_bound_class(cp):
+    cp.bind_state_type(_CustomState)
+    payload = cp._serialize_state_payload(_CustomState(label="x"))
+    payload["__checkpoint_version__"] = 3  # cache rows carry the version too
+    state = cp._deserialize_state_payload(payload)
+    assert type(state) is _CustomState
+    assert state.label == "x"
 
 
 def test_serialize_payload_uses_json_mode(cp):
     # mode="json" must be used so datetime/UUID/enum fields don't crash json.dumps.
     payload = cp._serialize_state_payload(AgentState())
-    assert "__class_path__" in payload
+    assert payload[STATE_META_KEY] == {"format": 1, "class": "AgentState"}
+    assert "__class_path__" not in payload
     # Round-trips through json without a custom default handler.
     assert json.loads(json.dumps(payload))
 

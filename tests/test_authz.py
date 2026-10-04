@@ -52,6 +52,24 @@ def test_get_authz_ignores_malformed():
     assert get_authz("nope") is None
 
 
+def test_get_authz_trusted_user_block_wins_over_top_level():
+    # The API stamps the policy into config["user"]["authz"]. A top-level block (which a
+    # client could smuggle in through request config) must never override it.
+    trusted = build_authz("u1", scope=SCOPE_OWNER, scopes=[CHECKPOINT_READ])
+    forged = build_authz("u1", scope=SCOPE_NONE, scopes=[GRAPH_INVOKE])
+    cfg = {"authz": forged, "user": {"user_id": "u1", "authz": trusted}}
+    assert get_authz(cfg) == trusted
+    assert isolation_scope(cfg) == "owner"
+    assert has_scope(cfg, GRAPH_INVOKE) is False
+
+
+def test_get_authz_top_level_still_used_without_user_block():
+    # Direct SDK usage: the developer passes the block at the top level.
+    block = build_authz("u1", scope=SCOPE_OWNER)
+    assert get_authz({"authz": block}) == block
+    assert get_authz({"authz": block, "user": {"user_id": "u1"}}) == block
+
+
 # ---------------------------------------------------------------------------
 # Store isolation helper (BaseStore._scope_user_id honors the policy)
 # ---------------------------------------------------------------------------

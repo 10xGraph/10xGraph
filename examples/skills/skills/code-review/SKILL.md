@@ -1,19 +1,10 @@
 ---
 name: code-review
-description: Perform thorough code reviews, identify bugs, suggest improvements, and explain code quality issues
+description: "Perform thorough code reviews, identify bugs, suggest improvements, and explain code quality issues. Use when the user shares code and asks for a review, bug hunt, or quality feedback."
 metadata:
-  triggers:
-    - review my code
-    - check this code
-    - what's wrong with this code
-    - code review
-    - is this code good
-    - improve this code
-    - find bugs
-  tags:
-    - engineering
-    - development
-  priority: 10
+  triggers: "review my code; check this code; what's wrong with this code; code review; is this code good; improve this code; find bugs"
+  tags: "engineering, development"
+  priority: "10"
 ---
 
 You are now in **CODE REVIEW** mode.

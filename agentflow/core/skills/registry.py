@@ -8,24 +8,24 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from html import escape
 from pathlib import Path
-from typing import Any
 
 from .loader import (
+    DEFAULT_MAX_LISTED_FILES,
     discover_skills,
-    load_resource,
+    list_skill_files,
     load_skill_content,
+    read_skill_file,
 )
-from .models import SkillMeta
+from .models import SkillDiagnostic, SkillMeta
 
 
 logger = logging.getLogger("agentflow.skills.registry")
 
 
-def _sanitize_markdown_cell(value: str) -> str:
-    """Normalize whitespace and escape markdown table separators."""
-    collapsed = " ".join(value.replace("\r", "\n").split())
-    return collapsed.replace("|", "\\|")
+def _log_diagnostic(diagnostic: SkillDiagnostic) -> None:
+    logger.warning("Skill %s", diagnostic)
 
 
 class SkillsRegistry:
@@ -34,27 +34,29 @@ class SkillsRegistry:
     Typical lifecycle::
 
         registry = SkillsRegistry()
-        registry.discover("/path/to/skills")
-        table = registry.build_trigger_table()
-        tool = registry.build_set_skill_tool()
+        registry.discover(["./.agents/skills", "./shared-skills"])
+        catalog = registry.build_catalog()
+        body = registry.load_content("pdf-processing")
+        script = registry.read_file("pdf-processing", "scripts/extract.py")
     """
 
     def __init__(self) -> None:
         self._skills: dict[str, SkillMeta] = {}
-        # file mod-time cache for hot-reload optimisation
-        self._mtimes: dict[str, float] = {}
+        # name -> (SKILL.md mtime, body) for hot-reload aware caching
+        self._bodies: dict[str, tuple[float, str]] = {}
+        self._diagnostics: list[SkillDiagnostic] = []
 
     # -- registration -------------------------------------------------------
 
-    def register(self, meta: SkillMeta) -> None:
+    def register(self, meta: SkillMeta, *, replace: bool = False) -> None:
         """Register a single :class:`SkillMeta`.
 
-        Duplicate names are allowed only when re-registering the exact same
-        skill file (idempotent registration). Different files using the same
-        skill name raise a ValueError to avoid silent overrides.
+        Re-registering the same skill file is a no-op. Registering a different
+        skill under an existing name raises ``ValueError`` unless *replace* is
+        ``True``.
         """
         existing = self._skills.get(meta.name)
-        if existing is not None:
+        if existing is not None and not replace:
             if existing.skill_file == meta.skill_file:
                 logger.debug("Skill '%s' already registered from %s", meta.name, meta.skill_file)
                 return
@@ -64,17 +66,47 @@ class SkillsRegistry:
             )
 
         self._skills[meta.name] = meta
-        if meta.skill_file:
-            with contextlib.suppress(OSError):
-                self._mtimes[meta.name] = Path(meta.skill_file).stat().st_mtime
+        self._bodies.pop(meta.name, None)
         logger.info("Registered skill: '%s'", meta.name)
 
-    def discover(self, skills_dir: str) -> list[SkillMeta]:
-        """Auto-discover skills from *skills_dir* and register them."""
-        found = discover_skills(skills_dir)
+    def discover(self, skills_dirs: str | Path | list[str] | list[Path]) -> list[SkillMeta]:
+        """Discover skills from one or more directories and register them.
+
+        Directories are scanned in order. When a name is already registered
+        from another file, the earlier skill wins and the later one is reported
+        as shadowed, so list project-specific directories first.
+
+        Returns:
+            The skills registered by this call.
+        """
+        found, diagnostics = discover_skills(skills_dirs)
+        for diagnostic in diagnostics:
+            _log_diagnostic(diagnostic)
+        self._diagnostics.extend(diagnostics)
+
+        registered: list[SkillMeta] = []
         for meta in found:
+            existing = self._skills.get(meta.name)
+            if existing is not None and existing.skill_file != meta.skill_file:
+                shadowed = SkillDiagnostic(
+                    level="warning",
+                    message=(
+                        f"Skill '{meta.name}' is shadowed by {existing.skill_file} and was "
+                        "not loaded"
+                    ),
+                    path=meta.skill_file,
+                )
+                _log_diagnostic(shadowed)
+                self._diagnostics.append(shadowed)
+                continue
             self.register(meta)
-        return found
+            registered.append(meta)
+        return registered
+
+    @property
+    def diagnostics(self) -> list[SkillDiagnostic]:
+        """Problems found while discovering skills, in discovery order."""
+        return list(self._diagnostics)
 
     # -- lookup -------------------------------------------------------------
 
@@ -94,7 +126,7 @@ class SkillsRegistry:
         """Remove a skill by name. Returns True if it was present."""
         if name in self._skills:
             del self._skills[name]
-            self._mtimes.pop(name, None)
+            self._bodies.pop(name, None)
             logger.info("Unregistered skill: '%s'", name)
             return True
         return False
@@ -108,86 +140,73 @@ class SkillsRegistry:
     # -- content loading ----------------------------------------------------
 
     def load_content(self, name: str, hot_reload: bool = True) -> str:
-        """Load the body of a skill's SKILL.md.
+        """Return the body of a skill's SKILL.md (frontmatter stripped).
 
-        When *hot_reload* is ``True``, file mtime is refreshed before loading
-        content. This supports edit-aware behavior without changing the return
-        contract: this method always returns the current skill content string.
+        The body is cached after the first read. With *hot_reload* the cache
+        is refreshed whenever the file's modification time changes.
         """
         meta = self._skills.get(name)
         if meta is None:
             return ""
 
-        if hot_reload and meta.skill_file:
-            try:
-                current_mtime = Path(meta.skill_file).stat().st_mtime
-            except OSError:
-                current_mtime = 0.0
-            cached = self._mtimes.get(name, 0.0)
-            # Always load on first access (cached == current when just registered)
-            if cached != 0.0 and current_mtime == cached:
-                # File unchanged -- but we still return content (caller needs it)
-                pass
-            else:
-                self._mtimes[name] = current_mtime
+        cached = self._bodies.get(name)
+        if cached is not None and not hot_reload:
+            return cached[1]
 
-        return load_skill_content(meta)
+        mtime = 0.0
+        with contextlib.suppress(OSError):
+            mtime = Path(meta.skill_file).stat().st_mtime
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
 
-    def load_resources(self, name: str) -> dict[str, str]:
-        """Load all resource files for a skill.  Returns ``{filename: content}``."""
+        body = load_skill_content(meta)
+        if body:
+            self._bodies[name] = (mtime, body)
+        return body
+
+    def list_files(
+        self, name: str, limit: int = DEFAULT_MAX_LISTED_FILES
+    ) -> tuple[list[str], bool]:
+        """List files bundled with a skill (see :func:`loader.list_skill_files`)."""
         meta = self._skills.get(name)
         if meta is None:
-            return {}
+            return [], False
+        return list_skill_files(meta, limit=limit)
 
-        result: dict[str, str] = {}
-        for rel_path in meta.resources:
-            content = load_resource(meta, rel_path)
-            if content is not None:
-                result[Path(rel_path).name] = content
-        return result
+    def read_file(self, name: str, path: str, max_bytes: int) -> str:
+        """Read a bundled file as text (see :func:`loader.read_skill_file`).
+
+        Raises:
+            KeyError: If the skill is not registered.
+            SkillResourceError: If the file cannot be resolved or read.
+        """
+        meta = self._skills.get(name)
+        if meta is None:
+            raise KeyError(name)
+        return read_skill_file(meta, path, max_bytes)
 
     # -- prompt helpers -----------------------------------------------------
 
-    def build_trigger_table(self, tags: set[str] | None = None) -> str:
-        """Generate a markdown trigger table for the LLM system prompt."""
-        skills = sorted(
-            self.get_all(tags=tags),
-            key=lambda s: (-s.priority, s.name),
-        )
+    def build_catalog(self, tags: set[str] | None = None) -> str:
+        """Build the ``<available_skills>`` catalog shown to the model.
+
+        Each entry carries the skill's name and description, plus any
+        Agentflow ``triggers`` as extra hints. Skills are ordered by priority
+        (highest first), then name. Returns ``""`` when there are no skills.
+        """
+        skills = sorted(self.get_all(tags=tags), key=lambda s: (-s.priority, s.name))
         if not skills:
             return ""
 
-        lines = [
-            "## Available Skills\n",
-            "### How to Use Skills\n",
-            "When the user's request matches a skill:\n",
-            "1. Call `set_skill(skill_name)` to load the skill instructions\n",
-            "2. Read the loaded content — it may reference additional resources\n",
-            "3. If you need a specific resource mentioned in the skill, "
-            "call `set_skill(skill_name, resource_name)`\n",
-            "4. Then provide your answer using the loaded content\n",
-            "### Skills\n",
-            "| Skill | When to Use |\n",
-            "| --- | --- |\n",
-        ]
+        lines = ["<available_skills>"]
         for meta in skills:
-            max_triggers_display = 4
+            lines.append("  <skill>")
+            lines.append(f"    <name>{escape(meta.name, quote=False)}</name>")
+            description = " ".join(meta.description.split())
+            lines.append(f"    <description>{escape(description, quote=False)}</description>")
             if meta.triggers:
-                triggers_str = ", ".join(
-                    f'"{_sanitize_markdown_cell(trigger)}"'
-                    for trigger in meta.triggers[:max_triggers_display]
-                )
-                if len(meta.triggers) > max_triggers_display:
-                    triggers_str += f" (+{len(meta.triggers) - max_triggers_display} more)"
-            else:
-                triggers_str = _sanitize_markdown_cell(meta.description)
-
-            lines.append(f"| `{meta.name}` | {triggers_str} |")
-
+                hints = "; ".join(" ".join(t.split()) for t in meta.triggers)
+                lines.append(f"    <triggers>{escape(hints, quote=False)}</triggers>")
+            lines.append("  </skill>")
+        lines.append("</available_skills>")
         return "\n".join(lines)
-
-    def build_set_skill_tool(self, hot_reload: bool = True) -> Any:
-        """Convenience — delegates to :func:`activation.make_set_skill_tool`."""
-        from agentflow.core.skills.activation import make_set_skill_tool
-
-        return make_set_skill_tool(self, hot_reload=hot_reload)

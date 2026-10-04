@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import json
 import logging
 import os
@@ -43,6 +42,17 @@ from .base_checkpointer import BaseCheckpointer
 
 
 logger = logging.getLogger("agentflow.checkpointer.pg")
+
+
+def _rows_affected(status: Any) -> int | None:
+    """Row count from an asyncpg command tag such as ``"INSERT 0 1"``, or None if unknown."""
+    if not isinstance(status, str):
+        return None
+    try:
+        return int(status.rsplit(" ", 1)[-1])
+    except ValueError:
+        return None
+
 
 StateT = TypeVar("StateT", bound="AgentState")
 
@@ -708,7 +718,22 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if not thread_id:
             raise ValueError("Both thread_id must be provided in config")
 
-        return thread_id, user_id
+        return self._db_thread_id(thread_id), user_id
+
+    def _db_thread_id(self, thread_id: str | int) -> str | int:
+        """``thread_id`` in the column's type.
+
+        Callers (the API in particular) pass thread ids as strings. An ``int``/``bigint``
+        column needs an int, or asyncpg rejects every query for that thread.
+        """
+        if self.id_type in ("int", "bigint") and not isinstance(thread_id, int):
+            try:
+                return int(str(thread_id).strip())
+            except ValueError:
+                raise ValueError(
+                    f"thread_id must be an integer for id_type={self.id_type!r}: {thread_id!r}"
+                ) from None
+        return thread_id
 
     def _get_thread_key(
         self,
@@ -994,52 +1019,24 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.error("Failed to ensure thread exists: %s", e)
             raise
 
-    def _get_full_class_path(self, obj: object) -> str:
-        cls = obj.__class__
-        return f"{cls.__module__}.{cls.__name__}"
-
-    def _import_class_from_path(self, path: str) -> type[AgentState]:
-        module_name, class_name = path.rsplit(".", 1)
-        module = importlib.import_module(module_name)
-        return getattr(module, class_name)
-
     def _serialize_state_payload(self, state: StateT) -> dict[str, Any]:
         """Build the JSON-safe payload persisted for a state.
 
-        Uses Pydantic ``mode="json"`` so non-primitive fields (datetime, UUID,
-        enums) are coerced to JSON-serializable values instead of raising at
-        ``json.dumps`` time. The concrete class is recorded under
-        ``__class_path__`` so it can be reconstructed on read.
+        Holds the state data plus a small header (see
+        :meth:`BaseCheckpointer._encode_state`). No class path is stored: rows are
+        rebuilt into the state class bound by ``StateGraph.compile()``.
         """
-        data = state.model_dump(mode="json")
-        data["__class_path__"] = self._get_full_class_path(state)
-        return data
+        return self._encode_state(state)
 
     def _deserialize_state_payload(self, data: dict[str, Any]) -> StateT:
-        """Reconstruct a state object from a persisted payload.
+        """Reconstruct a state from a persisted payload using the bound state class.
 
-        If the recorded ``__class_path__`` can no longer be imported (the class
-        was renamed or moved), fall back to the base ``AgentState`` with a
-        warning instead of failing the whole read, so history stays loadable.
+        The Redis cache copy also carries the checkpoint version, which is not a
+        state field and is dropped here.
         """
         data = dict(data)
-        class_path = data.pop("__class_path__", None)
         data.pop(_CACHE_VERSION_KEY, None)
-        cls: type[AgentState] | None = None
-        if class_path:
-            try:
-                cls = self._import_class_from_path(class_path)
-            except Exception as e:  # degrade gracefully rather than brick history
-                logger.warning(
-                    "Could not import persisted state class '%s' (%s); "
-                    "falling back to AgentState. History for this thread may be "
-                    "missing custom fields.",
-                    class_path,
-                    e,
-                )
-        if cls is None:
-            cls = AgentState
-        return cls.model_validate(data)  # type: ignore[return-value]
+        return self._decode_state(data)
 
     def _thread_scope(
         self,
@@ -1744,11 +1741,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         Shared by :meth:`aput_messages` (standalone) and :meth:`aput_checkpoint`
         (atomic with the state write) so both use identical insert semantics.
+
+        ``message_id`` is the primary key on its own, so the conflict also fires for a
+        message stored in a *different* thread. The ``WHERE`` guard limits the update to
+        rows in this thread; when the id belongs to another thread no row is written and
+        :class:`StorageError` is raised, rolling back the surrounding transaction.
         """
+        messages_table = self._get_table_name("messages")
         for message in messages:
-            await conn.execute(
+            status = await conn.execute(
                 f"""
-                    INSERT INTO {self._get_table_name("messages")} (
+                    INSERT INTO {messages_table} (
                         message_id, thread_id, role, content, tool_calls,
                         tool_call_id, reasoning, total_tokens, usages, meta
                     )
@@ -1758,6 +1761,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                         reasoning = EXCLUDED.reasoning,
                         usages = EXCLUDED.usages,
                         updated_at = NOW()
+                    WHERE {messages_table}.thread_id = EXCLUDED.thread_id
                     """,  # noqa: S608
                 message.message_id,
                 thread_id,
@@ -1770,6 +1774,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 json.dumps(message.usages.model_dump()) if message.usages else None,
                 json.dumps({**(metadata or {}), **(message.metadata or {})}),
             )
+            if _rows_affected(status) == 0:
+                raise StorageError(
+                    message="Message id already belongs to another thread",
+                    error_code="STORAGE_FORBIDDEN_002",
+                    context={"thread_id": thread_id, "message_id": message.message_id},
+                )
 
     async def aput_messages(
         self,
@@ -2221,6 +2231,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         different user acting on the thread. Returns None if no such thread exists.
         """
 
+        try:
+            thread_id = self._db_thread_id(thread_id)
+        except ValueError:
+            return None  # not a valid id for this table, so no such thread exists
         query = f"""
             SELECT user_id
             FROM {self._get_table_name("threads")}

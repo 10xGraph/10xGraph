@@ -174,7 +174,9 @@ class StateGraph[StateT: AgentState]:
         # external bootstrap such as the API server before compilation) instead
         # of clobbering it with None. Binding is frozen at container.compile(),
         # so a pre-compile container binding is the only reliable attach point.
-        if self._publisher is not None or self._container.try_get(BasePublisher) is None:
+        # Ask whether one is bound; resolving would make injectq try to build the abstract
+        # BasePublisher whenever its constructor's dependencies happen to be bound.
+        if self._publisher is not None or not self._container.has(BasePublisher):
             self._container.bind_instance(
                 BasePublisher,
                 self._publisher,
@@ -492,6 +494,9 @@ class StateGraph[StateT: AgentState]:
             checkpointer = InMemoryCheckpointer[StateT]()
             logger.debug("No checkpointer provided, using InMemoryCheckpointer")
 
+        # Stored rows hold data only; the checkpointer rebuilds them into this class.
+        checkpointer.bind_state_type(type(self._state))
+
         # Import the CompiledGraph class
         from .compiled_graph import CompiledGraph
 
@@ -594,7 +599,7 @@ class StateGraph[StateT: AgentState]:
         that was given ``tool_node="SOME_NAME"`` (i.e. ``tool_node_name`` is
         set and ``_tool_node`` is ``None``), the named graph node is looked up
         in ``self.nodes``, the underlying ``ToolNode`` is cached on the agent,
-        and any tools queued in ``_extra_tools`` (e.g. set_skill, memory tools)
+        and any tools queued in ``_extra_tools`` (e.g. activate_skill, memory tools)
         are registered immediately.  After this call the runtime
         ``_resolve_tools`` path needs no DI lookup for those agents.
         """

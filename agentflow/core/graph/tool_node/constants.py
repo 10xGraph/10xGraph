@@ -35,6 +35,10 @@ from __future__ import annotations
 import inspect
 
 
+# Attribute set on skill tools (activate_skill, read_skill_resource) so the
+# ToolNode reports their calls to callbacks as InvocationType.SKILL.
+SKILL_TOOL_ATTR = "_agentflow_skill_tool"
+
 INJECTABLE_PARAMS = {
     "tool_call_id",
     "state",

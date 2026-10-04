@@ -2,7 +2,7 @@
 
 Covers:
 - SkillConfig validation for mode and preload_from fields
-- AgentSkillsMixin._setup_skills in session mode (no tool, no trigger table)
+- AgentSkillsMixin._setup_skills in session mode (no activate_skill tool, no catalog)
 - AgentSkillsMixin._build_skill_prompts in session mode (reads state, loads content)
 - Edge cases: missing skill, empty skill_name, hot_reload behaviour, caching
 """
@@ -116,8 +116,8 @@ class TestSetupSkillsSessionMode:
         assert mixin._skills_config is not None
         assert mixin._skills_registry is not None
 
-    def test_session_mode_no_trigger_table_prompt(self, tmp_path: Path):
-        """Trigger table must not be built in session mode."""
+    def test_session_mode_no_catalog_prompt(self, tmp_path: Path):
+        """The skill catalog must not be built in session mode."""
         _make_skill_dir(tmp_path, "fashion", triggers=["show me clothes"])
 
         mixin = _make_mixin(tool_node=None)
@@ -125,10 +125,10 @@ class TestSetupSkillsSessionMode:
             SkillConfig(skills_dir=str(tmp_path), mode="session", preload_from="SKILL_NAME")
         )
 
-        assert mixin._trigger_table_prompt is None
+        assert mixin._skill_catalog_prompt is None
 
-    def test_session_mode_no_set_skill_tool_added(self, tmp_path: Path):
-        """set_skill tool must not be queued or attached in session mode."""
+    def test_session_mode_no_activate_tool_added(self, tmp_path: Path):
+        """activate_skill must not be queued or attached in session mode."""
         _make_skill_dir(tmp_path, "fashion")
 
         from agentflow.core.graph.tool_node import ToolNode
@@ -139,7 +139,7 @@ class TestSetupSkillsSessionMode:
             SkillConfig(skills_dir=str(tmp_path), mode="session", preload_from="SKILL_NAME")
         )
 
-        # _extra_tools should not be set (no set_skill tool added)
+        assert "activate_skill" not in tool_node._funcs
         assert not getattr(mixin, "_extra_tools", [])
 
     def test_session_mode_no_extra_tools_queued_without_tool_node(self, tmp_path: Path):
@@ -153,16 +153,39 @@ class TestSetupSkillsSessionMode:
 
         assert getattr(mixin, "_extra_tools", None) is None
 
-    def test_session_mode_initializes_preloaded_cache(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "fashion")
+    def test_session_mode_registers_resource_tool_for_bundled_files(self, tmp_path: Path):
+        from agentflow.core.graph.tool_node import ToolNode
+
+        skill_dir = _make_skill_dir(tmp_path, "fashion")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "catalog.md").write_text("items")
+
+        tool_node = ToolNode([])
+        mixin = _make_mixin(tool_node=tool_node)
+        mixin._setup_skills(
+            SkillConfig(skills_dir=str(tmp_path), mode="session", preload_from="SKILL_NAME")
+        )
+
+        assert set(tool_node._funcs) == {"read_skill_resource"}
+        result = mixin._build_skill_prompts(SimpleNamespace(SKILL_NAME="fashion"), [])
+        assert "<file>references/catalog.md</file>" in result[0]["content"]
+        assert "read_skill_resource(" in result[0]["content"]
+
+    def test_session_mode_bundled_files_without_tool_node(self, tmp_path: Path):
+        """Without a ToolNode, files are listed but no read hint is given."""
+        skill_dir = _make_skill_dir(tmp_path, "fashion")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "catalog.md").write_text("items")
 
         mixin = _make_mixin(tool_node=None)
         mixin._setup_skills(
             SkillConfig(skills_dir=str(tmp_path), mode="session", preload_from="SKILL_NAME")
         )
 
-        assert isinstance(mixin._preloaded_skill_cache, dict)
-        assert len(mixin._preloaded_skill_cache) == 0
+        assert getattr(mixin, "_extra_tools", None) is None
+        result = mixin._build_skill_prompts(SimpleNamespace(SKILL_NAME="fashion"), [])
+        assert "<file>references/catalog.md</file>" in result[0]["content"]
+        assert "read_skill_resource(" not in result[0]["content"]
 
     def test_on_demand_mode_still_works_with_named_tool_node(self, tmp_path: Path):
         """Ensure on-demand mode is unaffected by the new session-mode branching."""
@@ -206,6 +229,7 @@ class TestBuildSkillPromptsSessionMode:
         assert result[0] == base[0]
         assert result[1]["role"] == "system"
         assert "Fashion Expert" in result[1]["content"]
+        assert result[1]["content"].startswith('<skill_content name="fashion">')
 
     def test_no_skill_content_when_state_field_empty(self, tmp_path: Path):
         _make_skill_dir(tmp_path, "fashion")
@@ -258,7 +282,6 @@ class TestBuildSkillPromptsSessionMode:
         base = [{"role": "system", "content": "Be helpful"}]
         result = mixin._build_skill_prompts(state, base)
 
-        # Registry returns "" for unknown skill; no message appended
         assert result == base
 
     def test_does_not_mutate_original_list(self, tmp_path: Path):
@@ -298,10 +321,9 @@ class TestBuildSkillPromptsSessionMode:
         state = SimpleNamespace(SKILL_NAME="fashion")
         base = [{"role": "system", "content": "Be helpful"}]
 
-        # First call should populate cache
+        # First call should populate the registry's body cache
         mixin._build_skill_prompts(state, base)
-        assert "fashion" in mixin._preloaded_skill_cache
-        assert "Fashion Expert" in mixin._preloaded_skill_cache["fashion"]
+        assert "Fashion Expert" in mixin._skills_registry._bodies["fashion"][1]
 
     def test_multiple_skills_cached_independently(self, tmp_path: Path):
         _make_skill_dir(tmp_path, "fashion", body="# Fashion skill body")
@@ -316,18 +338,17 @@ class TestBuildSkillPromptsSessionMode:
         mixin._build_skill_prompts(SimpleNamespace(SKILL_NAME="fashion"), base)
         mixin._build_skill_prompts(SimpleNamespace(SKILL_NAME="bridal"), base)
 
-        assert "fashion" in mixin._preloaded_skill_cache
-        assert "bridal" in mixin._preloaded_skill_cache
-        assert "Fashion skill body" in mixin._preloaded_skill_cache["fashion"]
-        assert "Bridal skill body" in mixin._preloaded_skill_cache["bridal"]
+        bodies = mixin._skills_registry._bodies
+        assert "Fashion skill body" in bodies["fashion"][1]
+        assert "Bridal skill body" in bodies["bridal"][1]
 
     def test_no_preload_from_returns_base_prompt(self, tmp_path: Path):
         """mode='session' without preload_from raises at config creation time."""
         with pytest.raises(ValidationError, match="preload_from.*must be set"):
             SkillConfig(skills_dir=str(tmp_path), mode="session", preload_from=None)
 
-    def test_session_mode_no_trigger_table_in_output(self, tmp_path: Path):
-        """The trigger table must never appear in session-mode prompts."""
+    def test_session_mode_no_catalog_in_output(self, tmp_path: Path):
+        """The skill catalog must never appear in session-mode prompts."""
         _make_skill_dir(tmp_path, "fashion", triggers=["show me dresses"])
         mixin = _make_mixin(tool_node=None)
         mixin._setup_skills(
@@ -335,7 +356,7 @@ class TestBuildSkillPromptsSessionMode:
                 skills_dir=str(tmp_path),
                 mode="session",
                 preload_from="SKILL_NAME",
-                inject_trigger_table=True,  # ignored in session mode
+                inject_catalog=True,  # ignored in session mode
             )
         )
 
@@ -344,8 +365,8 @@ class TestBuildSkillPromptsSessionMode:
         result = mixin._build_skill_prompts(state, base)
 
         combined = " ".join(m.get("content", "") for m in result)
-        assert "Available Skills" not in combined
-        assert "set_skill" not in combined
+        assert "<available_skills>" not in combined
+        assert "activate_skill" not in combined
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -354,21 +375,21 @@ class TestBuildSkillPromptsSessionMode:
 
 
 class TestOnDemandModeRegression:
-    def test_trigger_table_still_appended_in_on_demand(self, tmp_path: Path):
+    def test_catalog_still_appended_in_on_demand(self, tmp_path: Path):
         from agentflow.core.graph.tool_node import ToolNode
 
         _make_skill_dir(tmp_path, "support", triggers=["need help"])
 
         mixin = _make_mixin(tool_node=ToolNode([]))
         mixin._setup_skills(
-            SkillConfig(skills_dir=str(tmp_path), mode="on-demand", inject_trigger_table=True)
+            SkillConfig(skills_dir=str(tmp_path), mode="on-demand", inject_catalog=True)
         )
 
         base = [{"role": "system", "content": "Be helpful"}]
         result = mixin._build_skill_prompts(None, base)
 
         assert len(result) == 2
-        assert "Available Skills" in result[1]["content"]
+        assert "<available_skills>" in result[1]["content"]
 
     def test_on_demand_does_not_use_state_for_skill_selection(self, tmp_path: Path):
         """State.SKILL_NAME is irrelevant in on-demand mode."""
@@ -383,6 +404,7 @@ class TestOnDemandModeRegression:
         base = [{"role": "system", "content": "Be helpful"}]
         result = mixin._build_skill_prompts(state, base)
 
-        # on-demand only adds trigger table, not skill body directly
+        # on-demand only adds the catalog, not the skill body directly
         content = " ".join(m.get("content", "") for m in result)
-        assert "Available Skills" in content
+        assert "<available_skills>" in content
+        assert "Skill body" not in content
