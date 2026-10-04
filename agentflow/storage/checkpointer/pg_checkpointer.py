@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import json
 import logging
 import os
@@ -1020,52 +1019,24 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.error("Failed to ensure thread exists: %s", e)
             raise
 
-    def _get_full_class_path(self, obj: object) -> str:
-        cls = obj.__class__
-        return f"{cls.__module__}.{cls.__name__}"
-
-    def _import_class_from_path(self, path: str) -> type[AgentState]:
-        module_name, class_name = path.rsplit(".", 1)
-        module = importlib.import_module(module_name)
-        return getattr(module, class_name)
-
     def _serialize_state_payload(self, state: StateT) -> dict[str, Any]:
         """Build the JSON-safe payload persisted for a state.
 
-        Uses Pydantic ``mode="json"`` so non-primitive fields (datetime, UUID,
-        enums) are coerced to JSON-serializable values instead of raising at
-        ``json.dumps`` time. The concrete class is recorded under
-        ``__class_path__`` so it can be reconstructed on read.
+        Holds the state data plus a small header (see
+        :meth:`BaseCheckpointer._encode_state`). No class path is stored: rows are
+        rebuilt into the state class bound by ``StateGraph.compile()``.
         """
-        data = state.model_dump(mode="json")
-        data["__class_path__"] = self._get_full_class_path(state)
-        return data
+        return self._encode_state(state)
 
     def _deserialize_state_payload(self, data: dict[str, Any]) -> StateT:
-        """Reconstruct a state object from a persisted payload.
+        """Reconstruct a state from a persisted payload using the bound state class.
 
-        If the recorded ``__class_path__`` can no longer be imported (the class
-        was renamed or moved), fall back to the base ``AgentState`` with a
-        warning instead of failing the whole read, so history stays loadable.
+        The Redis cache copy also carries the checkpoint version, which is not a
+        state field and is dropped here.
         """
         data = dict(data)
-        class_path = data.pop("__class_path__", None)
         data.pop(_CACHE_VERSION_KEY, None)
-        cls: type[AgentState] | None = None
-        if class_path:
-            try:
-                cls = self._import_class_from_path(class_path)
-            except Exception as e:  # degrade gracefully rather than brick history
-                logger.warning(
-                    "Could not import persisted state class '%s' (%s); "
-                    "falling back to AgentState. History for this thread may be "
-                    "missing custom fields.",
-                    class_path,
-                    e,
-                )
-        if cls is None:
-            cls = AgentState
-        return cls.model_validate(data)  # type: ignore[return-value]
+        return self._decode_state(data)
 
     def _thread_scope(
         self,

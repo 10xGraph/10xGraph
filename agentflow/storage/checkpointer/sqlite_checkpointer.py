@@ -22,7 +22,6 @@ Install with::
 """
 
 import asyncio
-import importlib
 import json
 import logging
 import time
@@ -54,10 +53,6 @@ StateT = TypeVar("StateT", bound="AgentState")
 
 # Default database location for desktop / single-user agents.
 DEFAULT_DB_PATH = str(Path.home() / ".agentflow" / "checkpointer.db")
-
-# Sentinel key holding the fully-qualified AgentState subclass path so state can
-# be recovered into its real type (mirrors PgCheckpointer behavior).
-_CLASS_PATH_KEY = "__class_path__"
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -132,9 +127,9 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     connection is opened lazily; WAL journal mode is enabled for better
     read concurrency and writes are serialized behind an ``asyncio.Lock``.
 
-    State is reconstructed into its exact :class:`AgentState` subclass on read
-    via an embedded class path, matching
-    :class:`~agentflow.storage.checkpointer.pg_checkpointer.PgCheckpointer`.
+    Rows store state data only. On read they are rebuilt into the state class
+    bound by ``StateGraph.compile()`` (see :meth:`BaseCheckpointer.bind_state_type`),
+    matching :class:`~agentflow.storage.checkpointer.pg_checkpointer.PgCheckpointer`.
 
     Args:
         db_path: Path to the SQLite database file. Defaults to
@@ -200,19 +195,10 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         return row is not None and str(row["owner_id"]) != str(user_id)
 
     def _serialize_state(self, state: StateT) -> str:
-        data = state.model_dump(mode="json")
-        cls = state.__class__
-        data[_CLASS_PATH_KEY] = f"{cls.__module__}.{cls.__name__}"
-        return _dumps(data)
+        return _dumps(self._encode_state(state))
 
     def _deserialize_state(self, raw: str) -> StateT:
-        data = json.loads(raw)
-        class_path = data.pop(_CLASS_PATH_KEY, None)
-        if not class_path:
-            raise ValueError("Missing '__class_path__' in stored state data")
-        module_name, class_name = class_path.rsplit(".", 1)
-        cls = getattr(importlib.import_module(module_name), class_name)
-        return cls.model_validate(data)  # type: ignore[no-any-return]
+        return self._decode_state(json.loads(raw))
 
     async def _ensure_setup(self) -> None:
         if self._setup_done:

@@ -494,6 +494,9 @@ class StateGraph[StateT: AgentState]:
             checkpointer = InMemoryCheckpointer[StateT]()
             logger.debug("No checkpointer provided, using InMemoryCheckpointer")
 
+        # Stored rows hold data only; the checkpointer rebuilds them into this class.
+        checkpointer.bind_state_type(type(self._state))
+
         # Import the CompiledGraph class
         from .compiled_graph import CompiledGraph
 

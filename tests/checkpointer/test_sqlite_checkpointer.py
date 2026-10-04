@@ -1,12 +1,13 @@
 """Tests for SqliteCheckpointer (async + sync APIs).
 
 Covers state (durable + cache), generic TTL cache, messages, threads, thread
-isolation, subclass recovery via ``__class_path__``, on-disk persistence across
+isolation, subclass recovery via the bound state class, on-disk persistence across
 ``release``, and the missing-dependency guard.
 """
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -29,8 +30,10 @@ class MyState(AgentState):
 @pytest.fixture
 def cp():
     # A single in-memory database per test; schema is created lazily on first
-    # async call via ``_ensure_setup``.
-    return SqliteCheckpointer(":memory:")
+    # async call via ``_ensure_setup``. ``compile()`` normally binds the state class.
+    c = SqliteCheckpointer(":memory:")
+    c.bind_state_type(MyState)
+    return c
 
 
 @pytest.fixture
@@ -86,6 +89,23 @@ async def test_state_recovers_exact_subclass(cp, cfg1):
     await cp.aput_state(cfg1, MyState(counter=3, label="sub"))
     got = await cp.aget_state(cfg1)
     assert isinstance(got, MyState)
+
+
+@pytest.mark.asyncio
+async def test_legacy_class_path_row_is_not_imported(cp, cfg1):
+    # Rows written before the class was bound by the graph carry a module path.
+    # It must be ignored, not imported: this one names a module that does not exist.
+    legacy = MyState(counter=9, label="old").model_dump(mode="json")
+    legacy["__class_path__"] = "agentflow.gone.module.MyState"
+    await cp.asetup()
+    conn = await cp._get_conn()
+    await conn.execute(
+        "INSERT INTO af_states (thread_id, state_data, updated_at) VALUES (?, ?, ?)",
+        (cfg1["thread_id"], json.dumps(legacy), time.time()),
+    )
+    got = await cp.aget_state(cfg1)
+    assert type(got) is MyState
+    assert got.counter == 9
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +324,7 @@ async def test_thread_isolation(cp, cfg1, cfg2):
 async def test_persists_to_disk_across_release(tmp_path):
     db = tmp_path / "cp.db"
     cp1 = SqliteCheckpointer(db)
+    cp1.bind_state_type(MyState)
     await cp1.asetup()
     cfg = {"thread_id": "t"}
     await cp1.aput_state(cfg, MyState(counter=42, label="persist"))
@@ -311,6 +332,7 @@ async def test_persists_to_disk_across_release(tmp_path):
     await cp1.arelease()
 
     cp2 = SqliteCheckpointer(db)
+    cp2.bind_state_type(MyState)
     got = await cp2.aget_state(cfg)
     assert got.counter == 42
     assert got.label == "persist"
@@ -338,6 +360,7 @@ async def test_default_path_used_when_none(monkeypatch, tmp_path):
 
 def test_sync_state_message_thread_roundtrip():
     cp = SqliteCheckpointer(":memory:")
+    cp.bind_state_type(MyState)
     cp.setup()
     cfg = {"thread_id": "sync-1"}
     cp.put_state(cfg, MyState(counter=5))
