@@ -269,7 +269,9 @@ def discover_skills(
     Returns:
         ``(skills, diagnostics)`` in discovery order.
     """
-    roots = [skills_dirs] if isinstance(skills_dirs, str | Path) else list(skills_dirs)
+    roots: list[str | Path] = (
+        [skills_dirs] if isinstance(skills_dirs, str | Path) else list(skills_dirs)
+    )
     skills: list[SkillMeta] = []
     diagnostics: list[SkillDiagnostic] = []
 

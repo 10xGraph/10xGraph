@@ -52,7 +52,8 @@ def run_remote_tools(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        spec = item.get("function") if isinstance(item.get("function"), dict) else item
+        function = item.get("function")
+        spec: dict[str, Any] = function if isinstance(function, dict) else item
         name = spec.get("name")
         if not isinstance(name, str) or not name.strip() or name in seen:
             continue
