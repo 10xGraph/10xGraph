@@ -1,6 +1,11 @@
 
 # 10xScale Agentflow
 
+> **Agentflow is now 10xGraph.** `0.10.0` is the final release of `10xscale-agentflow` on PyPI.
+> Development continues as **10xGraph**: `pip install 10xgraph`, then `import tenxgraph`.
+> Existing installs keep working. See [Moving to 10xGraph](#-moving-to-10xgraph) below,
+> [10xgraph.com](https://10xgraph.com) and [github.com/10xGraph](https://github.com/10xGraph).
+
 [![CI](https://github.com/10xHub/agentflow/actions/workflows/ci.yml/badge.svg)](https://github.com/10xHub/agentflow/actions/workflows/ci.yml)
 [![Release](https://github.com/10xHub/agentflow/actions/workflows/release.yml/badge.svg)](https://github.com/10xHub/agentflow/actions/workflows/release.yml)
 [![CodeQL](https://github.com/10xHub/agentflow/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/10xHub/agentflow/actions/workflows/github-code-scanning/codeql)
@@ -17,6 +22,51 @@
 **10xScale Agentflow** is a lightweight Python framework for building intelligent agents and orchestrating multi-agent workflows. It's an **LLM-agnostic orchestration tool** that works with native SDKs from OpenAI, Google Gemini, Anthropic Claude, or any other provider. You choose your LLM library; 10xScale Agentflow provides the workflow orchestration.
 
 This package is the **core engine**. It ships as part of a complete, end-to-end framework: an API server and CLI, a typed TypeScript/React client, a visual playground, and a full documentation site. Start here, then pick up the rest of the stack as you need it.
+
+---
+
+## 🔀 Moving to 10xGraph
+
+The project is renamed to **10xGraph** (by 10xScale) because "Agentflow" is shared by several
+unrelated projects and was hard to find. The framework, license and maintainers stay the same.
+
+**What changes**
+
+| | Before | After |
+|---|---|---|
+| PyPI package | `10xscale-agentflow` | `10xgraph` |
+| Import | `import agentflow` | `import tenxgraph` |
+| Website | [agentflow.10xscale.ai](https://agentflow.10xscale.ai) | [10xgraph.com](https://10xgraph.com) |
+| GitHub | [github.com/10xHub](https://github.com/10xHub) | [github.com/10xGraph](https://github.com/10xGraph) |
+
+The import name is `tenxgraph` because a Python identifier cannot start with a digit.
+
+**What happens to this package**
+
+- `0.10.0` is the last version of `10xscale-agentflow`. No further releases, fixes or security
+  patches will be published under this name.
+- Installed copies keep working. Pin `10xscale-agentflow==0.10.0` if you cannot migrate yet.
+- The API server/CLI (`10xscale-agentflow-cli`) and the TypeScript client
+  (`@10xscale/agentflow-client`) are renamed as well. Their new names are announced in the
+  10xGraph repositories.
+
+**How to migrate**
+
+```bash
+pip uninstall 10xscale-agentflow
+pip install 10xgraph
+```
+
+```python
+# before
+from agentflow.core.graph import StateGraph
+# after
+from tenxgraph import StateGraph
+```
+
+`10xgraph` keeps `agentflow` importable as a deprecated alias until 2.0, so existing code runs
+unchanged while you update imports. Uninstall `10xscale-agentflow` first: both packages provide
+the `agentflow` module and must not be installed side by side.
 
 ---
 
@@ -45,7 +95,7 @@ agentflow play                           # server + visual playground
 
 ## ✨ Key Features
 
-- **⚡ Agent Class** - Build complete agents in 10-30 lines of code (new in v0.5.3!)
+- **⚡ Agent Class** - Build complete agents in 10-30 lines of code
 - **🎯 LLM-Agnostic Orchestration** - Works with any LLM provider (OpenAI, Gemini, Claude, native SDKs)
 - **🤖 Multi-Agent Workflows** - Build complex agent systems with your choice of orchestration patterns
 - **📊 Structured Responses** - Get `content`, optional `thinking`, and `usage` in a standardized format
@@ -277,7 +327,7 @@ Sequential: 1.0 + 1.5 + 0.8 = 3.3s
 Agentflow:  max(1.0, 1.5, 0.8) = 1.5s
 ```
 
-See the [parallel tool execution docs](https://agentflow.10xscale.ai/Concept/graph/tools/#parallel-tool-execution).
+See the [agents and tools docs](https://agentflow.10xscale.ai/docs/concepts/agents-and-tools).
 
 ---
 
@@ -332,7 +382,7 @@ python examples/react/react_single_class.py
 - **Deep Research** - Multi-level research and synthesis
 - **Network** - Complex agent networks
 
-See the [documentation](https://10xhub.github.io/Agentflow/) for complete examples.
+See the [documentation](https://agentflow.10xscale.ai/) for complete examples.
 
 ---
 
@@ -373,7 +423,7 @@ The project uses:
 - **mypy** for type checking, applied in phases across the codebase
 - **bandit** for security checks
 - **pre-commit** to run all of the above before each commit
-- **Docusaurus** for the documentation site (`agentflow-docs/`)
+- **Astro** for the documentation site (`agentflow-docs/`)
 
 Tool configuration lives in `pyproject.toml`.
 
@@ -418,7 +468,7 @@ whichever part matches your skills:
 | [**API server + CLI**](https://github.com/10xHub/agentflow/tree/main/agentflow-api) | FastAPI, Typer | REST/WebSocket APIs, auth and RBAC, rate limiting, deployment tooling |
 | [**TypeScript client**](https://github.com/10xHub/agentflow/tree/main/agentflow-client) | TypeScript, Vite, Vitest | SDK design, streaming, typed APIs, React hooks |
 | [**Playground**](https://github.com/10xHub/agentflow/tree/main/agentflow-playground) | React 19, Redux Toolkit, Tailwind | UI/UX, graph visualization, developer tooling |
-| [**Documentation**](https://github.com/10xHub/agentflow/tree/main/agentflow-docs) | Docusaurus, Markdown | Tutorials, guides, reference, and making concepts click |
+| [**Documentation**](https://github.com/10xHub/agentflow/tree/main/agentflow-docs) | Astro, MDX | Tutorials, guides, reference, and making concepts click |
 | [**Examples**](https://github.com/10xHub/agentflow/tree/main/agentflow/examples) | Python | Showing real patterns: RAG, swarms, MCP, multimodal, realtime |
 
 ### Where we most need help right now
@@ -480,7 +530,11 @@ Agentflow is [MIT licensed](https://github.com/10xHub/agentflow/blob/main/LICENS
 - [Documentation home](https://agentflow.10xscale.ai/) — tutorials, how-to guides, concepts, API reference
 - [Examples directory](https://github.com/10xHub/agentflow/tree/main/agentflow/examples) — runnable code for every major pattern
 
-**Packages**
+**10xGraph (successor)**
+- [10xgraph.com](https://10xgraph.com) and [github.com/10xGraph](https://github.com/10xGraph): where development continues
+- PyPI: [`10xgraph`](https://pypi.org/project/10xgraph/)
+
+**Packages (final releases under the Agentflow name)**
 - PyPI: [`10xscale-agentflow`](https://pypi.org/project/10xscale-agentflow/) (core) · [`10xscale-agentflow-cli`](https://pypi.org/project/10xscale-agentflow-cli/) (API + CLI)
 - npm: [`@10xscale/agentflow-client`](https://www.npmjs.com/package/@10xscale/agentflow-client) (TypeScript SDK)
 
@@ -492,6 +546,5 @@ Agentflow is [MIT licensed](https://github.com/10xHub/agentflow/blob/main/LICENS
 
 ---
 
-**Ready to build?** Start with the [documentation](https://agentflow.10xscale.ai/), or jump straight into the
-[examples](https://github.com/10xHub/agentflow/tree/main/agentflow/examples). If Agentflow is useful to you,
-a ⭐ on the repository helps other developers find it.
+**Ready to build?** New projects should start on [10xGraph](https://github.com/10xGraph)
+(`pip install 10xgraph`). If it is useful to you, a ⭐ on the repository helps other developers find it.

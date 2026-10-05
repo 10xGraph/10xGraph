@@ -1,57 +1,64 @@
-# 10xscale-agentflow 1.0.0
+# 10xscale-agentflow 0.10.0
 
-First stable release. `10xscale-agentflow` is now `Development Status :: 5 -
-Production/Stable`, and the public API is covered by the deprecation policy in
-`CHANGELOG.md`: from here on, breaking changes bump the **major** version and ship with
-a migration path.
+## This is the final release of `10xscale-agentflow`
 
-This release is the production-hardening round on top of `0.8.0` (which introduced the
-realtime audio-to-audio subsystem). The focus is correctness and durability under
-concurrency, real execution bounds, and tenant isolation.
+Agentflow is now **10xGraph**. The project continues under a new name because
+"Agentflow" is shared by several unrelated projects, which made it hard to find.
+Nothing about the framework, its license or its maintainers changes.
+
+No further versions of `10xscale-agentflow` will be published to PyPI. Existing
+installs keep working; pin `10xscale-agentflow==0.10.0` if you need to stay on it.
+
+| | Before | After |
+|---|---|---|
+| PyPI package | `10xscale-agentflow` | `10xgraph` |
+| Import | `import agentflow` | `import tenxgraph` |
+| Website | agentflow.10xscale.ai | [10xgraph.com](https://10xgraph.com) |
+| GitHub | github.com/10xHub | [github.com/10xGraph](https://github.com/10xGraph) |
+
+The import name is `tenxgraph` because a Python identifier cannot start with a digit.
+`10xgraph` keeps `agentflow` importable as a deprecated alias until 2.0, so existing
+code runs unchanged while you migrate:
+
+```bash
+pip uninstall 10xscale-agentflow
+pip install 10xgraph
+```
+
+```python
+# before
+from agentflow.core.graph import StateGraph
+# after
+from tenxgraph import StateGraph
+```
+
+The API server/CLI (`10xscale-agentflow-cli`) and the TypeScript client
+(`@10xscale/agentflow-client`) are renamed too. Their new package names are announced
+in the 10xGraph repositories.
 
 ## Highlights
 
-### Durable state you can trust under concurrency
-- **Optimistic concurrency control.** `states` carries a `version` column with
-  `UNIQUE (thread_id, version)`; writes take a per-thread row lock and compare-and-swap.
-  A write based on a stale version raises `StaleStateError` (HTTP 409 at the API)
-  instead of silently discarding another run's update.
-- **Idempotent tool-execution ledger** (`tool_executions`, schema v3). A node replayed
-  after a crash no longer re-fires tool calls that already completed, keyed by
-  `(thread_id, origin_message_id:tool_call_id)`.
-- **Per-step durable checkpointing** (`durable_checkpoint_every_step`, default on), so a
-  crash replays one node rather than the whole run.
-- **Real schema migrations** with a stepwise, idempotent runner guarded by
-  `pg_advisory_xact_lock`, so concurrent workers cannot race the DDL.
+- **`interrupt()` from inside a node or tool.** Pause a run, save the thread, and resume
+  with `ainvoke({"resume": value}, config)`; the node re-runs and `interrupt()` returns
+  `value`. Works inside tools, including parallel tool calls.
+- **Per-run client tools** via `config["remote_tools"]`, without mutating the graph.
+- **Skills follow the Agent Skills specification (agentskills.io).** Skills written for
+  Claude Code, Codex or GitHub Copilot load unchanged. `activate_skill` and
+  `read_skill_resource` replace `set_skill`; activated skills survive context trimming.
+- **Client-side tool calls now pause the graph.** Previously the check never matched and
+  the graph kept running past a remote tool call.
+- **Checkpointers no longer import a class named by stored data.** Rows are rebuilt into
+  the state class bound at `compile()`. Old rows still load.
+- **`Inject[...]` defaults resolve per call**, so the first graph to run no longer decides
+  which checkpointer, publisher or store every later graph uses.
 
-### Bounded execution
-- **Node and tool timeouts** (`node_timeout`, `tool_timeout`) that actually cancel the
-  work, plus **stop-cancels-a-running-node** — previously stop was only polled *between*
-  nodes, so a hang inside one was unreachable.
-- **Backpressure on background tasks** (`max_pending_tasks`, default 1000). A slow or
-  dead publisher sink previously grew an unbounded task set until OOM.
+## Breaking changes
 
-### Isolation & security
-- **Per-user isolation in the checkpointer** (`enforce_user_isolation`, default on)
-  across state, messages, and threads, plus global thread-ownership resolution.
-- **File ownership.** Uploads record an owner; reads by another user 404.
-- **Production refuses to start with wildcard CORS *and* credentials enabled** (API
-  package). Set explicit `ORIGINS`, or `CORS_ALLOW_CREDENTIALS=false`.
+- **Skills API.** `set_skill` is replaced by `activate_skill` / `read_skill_resource`;
+  `SkillConfig.inject_trigger_table` is renamed `inject_catalog`; `triggers`, `tags` and
+  `priority` move under `metadata`.
+- **One checkpointer instance serves one state class.** Give each graph with its own state
+  class its own checkpointer, or call `checkpointer.bind_state_type(MyState)` when reading
+  threads outside a compiled graph.
 
-### Observability
-- **OpenTelemetry metrics** via `metrics.setup_otel_metrics()` — counters and histograms
-  on node/tool execution, with outcome dimensions.
-- **Structured, correlated logging** via `logging.setup_structured_logging()`; every
-  record carries `run_id` / `thread_id` / `node`.
-
-## Upgrade notes (0.8.0 -> 1.0.0)
-
-- **`Default user_id is now "anonymous"`** (was `"test-user-id"`). With per-user
-  isolation on, unauthenticated runs previously pooled into one placeholder identity.
-- **A conditional edge whose condition raises now fails the run** (`GraphError`,
-  `GRAPH_ROUTING_001`) instead of silently falling through to a static edge or `END`.
-- **`injectq` is pinned to `>=0.4.0,<0.5`.** It is pre-1.0; an unbounded `0.5` pickup
-  could break fresh installs.
-- Durable-storage schema advances to v3 and migrates in place on first connect.
-
-See `CHANGELOG.md` for the full list of Added / Fixed / Breaking changes.
+See `CHANGELOG.md` for the full list with migration steps.
