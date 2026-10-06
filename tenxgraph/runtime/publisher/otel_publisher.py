@@ -90,8 +90,7 @@ def _guard() -> None:
         import opentelemetry  # noqa: F401
     except ImportError as exc:
         raise ImportError(
-            "OpenTelemetry is required for tracing. "
-            "Install with: pip install '10xgraph[otel]'"
+            "OpenTelemetry is required for tracing. " "Install with: pip install '10xgraph[otel]'"
         ) from exc
 
 

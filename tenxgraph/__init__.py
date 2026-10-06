@@ -9,7 +9,9 @@ in submodules -- import the subpackage you need:
 
 ``__version__`` is exposed eagerly. ``StateGraph``, ``Agent``, ``ToolNode``, ``AgentState``,
 ``Message``, ``START`` and ``END`` are re-exported lazily (PEP 562) so
-``from tenxgraph import StateGraph`` works without importing the engine up front. It is resolved from the installed
+``from tenxgraph import StateGraph`` works without importing the engine up front.
+
+The version is resolved from the installed
 distribution metadata rather than hardcoded, so there is a single source of truth
 (``pyproject.toml``) and the reported version cannot drift from what is actually
 installed -- which is exactly how the previous 0.8.0-vs-0.7.5.1 mismatch arose.
@@ -52,12 +54,12 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "__version__",
-    "StateGraph",
+    "END",
+    "START",
     "Agent",
-    "ToolNode",
     "AgentState",
     "Message",
-    "START",
-    "END",
+    "StateGraph",
+    "ToolNode",
+    "__version__",
 ]

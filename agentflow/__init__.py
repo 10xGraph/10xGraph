@@ -47,12 +47,11 @@ class _AliasFinder(importlib.abc.MetaPathFinder):
             return None
         if real_spec is None:
             return None
-        spec = importlib.util.spec_from_loader(
+        return importlib.util.spec_from_loader(
             fullname,
             _AliasLoader(real_name),
             is_package=real_spec.submodule_search_locations is not None,
         )
-        return spec
 
 
 if not any(isinstance(f, _AliasFinder) for f in sys.meta_path):
