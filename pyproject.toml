@@ -1,6 +1,6 @@
 [project]
 name = "10xscale-agentflow"
-version = "0.10.0"
+version = "0.10.1"
 description = "Final release under this name: the project continues as 10xGraph (pip install 10xgraph). Production-grade Python framework for building, orchestrating, and deploying multi-agent LLM systems. A simpler, batteries-included alternative to LangGraph, CrewAI, and AutoGen with graph-based workflows, durable state, native MCP support, and provider-agnostic LLM integration (OpenAI, Google GenAI, Anthropic)."
 readme = "README.md"
 keywords = [
@@ -94,10 +94,10 @@ classifiers = [
 
 
 [project.urls]
-Homepage = "https://agentflow.10xscale.ai"
-Repository = "https://github.com/10xHub/agentflow"
-Issues = "https://github.com/10xHub/agentflow/issues"
-Documentation = "https://agentflow.10xscale.ai"
+Homepage = "https://10xgraph.com"
+Repository = "https://github.com/10xGraph/10xGraph"
+Issues = "https://github.com/10xGraph/10xGraph/issues"
+Documentation = "https://10xgraph.com"
 "10xGraph (successor)" = "https://10xgraph.com"
 "10xGraph on GitHub" = "https://github.com/10xGraph"
 
