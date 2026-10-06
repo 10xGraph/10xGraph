@@ -2,11 +2,11 @@
 
 import pytest
 
-from agentflow.core.graph import StateGraph, ToolNode, BaseAgent
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.store import  MemorySearchResult, MemoryType
-from agentflow.qa.testing import MockToolRegistry, TestAgent, TestContext, InMemoryStore
-from agentflow.utils import END
+from tenxgraph.core.graph import StateGraph, ToolNode, BaseAgent
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.store import  MemorySearchResult, MemoryType
+from tenxgraph.qa.testing import MockToolRegistry, TestAgent, TestContext, InMemoryStore
+from tenxgraph.utils import END
 
 
 class TestBaseAgent:

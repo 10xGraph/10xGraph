@@ -8,13 +8,13 @@ and direct graph execution to specific nodes or graphs.
 
 from typing import TYPE_CHECKING, TypeVar, Union
 
-from agentflow.core.state.message import Message
+from tenxgraph.core.state.message import Message
 
 
 if TYPE_CHECKING:
     # Import only for type checking to avoid circular imports at runtime
-    from agentflow.core.state import AgentState
-    from agentflow.runtime.adapters.llm.base_converter import BaseConverter
+    from tenxgraph.core.state import AgentState
+    from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter
 
 
 StateT = TypeVar("StateT", bound="AgentState")

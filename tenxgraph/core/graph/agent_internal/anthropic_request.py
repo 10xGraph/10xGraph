@@ -25,7 +25,7 @@ import logging
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.agent.anthropic")
+logger = logging.getLogger("tenxgraph.agent.anthropic")
 
 # Content part types Anthropic has no equivalent for. Dropped with a warning,
 # matching how the OpenAI path degrades video rather than inventing a failure.

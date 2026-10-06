@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.authz import SCOPE_NONE, build_authz
-from agentflow.storage.store.mem0_store import Mem0Store
-from agentflow.storage.store.qdrant_store import QdrantStore
-from agentflow.storage.store.store_schema import MemoryType
+from tenxgraph.core.authz import SCOPE_NONE, build_authz
+from tenxgraph.storage.store.mem0_store import Mem0Store
+from tenxgraph.storage.store.qdrant_store import QdrantStore
+from tenxgraph.storage.store.store_schema import MemoryType
 
 
 class _Embedding:
@@ -102,7 +102,7 @@ def mem0():
     async def from_config(config):
         return backend
 
-    with patch("agentflow.storage.store.mem0_store.AsyncMemory") as memory_cls:
+    with patch("tenxgraph.storage.store.mem0_store.AsyncMemory") as memory_cls:
         memory_cls.from_config = from_config
         yield Mem0Store(config={}, app_id="app"), add
 

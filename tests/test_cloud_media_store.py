@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.storage.media.storage.cloud_store import CloudMediaStore, _mime_to_ext
+from tenxgraph.storage.media.storage.cloud_store import CloudMediaStore, _mime_to_ext
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ class TestCloudMediaStoreInterface:
     """Verify CloudMediaStore implements all BaseMediaStore methods."""
 
     def test_is_subclass_of_base(self):
-        from agentflow.storage.media.storage.base import BaseMediaStore
+        from tenxgraph.storage.media.storage.base import BaseMediaStore
 
         assert issubclass(CloudMediaStore, BaseMediaStore)
 

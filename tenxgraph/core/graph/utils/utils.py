@@ -25,27 +25,27 @@ from typing import Any, TypeVar
 
 from injectq import Inject
 
-from agentflow.core.exceptions import GraphError
-from agentflow.core.state import AgentState, ExecutionStatus, Message
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.core.state.execution_state import ExecutionState as ExecMeta
-from agentflow.core.state.execution_state import StopRequestStatus
-from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
-from agentflow.storage.checkpointer import BaseCheckpointer
-from agentflow.utils import (
+from tenxgraph.core.exceptions import GraphError
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.execution_state import ExecutionState as ExecMeta
+from tenxgraph.core.state.execution_state import StopRequestStatus
+from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils import (
     END,
     START,
     Command,
     ResponseGranularity,
     add_messages,
 )
-from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
-from agentflow.utils.injection import fresh
+from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
+from tenxgraph.utils.injection import fresh
 
 
 StateT = TypeVar("StateT", bound=AgentState)
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 async def parse_response(
@@ -235,7 +235,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
                     last_input = new_messages[-1]
                     last_ctx = existing_state.context[-1] if existing_state.context else None
                     if last_input.role == "user" and (last_ctx is None or last_ctx.role != "user"):
-                        from agentflow.core.state.message import generate_id
+                        from tenxgraph.core.state.message import generate_id
 
                         new_msg = last_input.model_copy(update={"message_id": generate_id(None)})
                         existing_state.context = [*existing_state.context, new_msg]

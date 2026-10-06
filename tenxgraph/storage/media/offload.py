@@ -13,7 +13,7 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     DocumentBlock,
     ImageBlock,
@@ -22,10 +22,10 @@ from agentflow.core.state.message_block import (
 
 
 if TYPE_CHECKING:
-    from agentflow.core.state.message import Message
-    from agentflow.storage.media.storage.base import BaseMediaStore
+    from tenxgraph.core.state.message import Message
+    from tenxgraph.storage.media.storage.base import BaseMediaStore
 
-logger = logging.getLogger("agentflow.media.offload")
+logger = logging.getLogger("tenxgraph.media.offload")
 
 
 class MediaOffloadPolicy(str, Enum):

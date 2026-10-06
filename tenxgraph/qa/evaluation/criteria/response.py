@@ -10,14 +10,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from agentflow.qa.evaluation.criteria.base import SyncCriterion
-from agentflow.qa.evaluation.criteria.llm_judge import LLMJudgeCriterion
+from tenxgraph.qa.evaluation.criteria.base import SyncCriterion
+from tenxgraph.qa.evaluation.criteria.llm_judge import LLMJudgeCriterion
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.dataset.eval_set import EvalCase
-    from agentflow.qa.evaluation.eval_result import CriterionResult
-    from agentflow.qa.evaluation.execution.result import ExecutionResult
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase
+    from tenxgraph.qa.evaluation.eval_result import CriterionResult
+    from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
 
 class ResponseMatchCriterion(LLMJudgeCriterion):

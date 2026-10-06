@@ -7,7 +7,7 @@ it to instantiate criteria from EvalConfig; no other mapping is needed.
 
 Example:
     ```python
-    from agentflow.qa.evaluation.criteria import (
+    from tenxgraph.qa.evaluation.criteria import (
         TrajectoryMatchCriterion,
         ResponseMatchCriterion,
         LLMJudgeCriterion,

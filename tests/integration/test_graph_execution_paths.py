@@ -6,11 +6,11 @@ command routing, recursion limits, stop requests, and state persistence.
 
 import pytest
 
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.core.exceptions import GraphRecursionError
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, ExecutionStatus, Message
-from agentflow.utils import Command, END, ResponseGranularity
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.exceptions import GraphRecursionError
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.utils import Command, END, ResponseGranularity
 
 
 class TestInterruptExecution:

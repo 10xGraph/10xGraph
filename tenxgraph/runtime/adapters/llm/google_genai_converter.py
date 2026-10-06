@@ -15,12 +15,12 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, cast
 
-from agentflow.core.state.message import (
+from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
     generate_id,
 )
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     ImageBlock,
     MediaRef,
@@ -33,7 +33,7 @@ from agentflow.core.state.message_block import (
 from .base_converter import BaseConverter
 
 
-logger = logging.getLogger("agentflow.adapters.google_genai")
+logger = logging.getLogger("tenxgraph.adapters.google_genai")
 
 
 try:

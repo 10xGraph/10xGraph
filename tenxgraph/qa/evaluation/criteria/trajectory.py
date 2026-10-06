@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agentflow.qa.evaluation.config.eval_config import MatchType
-from agentflow.qa.evaluation.criteria.base import SyncCriterion
-from agentflow.qa.evaluation.dataset.eval_set import ToolCall
+from tenxgraph.qa.evaluation.config.eval_config import MatchType
+from tenxgraph.qa.evaluation.criteria.base import SyncCriterion
+from tenxgraph.qa.evaluation.dataset.eval_set import ToolCall
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.dataset.eval_set import EvalCase
-    from agentflow.qa.evaluation.eval_result import CriterionResult
-    from agentflow.qa.evaluation.execution.result import ExecutionResult
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase
+    from tenxgraph.qa.evaluation.eval_result import CriterionResult
+    from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
 
 class TrajectoryMatchCriterion(SyncCriterion):

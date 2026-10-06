@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, "/home/shudipto/projects/agentflow")
 
 # Import and configure logging directly
-from agentflow.utils.logging import configure_logging
+from tenxgraph.utils.logging import configure_logging
 
 
 # Test logging configuration
@@ -27,13 +27,13 @@ def test_logging():
     logger.error("This is an error message")
 
     # Test logging from different modules
-    graph_logger = logging.getLogger("agentflow.graph.compiled_graph")
+    graph_logger = logging.getLogger("tenxgraph.graph.compiled_graph")
     graph_logger.info("Testing graph module logging")
 
-    state_logger = logging.getLogger("agentflow.state.agent_state")
+    state_logger = logging.getLogger("tenxgraph.state.agent_state")
     state_logger.info("Testing state module logging")
 
-    utils_logger = logging.getLogger("agentflow.utils.dependency_injection")
+    utils_logger = logging.getLogger("tenxgraph.utils.dependency_injection")
     utils_logger.info("Testing utils module logging")
 
     print("Logging test completed - check output above for log messages")

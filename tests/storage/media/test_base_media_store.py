@@ -1,7 +1,7 @@
 import pytest
 from typing import Any
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.core.state.message_block import MediaRef
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.core.state.message_block import MediaRef
 
 class ConcreteMediaStore(BaseMediaStore):
     """A concrete implementation of BaseMediaStore for testing."""

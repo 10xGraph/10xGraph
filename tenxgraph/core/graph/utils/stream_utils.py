@@ -6,7 +6,7 @@ or processed incrementally as a stream. These utilities are used throughout the
 graph execution engine to support both synchronous and streaming workflows.
 """
 
-from agentflow.core.state import AgentState, Message
+from tenxgraph.core.state import AgentState, Message
 
 
 def check_non_streaming(result) -> bool:

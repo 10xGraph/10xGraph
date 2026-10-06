@@ -2,7 +2,7 @@
 
 These types are the seam between Agentflow and any realtime provider (Gemini Live
 first, OpenAI Realtime later). Nothing here imports a provider SDK; provider clients
-live under ``agentflow.core.realtime.providers`` and normalize their wire messages
+live under ``tenxgraph.core.realtime.providers`` and normalize their wire messages
 into the :data:`RealtimeEvent` union defined below.
 """
 

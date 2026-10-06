@@ -8,16 +8,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentflow.core.graph.agent_internal.anthropic import (
+from tenxgraph.core.graph.agent_internal.anthropic import (
     AgentAnthropicMixin,
     apply_reasoning_config,
     strip_rejected_sampling_params,
 )
-from agentflow.core.graph.agent_internal.constants import (
+from tenxgraph.core.graph.agent_internal.constants import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     ANTHROPIC_DEFAULT_MAX_TOKENS_STREAMING,
 )
-from agentflow.core.llm.client_factory import (
+from tenxgraph.core.llm.client_factory import (
     create_llm_client,
     detect_provider,
     resolve_provider_and_model,
@@ -77,7 +77,7 @@ class TestProviderDetection:
     def test_vertex_flag_selects_the_anthropic_vertex_backend(self, monkeypatch):
         """The flag means the same thing for Claude as it does for Gemini."""
         import sys
-        from agentflow.core.graph.agent_internal.providers import AgentProviderMixin
+        from tenxgraph.core.graph.agent_internal.providers import AgentProviderMixin
 
         module = SimpleNamespace(
             AsyncAnthropic=MagicMock(),
@@ -95,7 +95,7 @@ class TestProviderDetection:
 
     def test_explicit_backend_beats_the_vertex_flag(self, monkeypatch):
         import sys
-        from agentflow.core.graph.agent_internal.providers import AgentProviderMixin
+        from tenxgraph.core.graph.agent_internal.providers import AgentProviderMixin
 
         module = SimpleNamespace(
             AsyncAnthropic=MagicMock(),
@@ -169,7 +169,7 @@ class TestClientConstruction:
 
     def test_missing_sdk_raises_with_install_command(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "anthropic", None)
-        with pytest.raises(ImportError, match=r"10xscale-agentflow\[anthropic\]"):
+        with pytest.raises(ImportError, match=r"10xgraph\[anthropic\]"):
             create_llm_client("anthropic")
 
 

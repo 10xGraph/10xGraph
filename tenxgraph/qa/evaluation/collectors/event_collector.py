@@ -7,7 +7,7 @@ events that TrajectoryCollector doesn't process (e.g. GRAPH_EXECUTION start).
 
 from __future__ import annotations
 
-from agentflow.runtime.publisher.events import Event, EventModel, EventType
+from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
 
 
 class EventCollector:

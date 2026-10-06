@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from agentflow.qa.evaluation.config.types import DEFAULT_JUDGE_MODEL, MatchType
+from tenxgraph.qa.evaluation.config.types import DEFAULT_JUDGE_MODEL, MatchType
 
 
 class Rubric(BaseModel):

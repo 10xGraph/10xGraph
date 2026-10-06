@@ -9,8 +9,8 @@ Sections:
   3. Expected trajectory cases – multi-tool order, args, duplicates, empty
 """
 
-from agentflow.qa.evaluation.dataset import EvalCase, ToolCall
-from agentflow.qa.evaluation.dataset.eval_set import EvalSet, Invocation
+from tenxgraph.qa.evaluation.dataset import EvalCase, ToolCall
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet, Invocation
 
 
 # ═══════════════════════════════════════════════════════════════════════

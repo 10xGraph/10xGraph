@@ -5,7 +5,7 @@ Provides data models and builders for defining evaluation test cases.
 
 Example:
     ```python
-    from agentflow.qa.evaluation.dataset import (
+    from tenxgraph.qa.evaluation.dataset import (
         EvalSet,
         EvalCase,
         EvalSetBuilder,

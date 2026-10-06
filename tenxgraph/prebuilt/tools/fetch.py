@@ -11,7 +11,7 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 
-from agentflow.utils.decorators import tool
+from tenxgraph.utils.decorators import tool
 
 
 _DEFAULT_MAX_CHARS = 20_000

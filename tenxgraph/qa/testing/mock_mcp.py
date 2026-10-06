@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.testing")
+logger = logging.getLogger("tenxgraph.testing")
 
 
 class MockMCPClient:

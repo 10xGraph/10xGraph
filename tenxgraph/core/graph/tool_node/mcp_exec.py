@@ -6,20 +6,20 @@ import json
 import logging
 import typing as t
 
-from agentflow.core.state import (
+from tenxgraph.core.state import (
     ContentBlock,
     ErrorBlock,
     Message,
     ToolResultBlock,
 )
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.utils import CallbackContext, CallbackManager, InvocationType
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
 
 from ._helpers import _normalize_resource_uri
 
 
-logger = logging.getLogger("agentflow.graph.tool_node")
+logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 
 class MCPMixin:

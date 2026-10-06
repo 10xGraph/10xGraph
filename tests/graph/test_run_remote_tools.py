@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from agentflow.core.graph import StateGraph, ToolNode
-from agentflow.core.graph.tool_node.run_tools import run_remote_tools
-from agentflow.core.state import AgentState, Message, ToolCallBlock
-from agentflow.core.state.message_block import RemoteToolCallBlock
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.utils import ResponseGranularity
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import StateGraph, ToolNode
+from tenxgraph.core.graph.tool_node.run_tools import run_remote_tools
+from tenxgraph.core.state import AgentState, Message, ToolCallBlock
+from tenxgraph.core.state.message_block import RemoteToolCallBlock
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils import ResponseGranularity
+from tenxgraph.utils.constants import END
 
 
 PICK_COLOR = {
@@ -136,7 +136,7 @@ async def test_graph_pauses_for_a_run_tool_and_resumes_with_its_result():
     )
     assert first["state"].is_interrupted()
 
-    from agentflow.core.state import ToolResultBlock
+    from tenxgraph.core.state import ToolResultBlock
 
     result = Message(role="tool", content=[ToolResultBlock(call_id="c1", output="teal")])
     second = await app.ainvoke(
@@ -150,7 +150,7 @@ async def test_graph_pauses_for_a_run_tool_and_resumes_with_its_result():
 
 @pytest.mark.asyncio
 async def test_stream_pauses_for_a_run_tool_and_resumes():
-    from agentflow.core.state import StreamEvent, ToolResultBlock
+    from tenxgraph.core.state import StreamEvent, ToolResultBlock
 
     app = _graph()
     config = {"thread_id": "t-stream", "remote_tools": [PICK_COLOR]}
@@ -182,7 +182,7 @@ async def test_stream_pauses_for_a_run_tool_and_resumes():
 
 @pytest.mark.asyncio
 async def test_parallel_server_tool_result_is_kept_while_waiting_for_the_client():
-    from agentflow.core.state import ToolResultBlock
+    from tenxgraph.core.state import ToolResultBlock
 
     async def model(state: AgentState):
         last = state.context[-1]

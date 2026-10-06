@@ -18,13 +18,13 @@
 # from importlib import import_module
 # from typing import Any
 
-# from agentflow.core.state.agent_state import AgentState
-# from agentflow.core.state.message import Message as AFMessage
+# from tenxgraph.core.state.agent_state import AgentState
+# from tenxgraph.core.state.message import Message as AFMessage
 
 # from ._optional import A2A_EXTRA_INSTALL_HINT, get_a2a_attr, import_a2a_module
 
 
-# logger = logging.getLogger("agentflow.a2a")
+# logger = logging.getLogger("tenxgraph.a2a")
 
 
 # def _import_client_dependencies():

@@ -7,16 +7,16 @@ reach tools the agent was built to hide.
 
 import pytest
 
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.realtime.base import (
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.realtime.base import (
     RealtimeConfig,
     ToolCallEvent,
     ToolResultEvent,
     TurnCompleteEvent,
 )
-from agentflow.core.realtime.live_agent import LiveAgent, _advertised_tool_names
-from agentflow.core.realtime.queue import LiveInputQueue
-from agentflow.utils import tool
+from tenxgraph.core.realtime.live_agent import LiveAgent, _advertised_tool_names
+from tenxgraph.core.realtime.queue import LiveInputQueue
+from tenxgraph.utils import tool
 from tests.realtime.test_live_agent import MODEL, FakeRealtimeClient
 
 

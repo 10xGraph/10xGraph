@@ -9,7 +9,7 @@ Five cases covering:
   5. Ambiguous query — agent may or may not call a tool
 """
 
-from agentflow.qa.evaluation.dataset import EvalCase, ToolCall
+from tenxgraph.qa.evaluation.dataset import EvalCase, ToolCall
 
 
 # ── 1. Happy-path: current weather ──────────────────────────────────
@@ -68,7 +68,7 @@ NO_TOOL_CASES = [CAPITAL_QUESTION, AMBIGUOUS]
 ALL_CASES = TOOL_CASES + NO_TOOL_CASES
 
 # ── Batch eval set (used by reporters & builder tests) ──────────────
-from agentflow.qa.evaluation.dataset.eval_set import EvalSet
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet
 
 
 BATCH_EVAL_SET = EvalSet(

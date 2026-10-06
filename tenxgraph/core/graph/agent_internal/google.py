@@ -10,7 +10,7 @@ from typing import Any
 from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 class AgentGoogleMixin:

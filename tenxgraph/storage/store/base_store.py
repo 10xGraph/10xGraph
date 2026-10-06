@@ -16,13 +16,13 @@ from uuid import uuid4
 
 from injectq import InjectQ
 
-from agentflow.core.state import Message
-from agentflow.utils import run_coroutine
+from tenxgraph.core.state import Message
+from tenxgraph.utils import run_coroutine
 
 from .store_schema import DistanceMetric, MemorySearchResult, MemoryType, RetrievalStrategy
 
 
-logger = logging.getLogger("agentflow.store")
+logger = logging.getLogger("tenxgraph.store")
 
 
 class BaseStore(ABC):
@@ -70,7 +70,7 @@ class BaseStore(ABC):
         The safe default (no policy) keeps scoping by ``user_id`` -- memory is personal, so
         it stays isolated unless a developer explicitly runs ``allow_all``/``scope=none``.
         """
-        from agentflow.core.authz import SCOPE_NONE, isolation_scope
+        from tenxgraph.core.authz import SCOPE_NONE, isolation_scope
 
         if isolation_scope(config) == SCOPE_NONE:
             return None

@@ -13,12 +13,12 @@ import logging
 import time
 from typing import Any
 
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.utils.callbacks import AfterInvokeCallback, CallbackContext, InvocationType
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.utils.callbacks import AfterInvokeCallback, CallbackContext, InvocationType
 
 
-logger = logging.getLogger("agentflow.evaluation.collectors")
+logger = logging.getLogger("tenxgraph.evaluation.collectors")
 
 
 class PublisherCallback(AfterInvokeCallback):
@@ -62,7 +62,7 @@ class PublisherCallback(AfterInvokeCallback):
         Returns None on any failure so the callback never raises.
         """
         try:
-            from agentflow.runtime.adapters.llm.model_response_converter import (
+            from tenxgraph.runtime.adapters.llm.model_response_converter import (
                 ModelResponseConverter,
             )
 

@@ -13,7 +13,7 @@ the next worker (or ``FINISH``); a routing function extracts this token and
 directs the graph accordingly.
 
 Each WORKER is a **pre-built** ``Agent`` (or any
-:class:`~agentflow.core.graph.base_agent.BaseAgent` subclass) supplied by the
+:class:`~tenxgraph.core.graph.base_agent.BaseAgent` subclass) supplied by the
 caller via :class:`WorkerConfig`, so every worker can be independently
 configured with its own model, tools, memory, skills, retry config, etc.
 
@@ -21,9 +21,9 @@ Round counter lives in ``execution_meta.internal_data["sta_rounds"]``.
 
 Example::
 
-    from agentflow.core.graph import Agent, ToolNode
-    from agentflow.prebuilt.agent import SupervisorTeamAgent
-    from agentflow.prebuilt.agent.supervisor_team import WorkerConfig
+    from tenxgraph.core.graph import Agent, ToolNode
+    from tenxgraph.prebuilt.agent import SupervisorTeamAgent
+    from tenxgraph.prebuilt.agent.supervisor_team import WorkerConfig
 
 
     def web_search(query: str) -> str: ...
@@ -61,24 +61,24 @@ from typing import Any, TypeVar
 
 from injectq import InjectQ
 
-from agentflow.core.graph.agent import Agent
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.graph.state_graph import StateGraph
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.core.state.message import Message
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.utils.command import Command
-from agentflow.utils.constants import END
-from agentflow.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
+from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.graph.state_graph import StateGraph
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.message import Message
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.utils.command import Command
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
-logger = logging.getLogger("agentflow.prebuilt.supervisor_team")
+logger = logging.getLogger("tenxgraph.prebuilt.supervisor_team")
 
 StateT = TypeVar("StateT", bound=AgentState)
 
@@ -105,8 +105,8 @@ class WorkerConfig:
     ``retry_config``, or any other per-worker option.
 
     Args:
-        agent: A fully-configured :class:`~agentflow.core.graph.agent.Agent`
-            (or any :class:`~agentflow.core.graph.base_agent.BaseAgent`
+        agent: A fully-configured :class:`~tenxgraph.core.graph.agent.Agent`
+            (or any :class:`~tenxgraph.core.graph.base_agent.BaseAgent`
             subclass).
         description: Short description of what this worker can do.  Injected
             into the supervisor's system prompt so the LLM knows when to
@@ -226,7 +226,7 @@ def _make_supervisor_node(
     would surface ``SCOUT`` / ``FINISH`` noise in the conversation and pollute
     the context seen by workers), this node runs the supervisor agent
     *internally*, reads its one-word decision, and returns a
-    :class:`~agentflow.utils.command.Command` whose ``goto`` drives navigation.
+    :class:`~tenxgraph.utils.command.Command` whose ``goto`` drives navigation.
     Because the ``Command`` carries no ``update``, nothing is streamed to the
     caller and nothing is persisted to ``state.context``.
 
@@ -292,15 +292,15 @@ class SupervisorTeamAgent[StateT: AgentState]:
     system prompt is auto-generated to list all workers + their descriptions
     (override with *supervisor_system_prompt*).
 
-    Each WORKER is a **pre-built** :class:`~agentflow.core.graph.agent.Agent`
+    Each WORKER is a **pre-built** :class:`~tenxgraph.core.graph.agent.Agent`
     (via :class:`WorkerConfig`), so every worker can be independently
     configured — different models, tools, ``memory``, ``skills``, etc.
 
     Usage::
 
-        from agentflow.core.graph import Agent, ToolNode
-        from agentflow.prebuilt.agent import SupervisorTeamAgent
-        from agentflow.prebuilt.agent.supervisor_team import WorkerConfig
+        from tenxgraph.core.graph import Agent, ToolNode
+        from tenxgraph.prebuilt.agent import SupervisorTeamAgent
+        from tenxgraph.prebuilt.agent.supervisor_team import WorkerConfig
 
         agent = SupervisorTeamAgent(
             supervisor_model="gpt-4o",
@@ -326,7 +326,7 @@ class SupervisorTeamAgent[StateT: AgentState]:
             prompt.  If ``None`` the prompt is built from the worker registry.
         max_rounds: Maximum number of supervisor → worker delegations before
             the graph terminates (default ``10``).
-        state: Optional custom :class:`~agentflow.core.state.AgentState`
+        state: Optional custom :class:`~tenxgraph.core.state.AgentState`
             subclass instance.
         context_manager: Optional custom context manager.
         publisher: Optional event publisher.

@@ -18,35 +18,35 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
-from agentflow.core.exceptions import NodeError
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.graph.utils.stream_utils import check_non_streaming
-from agentflow.core.graph.utils.utils import process_node_result
-from agentflow.core.state import AgentState, Message
-from agentflow.core.state.message_block import ErrorBlock
-from agentflow.core.state.stream_chunks import StreamChunk, StreamEvent
-from agentflow.core.state.stream_emitter import StreamEmitter
-from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.utils import (
+from tenxgraph.core.exceptions import NodeError
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.utils.stream_utils import check_non_streaming
+from tenxgraph.core.graph.utils.utils import process_node_result
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.message_block import ErrorBlock
+from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
+from tenxgraph.core.state.stream_emitter import StreamEmitter
+from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.utils import (
     CallbackContext,
     CallbackManager,
     InvocationType,
     call_sync_or_async,
 )
-from agentflow.utils.command import Command
-from agentflow.utils.injection import fresh
-from agentflow.utils.interrupt import activate as activate_interrupts
+from tenxgraph.utils.command import Command
+from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.interrupt import activate as activate_interrupts
 
 from .handler_mixins import BaseLoggingMixin
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.base_agent import BaseAgent
+    from tenxgraph.core.graph.base_agent import BaseAgent
 
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class StreamNodeHandler(BaseLoggingMixin):
@@ -233,7 +233,7 @@ class StreamNodeHandler(BaseLoggingMixin):
             and len(last_message.tools_calls) > 0
         ):
             # Lazy import to avoid circular dependency
-            from agentflow.prebuilt.tools.handoff import is_handoff_tool
+            from tenxgraph.prebuilt.tools.handoff import is_handoff_tool
 
             # Check for handoff BEFORE executing any tools
             for tool_call in last_message.tools_calls:
@@ -459,8 +459,8 @@ class StreamNodeHandler(BaseLoggingMixin):
         callback_mgr: CallbackManager,
     ) -> AsyncGenerator[dict[str, Any] | Message | StreamChunk | Command]:
         """Dispatch streaming execution to the appropriate node implementation."""
-        from agentflow.core.graph.agent import Agent
-        from agentflow.core.graph.base_agent import BaseAgent
+        from tenxgraph.core.graph.agent import Agent
+        from tenxgraph.core.graph.base_agent import BaseAgent
 
         if isinstance(self.func, Agent | BaseAgent):
             logger.debug("Node '%s' is an Agent instance, executing agent streaming", self.name)

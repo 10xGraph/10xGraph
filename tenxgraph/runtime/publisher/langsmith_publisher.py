@@ -6,7 +6,7 @@ created.  All span dispatch logic is inherited from ``OtelPublisher``.
 
 Usage::
 
-    from agentflow.runtime.publisher import LangsmithPublisher
+    from tenxgraph.runtime.publisher import LangsmithPublisher
 
     publisher = LangsmithPublisher(project="my-agent", level=ObservabilityLevel.FULL)
     graph._publisher = publisher
@@ -14,13 +14,13 @@ Usage::
 
 Or use the convenience helper which does the same in one call::
 
-    from agentflow.runtime.publisher import setup_langsmith
+    from tenxgraph.runtime.publisher import setup_langsmith
 
     setup_langsmith(graph, project="my-agent")
 
 Secrets stay in the environment: set ``LANGSMITH_API_KEY`` (or pass ``api_key=``).
 
-Requires: pip install '10xscale-agentflow[langsmith]'
+Requires: pip install '10xgraph[langsmith]'
 """
 
 from __future__ import annotations

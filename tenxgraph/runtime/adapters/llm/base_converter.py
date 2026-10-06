@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from agentflow.core.state import AgentState, Message
-    from agentflow.runtime.publisher.events import EventModel
+    from tenxgraph.core.state import AgentState, Message
+    from tenxgraph.runtime.publisher.events import EventModel
 
 
 class ConverterType(str, Enum):

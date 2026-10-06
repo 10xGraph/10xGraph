@@ -10,13 +10,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from agentflow.qa.evaluation.eval_result import CriterionResult
+from tenxgraph.qa.evaluation.eval_result import CriterionResult
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.config.eval_config import CriterionConfig
-    from agentflow.qa.evaluation.dataset.eval_set import EvalCase
-    from agentflow.qa.evaluation.execution.result import ExecutionResult
+    from tenxgraph.qa.evaluation.config.eval_config import CriterionConfig
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase
+    from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
 
 class BaseCriterion(ABC):
@@ -67,7 +67,7 @@ class BaseCriterion(ABC):
             config: Configuration for this criterion. If not provided,
                 uses default configuration.
         """
-        from agentflow.qa.evaluation.config.eval_config import CriterionConfig as _CriterionConfig
+        from tenxgraph.qa.evaluation.config.eval_config import CriterionConfig as _CriterionConfig
 
         self.config = config or _CriterionConfig()
 

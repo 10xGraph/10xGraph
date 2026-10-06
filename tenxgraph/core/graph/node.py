@@ -17,15 +17,15 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
-from agentflow.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from agentflow.core.graph.utils.stream_node_handler import StreamNodeHandler
-from agentflow.core.state import AgentState, Message
-from agentflow.core.state.stream_chunks import StreamChunk
-from agentflow.utils import (
+from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.stream_chunks import StreamChunk
+from tenxgraph.utils import (
     CallbackManager,
 )
-from agentflow.utils.command import Command
-from agentflow.utils.injection import fresh
+from tenxgraph.utils.command import Command
+from tenxgraph.utils.injection import fresh
 
 from .tool_node import ToolNode
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from .base_agent import BaseAgent
 
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class Node:

@@ -6,7 +6,7 @@ import inspect
 import logging
 import typing as t
 
-from agentflow.core.state import (
+from tenxgraph.core.state import (
     AgentState,
     ContentBlock,
     ErrorBlock,
@@ -14,10 +14,10 @@ from agentflow.core.state import (
     ToolResult,
     ToolResultBlock,
 )
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
-from agentflow.utils.interrupt import activate as activate_interrupts
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
+from tenxgraph.utils.interrupt import activate as activate_interrupts
 
 from ._helpers import _extract_block_meta, _safe_serialize
 from .coercion import coerce_tool_argument
@@ -26,9 +26,9 @@ from .schema import _safe_type_hints
 
 
 if t.TYPE_CHECKING:
-    from agentflow.core.state.stream_emitter import StreamEmitter
+    from tenxgraph.core.state.stream_emitter import StreamEmitter
 
-logger = logging.getLogger("agentflow.graph.tool_node")
+logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 
 class LocalExecMixin:

@@ -24,36 +24,36 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
-from agentflow.core.exceptions import NodeError, NodeTimeoutError
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.graph.utils.guards import execute_with_guards, resolve_timeout
-from agentflow.core.graph.utils.utils import process_node_result
-from agentflow.core.state import AgentState, Message
-from agentflow.core.state.message_block import ToolResultBlock
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.storage.checkpointer import BaseCheckpointer
-from agentflow.utils import (
+from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
+from tenxgraph.core.graph.utils.utils import process_node_result
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.message_block import ToolResultBlock
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils import (
     CallbackContext,
     CallbackManager,
     InvocationType,
     call_sync_or_async,
     metrics,
 )
-from agentflow.utils.command import Command
-from agentflow.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
-from agentflow.utils.injection import fresh
-from agentflow.utils.interrupt import GraphInterrupt
-from agentflow.utils.interrupt import activate as activate_interrupts
+from tenxgraph.utils.command import Command
+from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
+from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.interrupt import GraphInterrupt
+from tenxgraph.utils.interrupt import activate as activate_interrupts
 
 from .handler_mixins import BaseLoggingMixin
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.base_agent import BaseAgent
+    from tenxgraph.core.graph.base_agent import BaseAgent
 
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class InvokeNodeHandler(BaseLoggingMixin):
@@ -187,9 +187,9 @@ class InvokeNodeHandler(BaseLoggingMixin):
         timeout = resolve_timeout(config, "tool_timeout", DEFAULT_TOOL_TIMEOUT_SECONDS)
 
         tool_attrs = {"node": self.name, "tool": function_name}
-        metrics.counter("agentflow.tool.calls").inc(attributes=tool_attrs)
+        metrics.counter("tenxgraph.tool.calls").inc(attributes=tool_attrs)
 
-        with metrics.timer("agentflow.tool.duration", attributes=tool_attrs):
+        with metrics.timer("tenxgraph.tool.duration", attributes=tool_attrs):
             tool_result = await self._invoke_tool_guarded(
                 function_name, function_args, tool_call_id, state, config, timeout, tool_attrs
             )
@@ -239,10 +239,10 @@ class InvokeNodeHandler(BaseLoggingMixin):
                 ),
             )
         except NodeTimeoutError:
-            metrics.counter("agentflow.tool.timeouts").inc(attributes=tool_attrs)
+            metrics.counter("tenxgraph.tool.timeouts").inc(attributes=tool_attrs)
             raise
         except Exception:
-            metrics.counter("agentflow.tool.errors").inc(attributes=tool_attrs)
+            metrics.counter("tenxgraph.tool.errors").inc(attributes=tool_attrs)
             raise
 
     async def _get_recorded_tool_result(
@@ -342,7 +342,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
             and len(last_message.tools_calls) > 0
         ):
             # Lazy import to avoid circular dependency
-            from agentflow.prebuilt.tools.handoff import is_handoff_tool
+            from tenxgraph.prebuilt.tools.handoff import is_handoff_tool
 
             # NEW: Check for handoff BEFORE executing any tools
             for tool_call in last_message.tools_calls:
@@ -666,8 +666,8 @@ class InvokeNodeHandler(BaseLoggingMixin):
         callback_mgr: CallbackManager,
     ) -> dict[str, Any] | list[Message] | Command:
         """Dispatch node execution to the appropriate implementation."""
-        from agentflow.core.graph.agent import Agent
-        from agentflow.core.graph.base_agent import BaseAgent
+        from tenxgraph.core.graph.agent import Agent
+        from tenxgraph.core.graph.base_agent import BaseAgent
 
         if isinstance(self.func, Agent | BaseAgent):
             logger.debug("Node '%s' is an Agent instance, executing agent", self.name)

@@ -3,8 +3,8 @@
 This package groups Agentflow's testing and evaluation tooling under a
 single namespace:
 
-- ``agentflow.qa.testing``    — test doubles, mocks, quick tests, and helpers
-- ``agentflow.qa.evaluation`` — eval sets, criteria, runners, reporters, and results
+- ``tenxgraph.qa.testing``    — test doubles, mocks, quick tests, and helpers
+- ``tenxgraph.qa.evaluation`` — eval sets, criteria, runners, reporters, and results
 """
 
 from . import evaluation, testing

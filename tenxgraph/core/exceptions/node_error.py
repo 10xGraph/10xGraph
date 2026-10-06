@@ -4,7 +4,7 @@ from typing import Any
 from .graph_error import GraphError
 
 
-logger = logging.getLogger("agentflow.exceptions")
+logger = logging.getLogger("tenxgraph.exceptions")
 
 
 class NodeError(GraphError):
@@ -15,7 +15,7 @@ class NodeError(GraphError):
     Inherits structured error handling from GraphError.
 
     Example:
-        >>> from agentflow.exceptions.node_error import NodeError
+        >>> from tenxgraph.exceptions.node_error import NodeError
         >>> raise NodeError(
         ...     message="Node failed to execute",
         ...     error_code="NODE_001",

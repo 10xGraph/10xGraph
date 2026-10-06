@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentflow.storage.media.capabilities import (
+from tenxgraph.storage.media.capabilities import (
     MediaTransportMode,
     ModelMediaCapabilities,
     get_capabilities,

@@ -2,10 +2,10 @@ import os
 
 from dotenv import load_dotenv
 
-from agentflow.core.graph import Agent, StateGraph, ToolNode
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.message import Message
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import Agent, StateGraph, ToolNode
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.message import Message
+from tenxgraph.utils.constants import END
 
 
 load_dotenv()

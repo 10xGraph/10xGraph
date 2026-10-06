@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state.agent_state import AgentState
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state.agent_state import AgentState
 
 
 @dataclass

@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from agentflow.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 
 
 class TestBackpressure:
@@ -88,7 +88,7 @@ class TestBackpressure:
 class TestNoPublisherShortCircuit:
     def test_publish_event_does_nothing_without_a_publisher(self):
         """No sink bound -> don't build a task per event on the hot path."""
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         mgr = BackgroundTaskManager()
         publish_event(event=object(), publisher=None, task_manager=mgr)  # type: ignore[arg-type]

@@ -1,6 +1,6 @@
 """Basic test to verify pytest setup."""
 
-import agentflow  # noqa: F401
+import tenxgraph  # noqa: F401
 
 
 def test_basic_functionality():

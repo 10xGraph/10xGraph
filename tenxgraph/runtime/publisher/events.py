@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentflow.core.state.message_block import ContentBlock
+from tenxgraph.core.state.message_block import ContentBlock
 
 
 class Event(StrEnum):

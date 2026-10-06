@@ -1,6 +1,6 @@
 """Tests for shared reasoning tag extraction utilities."""
 
-from agentflow.runtime.adapters.llm.reasoning_utils import (
+from tenxgraph.runtime.adapters.llm.reasoning_utils import (
     parse_reasoning_tags,
     parse_think_tags,
     parse_thought_tags,

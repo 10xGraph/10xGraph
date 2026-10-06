@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
-logger = logging.getLogger("agentflow.media.capabilities")
+logger = logging.getLogger("tenxgraph.media.capabilities")
 
 
 class MediaTransportMode(str, Enum):

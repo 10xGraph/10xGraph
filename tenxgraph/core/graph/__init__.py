@@ -63,8 +63,8 @@ Usage Example:
 ==============
 
     ```python
-    from agentflow.core.graph import StateGraph, ToolNode
-    from agentflow.utils import START, END
+    from tenxgraph.core.graph import StateGraph, ToolNode
+    from tenxgraph.utils import START, END
 
 
     # Define workflow functions

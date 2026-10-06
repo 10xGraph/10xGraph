@@ -9,14 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from agentflow.core.graph.utils.stream_node_handler import StreamNodeHandler
-from agentflow.core.state import AgentState, Message, ToolResult
-from agentflow.core.state.message_block import ToolCallBlock, ToolResultBlock
-from agentflow.core.state.stream_chunks import StreamChunk
-from agentflow.utils import CallbackManager
-from agentflow.utils.command import Command
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
+from tenxgraph.core.state import AgentState, Message, ToolResult
+from tenxgraph.core.state.message_block import ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.stream_chunks import StreamChunk
+from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.command import Command
 
 
 class CustomState(AgentState):
@@ -342,7 +342,7 @@ class TestCommandHandoffStream:
         from unittest.mock import patch
 
         with patch(
-            "agentflow.prebuilt.tools.handoff.is_handoff_tool",
+            "tenxgraph.prebuilt.tools.handoff.is_handoff_tool",
             return_value=(True, "specialist_agent"),
         ):
             state = CustomState(context=[message])
@@ -389,7 +389,7 @@ class TestCommandHandoffStream:
         from unittest.mock import patch
 
         with patch(
-            "agentflow.prebuilt.tools.handoff.is_handoff_tool",
+            "tenxgraph.prebuilt.tools.handoff.is_handoff_tool",
             return_value=(True, "specialist_agent"),
         ):
             state = CustomState(context=[message])

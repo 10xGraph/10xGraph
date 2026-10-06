@@ -6,7 +6,7 @@ package to provide unified S3 / GCS blob storage behind the standard
 
 Install the optional dependency::
 
-    pip install 10xscale-agentflow[cloud-storage]
+    pip install 10xgraph[cloud-storage]
 
 Then create a store::
 
@@ -16,7 +16,7 @@ Then create a store::
         StorageConfig,
         AwsConfig,
     )
-    from agentflow.media.storage import CloudMediaStore
+    from tenxgraph.media.storage import CloudMediaStore
 
     config = StorageConfig(
         aws=AwsConfig(
@@ -44,7 +44,7 @@ from uuid import uuid4
 from .base import BaseMediaStore
 
 
-logger = logging.getLogger("agentflow.storage.media.cloud")
+logger = logging.getLogger("tenxgraph.storage.media.cloud")
 
 # Extension map for cases where mimetypes doesn't know the type
 _FALLBACK_EXT: dict[str, str] = {

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from agentflow.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
-from agentflow.core.state.message import Message
-from agentflow.utils.thread_info import ThreadInfo
+from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+from tenxgraph.core.state.message import Message
+from tenxgraph.utils.thread_info import ThreadInfo
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def _make_message(mid: str = "msg-1", content: str = "hello") -> Message:
 
 
 def _make_state():
-    from agentflow.core.state import AgentState
+    from tenxgraph.core.state import AgentState
 
     return AgentState(messages=[_make_message()])
 
@@ -410,7 +410,7 @@ async def test_aget_thread_owner_none_for_unknown_thread(cp):
 async def test_base_default_raises_not_implemented():
     """A backend that does not override the hook must fail loud, never silently
     report 'no owner' (which would defeat owner-based authorization)."""
-    from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
+    from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 
     # Bypass ABC instantiation guard to exercise the concrete default body directly.
     inst = object.__new__(InMemoryCheckpointer)
@@ -424,14 +424,14 @@ async def test_base_default_raises_not_implemented():
 
 
 def _owner_cfg(thread_id, user_id):
-    from agentflow.core.authz import build_authz
+    from tenxgraph.core.authz import build_authz
 
     return {"thread_id": thread_id, "user_id": user_id, "authz": build_authz(user_id, scope="owner")}
 
 
 @pytest.mark.asyncio
 async def test_inmem_owner_only_state(cp):
-    from agentflow.core.exceptions import StorageError
+    from tenxgraph.core.exceptions import StorageError
 
     await cp.aput_state(_owner_cfg("t1", "A"), _make_state())
     # non-owner read -> None; owner read -> present
@@ -459,7 +459,7 @@ async def test_inmem_no_policy_is_backward_compatible(cp):
 
 @pytest.mark.asyncio
 async def test_inmem_allow_all_scope_sees_everything(cp):
-    from agentflow.core.authz import build_authz
+    from tenxgraph.core.authz import build_authz
 
     await cp.aput_state(_owner_cfg("t1", "A"), _make_state())
     none_cfg = {"thread_id": "t1", "user_id": "B", "authz": build_authz("B", scope="none")}

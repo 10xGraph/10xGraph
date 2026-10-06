@@ -2,7 +2,7 @@
 
 import asyncio
 
-from agentflow.qa.testing import QuickTest
+from tenxgraph.qa.testing import QuickTest
 
 
 async def example_single_turn():

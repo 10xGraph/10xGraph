@@ -21,7 +21,7 @@ from .constants import (
 )
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 # Rejected with a 400 by the models in ANTHROPIC_NO_SAMPLING_MODELS.
 _SAMPLING_KEYS = ("temperature", "top_p", "top_k")

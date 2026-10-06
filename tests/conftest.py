@@ -9,7 +9,7 @@ import pytest
 from injectq import InjectQ
 from injectq.core.context import ContainerContext
 
-from agentflow.core.graph.node import Node
+from tenxgraph.core.graph.node import Node
 
 
 _ORIGINAL_NODE_INIT = Node.__init__

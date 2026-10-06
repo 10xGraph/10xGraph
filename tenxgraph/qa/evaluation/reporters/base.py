@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.eval_result import EvalReport
+    from tenxgraph.qa.evaluation.eval_result import EvalReport
 
 
 class BaseReporter(abc.ABC):

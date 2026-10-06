@@ -23,10 +23,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from agentflow.core.llm.client_factory import create_llm_client, resolve_provider_and_model
+from tenxgraph.core.llm.client_factory import create_llm_client, resolve_provider_and_model
 
 
-logger = logging.getLogger("agentflow.llm.caller")
+logger = logging.getLogger("tenxgraph.llm.caller")
 
 
 async def call_llm(
@@ -143,8 +143,8 @@ async def _call_anthropic(
     json_mode: bool,
     **llm_kwargs: Any,
 ) -> tuple[str, int, int, int]:
-    from agentflow.core.graph.agent_internal.anthropic_request import strip_bedrock_prefix
-    from agentflow.core.graph.agent_internal.constants import ANTHROPIC_NO_SAMPLING_MODELS
+    from tenxgraph.core.graph.agent_internal.anthropic_request import strip_bedrock_prefix
+    from tenxgraph.core.graph.agent_internal.constants import ANTHROPIC_NO_SAMPLING_MODELS
 
     call_kwargs: dict[str, Any] = dict(llm_kwargs)
     call_kwargs["max_tokens"] = max_tokens

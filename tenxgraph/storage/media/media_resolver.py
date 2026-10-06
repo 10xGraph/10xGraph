@@ -15,9 +15,9 @@ import base64
 import logging
 from typing import Any
 
-from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
-from agentflow.core.state.message_block import MediaRef
-from agentflow.storage.media.capabilities import (
+from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
+from tenxgraph.core.state.message_block import MediaRef
+from tenxgraph.storage.media.capabilities import (
     MediaTransportMode,
     get_capabilities,
 )
@@ -25,7 +25,7 @@ from agentflow.storage.media.capabilities import (
 from .storage.base import BaseMediaStore
 
 
-logger = logging.getLogger("agentflow.media.media_resolver")
+logger = logging.getLogger("tenxgraph.media.media_resolver")
 
 _AGENTFLOW_SCHEME = "agentflow://media/"
 

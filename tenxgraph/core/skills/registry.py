@@ -21,7 +21,7 @@ from .loader import (
 from .models import SkillDiagnostic, SkillMeta
 
 
-logger = logging.getLogger("agentflow.skills.registry")
+logger = logging.getLogger("tenxgraph.skills.registry")
 
 
 def _log_diagnostic(diagnostic: SkillDiagnostic) -> None:

@@ -10,21 +10,21 @@ from uuid import uuid4
 
 from injectq import InjectQ
 
-from agentflow.core.exceptions.graph_error import GraphError
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.graph.tool_node.base import ToolNode
-from agentflow.core.state import AgentState
-from agentflow.core.state.execution_state import StopRequestStatus
-from agentflow.core.state.stream_chunks import StreamChunk
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.utils import (
+from tenxgraph.core.exceptions.graph_error import GraphError
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.tool_node.base import ToolNode
+from tenxgraph.core.state import AgentState
+from tenxgraph.core.state.execution_state import StopRequestStatus
+from tenxgraph.core.state.stream_chunks import StreamChunk
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.utils import (
     CallbackManager,
     ResponseGranularity,
 )
-from agentflow.utils.background_task_manager import BackgroundTaskManager
-from agentflow.utils.constants import DEFAULT_ANONYMOUS_USER_ID
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 StateT = TypeVar("StateT", bound=AgentState)
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class CompiledGraph[StateT: AgentState]:
@@ -606,7 +606,7 @@ class CompiledGraph[StateT: AgentState]:
     # super-step invoke/stream loop: the live agent owns the turn loop.
     # ------------------------------------------------------------------ #
     def _find_live_nodes(self) -> list[tuple[str, Node]]:
-        from agentflow.core.realtime.live_agent import LiveAgent
+        from tenxgraph.core.realtime.live_agent import LiveAgent
 
         return [
             (name, node)
@@ -741,7 +741,7 @@ class CompiledGraph[StateT: AgentState]:
                     print(f"Shutdown completed: {stats}")
             ```
         """
-        from agentflow.utils.shutdown import shutdown_with_timeout
+        from tenxgraph.utils.shutdown import shutdown_with_timeout
 
         if self._closed:
             logger.debug("CompiledGraph.aclose() called again; already closed")

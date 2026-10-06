@@ -2,10 +2,10 @@
 
 import pytest
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, ExecutionStatus, Message
-from agentflow.utils.constants import END
-from agentflow.utils import ResponseGranularity
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.utils.constants import END
+from tenxgraph.utils import ResponseGranularity
 
 
 def node_a(state: AgentState, config: dict) -> Message:

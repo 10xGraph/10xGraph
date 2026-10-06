@@ -5,7 +5,7 @@ This publisher uses the redis-py asyncio client to publish events via:
 - Redis Streams (XADD) when configured with mode="stream".
 
 Dependency: redis>=4.2 (provides redis.asyncio).
-Not installed by default; install extra: `pip install 10xscale-agentflow[redis]`.
+Not installed by default; install extra: `pip install 10xgraph[redis]`.
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ import json
 import logging
 from typing import Any
 
-from agentflow.runtime.publisher.events import EventModel
+from tenxgraph.runtime.publisher.events import EventModel
 
 from .base_publisher import BasePublisher
 
 
-logger = logging.getLogger("agentflow.publisher")
+logger = logging.getLogger("tenxgraph.publisher")
 
 
 class RedisPublisher(BasePublisher):
@@ -51,8 +51,8 @@ class RedisPublisher(BasePublisher):
             config: Configuration dictionary. Supported keys:
                 - url: Redis URL (default: "redis://localhost:6379/0").
                 - mode: Publishing mode ('pubsub' or 'stream', default: 'pubsub').
-                - channel: Pub/Sub channel name (default: "agentflow.events").
-                - stream: Stream name (default: "agentflow.events").
+                - channel: Pub/Sub channel name (default: "tenxgraph.events").
+                - stream: Stream name (default: "tenxgraph.events").
                 - maxlen: Max length for streams.
                 - encoding: Encoding (default: "utf-8").
                 - max_connections: Maximum connections in pool (default: 10).
@@ -64,8 +64,8 @@ class RedisPublisher(BasePublisher):
         super().__init__(config or {})
         self.url: str = self.config.get("url", "redis://localhost:6379/0")
         self.mode: str = self.config.get("mode", "pubsub")
-        self.channel: str = self.config.get("channel", "agentflow.events")
-        self.stream: str = self.config.get("stream", "agentflow.events")
+        self.channel: str = self.config.get("channel", "tenxgraph.events")
+        self.stream: str = self.config.get("stream", "tenxgraph.events")
         self.maxlen: int | None = self.config.get("maxlen")
         self.encoding: str = self.config.get("encoding", "utf-8")
         self.max_connections: int = self.config.get("max_connections", 10)
@@ -99,7 +99,7 @@ class RedisPublisher(BasePublisher):
             except Exception as exc:  # ImportError and others
                 raise RuntimeError(
                     "RedisPublisher requires the 'redis' package. Install with "
-                    "'pip install 10xscale-agentflow[redis]' or 'pip install redis'."
+                    "'pip install 10xgraph[redis]' or 'pip install redis'."
                 ) from exc
 
             try:

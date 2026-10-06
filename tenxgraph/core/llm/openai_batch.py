@@ -1,9 +1,9 @@
 """OpenAI Message Batches helper.
 
-Same surface as :class:`~agentflow.core.llm.anthropic_batch.AnthropicBatch`, so
+Same surface as :class:`~tenxgraph.core.llm.anthropic_batch.AnthropicBatch`, so
 switching providers does not mean relearning the interface:
 
-    from agentflow.core.llm import OpenAIBatch
+    from tenxgraph.core.llm import OpenAIBatch
 
     batch = OpenAIBatch(model="gpt-4o-mini")
     batch.add("row-1", [{"role": "user", "content": "Summarise: ..."}])
@@ -30,11 +30,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from agentflow.core.llm.batch_common import BatchResult
-from agentflow.core.llm.client_factory import create_llm_client
+from tenxgraph.core.llm.batch_common import BatchResult
+from tenxgraph.core.llm.client_factory import create_llm_client
 
 
-logger = logging.getLogger("agentflow.llm.openai_batch")
+logger = logging.getLogger("tenxgraph.llm.openai_batch")
 
 # OpenAI batch statuses that mean "no further progress will happen".
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "cancelled"})

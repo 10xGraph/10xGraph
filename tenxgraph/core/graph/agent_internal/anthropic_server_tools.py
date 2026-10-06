@@ -17,7 +17,7 @@ from typing import Any
 from .anthropic_request import strip_bedrock_prefix
 
 
-logger = logging.getLogger("agentflow.agent.anthropic")
+logger = logging.getLogger("tenxgraph.agent.anthropic")
 
 # Models supporting the dynamic-filtering web tool variants.
 _DYNAMIC_FILTER_MODELS = frozenset(

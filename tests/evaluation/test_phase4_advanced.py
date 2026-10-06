@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.qa.evaluation import (
+from tenxgraph.qa.evaluation import (
     CriterionConfig,
     CriterionResult,
     EvalCase,
@@ -16,11 +16,11 @@ from agentflow.qa.evaluation import (
     MessageContent,
     TrajectoryCollector,
 )
-from agentflow.qa.evaluation.execution.result import ExecutionResult
-from agentflow.qa.evaluation.criteria.hallucination import HallucinationCriterion
-from agentflow.qa.evaluation.criteria.safety import SafetyCriterion
-from agentflow.qa.evaluation.criteria.factual_accuracy import FactualAccuracyCriterion
-from agentflow.qa.evaluation.simulators.user_simulator import (
+from tenxgraph.qa.evaluation.execution.result import ExecutionResult
+from tenxgraph.qa.evaluation.criteria.hallucination import HallucinationCriterion
+from tenxgraph.qa.evaluation.criteria.safety import SafetyCriterion
+from tenxgraph.qa.evaluation.criteria.factual_accuracy import FactualAccuracyCriterion
+from tenxgraph.qa.evaluation.simulators.user_simulator import (
     UserSimulator,
     BatchSimulator,
     ConversationScenario,
@@ -97,7 +97,7 @@ class TestHallucinationCriterion:
         """Test extracting context from tool results."""
         criterion = HallucinationCriterion()
 
-        from agentflow.qa.evaluation import ToolCall
+        from tenxgraph.qa.evaluation import ToolCall
 
         collector = TrajectoryCollector()
         tc = ToolCall(name="get_info", args={}, result="Paris is the capital")
@@ -282,7 +282,7 @@ class TestUserSimulator:
 
     def test_init_with_config(self):
         """Test simulator initializes from config."""
-        from agentflow.qa.evaluation import UserSimulatorConfig
+        from tenxgraph.qa.evaluation import UserSimulatorConfig
 
         config = UserSimulatorConfig(
             model="gpt-3.5-turbo",
@@ -404,7 +404,7 @@ class TestAdvancedCriteriaIntegration:
 
         # Mock the _call_llm_json method used by _run_samples
         async def mock_call_llm_json(prompt):
-            from agentflow.qa.evaluation.token_usage import TokenUsage
+            from tenxgraph.qa.evaluation.token_usage import TokenUsage
             return ({"score": 0.9, "is_grounded": True, "hallucinations": [], "reasoning": "Response is well grounded"}, TokenUsage())
 
         criterion._call_llm_json = mock_call_llm_json
@@ -429,7 +429,7 @@ class TestAdvancedCriteriaIntegration:
         criterion = SafetyCriterion()
 
         async def mock_call_llm_json(prompt):
-            from agentflow.qa.evaluation.token_usage import TokenUsage
+            from tenxgraph.qa.evaluation.token_usage import TokenUsage
             return ({"score": 1.0, "is_safe": True, "issues": [], "categories": {"harmful_content": 1.0, "hate_speech": 1.0, "privacy": 1.0, "misinformation": 1.0, "manipulation": 1.0}, "reasoning": "Response is safe"}, TokenUsage())
 
         criterion._call_llm_json = mock_call_llm_json
@@ -454,7 +454,7 @@ class TestAdvancedCriteriaIntegration:
         criterion = FactualAccuracyCriterion()
 
         async def mock_call_llm_json(prompt):
-            from agentflow.qa.evaluation.token_usage import TokenUsage
+            from tenxgraph.qa.evaluation.token_usage import TokenUsage
             return ({"score": 0.85, "is_accurate": True, "errors": [], "reasoning": "Most facts are correct"}, TokenUsage())
 
         criterion._call_llm_json = mock_call_llm_json
@@ -479,7 +479,7 @@ class TestTestingUtilities:
 
     def test_create_simple_eval_set(self):
         """Test creating a simple eval set."""
-        from agentflow.qa.evaluation.testing import create_simple_eval_set
+        from tenxgraph.qa.evaluation.testing import create_simple_eval_set
 
         eval_set = create_simple_eval_set(
             "my_tests",
@@ -495,8 +495,8 @@ class TestTestingUtilities:
 
     def test_assert_eval_passed_success(self):
         """Test assert_eval_passed with passing report."""
-        from agentflow.qa.evaluation.testing import assert_eval_passed
-        from agentflow.qa.evaluation import EvalReport, EvalCaseResult, CriterionResult
+        from tenxgraph.qa.evaluation.testing import assert_eval_passed
+        from tenxgraph.qa.evaluation import EvalReport, EvalCaseResult, CriterionResult
 
         report = EvalReport.create(
             eval_set_id="test",
@@ -515,8 +515,8 @@ class TestTestingUtilities:
 
     def test_assert_eval_passed_failure(self):
         """Test assert_eval_passed with failing report."""
-        from agentflow.qa.evaluation.testing import assert_eval_passed
-        from agentflow.qa.evaluation import EvalReport, EvalCaseResult, CriterionResult
+        from tenxgraph.qa.evaluation.testing import assert_eval_passed
+        from tenxgraph.qa.evaluation import EvalReport, EvalCaseResult, CriterionResult
 
         report = EvalReport.create(
             eval_set_id="test",
@@ -542,8 +542,8 @@ class TestTestingUtilities:
 
     def test_assert_criterion_passed_success(self):
         """Test assert_criterion_passed with passing criterion."""
-        from agentflow.qa.evaluation.testing import assert_criterion_passed
-        from agentflow.qa.evaluation import EvalReport, EvalCaseResult, CriterionResult
+        from tenxgraph.qa.evaluation.testing import assert_criterion_passed
+        from tenxgraph.qa.evaluation import EvalReport, EvalCaseResult, CriterionResult
 
         report = EvalReport.create(
             eval_set_id="test",
@@ -562,8 +562,8 @@ class TestTestingUtilities:
 
     def test_assert_criterion_passed_not_found(self):
         """Test assert_criterion_passed with missing criterion."""
-        from agentflow.qa.evaluation.testing import assert_criterion_passed
-        from agentflow.qa.evaluation import EvalReport
+        from tenxgraph.qa.evaluation.testing import assert_criterion_passed
+        from tenxgraph.qa.evaluation import EvalReport
 
         report = EvalReport.create(
             eval_set_id="test",

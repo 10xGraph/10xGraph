@@ -19,17 +19,17 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from agentflow.qa.evaluation.criteria.base import BaseCriterion
-from agentflow.qa.evaluation.criteria.llm_utils import LLMCallerMixin
-from agentflow.qa.evaluation.eval_result import CriterionResult
-from agentflow.qa.evaluation.token_usage import TokenUsage
+from tenxgraph.qa.evaluation.criteria.base import BaseCriterion
+from tenxgraph.qa.evaluation.criteria.llm_utils import LLMCallerMixin
+from tenxgraph.qa.evaluation.eval_result import CriterionResult
+from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.dataset.eval_set import EvalCase
-    from agentflow.qa.evaluation.execution.result import ExecutionResult
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase
+    from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
-logger = logging.getLogger("agentflow.evaluation")
+logger = logging.getLogger("tenxgraph.evaluation")
 
 
 class TemplatedLLMCriterion(LLMCallerMixin, BaseCriterion):

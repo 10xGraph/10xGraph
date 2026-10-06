@@ -42,7 +42,7 @@ from typing import Any
 
 from injectq import InjectQ
 
-from agentflow.core.state import Message
+from tenxgraph.core.state import Message
 
 from .base_store import BaseStore
 from .qdrant_store import DEFAULT_COLLECTION
@@ -60,7 +60,7 @@ except ImportError:
     MemoryConfig = None
     AsyncMemory = None
 
-logger = logging.getLogger("agentflow.store")
+logger = logging.getLogger("tenxgraph.store")
 
 
 class Mem0Store(BaseStore):

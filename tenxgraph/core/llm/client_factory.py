@@ -12,7 +12,7 @@ import os
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.llm")
+logger = logging.getLogger("tenxgraph.llm")
 
 # Default timeout (in seconds) applied to LLM client construction when the
 # caller does not pass an explicit ``timeout``. Bounds every request so a stalled
@@ -268,7 +268,7 @@ def _create_google_client(*, use_vertex_ai: bool) -> Any:
     except ImportError as exc:
         raise ImportError(
             "google-genai SDK is required for the Google provider. "
-            "Install it with: pip install 10xscale-agentflow[google-genai]"
+            "Install it with: pip install 10xgraph[google-genai]"
         ) from exc
 
     # google-genai expresses the request timeout in milliseconds.
@@ -313,7 +313,7 @@ def _create_openai_client(
     except ImportError as exc:
         raise ImportError(
             "openai SDK is required for the OpenAI provider. "
-            "Install it with: pip install 10xscale-agentflow[openai]"
+            "Install it with: pip install 10xgraph[openai]"
         ) from exc
 
     resolved_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -371,7 +371,7 @@ def _create_anthropic_client(
             raise ImportError(
                 "anthropic SDK with Vertex support is required for "
                 "anthropic_backend='vertex'. Install it with: "
-                'pip install "10xscale-agentflow[anthropic-vertex]"'
+                'pip install "10xgraph[anthropic-vertex]"'
             ) from exc
 
         client_kwargs = {
@@ -390,7 +390,7 @@ def _create_anthropic_client(
             raise ImportError(
                 "anthropic SDK with Bedrock support is required for "
                 "anthropic_backend='bedrock'. Install it with: "
-                'pip install "10xscale-agentflow[anthropic-bedrock]"'
+                'pip install "10xgraph[anthropic-bedrock]"'
             ) from exc
 
         client_kwargs = {
@@ -409,7 +409,7 @@ def _create_anthropic_client(
     except ImportError as exc:
         raise ImportError(
             "anthropic SDK is required for the Anthropic provider. "
-            'Install it with: pip install "10xscale-agentflow[anthropic]"'
+            'Install it with: pip install "10xgraph[anthropic]"'
         ) from exc
 
     resolved_key = api_key or os.getenv("ANTHROPIC_API_KEY")

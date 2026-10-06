@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from agentflow.storage.store.mem0_store import Mem0Store
-from agentflow.storage.store.store_schema import MemoryType
-from agentflow.core.state import Message
+from tenxgraph.storage.store.mem0_store import Mem0Store
+from tenxgraph.storage.store.store_schema import MemoryType
+from tenxgraph.core.state import Message
 
 
 class MockAsyncMem0:
@@ -100,7 +100,7 @@ class MockAsyncMem0:
 @pytest.fixture()
 def store():
     mock_instance = MockAsyncMem0()
-    with patch("agentflow.storage.store.mem0_store.AsyncMemory") as mock_class:
+    with patch("tenxgraph.storage.store.mem0_store.AsyncMemory") as mock_class:
         # Mock the from_config class method to return our mock instance
         async def mock_from_config(config):
             return mock_instance

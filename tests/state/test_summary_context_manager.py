@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
-from agentflow.core.state.summary_context_manager import (
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.summary_context_manager import (
     SummaryContextManager,
     _estimate_tokens,
     _messages_to_text,
@@ -134,7 +134,7 @@ class TestSplitContext:
 # Async tests — mocked LLM
 # ---------------------------------------------------------------------------
 
-_CALL_LLM = "agentflow.core.state.summary_context_manager.call_llm"
+_CALL_LLM = "tenxgraph.core.state.summary_context_manager.call_llm"
 
 
 @pytest.mark.anyio(loop_scope="function")

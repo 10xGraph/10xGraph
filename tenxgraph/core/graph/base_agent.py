@@ -11,13 +11,13 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.tool_node.base import ToolNode
+    from tenxgraph.core.graph.tool_node.base import ToolNode
 
-from agentflow.core.state import AgentState
-from agentflow.core.state.message import Message
+from tenxgraph.core.state import AgentState
+from tenxgraph.core.state.message import Message
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 class BaseAgent(ABC):

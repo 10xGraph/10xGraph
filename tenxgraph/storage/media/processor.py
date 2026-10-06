@@ -13,18 +13,18 @@ import io
 import logging
 from typing import Any
 
-from agentflow.core.state.message_block import ImageBlock
+from tenxgraph.core.state.message_block import ImageBlock
 
 from .config import MultimodalConfig
 
 
-logger = logging.getLogger("agentflow.media.processor")
+logger = logging.getLogger("tenxgraph.media.processor")
 
 
 class MediaProcessor:
     """Validate and optionally resize images before they enter the pipeline.
 
-    Pillow is an *optional* dependency (``pip install 10xscale-agentflow[images]``).
+    Pillow is an *optional* dependency (``pip install 10xgraph[images]``).
     Without Pillow, validation still works but resizing is skipped.
     """
 

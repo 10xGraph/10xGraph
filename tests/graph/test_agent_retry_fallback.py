@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.graph.agent import Agent
-from agentflow.core.graph.agent_internal.circuit_breaker import CircuitBreakerOpenError
-from agentflow.core.graph.agent_internal.constants import DEFAULT_RETRY_CONFIG, RetryConfig
+from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.agent_internal.circuit_breaker import CircuitBreakerOpenError
+from tenxgraph.core.graph.agent_internal.constants import DEFAULT_RETRY_CONFIG, RetryConfig
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +363,7 @@ class TestCallLLMWithRetrySuccess:
             ]
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -399,7 +399,7 @@ class TestCallLLMWithRetryExponentialBackoff:
         async def capture_delay(d):
             delays.append(d)
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", side_effect=capture_delay):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", side_effect=capture_delay):
             result = await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -432,7 +432,7 @@ class TestCallLLMWithRetryExponentialBackoff:
         async def capture_delay(d):
             delays.append(d)
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", side_effect=capture_delay):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", side_effect=capture_delay):
             await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -450,7 +450,7 @@ class TestCallLLMWithRetryExhausted:
             side_effect=_FakeAPIStatusError(503, "always_unavailable"),
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(_FakeAPIStatusError, match="always_unavailable"):
                 await agent._call_llm_with_retry(
                     [{"role": "user", "content": "Hi"}],
@@ -509,7 +509,7 @@ class TestCallLLMFallbackModels:
 
         agent._call_llm = AsyncMock(side_effect=mock_call_llm)
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             with patch.object(Agent, "_create_client", return_value=_mock_openai_client()):
                 result = await agent._call_llm_with_retry(
                     [{"role": "user", "content": "Hi"}],
@@ -567,7 +567,7 @@ class TestCallLLMFallbackModels:
             side_effect=_FakeAPIStatusError(503, "all_down"),
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             with patch.object(Agent, "_create_client", return_value=_mock_openai_client()):
                 with pytest.raises(_FakeAPIStatusError, match="all_down"):
                     await agent._call_llm_with_retry(
@@ -712,7 +712,7 @@ class TestConnectionErrors:
             ]
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             result = await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -731,7 +731,7 @@ class TestConnectionErrors:
             ]
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             result = await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -756,7 +756,7 @@ class TestGoogleRetryable:
             side_effect=[google_error, response],
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             result = await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -775,7 +775,7 @@ class TestGoogleRetryable:
             side_effect=[error, response],
         )
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             result = await agent._call_llm_with_retry(
                 [{"role": "user", "content": "Hi"}],
             )
@@ -805,7 +805,7 @@ class TestCircuitBreakerIntegration:
             return _chat_response("fallback")
 
         agent._call_llm = AsyncMock(side_effect=mock_call_llm)
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             for _ in range(4):
                 await agent._call_llm_with_retry([{"role": "user", "content": "Hi"}])
 
@@ -833,7 +833,7 @@ class TestCircuitBreakerIntegration:
             return fallback_response
 
         agent._call_llm = AsyncMock(side_effect=mock_call_llm)
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             results = [
                 await agent._call_llm_with_retry([{"role": "user", "content": "Hi"}])
                 for _ in range(4)
@@ -855,7 +855,7 @@ class TestCircuitBreakerIntegration:
         agent = _make_agent(retry_config=cfg, fallback_models=None)
         agent._call_llm = AsyncMock(side_effect=_FakeAPIStatusError(503, "down"))
 
-        with patch("agentflow.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
+        with patch("tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock):
             # First call fails normally and opens the circuit (threshold=1).
             with pytest.raises(_FakeAPIStatusError):
                 await agent._call_llm_with_retry([{"role": "user", "content": "Hi"}])

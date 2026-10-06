@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable
 
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class Edge:

@@ -20,11 +20,11 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 # Re-export everything from sibling modules so that existing imports of the form
-#   from agentflow.qa.evaluation.config.eval_config import XYZ
+#   from tenxgraph.qa.evaluation.config.eval_config import XYZ
 # continue to work without modification.
-from agentflow.qa.evaluation.config.criterion_config import CriterionConfig, Rubric
-from agentflow.qa.evaluation.config.reporter_config import ReporterConfig, UserSimulatorConfig
-from agentflow.qa.evaluation.config.types import DEFAULT_JUDGE_MODEL, MatchType
+from tenxgraph.qa.evaluation.config.criterion_config import CriterionConfig, Rubric
+from tenxgraph.qa.evaluation.config.reporter_config import ReporterConfig, UserSimulatorConfig
+from tenxgraph.qa.evaluation.config.types import DEFAULT_JUDGE_MODEL, MatchType
 
 
 __all__ = [

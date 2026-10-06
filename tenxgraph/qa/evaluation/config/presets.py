@@ -1,6 +1,6 @@
 """Preset evaluation configurations for common scenarios."""
 
-from agentflow.qa.evaluation.config.eval_config import (
+from tenxgraph.qa.evaluation.config.eval_config import (
     DEFAULT_JUDGE_MODEL,
     CriteriaConfig,
     CriterionConfig,

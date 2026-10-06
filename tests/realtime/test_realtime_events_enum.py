@@ -1,7 +1,7 @@
 """Phase 3: the publisher taxonomy gains a REALTIME category + transcript content type
 so all publisher backends inherit realtime telemetry without per-backend changes."""
 
-from agentflow.runtime.publisher.events import ContentType, Event, EventType
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventType
 
 
 def test_realtime_event_category_added():

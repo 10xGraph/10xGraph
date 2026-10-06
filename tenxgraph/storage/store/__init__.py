@@ -38,7 +38,7 @@ _MEMORY_TOOL_EXPORTS = {
 def __getattr__(name: str) -> _Any:
     """Resolve prebuilt memory tools only when callers ask for them."""
     if name in _MEMORY_TOOL_EXPORTS:
-        memory_tools = _import_module("agentflow.prebuilt.tools.memory")
+        memory_tools = _import_module("tenxgraph.prebuilt.tools.memory")
         value = getattr(memory_tools, name)
         globals()[name] = value
         return value

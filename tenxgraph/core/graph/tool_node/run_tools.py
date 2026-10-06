@@ -30,7 +30,7 @@ import logging
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.tool_node")
+logger = logging.getLogger("tenxgraph.tool_node")
 
 # Run-config key holding per-run client tool schemas.
 RUN_REMOTE_TOOLS_KEY = "remote_tools"

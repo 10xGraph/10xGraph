@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from agentflow.utils.callable_utils import run_coroutine
+from tenxgraph.utils.callable_utils import run_coroutine
 
 
 class BaseEmbedding(ABC):

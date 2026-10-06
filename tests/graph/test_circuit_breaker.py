@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentflow.core.graph.agent_internal.circuit_breaker import (
+from tenxgraph.core.graph.agent_internal.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerOpenError,
     CircuitState,

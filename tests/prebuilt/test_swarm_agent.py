@@ -6,12 +6,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from agentflow.core.graph import CompiledGraph, ToolNode
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.prebuilt.agent.swarm import (
+from tenxgraph.core.graph import CompiledGraph, ToolNode
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.prebuilt.agent.swarm import (
     SwarmAgent,
     SwarmMemberConfig,
     _make_member_route,
@@ -404,7 +404,7 @@ class TestSwarmAgentCompile:
         agent = SwarmAgent(members=_two_members(), entry="TRIAGE")
 
         with patch(
-            "agentflow.prebuilt.agent.swarm.StateGraph.compile",
+            "tenxgraph.prebuilt.agent.swarm.StateGraph.compile",
             autospec=True,
             return_value=compiled_graph,
         ) as compile_mock:

@@ -45,23 +45,23 @@ GEN_AI_OUTPUT_MESSAGES = "gen_ai.output.messages"
 # ── session / trace context ───────────────────────────────────────────────────
 SESSION_ID = "session.id"
 
-# ── agentflow.graph span attributes ─────────────────────────────────────────
-GRAPH_THREAD_ID = "agentflow.graph.thread_id"
-GRAPH_RUN_ID = "agentflow.graph.run_id"
-GRAPH_USER_ID = "agentflow.graph.user_id"
-GRAPH_TOTAL_STEPS = "agentflow.graph.total_steps"
-GRAPH_MODEL = "agentflow.graph.model"
+# ── tenxgraph.graph span attributes ─────────────────────────────────────────
+GRAPH_THREAD_ID = "tenxgraph.graph.thread_id"
+GRAPH_RUN_ID = "tenxgraph.graph.run_id"
+GRAPH_USER_ID = "tenxgraph.graph.user_id"
+GRAPH_TOTAL_STEPS = "tenxgraph.graph.total_steps"
+GRAPH_MODEL = "tenxgraph.graph.model"
 
-# ── agentflow.node span attributes ───────────────────────────────────────────
-NODE_NAME = "agentflow.node.name"
-NODE_STEP = "agentflow.node.step"
+# ── tenxgraph.node span attributes ───────────────────────────────────────────
+NODE_NAME = "tenxgraph.node.name"
+NODE_STEP = "tenxgraph.node.step"
 
-# ── agentflow.tool span attributes ───────────────────────────────────────────
-TOOL_NAME = "agentflow.tool.name"
-TOOL_TYPE = "agentflow.tool.type"  # "local" | "mcp"
+# ── tenxgraph.tool span attributes ───────────────────────────────────────────
+TOOL_NAME = "tenxgraph.tool.name"
+TOOL_TYPE = "tenxgraph.tool.type"  # "local" | "mcp"
 
 # ── lifecycle annotation (added as span event attribute) ─────────────────────
-LIFECYCLE = "agentflow.lifecycle"
+LIFECYCLE = "tenxgraph.lifecycle"
 
 # ── provider name mapping (agentflow provider → OTEL gen_ai.system value) ────
 PROVIDER_NAME_MAP: dict[str, str] = {

@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.exceptions")
+logger = logging.getLogger("tenxgraph.exceptions")
 
 
 class StorageError(Exception):

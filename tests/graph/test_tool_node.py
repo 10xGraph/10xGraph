@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from injectq import Inject
 
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.state import AgentState, ToolResult
-from agentflow.core.state.message import Message, ToolResultBlock
-from agentflow.utils import CallbackManager
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.state import AgentState, ToolResult
+from tenxgraph.core.state.message import Message, ToolResultBlock
+from tenxgraph.utils import CallbackManager
 
 
 class TestToolNode:
@@ -38,7 +38,7 @@ class TestToolNode:
 
         # Mock the imports to simulate missing dependencies
         with (
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_FASTMCP", False),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_FASTMCP", False),
             pytest.raises(ImportError, match="MCP client functionality requires"),
         ):
             ToolNode([], client=mock_client)
@@ -546,8 +546,8 @@ class TestToolNodeMCPUserInfo:
 
         # Patch dependencies to allow MCP client
         with (
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_MCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_MCP", True),
         ):
             tool_node = ToolNode([sample_func], client=mock_client, pass_user_info_to_mcp=True)
             # Register MCP tool
@@ -594,8 +594,8 @@ class TestToolNodeMCPUserInfo:
 
         # Patch dependencies to allow MCP client
         with (
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_MCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_MCP", True),
         ):
             tool_node = ToolNode([sample_func], client=mock_client, pass_user_info_to_mcp=False)
             # Register MCP tool
@@ -643,8 +643,8 @@ class TestToolNodeMCPUserInfo:
 
         # Patch dependencies to allow MCP client
         with (
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_MCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_MCP", True),
         ):
             tool_node = ToolNode([sample_func], client=mock_client, pass_user_info_to_mcp=True)
             # Register MCP tool
@@ -692,8 +692,8 @@ class TestToolNodeMCPUserInfo:
 
         # Patch dependencies to allow MCP client
         with (
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
-            patch("agentflow.core.graph.tool_node.base.deps.HAS_MCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_FASTMCP", True),
+            patch("tenxgraph.core.graph.tool_node.base.deps.HAS_MCP", True),
         ):
             tool_node = ToolNode([sample_func], client=mock_client, pass_user_info_to_mcp=True)
             # Register MCP tool

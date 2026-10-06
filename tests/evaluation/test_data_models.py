@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agentflow.qa.evaluation import (
+from tenxgraph.qa.evaluation import (
     CriterionConfig,
     CriteriaConfig,
     EvalCase,
@@ -447,7 +447,7 @@ class TestTokenUsage:
     """Unit tests for the TokenUsage dataclass."""
 
     def _make(self, inp: int = 0, out: int = 0, cr: int = 0, cc: int = 0):
-        from agentflow.qa.evaluation.token_usage import TokenUsage
+        from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
         return TokenUsage(
             input_tokens=inp,
@@ -482,7 +482,7 @@ class TestTokenUsage:
         assert result is not b
 
     def test_radd_with_zero_supports_sum(self):
-        from agentflow.qa.evaluation.token_usage import TokenUsage
+        from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
         tokens = [
             self._make(inp=100, out=30),
@@ -511,7 +511,7 @@ class TestTokenUsage:
         }
 
     def test_default_instance_is_all_zeros(self):
-        from agentflow.qa.evaluation.token_usage import TokenUsage
+        from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
         tok = TokenUsage()
         assert tok.input_tokens == 0
@@ -526,8 +526,8 @@ class TestEvalSummaryTokenAggregation:
     """Verify token fields are correctly aggregated in EvalSummary."""
 
     def test_total_token_usage_sums_all_cases(self):
-        from agentflow.qa.evaluation.eval_result import EvalCaseResult, EvalSummary
-        from agentflow.qa.evaluation.token_usage import TokenUsage
+        from tenxgraph.qa.evaluation.eval_result import EvalCaseResult, EvalSummary
+        from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
         r1 = EvalCaseResult.success(
             eval_id="c1",
@@ -554,8 +554,8 @@ class TestEvalSummaryTokenAggregation:
         assert summary.avg_tokens_per_case == 200.0
 
     def test_per_case_token_usage_keyed_by_eval_id(self):
-        from agentflow.qa.evaluation.eval_result import EvalCaseResult, EvalSummary
-        from agentflow.qa.evaluation.token_usage import TokenUsage
+        from tenxgraph.qa.evaluation.eval_result import EvalCaseResult, EvalSummary
+        from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
         r = EvalCaseResult.success(
             eval_id="my_case",
@@ -571,8 +571,8 @@ class TestEvalSummaryTokenAggregation:
         assert summary.per_case_token_usage["my_case"].total_tokens == 75
 
     def test_model_dump_includes_total_tokens_field(self):
-        from agentflow.qa.evaluation.eval_result import EvalCaseResult, EvalSummary
-        from agentflow.qa.evaluation.token_usage import TokenUsage
+        from tenxgraph.qa.evaluation.eval_result import EvalCaseResult, EvalSummary
+        from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
         r = EvalCaseResult.success(
             eval_id="x",

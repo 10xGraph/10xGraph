@@ -12,8 +12,8 @@ Exports:
         single-user agents (optional, requires extras).
 
 Usage:
-    PgCheckpointer requires: pip install 10xscale-agentflow[pg_checkpoint]
-    SqliteCheckpointer requires: pip install 10xscale-agentflow[sqlite_checkpoint]
+    PgCheckpointer requires: pip install 10xgraph[pg_checkpoint]
+    SqliteCheckpointer requires: pip install 10xgraph[sqlite_checkpoint]
 """
 
 from .base_checkpointer import BaseCheckpointer

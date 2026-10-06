@@ -4,7 +4,7 @@ from typing import Any
 from .graph_error import GraphError
 
 
-logger = logging.getLogger("agentflow.exceptions")
+logger = logging.getLogger("tenxgraph.exceptions")
 
 
 class GraphRecursionError(GraphError):
@@ -15,7 +15,7 @@ class GraphRecursionError(GraphError):
     Inherits structured error handling from GraphError.
 
     Example:
-        >>> from agentflow.exceptions.recursion_error import GraphRecursionError
+        >>> from tenxgraph.exceptions.recursion_error import GraphRecursionError
         >>> raise GraphRecursionError(
         ...     message="Recursion limit exceeded in graph execution",
         ...     error_code="RECURSION_001",

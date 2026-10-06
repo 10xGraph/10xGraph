@@ -6,16 +6,16 @@ no server and no live LLM involved.
 
 import pytest
 
-from agentflow.core.realtime.base import (
+from tenxgraph.core.realtime.base import (
     AudioDeltaEvent,
     InputTranscriptEvent,
     OutputTranscriptEvent,
     ToolCallEvent,
     TurnCompleteEvent,
 )
-from agentflow.core.realtime.queue import LiveInputQueue
-from agentflow.prebuilt.agent import AudioAgent, ReactAgent
-from agentflow.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.realtime.queue import LiveInputQueue
+from tenxgraph.prebuilt.agent import AudioAgent, ReactAgent
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tests.realtime.test_live_agent import FakeRealtimeClient, _factory
 
 MODEL = "gemini-2.5-flash-live"

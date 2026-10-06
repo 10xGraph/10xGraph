@@ -7,24 +7,24 @@ feeds, then `setup_tracing` is called as normal.
 Usage:
 
     # Logfire only
-    from agentflow.runtime.publisher import setup_logfire
+    from tenxgraph.runtime.publisher import setup_logfire
     setup_logfire(graph, service_name="my-agent")
 
     # LangSmith only
-    from agentflow.runtime.publisher import setup_langsmith
+    from tenxgraph.runtime.publisher import setup_langsmith
     setup_langsmith(graph, project="my-project")
 
     # Both at once (shares one TracerProvider)
-    from agentflow.runtime.publisher import setup_observability
+    from tenxgraph.runtime.publisher import setup_observability
     setup_observability(graph, {
         "logfire":   {"enabled": True, "service_name": "my-agent"},
         "langsmith": {"enabled": True, "project": "my-project"},
     })
 
 Requires extras:
-  pip install '10xscale-agentflow[logfire]'       # Logfire
-  pip install '10xscale-agentflow[langsmith]'     # LangSmith
-  pip install '10xscale-agentflow[observability]' # both
+  pip install '10xgraph[logfire]'       # Logfire
+  pip install '10xgraph[langsmith]'     # LangSmith
+  pip install '10xgraph[observability]' # both
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from .otel_publisher import ObservabilityLevel, setup_tracing
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.state_graph import StateGraph
+    from tenxgraph.core.graph.state_graph import StateGraph
 
 
 # ── Guard helpers ─────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ def _guard_logfire() -> None:
     except ImportError as exc:
         raise ImportError(
             "Logfire is required for logfire tracing. "
-            "Install with: pip install '10xscale-agentflow[logfire]'"
+            "Install with: pip install '10xgraph[logfire]'"
         ) from exc
 
 
@@ -60,7 +60,7 @@ def _guard_otlp_http() -> None:
     except ImportError as exc:
         raise ImportError(
             "opentelemetry-exporter-otlp-proto-http is required for LangSmith tracing. "
-            "Install with: pip install '10xscale-agentflow[langsmith]'"
+            "Install with: pip install '10xgraph[langsmith]'"
         ) from exc
 
 
@@ -70,7 +70,7 @@ def _guard_otel_sdk() -> None:
     except ImportError as exc:
         raise ImportError(
             "opentelemetry-sdk is required for observability. "
-            "Install with: pip install '10xscale-agentflow[otel]'"
+            "Install with: pip install '10xgraph[otel]'"
         ) from exc
 
 

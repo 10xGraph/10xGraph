@@ -13,7 +13,7 @@ from uuid import uuid4
 from .base import BaseMediaStore
 
 
-logger = logging.getLogger("agentflow.media.storage.local")
+logger = logging.getLogger("tenxgraph.media.storage.local")
 
 _VALID_KEY_RE = re.compile(r"^[a-f0-9]{32}$")
 

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.callbacks import (
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.callbacks import (
     CallbackManager,
     GraphLifecycleContext,
     GraphLifecycleHook,
@@ -564,7 +564,7 @@ class TestLifecycleHooksIntegration:
     @pytest.mark.asyncio
     async def test_streaming_lifecycle_hooks_fire(self):
         """Lifecycle hooks also fire during streaming execution."""
-        from agentflow.utils import ResponseGranularity
+        from tenxgraph.utils import ResponseGranularity
 
         call_log = []
 
@@ -667,7 +667,7 @@ class TestBackwardCompatibility:
 
     @pytest.mark.asyncio
     async def test_existing_register_before_invoke_still_works(self):
-        from agentflow.utils.callbacks import CallbackContext, InvocationType
+        from tenxgraph.utils.callbacks import CallbackContext, InvocationType
 
         fired = []
 
@@ -709,8 +709,8 @@ class TestBackwardCompatibility:
 
 
 def test_imports_from_agentflow_utils():
-    """GraphLifecycleContext and GraphLifecycleHook are importable from agentflow.utils."""
-    from agentflow.utils import GraphLifecycleContext, GraphLifecycleHook  # noqa: F401
+    """GraphLifecycleContext and GraphLifecycleHook are importable from tenxgraph.utils."""
+    from tenxgraph.utils import GraphLifecycleContext, GraphLifecycleHook  # noqa: F401
 
     assert GraphLifecycleContext is not None
     assert GraphLifecycleHook is not None
@@ -718,7 +718,7 @@ def test_imports_from_agentflow_utils():
 
 def test_imports_from_callbacks():
     """GraphLifecycleContext and GraphLifecycleHook are importable from callbacks module."""
-    from agentflow.utils.callbacks import GraphLifecycleContext, GraphLifecycleHook  # noqa: F401
+    from tenxgraph.utils.callbacks import GraphLifecycleContext, GraphLifecycleHook  # noqa: F401
 
     assert GraphLifecycleContext is not None
     assert GraphLifecycleHook is not None

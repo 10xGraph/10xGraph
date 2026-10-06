@@ -17,15 +17,15 @@ from collections.abc import Callable
 
 from injectq import inject, Inject
 
-from agentflow.core.exceptions import GraphRecursionError
-from agentflow.core.graph.edge import Edge
-from agentflow.core.graph.node import Node
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.core.state import AgentState, Message, ErrorBlock
-from agentflow.core.state.stream_chunks import StreamChunk, StreamEvent
-from agentflow.utils import END, ResponseGranularity, add_messages
-from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
+from tenxgraph.core.exceptions import GraphRecursionError
+from tenxgraph.core.graph.edge import Edge
+from tenxgraph.core.graph.node import Node
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.core.state import AgentState, Message, ErrorBlock
+from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
+from tenxgraph.utils import END, ResponseGranularity, add_messages
+from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from .handler_utils import (
     check_and_handle_interrupt,
     check_interrupted,
@@ -48,8 +48,8 @@ from .utils import (
     process_node_result,
     sync_data,
 )
-from agentflow.utils.injection import fresh
-from agentflow.utils.interrupt import (
+from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.interrupt import (
     GraphInterrupt,
     clear_resume_values,
     node_scope,
@@ -59,7 +59,7 @@ from agentflow.utils.interrupt import (
 
 StateT = TypeVar("StateT", bound=AgentState)
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class StreamHandler[StateT: AgentState](

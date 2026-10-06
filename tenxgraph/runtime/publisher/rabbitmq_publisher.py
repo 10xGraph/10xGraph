@@ -3,7 +3,7 @@
 Uses aio-pika to publish events to an exchange with a routing key.
 
 Dependency: aio-pika
-Not installed by default; install extra: `pip install 10xscale-agentflow[rabbitmq]`.
+Not installed by default; install extra: `pip install 10xgraph[rabbitmq]`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .base_publisher import BasePublisher
 from .events import EventModel
 
 
-logger = logging.getLogger("agentflow.publisher")
+logger = logging.getLogger("tenxgraph.publisher")
 
 
 class RabbitMQPublisher(BasePublisher):
@@ -46,8 +46,8 @@ class RabbitMQPublisher(BasePublisher):
         Args:
             config: Configuration dictionary. Supported keys:
                 - url: RabbitMQ URL (default: "amqp://guest:guest@localhost/").
-                - exchange: Exchange name (default: "agentflow.events").
-                - routing_key: Routing key (default: "agentflow.events").
+                - exchange: Exchange name (default: "tenxgraph.events").
+                - routing_key: Routing key (default: "tenxgraph.events").
                 - exchange_type: Exchange type (default: "topic").
                 - declare: Whether to declare exchange (default: True).
                 - durable: Whether exchange is durable (default: True).
@@ -56,8 +56,8 @@ class RabbitMQPublisher(BasePublisher):
         """
         super().__init__(config or {})
         self.url: str = self.config.get("url", "amqp://guest:guest@localhost/")
-        self.exchange: str = self.config.get("exchange", "agentflow.events")
-        self.routing_key: str = self.config.get("routing_key", "agentflow.events")
+        self.exchange: str = self.config.get("exchange", "tenxgraph.events")
+        self.routing_key: str = self.config.get("routing_key", "tenxgraph.events")
         self.exchange_type: str = self.config.get("exchange_type", "topic")
         self.declare: bool = self.config.get("declare", True)
         self.durable: bool = self.config.get("durable", True)
@@ -87,7 +87,7 @@ class RabbitMQPublisher(BasePublisher):
             except Exception as exc:
                 raise RuntimeError(
                     "RabbitMQPublisher requires the 'aio-pika' package. Install with "
-                    "'pip install 10xscale-agentflow[rabbitmq]' or 'pip install aio-pika'."
+                    "'pip install 10xgraph[rabbitmq]' or 'pip install aio-pika'."
                 ) from exc
 
             # Connect with timeout and heartbeat

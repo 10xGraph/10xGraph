@@ -28,10 +28,10 @@ from typing import Any
 from dotenv import load_dotenv
 from mem0 import Memory
 
-from agentflow.core import Agent, StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.utils.constants import END
+from tenxgraph.core import Agent, StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils.constants import END
 
 
 # Load environment variables

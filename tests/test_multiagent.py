@@ -6,11 +6,11 @@ import pytest
 from injectq import Inject, InjectQ, inject
 from pydantic import Field
 
-from agentflow.core.exceptions import NodeError
-from agentflow.core.graph import CompiledGraph, StateGraph
-from agentflow.runtime.publisher import ConsolePublisher
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
+from tenxgraph.core.exceptions import NodeError
+from tenxgraph.core.graph import CompiledGraph, StateGraph
+from tenxgraph.runtime.publisher import ConsolePublisher
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
 
 
 class TestMultiAgentSuite:
@@ -590,7 +590,7 @@ class TestMultiAgentStressTests:
         messages = [Message.text_message("Test recursion limit", "user")]
 
         # Should hit recursion limit (default is usually 25)
-        from agentflow.core.exceptions import GraphRecursionError
+        from tenxgraph.core.exceptions import GraphRecursionError
 
         with pytest.raises(GraphRecursionError, match="recursion limit"):
             compiled.invoke({"messages": messages}, config={"thread_id": "test_recursion_limit_enforcement", "recursion_limit": 5})
@@ -894,7 +894,7 @@ class TestMultiAgentStressTests:
         graph.add_edge("agent", END)
 
         # Should raise error when compiling without entry point
-        from agentflow.core.exceptions import GraphError
+        from tenxgraph.core.exceptions import GraphError
 
         with pytest.raises(GraphError, match="entry point"):
             graph.compile()

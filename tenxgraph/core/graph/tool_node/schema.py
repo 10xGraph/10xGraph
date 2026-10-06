@@ -52,7 +52,7 @@ from pydantic import BaseModel
 from .constants import is_injected_param
 
 
-logger = logging.getLogger("agentflow.graph.tool_node")
+logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 _EMPTY = inspect._empty
 

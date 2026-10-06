@@ -17,9 +17,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentflow.storage.media.config import DocumentHandling, ImageHandling, MultimodalConfig
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import (
+from tenxgraph.storage.media.config import DocumentHandling, ImageHandling, MultimodalConfig
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     ContentBlock,
     DocumentBlock,
@@ -28,7 +28,7 @@ from agentflow.core.state.message_block import (
     TextBlock,
     ToolResultBlock,
 )
-from agentflow.utils.converter import (
+from tenxgraph.utils.converter import (
     _build_content,
     _convert_dict,
     _has_multimodal_blocks,
@@ -418,7 +418,7 @@ class TestConvertMessagesMultimodal:
 
     def test_multimodal_message_in_context(self):
         """Multimodal messages in state.context should be converted properly."""
-        from agentflow.core.state import AgentState
+        from tenxgraph.core.state import AgentState
 
         state = AgentState()
         state.context = [
@@ -456,7 +456,7 @@ class TestGoogleMultimodalConversion:
 
     def _make_mixin(self):
         """Create a minimal AgentGoogleMixin instance."""
-        from agentflow.core.graph.agent_internal.google import AgentGoogleMixin
+        from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
 
         mixin = AgentGoogleMixin()
         return mixin
@@ -735,7 +735,7 @@ class TestEndToEndMultimodal:
 
     def test_image_message_to_google_format(self):
         """Message.image_message → _convert_dict → Google format."""
-        from agentflow.core.graph.agent_internal.google import AgentGoogleMixin
+        from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
 
         msg = Message.image_message(
             image_url="https://example.com/photo.jpg",

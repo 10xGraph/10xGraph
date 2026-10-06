@@ -10,7 +10,7 @@ relying on contextvars (which do not transfer across asyncio.create_task boundar
 Span timing is accurate because EventModel.timestamp is captured at execution time
 and passed as start_time / end_time to the OTEL SDK.
 
-Requires: pip install '10xscale-agentflow[otel]'
+Requires: pip install '10xgraph[otel]'
 """
 
 from __future__ import annotations
@@ -65,9 +65,9 @@ from .otel_attributes import (
 if TYPE_CHECKING:
     from opentelemetry.trace import Span, Tracer
 
-    from agentflow.core.graph.state_graph import StateGraph
+    from tenxgraph.core.graph.state_graph import StateGraph
 
-logger = logging.getLogger("agentflow.otel")
+logger = logging.getLogger("tenxgraph.otel")
 
 
 class ObservabilityLevel(StrEnum):
@@ -91,7 +91,7 @@ def _guard() -> None:
     except ImportError as exc:
         raise ImportError(
             "OpenTelemetry is required for tracing. "
-            "Install with: pip install '10xscale-agentflow[otel]'"
+            "Install with: pip install '10xgraph[otel]'"
         ) from exc
 
 
@@ -148,7 +148,7 @@ class OtelPublisher(BasePublisher):
     """Publisher backend that maps EventModel events to OTEL spans.
 
     Usage (minimal — STANDARD level, global TracerProvider):
-        from agentflow.runtime.publisher.otel_publisher import setup_tracing
+        from tenxgraph.runtime.publisher.otel_publisher import setup_tracing
 
         setup_tracing(graph)           # call before graph.compile()
         compiled = graph.compile(...)
@@ -241,7 +241,7 @@ class OtelPublisher(BasePublisher):
         lifecycle = event.metadata.get("lifecycle", "")
         if lifecycle == "validation_rejected":
             span = self._get_tracer().start_span(
-                "agentflow.graph",
+                "tenxgraph.graph",
                 start_time=_ns(event.timestamp),
             )
             span.set_attribute(GEN_AI_SYSTEM, "agentflow")
@@ -253,7 +253,7 @@ class OtelPublisher(BasePublisher):
             return
 
         span = self._get_tracer().start_span(
-            "agentflow.graph",
+            "tenxgraph.graph",
             start_time=_ns(event.timestamp),
         )
         span.set_attribute(GEN_AI_SYSTEM, "agentflow")
@@ -371,7 +371,7 @@ class OtelPublisher(BasePublisher):
         parent = self._registry.get_graph(event.run_id)
         ctx = trace.set_span_in_context(parent) if parent else None
         span = self._get_tracer().start_span(
-            "agentflow.node",
+            "tenxgraph.node",
             context=ctx,
             start_time=_ns(event.timestamp),
         )
@@ -462,7 +462,7 @@ class OtelPublisher(BasePublisher):
         system_name = _provider_system_name(provider)
 
         span = self._get_tracer().start_span(
-            "agentflow.llm",
+            "tenxgraph.llm",
             context=ctx,
             start_time=_ns(event.timestamp),
         )
@@ -587,7 +587,7 @@ class OtelPublisher(BasePublisher):
         span_key = f"tool:{tool_name}"
 
         span = self._get_tracer().start_span(
-            "agentflow.tool",
+            "tenxgraph.tool",
             context=ctx,
             start_time=_ns(event.timestamp),
         )

@@ -4,15 +4,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.state import AgentState
-from agentflow.storage.checkpointer.base_checkpointer import STATE_META_KEY
-from agentflow.storage.checkpointer.pg_checkpointer import PgCheckpointer
+from tenxgraph.core.state import AgentState
+from tenxgraph.storage.checkpointer.base_checkpointer import STATE_META_KEY
+from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 
 
 @pytest.fixture
 def cp(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
 
     class _Redis:
         def __init__(self):
@@ -190,7 +190,7 @@ async def test_thread_methods_cover_insert_update_and_list(cp):
     cp._pg_pool = MagicMock()
     cp._pg_pool.acquire.return_value = _AcquireCtx(conn)
 
-    from agentflow.utils.thread_info import ThreadInfo
+    from tenxgraph.utils.thread_info import ThreadInfo
 
     created = await cp.aput_thread({"thread_id": "t1", "user_id": "u1"}, ThreadInfo(thread_id="t1", thread_name="T"))
     assert created is True
@@ -220,43 +220,43 @@ async def test_aget_message_not_found_raises(cp):
 
 
 def test_import_error_asyncpg(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", False)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", False)
     with pytest.raises(ImportError) as exc:
         PgCheckpointer(postgres_dsn="postgres://x")
     assert "requires 'asyncpg'" in str(exc.value)
 
 
 def test_import_error_redis(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", False)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", False)
     with pytest.raises(ImportError) as exc:
         PgCheckpointer(postgres_dsn="postgres://x")
     assert "requires 'redis'" in str(exc.value)
 
 
 def test_schema_name_validation_on_init(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
     with pytest.raises(ValueError):
         PgCheckpointer(postgres_dsn="postgres://x", redis=MagicMock(), schema="invalid-schema-name")
 
 
 def test_init_with_pools(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
     
     mock_pg_pool = MagicMock()
     mock_redis_pool = MagicMock()
     
-    with patch("agentflow.storage.checkpointer.pg_checkpointer.Redis") as mock_redis_class:
+    with patch("tenxgraph.storage.checkpointer.pg_checkpointer.Redis") as mock_redis_class:
         cp = PgCheckpointer(pg_pool=mock_pg_pool, redis_pool=mock_redis_pool)
         assert cp._pg_pool is mock_pg_pool
         mock_redis_class.assert_called_once_with(connection_pool=mock_redis_pool)
 
 
 def test_create_redis_pool_no_url(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
     
     cp = PgCheckpointer(postgres_dsn="postgres://x", redis=MagicMock())
     with pytest.raises(ValueError):
@@ -274,8 +274,8 @@ def test_create_pg_pool(cp):
 
 @pytest.mark.asyncio
 async def test_get_pg_pool_lazy(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
     
     cp = PgCheckpointer(postgres_dsn="postgres://dsn", redis=MagicMock())
     assert cp._pg_pool is None
@@ -324,7 +324,7 @@ async def test_check_and_apply_schema_version_upgrade(cp):
 @pytest.mark.asyncio
 async def test_check_and_apply_schema_version_exception(cp):
     # A failing migration must surface as a SchemaVersionError, not be swallowed.
-    from agentflow.core.exceptions.storage_exceptions import SchemaVersionError
+    from tenxgraph.core.exceptions.storage_exceptions import SchemaVersionError
 
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(side_effect=RuntimeError("db error"))
@@ -412,7 +412,7 @@ async def test_aput_state_appends_next_version_and_records_it(cp):
 
 @pytest.mark.asyncio
 async def test_aput_state_conflict_raises_stale(cp):
-    from agentflow.core.exceptions.storage_exceptions import StaleStateError
+    from tenxgraph.core.exceptions.storage_exceptions import StaleStateError
 
     conn = _mock_conn()
     # Current version is 7 but the caller based its write on version 5.
@@ -430,7 +430,7 @@ async def test_aput_state_rejects_cross_user_thread(cp):
     conn.fetchrow = AsyncMock(side_effect=[{"user_id": "someone_else"}])
     _bind_conn(cp, conn)
 
-    from agentflow.core.exceptions.storage_exceptions import StorageError
+    from tenxgraph.core.exceptions.storage_exceptions import StorageError
 
     config = {"thread_id": "t1", "user_id": "u1"}
     with pytest.raises(StorageError):
@@ -444,7 +444,7 @@ async def test_aput_checkpoint_writes_state_and_messages_atomically(cp):
     _bind_conn(cp, conn)
 
     config = {"thread_id": "t1", "user_id": "u1"}
-    from agentflow.core.state import Message
+    from tenxgraph.core.state import Message
 
     msgs = [Message.text_message("hi", role="user", message_id="m1")]
     await cp.aput_checkpoint(config, AgentState(), msgs)
@@ -563,7 +563,7 @@ async def test_cache_write_with_no_version_uses_sentinel(cp):
 
 @pytest.mark.asyncio
 async def test_stale_write_invalidates_cache_so_thread_is_not_wedged(cp):
-    from agentflow.core.exceptions.storage_exceptions import StaleStateError
+    from tenxgraph.core.exceptions.storage_exceptions import StaleStateError
 
     conn = _mock_conn()
     conn.fetchrow = AsyncMock(side_effect=[{"user_id": "u1"}, {"v": 7}])
@@ -635,7 +635,7 @@ async def test_get_message_is_owner_scoped(cp):
 
 @pytest.mark.asyncio
 async def test_ensure_thread_exists_rejects_thread_owned_by_other_user(cp):
-    from agentflow.core.exceptions.storage_exceptions import StorageError
+    from tenxgraph.core.exceptions.storage_exceptions import StorageError
 
     conn = _mock_conn()
     # INSERT ... ON CONFLICT DO NOTHING no-ops; the thread belongs to someone else.
@@ -678,8 +678,8 @@ def test_thread_scope_joins_when_isolation_on(cp):
 
 
 def test_thread_scope_skips_join_when_isolation_off(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
     cp = PgCheckpointer(
         postgres_dsn="postgres://x",
         redis=MagicMock(),
@@ -694,8 +694,8 @@ def test_thread_scope_skips_join_when_isolation_off(monkeypatch):
 async def test_isolation_off_allows_writing_thread_owned_by_other(monkeypatch):
     # Single-tenant / no-real-identity setups must not be forced into ownership
     # errors just because a placeholder user_id differs.
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
 
     redis = MagicMock()
     redis.eval = AsyncMock(return_value=1)
@@ -718,8 +718,8 @@ async def test_isolation_off_allows_writing_thread_owned_by_other(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_isolation_off_skips_user_filter_on_messages(monkeypatch):
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
-    monkeypatch.setattr("agentflow.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
     cp = PgCheckpointer(
         postgres_dsn="postgres://x",
         redis=MagicMock(),

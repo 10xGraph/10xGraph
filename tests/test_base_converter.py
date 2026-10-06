@@ -4,9 +4,9 @@ import pytest
 from collections.abc import AsyncGenerator
 from unittest.mock import Mock, AsyncMock
 
-from agentflow.runtime.adapters.llm.base_converter import BaseConverter, ConverterType
-from agentflow.core.state import AgentState, Message
-from agentflow.runtime.publisher.events import EventModel
+from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter, ConverterType
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.runtime.publisher.events import EventModel
 
 
 class TestConverterType:
@@ -128,7 +128,7 @@ class TestBaseConverter:
                 yield Message.text_message(f"Stream 1: {response}", "assistant")
                 yield Message.text_message(f"Stream 2: {node_name}", "assistant")
                 # Can also yield EventModel
-                from agentflow.runtime.publisher.events import Event, EventType, ContentType
+                from tenxgraph.runtime.publisher.events import Event, EventType, ContentType
                 yield EventModel(
                     event=Event.STREAMING,
                     event_type=EventType.PROGRESS,

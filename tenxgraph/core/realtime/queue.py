@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
-from agentflow.core.realtime.base import INPUT_SAMPLE_RATE
+from tenxgraph.core.realtime.base import INPUT_SAMPLE_RATE
 
 
 logger = logging.getLogger(__name__)

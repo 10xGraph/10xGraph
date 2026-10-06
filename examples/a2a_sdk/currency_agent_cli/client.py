@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from agentflow.runtime.protocols import delegate_to_a2a_agent
+from tenxgraph.runtime.protocols import delegate_to_a2a_agent
 
 
 SERVER_URL = "http://localhost:10000"

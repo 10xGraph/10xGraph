@@ -8,8 +8,8 @@ history (context) for agent interactions, ensuring efficient context window usag
 import logging
 from typing import TypeVar
 
-from agentflow.core.state import Message
-from agentflow.core.state.reducers import remove_tool_messages
+from tenxgraph.core.state import Message
+from tenxgraph.core.state.reducers import remove_tool_messages
 
 from .agent_state import AgentState
 from .base_context import BaseContextManager
@@ -17,7 +17,7 @@ from .base_context import BaseContextManager
 
 S = TypeVar("S", bound=AgentState)
 
-logger = logging.getLogger("agentflow.state")
+logger = logging.getLogger("tenxgraph.state")
 
 
 class MessageContextManager(BaseContextManager[S]):

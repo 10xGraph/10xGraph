@@ -1,14 +1,14 @@
 """Import-order regression guard.
 
-``agentflow.core.graph`` imports back into ``agentflow.utils`` and
-``agentflow.storage.checkpointer``. Historically that made those modules unimportable as the
+``tenxgraph.core.graph`` imports back into ``tenxgraph.utils`` and
+``tenxgraph.storage.checkpointer``. Historically that made those modules unimportable as the
 *first* import in a fresh interpreter (``ImportError: ... partially initialized module``), because
-``agentflow.core`` eagerly pulled in ``graph``. ``graph`` is now loaded lazily (PEP 562
+``tenxgraph.core`` eagerly pulled in ``graph``. ``graph`` is now loaded lazily (PEP 562
 ``__getattr__`` in ``agentflow/core/__init__.py``) so every public entry point imports cleanly in
 any order.
 
 Each case runs in a *fresh* subprocess — importing in-process would not catch the bug once pytest
-has already loaded ``agentflow.core``.
+has already loaded ``tenxgraph.core``.
 """
 
 from __future__ import annotations
@@ -21,18 +21,18 @@ import pytest
 
 # Public entry points that must import cleanly as the very first import in a fresh interpreter.
 FIRST_IMPORTS = [
-    "import agentflow.utils",
-    "from agentflow.utils import CallbackManager, convert_messages, tool",
-    "import agentflow.storage",
-    "import agentflow.storage.checkpointer",
-    "from agentflow.storage.checkpointer import InMemoryCheckpointer, BaseCheckpointer",
-    "import agentflow.core",
-    "from agentflow.core import StateGraph, Agent, ToolNode, CompiledGraph, AgentState, Message",
-    "from agentflow.core.graph import Agent, StateGraph, ToolNode, CompiledGraph",
-    "from agentflow.core.state import AgentState, Message",
-    "import agentflow.runtime.publisher",
-    "import agentflow.qa.evaluation",
-    "import agentflow.qa.testing",
+    "import tenxgraph.utils",
+    "from tenxgraph.utils import CallbackManager, convert_messages, tool",
+    "import tenxgraph.storage",
+    "import tenxgraph.storage.checkpointer",
+    "from tenxgraph.storage.checkpointer import InMemoryCheckpointer, BaseCheckpointer",
+    "import tenxgraph.core",
+    "from tenxgraph.core import StateGraph, Agent, ToolNode, CompiledGraph, AgentState, Message",
+    "from tenxgraph.core.graph import Agent, StateGraph, ToolNode, CompiledGraph",
+    "from tenxgraph.core.state import AgentState, Message",
+    "import tenxgraph.runtime.publisher",
+    "import tenxgraph.qa.evaluation",
+    "import tenxgraph.qa.testing",
 ]
 
 
@@ -53,8 +53,8 @@ def test_importable_as_first_import(statement: str):
 def test_lazy_graph_symbol_identity():
     """The lazily-resolved aggregate symbol is the same object as the direct submodule symbol."""
     code = (
-        "from agentflow.core import StateGraph as A\n"
-        "from agentflow.core.graph import StateGraph as B\n"
+        "from tenxgraph.core import StateGraph as A\n"
+        "from tenxgraph.core.graph import StateGraph as B\n"
         "assert A is B, 'aggregate symbol is not the submodule symbol'\n"
     )
     result = subprocess.run(

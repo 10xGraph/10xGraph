@@ -15,16 +15,16 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from agentflow.core.llm.caller import call_llm
-from agentflow.qa.evaluation.token_usage import TokenUsage
+from tenxgraph.core.llm.caller import call_llm
+from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.compiled_graph import CompiledGraph
-    from agentflow.qa.evaluation.config.eval_config import UserSimulatorConfig
-    from agentflow.qa.evaluation.criteria.base import BaseCriterion
+    from tenxgraph.core.graph.compiled_graph import CompiledGraph
+    from tenxgraph.qa.evaluation.config.eval_config import UserSimulatorConfig
+    from tenxgraph.qa.evaluation.criteria.base import BaseCriterion
 
-logger = logging.getLogger("agentflow.evaluation")
+logger = logging.getLogger("tenxgraph.evaluation")
 
 USER_SIMULATOR_PROMPT = """You are simulating a user interacting with an AI assistant.
 
@@ -143,7 +143,7 @@ class UserSimulator:
 
     Example:
         ```python
-        from agentflow.qa.evaluation import (
+        from tenxgraph.qa.evaluation import (
             UserSimulator,
             ConversationScenario,
             SimulationGoalsCriterion,
@@ -218,7 +218,7 @@ class UserSimulator:
         Returns:
             SimulationResult with conversation history, outcomes, and criterion scores.
         """
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
 
         conversation: list[dict[str, str]] = []
         goals_achieved: list[str] = []
@@ -452,12 +452,12 @@ class UserSimulator:
         if not self.criteria or not conversation:
             return {}, {}, []
 
-        from agentflow.qa.evaluation.dataset.eval_set import (
+        from tenxgraph.qa.evaluation.dataset.eval_set import (
             EvalCase,
             Invocation,
             MessageContent,
         )
-        from agentflow.qa.evaluation.execution.result import ExecutionResult
+        from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
         # Build ExecutionResult — pass the full conversation so the LLM judge
         # evaluates goal achievement across all turns, not just the last message.

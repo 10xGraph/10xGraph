@@ -8,11 +8,11 @@ that use a naming convention for transparent agent-to-agent transfers.
 import logging
 from collections.abc import Callable
 
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import TextBlock
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import TextBlock
 
 
-logger = logging.getLogger("agentflow.prebuilt")
+logger = logging.getLogger("tenxgraph.prebuilt")
 
 
 def create_handoff_tool(

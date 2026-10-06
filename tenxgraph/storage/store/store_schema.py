@@ -8,7 +8,7 @@ from typing import Any
 from injectq import InjectQ
 from pydantic import BaseModel, Field, field_validator
 
-from agentflow.core.state import Message
+from tenxgraph.core.state import Message
 
 
 def _generate_memory_id() -> str:

@@ -12,7 +12,7 @@ Two activation modes are supported:
 LLM calls ``activate_skill()`` when a user request matches a skill, then
 ``read_skill_resource()`` for any bundled file it needs::
 
-    from agentflow.core.skills import SkillConfig
+    from tenxgraph.core.skills import SkillConfig
 
     agent = Agent(
         model="gpt-4o",
@@ -25,8 +25,8 @@ LLM calls ``activate_skill()`` when a user request matches a skill, then
 domain/persona.  The framework reads a state field to identify which skill to
 preload, with no catalog and no extra tool-call round-trip::
 
-    from agentflow.core.skills import SkillConfig
-    from agentflow.core.state import AgentState
+    from tenxgraph.core.skills import SkillConfig
+    from tenxgraph.core.state import AgentState
 
 
     class TenantState(AgentState):

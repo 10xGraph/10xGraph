@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.media.provider_media")
+logger = logging.getLogger("tenxgraph.media.provider_media")
 
 # Google File API inline threshold (20 MB)
 GOOGLE_INLINE_THRESHOLD = 20 * 1024 * 1024

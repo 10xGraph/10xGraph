@@ -19,18 +19,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.graph.agent import Agent
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.memory_config import (
+from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.memory_config import (
     AgentMemoryConfig,
     MemoryConfig,
     UserMemoryConfig,
 )
-from agentflow.storage.store.store_schema import MemorySearchResult, MemoryType
+from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
 
-from agentflow.core.graph.agent_internal.execution import (
+from tenxgraph.core.graph.agent_internal.execution import (
     _extract_cache_creation_tokens,
     _extract_cache_read_tokens,
     _extract_finish_reason,
@@ -1667,7 +1667,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "agentflow://media/img_1", "mime_type": "image/png"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         assert result[0]["content"][0] is resolved
@@ -1691,7 +1691,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "agentflow://media/img_g", "mime_type": "image/png"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         content = result[0]["content"][0]
@@ -1713,7 +1713,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "agentflow://media/img_fd", "mime_type": "image/png"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         content = result[0]["content"][0]
@@ -1731,7 +1731,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "agentflow://media/img_fail", "mime_type": "image/png"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         # Content unchanged on error
@@ -1749,7 +1749,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "agentflow://media/img_pfx", "mime_type": "image/png"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             await agent._resolve_media_in_messages(messages)
 
         # Model passed to resolver should not have the prefix
@@ -1769,7 +1769,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "document", "document": {"url": "agentflow://media/doc_1", "mime_type": "application/pdf"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         content = result[0]["content"][0]
@@ -1794,7 +1794,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "video", "video": {"url": "agentflow://media/vid_1", "mime_type": "video/mp4"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         content = result[0]["content"][0]
@@ -1810,7 +1810,7 @@ class TestResolveMediaInMessages:
         mock_media_store = MagicMock()
         messages = [{"role": "user", "content": "hello"}]
 
-        with patch("agentflow.core.graph.agent_internal.execution.InjectQ") as mock_injectq:
+        with patch("tenxgraph.core.graph.agent_internal.execution.InjectQ") as mock_injectq:
             instance = mock_injectq.get_instance.return_value
             instance.try_get.side_effect = lambda key: mock_media_store if key == "media_store" else None
             result = await agent._resolve_media_in_messages(messages)
@@ -1838,7 +1838,7 @@ class TestResolveMediaInMessages:
 
         messages = [{"role": "user", "content": [{"type": "document", "document": {"url": "agentflow://media/doc_fail", "mime_type": "application/pdf"}}]}]
 
-        with patch("agentflow.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
+        with patch("tenxgraph.storage.media.resolver.MediaRefResolver", return_value=mock_resolver):
             result = await agent._resolve_media_in_messages(messages)
 
         assert result[0]["content"][0]["document"]["url"] == "agentflow://media/doc_fail"
@@ -1870,10 +1870,10 @@ class TestExecute:
         agent._build_skill_prompts = MagicMock(return_value=[])
         agent._build_memory_prompts = AsyncMock(return_value=[])
 
-        with patch("agentflow.core.graph.agent_internal.execution.convert_messages", return_value=[{"role": "user", "content": "hi"}]), \
-             patch("agentflow.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
-             patch("agentflow.runtime.publisher.publish.publish_event") as mock_publish, \
-             patch("agentflow.core.graph.agent_internal.execution.ModelResponseConverter") as mock_converter:
+        with patch("tenxgraph.core.graph.agent_internal.execution.convert_messages", return_value=[{"role": "user", "content": "hi"}]), \
+             patch("tenxgraph.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event") as mock_publish, \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter") as mock_converter:
 
             mock_converter_instance = MagicMock()
             mock_converter.return_value = mock_converter_instance
@@ -1905,10 +1905,10 @@ class TestExecute:
         agent._build_skill_prompts = MagicMock(return_value=[])
         agent._build_memory_prompts = AsyncMock(return_value=[])
 
-        with patch("agentflow.core.graph.agent_internal.execution.convert_messages", return_value=[]), \
-             patch("agentflow.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
-             patch("agentflow.runtime.publisher.publish.publish_event") as mock_publish, \
-             patch("agentflow.core.graph.agent_internal.execution.ModelResponseConverter") as mock_converter:
+        with patch("tenxgraph.core.graph.agent_internal.execution.convert_messages", return_value=[]), \
+             patch("tenxgraph.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event") as mock_publish, \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter") as mock_converter:
 
             await agent.execute(state, config)
 
@@ -1936,10 +1936,10 @@ class TestExecute:
             strip_called.append(True)
             return msgs
 
-        with patch("agentflow.core.graph.agent_internal.execution.convert_messages", return_value=[]), \
-             patch("agentflow.core.graph.agent_internal.execution.strip_media_blocks", side_effect=tracking_strip), \
-             patch("agentflow.runtime.publisher.publish.publish_event"), \
-             patch("agentflow.core.graph.agent_internal.execution.ModelResponseConverter"):
+        with patch("tenxgraph.core.graph.agent_internal.execution.convert_messages", return_value=[]), \
+             patch("tenxgraph.core.graph.agent_internal.execution.strip_media_blocks", side_effect=tracking_strip), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
 
             await agent.execute(state, config)
 
@@ -1965,10 +1965,10 @@ class TestExecute:
         agent._build_skill_prompts = MagicMock(return_value=[])
         agent._build_memory_prompts = AsyncMock(return_value=[])
 
-        with patch("agentflow.core.graph.agent_internal.execution.convert_messages", return_value=[]), \
-             patch("agentflow.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
-             patch("agentflow.runtime.publisher.publish.publish_event"), \
-             patch("agentflow.core.graph.agent_internal.execution.ModelResponseConverter"):
+        with patch("tenxgraph.core.graph.agent_internal.execution.convert_messages", return_value=[]), \
+             patch("tenxgraph.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
 
             await agent.execute(state, config)
 
@@ -2143,7 +2143,7 @@ class TestAgentInit:
         assert len(agent._extra_tools) > 0
 
     def test_agent_init_defers_skills_to_named_tool_node(self, tmp_path: Path):
-        from agentflow.core.skills.models import SkillConfig
+        from tenxgraph.core.skills.models import SkillConfig
 
         skill_dir = tmp_path / "alpha"
         skill_dir.mkdir()

@@ -2,9 +2,9 @@ import random
 
 from dotenv import load_dotenv
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils.constants import END
 
 
 load_dotenv()

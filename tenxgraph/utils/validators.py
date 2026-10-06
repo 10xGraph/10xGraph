@@ -25,8 +25,8 @@ Functions:
 
 Example:
     ```python
-    from agentflow.utils.callbacks import CallbackManager
-    from agentflow.utils.validators import PromptInjectionValidator, register_default_validators
+    from tenxgraph.utils.callbacks import CallbackManager
+    from tenxgraph.utils.validators import PromptInjectionValidator, register_default_validators
 
     # Create callback manager and register default validators
     callback_manager = CallbackManager()
@@ -38,7 +38,7 @@ Example:
         async def validate(self, messages: list[Message]) -> bool:
             for msg in messages:
                 if "bad_word" in msg.text():
-                    from agentflow.utils.validators import ValidationError
+                    from tenxgraph.utils.validators import ValidationError
 
                     raise ValidationError("Bad word detected", "content_policy")
             return True
@@ -54,11 +54,11 @@ import re
 from contextlib import suppress
 from typing import Any
 
-from agentflow.core.state.message import Message
-from agentflow.utils.callbacks import BaseValidator
+from tenxgraph.core.state.message import Message
+from tenxgraph.utils.callbacks import BaseValidator
 
 
-logger = logging.getLogger("agentflow.utils")
+logger = logging.getLogger("tenxgraph.utils")
 
 
 class ValidationError(Exception):
@@ -102,8 +102,8 @@ class PromptInjectionValidator(BaseValidator):
 
     Example:
         ```python
-        from agentflow.utils.callbacks import CallbackManager
-        from agentflow.utils.validators import PromptInjectionValidator
+        from tenxgraph.utils.callbacks import CallbackManager
+        from tenxgraph.utils.validators import PromptInjectionValidator
 
         # Create callback manager and register validator
         callback_manager = CallbackManager()
@@ -386,8 +386,8 @@ class MessageContentValidator(BaseValidator):
 
     Example:
         ```python
-        from agentflow.utils.callbacks import CallbackManager
-        from agentflow.utils.validators import MessageContentValidator
+        from tenxgraph.utils.callbacks import CallbackManager
+        from tenxgraph.utils.validators import MessageContentValidator
 
         callback_manager = CallbackManager()
         validator = MessageContentValidator(allowed_roles=["user", "assistant", "system"])
@@ -456,8 +456,8 @@ def register_default_validators(callback_manager: Any, strict_mode: bool = True)
 
     Example:
         ```python
-        from agentflow.utils.validators import register_default_validators
-        from agentflow.utils.callbacks import CallbackManager
+        from tenxgraph.utils.validators import register_default_validators
+        from tenxgraph.utils.callbacks import CallbackManager
 
         # Register with custom callback manager
         my_manager = CallbackManager()

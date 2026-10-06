@@ -1,5 +1,5 @@
 [project]
-name = "10xscale-agentflow"
+name = "10xgraph"
 version = "0.10.1"
 description = "Final release under this name: the project continues as 10xGraph (pip install 10xgraph). Production-grade Python framework for building, orchestrating, and deploying multi-agent LLM systems. A simpler, batteries-included alternative to LangGraph, CrewAI, and AutoGen with graph-based workflows, durable state, native MCP support, and provider-agnostic LLM integration (OpenAI, Google GenAI, Anthropic)."
 readme = "README.md"
@@ -137,7 +137,7 @@ langsmith = [
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
 ]
 observability = [
-    "10xscale-agentflow[otel,logfire,langsmith]",
+    "10xgraph[otel,logfire,langsmith]",
 ]
 
 all_publishers = [
@@ -151,19 +151,20 @@ all_publishers = [
 # cloud-storage pulls boto3, so the resolved set is identical with or without
 # them. Verified with `uv pip compile --extra all`.
 all = [
-    "10xscale-agentflow[google-genai,openai,realtime,mcp]",
-    "10xscale-agentflow[anthropic,anthropic-vertex,anthropic-bedrock]",
-    "10xscale-agentflow[pg_checkpoint,sqlite_checkpoint]",
-    "10xscale-agentflow[qdrant,mem0]",
-    "10xscale-agentflow[all_publishers,observability]",
-    "10xscale-agentflow[images,cloud-storage,a2a_sdk]",
+    "10xgraph[google-genai,openai,realtime,mcp]",
+    "10xgraph[anthropic,anthropic-vertex,anthropic-bedrock]",
+    "10xgraph[pg_checkpoint,sqlite_checkpoint]",
+    "10xgraph[qdrant,mem0]",
+    "10xgraph[all_publishers,observability]",
+    "10xgraph[images,cloud-storage,a2a_sdk]",
 ]
 
 [tool.setuptools.packages.find]
-include = ["agentflow*"]
+include = ["tenxgraph*", "agentflow*"]
 exclude = ["normal_tests*", "tests*", "examples*", "docs*"]
 
 [tool.setuptools.package-data]
+tenxgraph = ["py.typed"]
 agentflow = ["py.typed"]
 
 
@@ -235,16 +236,16 @@ max-complexity = 10
 "scripts/*.py" = ["E402", "S603", "T201", "S101", "INP001"]
 "*/__init__.py" = ["E402", "S603", "T201", "S101"]
 "*/migrations/*.py" = ["E402", "S603", "T201", "S101"]
-"agentflow/adapters/llm/openai_converter.py" = ["PLR0912"]
-"agentflow/adapters/llm/openai_responses_converter.py" = ["PLR0912", "PLR0915"]
-"agentflow/graph/agent.py" = ["PLR0912", "PLR0913"]
-"agentflow/runtime/publisher/otel_publisher.py" = ["PLR0912"]
+"tenxgraph/adapters/llm/openai_converter.py" = ["PLR0912"]
+"tenxgraph/adapters/llm/openai_responses_converter.py" = ["PLR0912", "PLR0915"]
+"tenxgraph/graph/agent.py" = ["PLR0912", "PLR0913"]
+"tenxgraph/runtime/publisher/otel_publisher.py" = ["PLR0912"]
 # Type dispatchers: one return per supported annotation reads better as a flat table.
-"agentflow/core/graph/tool_node/schema.py" = ["PLR0911"]
-"agentflow/qa/evaluation/reporters/_html_css.py" = ["E501"]
-"agentflow/qa/evaluation/reporters/_html_js.py" = ["E501"]
-"agentflow/qa/evaluation/reporters/_html_template.py" = ["E501", "PLR0913"]
-"agentflow/qa/evaluation/reporters/_html_render.py" = ["PLR0912"]
+"tenxgraph/core/graph/tool_node/schema.py" = ["PLR0911"]
+"tenxgraph/qa/evaluation/reporters/_html_css.py" = ["E501"]
+"tenxgraph/qa/evaluation/reporters/_html_js.py" = ["E501"]
+"tenxgraph/qa/evaluation/reporters/_html_template.py" = ["E501", "PLR0913"]
+"tenxgraph/qa/evaluation/reporters/_html_render.py" = ["PLR0912"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
@@ -297,47 +298,47 @@ exclude = [
 # default -- do not add to it. Retire it module by module, cheapest first.
 [[tool.mypy.overrides]]
 module = [
-    "agentflow.core.graph.agent",
-    "agentflow.core.graph.agent_internal.execution",
-    "agentflow.core.graph.agent_internal.google",
-    "agentflow.core.graph.agent_internal.memory",
-    "agentflow.core.graph.agent_internal.openai",
-    "agentflow.core.graph.compiled_graph",
-    "agentflow.core.graph.node",
-    "agentflow.core.graph.state_graph",
-    "agentflow.core.graph.tool_node.base",
-    "agentflow.core.graph.tool_node.mcp_exec",
-    "agentflow.core.graph.tool_node.schema",
-    "agentflow.core.graph.utils.handler_utils",
-    "agentflow.core.graph.utils.invoke_handler",
-    "agentflow.core.graph.utils.invoke_node_handler",
-    "agentflow.core.graph.utils.stream_handler",
-    "agentflow.core.graph.utils.stream_node_handler",
-    "agentflow.core.graph.utils.utils",
-    "agentflow.prebuilt.tools.calculator",
-    "agentflow.prebuilt.tools.fetch",
-    "agentflow.prebuilt.tools.files",
-    "agentflow.prebuilt.tools.memory",
-    "agentflow.prebuilt.tools.search",
-    "agentflow.qa.evaluation.criteria.llm_utils",
-    "agentflow.qa.evaluation.evaluator",
-    "agentflow.qa.evaluation.quick_eval",
-    "agentflow.qa.evaluation.reporters.console",
-    "agentflow.qa.evaluation.reporters._html_render",
-    "agentflow.qa.evaluation.simulators.user_simulator",
-    "agentflow.qa.testing.quick_test",
-    "agentflow.qa.testing.test_agent",
-    "agentflow.runtime.adapters.llm.google_genai_converter",
-    "agentflow.runtime.adapters.llm.model_response_converter",
-    "agentflow.runtime.adapters.llm.openai_converter",
-    "agentflow.runtime.adapters.llm.openai_responses_converter",
-    "agentflow.runtime.publisher.publish",
-    "agentflow.storage.checkpointer.pg_checkpointer",
-    "agentflow.storage.checkpointer.sqlite_checkpointer",
-    "agentflow.storage.media.processor",
-    "agentflow.storage.store.embedding.google_embedding",
-    "agentflow.storage.store.long_term_memory",
-    "agentflow.storage.store.qdrant_store",
+    "tenxgraph.core.graph.agent",
+    "tenxgraph.core.graph.agent_internal.execution",
+    "tenxgraph.core.graph.agent_internal.google",
+    "tenxgraph.core.graph.agent_internal.memory",
+    "tenxgraph.core.graph.agent_internal.openai",
+    "tenxgraph.core.graph.compiled_graph",
+    "tenxgraph.core.graph.node",
+    "tenxgraph.core.graph.state_graph",
+    "tenxgraph.core.graph.tool_node.base",
+    "tenxgraph.core.graph.tool_node.mcp_exec",
+    "tenxgraph.core.graph.tool_node.schema",
+    "tenxgraph.core.graph.utils.handler_utils",
+    "tenxgraph.core.graph.utils.invoke_handler",
+    "tenxgraph.core.graph.utils.invoke_node_handler",
+    "tenxgraph.core.graph.utils.stream_handler",
+    "tenxgraph.core.graph.utils.stream_node_handler",
+    "tenxgraph.core.graph.utils.utils",
+    "tenxgraph.prebuilt.tools.calculator",
+    "tenxgraph.prebuilt.tools.fetch",
+    "tenxgraph.prebuilt.tools.files",
+    "tenxgraph.prebuilt.tools.memory",
+    "tenxgraph.prebuilt.tools.search",
+    "tenxgraph.qa.evaluation.criteria.llm_utils",
+    "tenxgraph.qa.evaluation.evaluator",
+    "tenxgraph.qa.evaluation.quick_eval",
+    "tenxgraph.qa.evaluation.reporters.console",
+    "tenxgraph.qa.evaluation.reporters._html_render",
+    "tenxgraph.qa.evaluation.simulators.user_simulator",
+    "tenxgraph.qa.testing.quick_test",
+    "tenxgraph.qa.testing.test_agent",
+    "tenxgraph.runtime.adapters.llm.google_genai_converter",
+    "tenxgraph.runtime.adapters.llm.model_response_converter",
+    "tenxgraph.runtime.adapters.llm.openai_converter",
+    "tenxgraph.runtime.adapters.llm.openai_responses_converter",
+    "tenxgraph.runtime.publisher.publish",
+    "tenxgraph.storage.checkpointer.pg_checkpointer",
+    "tenxgraph.storage.checkpointer.sqlite_checkpointer",
+    "tenxgraph.storage.media.processor",
+    "tenxgraph.storage.store.embedding.google_embedding",
+    "tenxgraph.storage.store.long_term_memory",
+    "tenxgraph.storage.store.qdrant_store",
 ]
 ignore_errors = true
 
@@ -365,11 +366,12 @@ norecursedirs = [
     "dist",
     "build",
     "agentflow.egg-info",
+    "10xgraph.egg-info",
     "__pycache__",
     ".venv"
 ]
 addopts = [
-    "--cov=agentflow",
+    "--cov=tenxgraph",
     # Measure branch coverage locally too, not just in CI. Without it the local
     # gate was line-only, so a branch-coverage regression only showed up in CI.
     "--cov-branch",
@@ -387,7 +389,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["agentflow"]
+source = ["tenxgraph"]
 omit = [
     "*/tests/*",
     "*/test_*",

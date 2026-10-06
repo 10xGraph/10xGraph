@@ -2,10 +2,10 @@
 
 This package provides the foundational building blocks for agent workflows:
 
-- ``agentflow.core.graph``      — graph-based workflow engine (StateGraph, Agent, ...)
-- ``agentflow.core.exceptions`` — custom exception hierarchy
-- ``agentflow.core.skills``     — dynamic skill injection for agents
-- ``agentflow.core.state``      — state management, messages, and reducers
+- ``tenxgraph.core.graph``      — graph-based workflow engine (StateGraph, Agent, ...)
+- ``tenxgraph.core.exceptions`` — custom exception hierarchy
+- ``tenxgraph.core.skills``     — dynamic skill injection for agents
+- ``tenxgraph.core.state``      — state management, messages, and reducers
 """
 
 from __future__ import annotations
@@ -32,11 +32,11 @@ from .skills import SkillConfig, SkillMeta, SkillsRegistry
 
 
 # --- Graph (lazy) ---
-# The graph engine is imported lazily to avoid an import cycle: ``agentflow.core.graph`` imports
-# back into ``agentflow.utils`` and ``agentflow.storage.checkpointer``. Importing it eagerly here
-# means that ``import agentflow.utils`` or ``import agentflow.storage.checkpointer`` *as the first
-# import* triggers ``agentflow.core`` -> ``graph`` -> back into the half-initialized module and
-# raises ImportError. Deferring graph keeps ``from agentflow.core import StateGraph`` working while
+# The graph engine is imported lazily to avoid an import cycle: ``tenxgraph.core.graph`` imports
+# back into ``tenxgraph.utils`` and ``tenxgraph.storage.checkpointer``. Importing it eagerly here
+# means that ``import tenxgraph.utils`` or ``import tenxgraph.storage.checkpointer`` *as the first
+# import* triggers ``tenxgraph.core`` -> ``graph`` -> back into the half-initialized module and
+# raises ImportError. Deferring graph keeps ``from tenxgraph.core import StateGraph`` working while
 # letting those modules be imported in any order. See tests/test_import_order.py.
 _GRAPH_EXPORTS = frozenset(
     {

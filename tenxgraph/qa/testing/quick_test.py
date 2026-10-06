@@ -6,16 +6,16 @@ Reduces test boilerplate from ~20 lines to ~3 lines with preset test scenarios.
 import logging
 from typing import Any
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import Message
-from agentflow.utils import ResponseGranularity
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import Message
+from tenxgraph.utils import ResponseGranularity
+from tenxgraph.utils.constants import END
 
 from .test_agent import TestAgent
 from .test_result import TestResult
 
 
-logger = logging.getLogger("agentflow.testing")
+logger = logging.getLogger("tenxgraph.testing")
 
 
 class QuickTest:
@@ -182,7 +182,7 @@ class QuickTest:
         Returns:
             TestResult with tool call tracking
         """
-        from agentflow.core.graph import ToolNode
+        from tenxgraph.core.graph import ToolNode
 
         # Create mock tools
         tool_funcs = []

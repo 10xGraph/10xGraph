@@ -36,7 +36,7 @@ from .models import SkillDiagnostic, SkillMeta
 from .validation import SKILL_FILENAME, validate_frontmatter
 
 
-logger = logging.getLogger("agentflow.skills.loader")
+logger = logging.getLogger("tenxgraph.skills.loader")
 
 # Directory names never scanned for skills or listed as bundled files.
 _IGNORED_DIRS = frozenset({"node_modules", "__pycache__"})

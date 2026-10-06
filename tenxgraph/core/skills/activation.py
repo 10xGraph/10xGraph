@@ -20,8 +20,8 @@ from collections.abc import Callable
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
 
-from agentflow.core.graph.tool_node.constants import SKILL_TOOL_ATTR
-from agentflow.core.state import AgentState, ToolResult
+from tenxgraph.core.graph.tool_node.constants import SKILL_TOOL_ATTR
+from tenxgraph.core.state import AgentState, ToolResult
 
 from .loader import SkillResourceError
 
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from .registry import SkillsRegistry
 
 
-logger = logging.getLogger("agentflow.skills.activation")
+logger = logging.getLogger("tenxgraph.skills.activation")
 
 ACTIVATE_SKILL_TOOL = "activate_skill"
 READ_SKILL_RESOURCE_TOOL = "read_skill_resource"

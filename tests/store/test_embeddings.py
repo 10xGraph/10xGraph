@@ -9,8 +9,8 @@ import os
 from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
-from agentflow.storage.store.embedding.base_embedding import BaseEmbedding
-from agentflow.storage.store.embedding.openai_embedding import OpenAIEmbedding
+from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding
+from tenxgraph.storage.store.embedding.openai_embedding import OpenAIEmbedding
 
 
 class MockEmbedding(BaseEmbedding):
@@ -118,14 +118,14 @@ class TestOpenAIEmbedding:
     
     def test_import_error_when_openai_not_available(self):
         """Test that ImportError is raised when OpenAI is not available."""
-        with patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', False):
+        with patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', False):
             with pytest.raises(ImportError) as exc_info:
                 OpenAIEmbedding()
             
             assert "openai" in str(exc_info.value).lower()
             assert "pip install openai" in str(exc_info.value)
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     def test_initialization_with_api_key_parameter(self, mock_openai_class):
         """Test initialization with API key provided as parameter."""
@@ -139,7 +139,7 @@ class TestOpenAIEmbedding:
         assert embedding.client == mock_client
         mock_openai_class.assert_called_once_with(api_key="test-key")
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     def test_initialization_with_environment_variable(self, mock_openai_class):
         """Test initialization with API key from environment variable."""
@@ -151,7 +151,7 @@ class TestOpenAIEmbedding:
             
             assert embedding.api_key == "env-test-key"
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     def test_initialization_with_custom_model(self, mock_openai_class):
         """Test initialization with custom model."""
@@ -165,7 +165,7 @@ class TestOpenAIEmbedding:
         
         assert embedding.model == "text-embedding-3-large"
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     def test_initialization_missing_api_key(self):
         """Test that ValueError is raised when API key is missing."""
         with patch.dict(os.environ, {}, clear=True):
@@ -174,7 +174,7 @@ class TestOpenAIEmbedding:
             
             assert "API key must be provided" in str(exc_info.value)
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     @pytest.mark.asyncio
     async def test_aembed_batch_success(self, mock_openai_class):
@@ -205,7 +205,7 @@ class TestOpenAIEmbedding:
             model="text-embedding-3-small"
         )
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     @pytest.mark.asyncio
     async def test_aembed_single_success(self, mock_openai_class):
@@ -232,7 +232,7 @@ class TestOpenAIEmbedding:
             model="text-embedding-3-small"
         )
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     @pytest.mark.asyncio
     async def test_aembed_empty_response(self, mock_openai_class):
@@ -251,7 +251,7 @@ class TestOpenAIEmbedding:
         
         assert result == []
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     @pytest.mark.asyncio
     async def test_aembed_batch_openai_error(self, mock_openai_class):
@@ -273,7 +273,7 @@ class TestOpenAIEmbedding:
         assert "OpenAI API error" in str(exc_info.value)
         assert "Rate limit exceeded" in str(exc_info.value)
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     @pytest.mark.asyncio
     async def test_aembed_openai_error(self, mock_openai_class):
@@ -295,7 +295,7 @@ class TestOpenAIEmbedding:
         assert "OpenAI API error" in str(exc_info.value)
         assert "Invalid model" in str(exc_info.value)
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     def test_dimension_known_models(self, mock_openai_class):
         """Test dimension property for known models."""
@@ -314,7 +314,7 @@ class TestOpenAIEmbedding:
             embedding = OpenAIEmbedding(model=model, api_key="test-key")
             assert embedding.dimension == expected_dim
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     def test_dimension_unknown_model(self, mock_openai_class):
         """Test dimension property raises error for unknown models."""
@@ -329,7 +329,7 @@ class TestOpenAIEmbedding:
         assert "Unknown model 'unknown-model'" in str(exc_info.value)
         assert "Cannot determine dimension" in str(exc_info.value)
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
     def test_sync_methods_work(self, mock_openai_class):
         """Test that sync wrapper methods work correctly."""
@@ -382,7 +382,7 @@ class TestEmbeddingIntegration:
         assert hasattr(embedding, 'embed')
         assert hasattr(embedding, 'embed_batch')
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     def test_openai_embedding_implements_base_correctly(self):
         """Test that OpenAIEmbedding properly implements BaseEmbedding."""
         
@@ -461,7 +461,7 @@ class TestEmbeddingEdgeCases:
         assert all(isinstance(emb, list) for emb in result)
         assert all(all(isinstance(x, float) for x in emb) for emb in result)
     
-    @patch('agentflow.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
+    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     def test_parameter_precedence(self):
         """Test that parameter API key takes precedence over environment variable."""
         with patch.dict(os.environ, {'api_key': 'env-key'}):

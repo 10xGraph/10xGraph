@@ -10,8 +10,8 @@ from abc import ABC
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.runtime.publisher.events import EventModel, Event, EventType, ContentType
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.events import EventModel, Event, EventType, ContentType
 
 
 class MockPublisher(BasePublisher):

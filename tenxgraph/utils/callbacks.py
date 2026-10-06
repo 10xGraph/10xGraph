@@ -30,14 +30,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
 
-from agentflow.core.state.message import Message
+from tenxgraph.core.state.message import Message
 
 
 if TYPE_CHECKING:
-    from agentflow.core.state import AgentState
+    from tenxgraph.core.state import AgentState
 
 
-logger = logging.getLogger("agentflow.utils")
+logger = logging.getLogger("tenxgraph.utils")
 
 StateT = TypeVar("StateT", bound="AgentState")
 
@@ -60,7 +60,7 @@ class BaseValidator(ABC):
 
 
         # Register with callback manager
-        from agentflow.utils.callbacks import CallbackManager
+        from tenxgraph.utils.callbacks import CallbackManager
 
         callback_manager = CallbackManager()
         callback_manager.register_input_validator(MyValidator())
@@ -578,7 +578,7 @@ class CallbackManager:
 
         Example:
             ```python
-            from agentflow.utils.validators import PromptInjectionValidator
+            from tenxgraph.utils.validators import PromptInjectionValidator
 
             callback_manager = CallbackManager()
             validator = PromptInjectionValidator()
@@ -618,13 +618,13 @@ class CallbackManager:
                 await validator.validate(messages)
         except Exception as e:
             if config:
-                from agentflow.runtime.publisher.events import (
+                from tenxgraph.runtime.publisher.events import (
                     ContentType,
                     Event,
                     EventModel,
                     EventType,
                 )
-                from agentflow.runtime.publisher.publish import publish_event
+                from tenxgraph.runtime.publisher.publish import publish_event
 
                 publish_event(
                     EventModel.default(
@@ -695,13 +695,13 @@ class CallbackManager:
                     e,
                 )
 
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(
@@ -736,13 +736,13 @@ class CallbackManager:
                     e,
                 )
 
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(
@@ -784,13 +784,13 @@ class CallbackManager:
                     hook.__class__.__name__,
                     e,
                 )
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(
@@ -827,13 +827,13 @@ class CallbackManager:
                     hook.__class__.__name__,
                     e,
                 )
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(
@@ -868,13 +868,13 @@ class CallbackManager:
                     hook.__class__.__name__,
                     e,
                 )
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(
@@ -913,13 +913,13 @@ class CallbackManager:
                     hook.__class__.__name__,
                     e,
                 )
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(
@@ -954,13 +954,13 @@ class CallbackManager:
                     hook.__class__.__name__,
                     e,
                 )
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         publish_event(
             EventModel.default(

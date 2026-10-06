@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentflow.core.state.message import generate_id
+from tenxgraph.core.state.message import generate_id
 
 
 def _mock_iq(id_type: str = "string", generated_id=None) -> MagicMock:
@@ -30,7 +30,7 @@ def _mock_iq(id_type: str = "string", generated_id=None) -> MagicMock:
 def _patch(id_type: str = "string", generated_id=None):
     """Patch InjectQ.get_instance() on the current state.message module."""
     return patch(
-        "agentflow.core.state.message.InjectQ.get_instance",
+        "tenxgraph.core.state.message.InjectQ.get_instance",
         return_value=_mock_iq(id_type=id_type, generated_id=generated_id),
     )
 

@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from agentflow.storage.checkpointer import BaseCheckpointer, InMemoryCheckpointer
-from agentflow.core.exceptions import NodeError
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, ExecutionStatus, Message
-from agentflow.utils import END
+from tenxgraph.storage.checkpointer import BaseCheckpointer, InMemoryCheckpointer
+from tenxgraph.core.exceptions import NodeError
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.utils import END
 
 
 class FailingCheckpointer(InMemoryCheckpointer):
@@ -269,7 +269,7 @@ class TestConcurrentExecutionResilience:
         
         # Run multiple threads concurrently
         import asyncio
-        from agentflow.utils import ResponseGranularity
+        from tenxgraph.utils import ResponseGranularity
         
         async def run_thread(thread_id: str):
             return await compiled.ainvoke(
@@ -358,7 +358,7 @@ class TestStateConsistencyUnderFailures:
         
         thread_id = "test_state_consistency"
         
-        from agentflow.utils import ResponseGranularity
+        from tenxgraph.utils import ResponseGranularity
         
         # First run: execute node1 successfully
         result1 = await compiled.ainvoke(

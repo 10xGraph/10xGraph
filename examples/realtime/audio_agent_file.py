@@ -6,7 +6,7 @@ output transcripts plus any tool calls. It is the headless counterpart to
 ``audio_agent_mic.py`` and is the easiest way to sanity-check your setup.
 
 Setup
-    pip install "10xscale-agentflow[realtime]"
+    pip install "10xgraph[realtime]"
     export GEMINI_API_KEY=...
     # optionally override the model (see README for valid Gemini Live models):
     export GEMINI_LIVE_MODEL=gemini-live-2.5-flash-preview
@@ -24,9 +24,9 @@ import wave
 
 from dotenv import find_dotenv, load_dotenv
 
-from agentflow.core.realtime.base import OUTPUT_SAMPLE_RATE, RealtimeConfig
-from agentflow.core.realtime.queue import LiveInputQueue
-from agentflow.prebuilt.agent import AudioAgent
+from tenxgraph.core.realtime.base import OUTPUT_SAMPLE_RATE, RealtimeConfig
+from tenxgraph.core.realtime.queue import LiveInputQueue
+from tenxgraph.prebuilt.agent import AudioAgent
 
 
 # Load .env reliably regardless of the launch directory.

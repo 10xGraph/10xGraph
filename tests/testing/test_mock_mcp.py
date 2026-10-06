@@ -3,7 +3,7 @@
 import pytest
 import pytest_asyncio
 
-from agentflow.qa.testing.mock_mcp import MockMCPClient
+from tenxgraph.qa.testing.mock_mcp import MockMCPClient
 
 
 class TestMockMCPClientInit:

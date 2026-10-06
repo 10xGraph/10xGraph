@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from agentflow.qa.evaluation.dataset.eval_set import EvalCase, EvalSet, ToolCall
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet, ToolCall
 
 
 class EvalSetBuilder:

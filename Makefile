@@ -21,7 +21,7 @@ test:
 	uv run pytest -v
 
 test-cov:
-	uv run pytest --cov=agentflow --cov-report=html --cov-report=term-missing --cov-report=xml -v
+	uv run pytest --cov=tenxgraph --cov-report=html --cov-report=term-missing --cov-report=xml -v
 
 
 

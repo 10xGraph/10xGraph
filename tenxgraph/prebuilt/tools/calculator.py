@@ -8,7 +8,7 @@ import math
 import operator
 from typing import Any
 
-from agentflow.utils.decorators import tool
+from tenxgraph.utils.decorators import tool
 
 
 _BINARY_OPERATORS: dict[type[ast.operator], Any] = {

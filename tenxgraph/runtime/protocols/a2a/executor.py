@@ -23,15 +23,15 @@
 # import logging
 # from typing import TYPE_CHECKING, Any
 
-# from agentflow.core.state.message import Message as AFMessage
-# from agentflow.core.state.stream_chunks import StreamEvent
-# from agentflow.utils.constants import ResponseGranularity
+# from tenxgraph.core.state.message import Message as AFMessage
+# from tenxgraph.core.state.stream_chunks import StreamEvent
+# from tenxgraph.utils.constants import ResponseGranularity
 
 # from ._optional import missing_a2a_sdk_error
 
 
 # if TYPE_CHECKING:
-#     from agentflow.core.graph.compiled_graph import CompiledGraph
+#     from tenxgraph.core.graph.compiled_graph import CompiledGraph
 
 
 # try:
@@ -52,7 +52,7 @@
 # AgentExecutor = _AgentExecutor
 
 
-# logger = logging.getLogger("agentflow.a2a")
+# logger = logging.getLogger("tenxgraph.a2a")
 
 
 # class AgentFlowExecutor(AgentExecutor):

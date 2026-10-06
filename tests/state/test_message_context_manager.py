@@ -1,8 +1,8 @@
 import pytest
-from agentflow.core.state.message_context_manager import MessageContextManager
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.message_context_manager import MessageContextManager
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
 
 @pytest.fixture
 def system_msg():

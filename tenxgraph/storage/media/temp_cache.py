@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.media.temp_cache")
+logger = logging.getLogger("tenxgraph.media.temp_cache")
 
 # Default TTL for temporary cached media (24 hours)
 DEFAULT_TTL_SECONDS = 24 * 60 * 60

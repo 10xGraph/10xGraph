@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from agentflow.core.llm.client_factory import (
+from tenxgraph.core.llm.client_factory import (
     create_llm_client,
     detect_provider,
     resolve_provider_and_model,
@@ -20,7 +20,7 @@ from .constants import (
 )
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 class _ProviderAgentLike(Protocol):

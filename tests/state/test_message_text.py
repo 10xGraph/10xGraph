@@ -1,5 +1,5 @@
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import TextBlock
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import TextBlock
 
 
 def test_text_extracts_from_mixed_block_shapes():

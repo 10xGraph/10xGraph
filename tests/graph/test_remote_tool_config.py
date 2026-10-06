@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from agentflow.core.graph import CompiledGraph, Node, RemoteToolConfig, ToolNode
+from tenxgraph.core.graph import CompiledGraph, Node, RemoteToolConfig, ToolNode
 
 
 def _compiled_with_tool_nodes(*names: str) -> CompiledGraph:

@@ -6,7 +6,7 @@ All span dispatch logic is inherited from ``OtelPublisher``.
 
 Usage::
 
-    from agentflow.runtime.publisher import LogfirePublisher
+    from tenxgraph.runtime.publisher import LogfirePublisher
 
     publisher = LogfirePublisher(service_name="my-agent", level=ObservabilityLevel.FULL)
     graph._publisher = publisher
@@ -14,11 +14,11 @@ Usage::
 
 Or use the convenience helper which does the same in one call::
 
-    from agentflow.runtime.publisher import setup_logfire
+    from tenxgraph.runtime.publisher import setup_logfire
 
     setup_logfire(graph, service_name="my-agent")
 
-Requires: pip install '10xscale-agentflow[logfire]'
+Requires: pip install '10xgraph[logfire]'
 """
 
 from __future__ import annotations

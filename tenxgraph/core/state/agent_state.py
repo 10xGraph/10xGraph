@@ -11,7 +11,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from agentflow.utils.constants import START
+from tenxgraph.utils.constants import START
 
 from .execution_state import ExecutionState as ExecMeta
 from .message import Message
@@ -20,7 +20,7 @@ from .reducers import add_messages
 
 # Generic type variable for state subclassing
 
-logger = logging.getLogger("agentflow.state")
+logger = logging.getLogger("tenxgraph.state")
 
 
 class AgentState(BaseModel):

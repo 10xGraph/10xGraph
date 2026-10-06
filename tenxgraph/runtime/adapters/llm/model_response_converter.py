@@ -9,10 +9,10 @@ from .base_converter import BaseConverter
 
 
 if TYPE_CHECKING:
-    from agentflow.core.state.message import Message
+    from tenxgraph.core.state.message import Message
 
 
-logger = logging.getLogger("agentflow.adapters")
+logger = logging.getLogger("tenxgraph.adapters")
 
 
 class ModelResponseConverter:

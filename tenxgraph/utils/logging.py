@@ -21,7 +21,7 @@ User Configuration Example:
         import logging
 
         # Configure the agentflow logger
-        logger = logging.getLogger("agentflow")
+        logger = logging.getLogger("tenxgraph")
         logger.setLevel(logging.DEBUG)
 
         # Add a handler
@@ -48,7 +48,7 @@ from collections.abc import Callable
 
 
 # Create the main agentflow logger
-logger = logging.getLogger("agentflow")
+logger = logging.getLogger("tenxgraph")
 
 # Add NullHandler by default to prevent "No handlers found" warnings
 # Users can configure their own handlers as needed
@@ -144,7 +144,7 @@ class SecretRedactionFilter(logging.Filter):
         return True
 
 
-def install_secret_redaction(logger_name: str = "agentflow") -> SecretRedactionFilter:
+def install_secret_redaction(logger_name: str = "tenxgraph") -> SecretRedactionFilter:
     """Attach a :class:`SecretRedactionFilter` to ``logger_name`` and its handlers.
 
     Call this *after* configuring your logging handlers so the filter covers the
@@ -310,7 +310,7 @@ def setup_structured_logging(
     level: int = logging.INFO,
     json_format: bool = True,
     redact_secrets: bool = True,
-    logger_name: str = "agentflow",
+    logger_name: str = "tenxgraph",
 ) -> logging.Handler:
     """Configure Agentflow logging for production: correlated and queryable.
 

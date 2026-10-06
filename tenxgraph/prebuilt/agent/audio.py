@@ -1,7 +1,7 @@
 """AudioAgent -- prebuilt realtime (audio-to-audio) agent, React-style builder.
 
-Mirrors :class:`~agentflow.prebuilt.agent.react.ReactAgent`'s construction surface but
-wraps a :class:`~agentflow.core.realtime.live_agent.LiveAgent` as the graph root. The
+Mirrors :class:`~tenxgraph.prebuilt.agent.react.ReactAgent`'s construction surface but
+wraps a :class:`~tenxgraph.core.realtime.live_agent.LiveAgent` as the graph root. The
 compiled graph is driven by ``CompiledGraph.arealtime`` (a separate runtime), not
 ``invoke``/``stream``. No sub-agents / handoff are wired in v1 (a handoff tool is just a
 tool, so the door stays open).
@@ -10,21 +10,21 @@ tool, so the door stays open).
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.graph.state_graph import StateGraph
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.realtime.base import RealtimeClient, RealtimeConfig
-from agentflow.core.realtime.live_agent import LiveAgent
-from agentflow.core.skills.models import SkillConfig
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.memory_config import MemoryConfig
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.utils.constants import END
-from agentflow.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.graph.state_graph import StateGraph
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.realtime.base import RealtimeClient, RealtimeConfig
+from tenxgraph.core.realtime.live_agent import LiveAgent
+from tenxgraph.core.skills.models import SkillConfig
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.memory_config import MemoryConfig
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
 class AudioAgent[StateT: AgentState]:

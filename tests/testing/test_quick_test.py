@@ -3,8 +3,8 @@
 import uuid
 import pytest
 
-from agentflow.qa.testing.quick_test import QuickTest
-from agentflow.qa.testing import TestAgent
+from tenxgraph.qa.testing.quick_test import QuickTest
+from tenxgraph.qa.testing import TestAgent
 
 
 class TestQuickTestSingleTurn:
@@ -177,7 +177,7 @@ class TestQuickTestCustom:
     @pytest.mark.asyncio
     async def test_custom_with_graph_setup(self):
         """Test custom with a graph_setup callback."""
-        from agentflow.utils.constants import END
+        from tenxgraph.utils.constants import END
 
         agent = TestAgent(responses=["Modified graph response"])
 
@@ -214,21 +214,21 @@ class TestQuickTestExtractResponse:
 
     def test_extract_response_no_assistant(self):
         """Test extract response with no assistant messages."""
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
         msg = Message.text_message("Hello", role="user")
         result = QuickTest._extract_response({"messages": [msg]})
         assert result == ""
 
     def test_extract_response_with_assistant(self):
         """Test extract response with assistant message."""
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
         msg = Message.text_message("Hello user", role="assistant")
         result = QuickTest._extract_response({"messages": [msg]})
         assert result == "Hello user"
 
     def test_extract_response_last_assistant(self):
         """Test extract response returns last assistant message."""
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
         msgs = [
             Message.text_message("user input", role="user"),
             Message.text_message("first response", role="assistant"),
@@ -258,8 +258,8 @@ class TestQuickTestExtractResponse:
         """Test multi_turn fallback when state context is not present."""
         # We can mock compiled.ainvoke to return a dict without state context
         # to hit line 150 of quick_test.py
-        from agentflow.core.graph.compiled_graph import CompiledGraph
-        from agentflow.core.state import Message
+        from tenxgraph.core.graph.compiled_graph import CompiledGraph
+        from tenxgraph.core.state import Message
         from unittest.mock import AsyncMock, MagicMock, patch
 
         mock_compiled = MagicMock(spec=CompiledGraph)
@@ -267,7 +267,7 @@ class TestQuickTestExtractResponse:
             "messages": [Message.text_message("User message", role="user"), Message.text_message("Response", role="assistant")]
         })
 
-        with patch("agentflow.core.graph.StateGraph.compile", return_value=mock_compiled):
+        with patch("tenxgraph.core.graph.StateGraph.compile", return_value=mock_compiled):
             result = await QuickTest.multi_turn(
                 conversation=[("User message", "Response")]
             )

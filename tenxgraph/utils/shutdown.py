@@ -20,7 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.utils")
+logger = logging.getLogger("tenxgraph.utils")
 
 # Windows error code for invalid handle
 WINDOWS_INVALID_HANDLE_ERROR = 6

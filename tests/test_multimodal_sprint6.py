@@ -6,9 +6,9 @@ import io
 
 import pytest
 
-from agentflow.storage.media.config import MultimodalConfig
-from agentflow.storage.media.processor import MediaProcessor
-from agentflow.core.state.message_block import ImageBlock, MediaRef
+from tenxgraph.storage.media.config import MultimodalConfig
+from tenxgraph.storage.media.processor import MediaProcessor
+from tenxgraph.core.state.message_block import ImageBlock, MediaRef
 
 
 # ---------------------------------------------------------------------------
@@ -268,31 +268,31 @@ class TestMagicBytesValidation:
     """Test file type validation via magic bytes (not just extension)."""
 
     def test_valid_png_magic_bytes(self):
-        from agentflow.storage.media.security import validate_magic_bytes
+        from tenxgraph.storage.media.security import validate_magic_bytes
 
         raw = _make_image_bytes(10, 10, fmt="PNG")
         assert validate_magic_bytes(raw, "image/png") is True
 
     def test_valid_jpeg_magic_bytes(self):
-        from agentflow.storage.media.security import validate_magic_bytes
+        from tenxgraph.storage.media.security import validate_magic_bytes
 
         raw = _make_image_bytes(10, 10, fmt="JPEG")
         assert validate_magic_bytes(raw, "image/jpeg") is True
 
     def test_mismatched_magic_bytes(self):
-        from agentflow.storage.media.security import validate_magic_bytes
+        from tenxgraph.storage.media.security import validate_magic_bytes
 
         raw = _make_image_bytes(10, 10, fmt="PNG")
         # Claim it's JPEG but it's actually PNG
         assert validate_magic_bytes(raw, "image/jpeg") is False
 
     def test_unknown_mime_type_passes(self):
-        from agentflow.storage.media.security import validate_magic_bytes
+        from tenxgraph.storage.media.security import validate_magic_bytes
 
         assert validate_magic_bytes(b"some data", "application/octet-stream") is True
 
     def test_empty_data_fails(self):
-        from agentflow.storage.media.security import validate_magic_bytes
+        from tenxgraph.storage.media.security import validate_magic_bytes
 
         assert validate_magic_bytes(b"", "image/png") is False
 
@@ -301,38 +301,38 @@ class TestFilenameSanitization:
     """Test filename sanitization."""
 
     def test_sanitize_normal_filename(self):
-        from agentflow.storage.media.security import sanitize_filename
+        from tenxgraph.storage.media.security import sanitize_filename
 
         assert sanitize_filename("photo.jpg") == "photo.jpg"
 
     def test_sanitize_path_traversal(self):
-        from agentflow.storage.media.security import sanitize_filename
+        from tenxgraph.storage.media.security import sanitize_filename
 
         result = sanitize_filename("../../../etc/passwd")
         assert ".." not in result
         assert "/" not in result
 
     def test_sanitize_null_bytes(self):
-        from agentflow.storage.media.security import sanitize_filename
+        from tenxgraph.storage.media.security import sanitize_filename
 
         result = sanitize_filename("image\x00.jpg")
         assert "\x00" not in result
 
     def test_sanitize_empty_string(self):
-        from agentflow.storage.media.security import sanitize_filename
+        from tenxgraph.storage.media.security import sanitize_filename
 
         result = sanitize_filename("")
         assert result == "unnamed"
 
     def test_sanitize_long_filename(self):
-        from agentflow.storage.media.security import sanitize_filename
+        from tenxgraph.storage.media.security import sanitize_filename
 
         long_name = "a" * 300 + ".pdf"
         result = sanitize_filename(long_name)
         assert len(result) <= 255
 
     def test_sanitize_special_characters(self):
-        from agentflow.storage.media.security import sanitize_filename
+        from tenxgraph.storage.media.security import sanitize_filename
 
         result = sanitize_filename("my file (1) [copy].jpg")
         assert result  # Should not be empty
@@ -342,12 +342,12 @@ class TestFileSizeEnforcement:
     """Test max file size enforcement."""
 
     def test_enforce_size_passes(self):
-        from agentflow.storage.media.security import enforce_file_size
+        from tenxgraph.storage.media.security import enforce_file_size
 
         enforce_file_size(b"x" * 1000, max_mb=1.0)  # 1000 bytes < 1MB
 
     def test_enforce_size_rejects_oversized(self):
-        from agentflow.storage.media.security import enforce_file_size
+        from tenxgraph.storage.media.security import enforce_file_size
 
         with pytest.raises(ValueError, match="exceeds maximum"):
             enforce_file_size(b"x" * (2 * 1024 * 1024), max_mb=1.0)
@@ -362,7 +362,7 @@ class TestProviderMediaCache:
     """Test the content-addressed provider media cache."""
 
     def test_content_key_deterministic(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         data = b"hello world"
@@ -372,26 +372,26 @@ class TestProviderMediaCache:
         assert len(key1) == 64  # SHA-256 hex digest
 
     def test_different_data_different_keys(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         assert cache.content_key(b"aaa") != cache.content_key(b"bbb")
 
     def test_put_and_get(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         cache.put("google", "abc123", {"uri": "gs://bucket/abc123"})
         assert cache.get("google", "abc123") == {"uri": "gs://bucket/abc123"}
 
     def test_get_miss_returns_none(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         assert cache.get("google", "nonexistent") is None
 
     def test_separate_providers(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         cache.put("google", "key1", "google_ref")
@@ -400,7 +400,7 @@ class TestProviderMediaCache:
         assert cache.get("openai", "key1") == "openai_ref"
 
     def test_eviction_at_capacity(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache(max_entries=3)
         cache.put("google", "a", 1)
@@ -412,7 +412,7 @@ class TestProviderMediaCache:
         assert cache.get("google", "d") == 4
 
     def test_clear_provider(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         cache.put("google", "k1", "v1")
@@ -422,7 +422,7 @@ class TestProviderMediaCache:
         assert cache.get("openai", "k2") == "v2"
 
     def test_clear_all(self):
-        from agentflow.storage.media.provider_media import ProviderMediaCache
+        from tenxgraph.storage.media.provider_media import ProviderMediaCache
 
         cache = ProviderMediaCache()
         cache.put("google", "k1", "v1")
@@ -436,17 +436,17 @@ class TestGoogleThresholdHelper:
     """Test Google File API threshold helpers."""
 
     def test_small_file_below_threshold(self):
-        from agentflow.storage.media.provider_media import should_use_google_file_api
+        from tenxgraph.storage.media.provider_media import should_use_google_file_api
 
         assert should_use_google_file_api(1024) is False
 
     def test_large_file_above_threshold(self):
-        from agentflow.storage.media.provider_media import should_use_google_file_api
+        from tenxgraph.storage.media.provider_media import should_use_google_file_api
 
         assert should_use_google_file_api(25 * 1024 * 1024) is True
 
     def test_exactly_at_threshold(self):
-        from agentflow.storage.media.provider_media import (
+        from tenxgraph.storage.media.provider_media import (
             GOOGLE_INLINE_THRESHOLD,
             should_use_google_file_api,
         )
@@ -459,21 +459,21 @@ class TestOpenAIFileHelpers:
     """Test OpenAI file attachment helper functions."""
 
     def test_create_file_search_tool(self):
-        from agentflow.storage.media.provider_media import create_openai_file_search_tool
+        from tenxgraph.storage.media.provider_media import create_openai_file_search_tool
 
         tool = create_openai_file_search_tool(["file-abc123"])
         assert tool["type"] == "file_search"
         assert "file_search" in tool
 
     def test_create_file_attachment(self):
-        from agentflow.storage.media.provider_media import create_openai_file_attachment
+        from tenxgraph.storage.media.provider_media import create_openai_file_attachment
 
         att = create_openai_file_attachment("file-abc123")
         assert att["file_id"] == "file-abc123"
         assert att["tools"][0]["type"] == "file_search"
 
     def test_create_file_attachment_custom_tools(self):
-        from agentflow.storage.media.provider_media import create_openai_file_attachment
+        from tenxgraph.storage.media.provider_media import create_openai_file_attachment
 
         att = create_openai_file_attachment("file-abc123", tools=["code_interpreter"])
         assert att["tools"][0]["type"] == "code_interpreter"
@@ -489,9 +489,9 @@ class TestStreamingMultimodalSupport:
 
     def test_stream_chunk_can_hold_multimodal_message(self):
         """StreamChunk.message can carry messages with image blocks."""
-        from agentflow.core.state.message import Message
-        from agentflow.core.state.message_block import ImageBlock, MediaRef, TextBlock
-        from agentflow.core.state.stream_chunks import StreamChunk
+        from tenxgraph.core.state.message import Message
+        from tenxgraph.core.state.message_block import ImageBlock, MediaRef, TextBlock
+        from tenxgraph.core.state.stream_chunks import StreamChunk
 
         msg = Message(
             role="assistant",
@@ -507,9 +507,9 @@ class TestStreamingMultimodalSupport:
 
     def test_stream_chunk_serialization_with_image(self):
         """StreamChunk with image block serializes and deserializes correctly."""
-        from agentflow.core.state.message import Message
-        from agentflow.core.state.message_block import ImageBlock, MediaRef, TextBlock
-        from agentflow.core.state.stream_chunks import StreamChunk
+        from tenxgraph.core.state.message import Message
+        from tenxgraph.core.state.message_block import ImageBlock, MediaRef, TextBlock
+        from tenxgraph.core.state.stream_chunks import StreamChunk
 
         msg = Message(
             role="assistant",
@@ -537,8 +537,8 @@ class TestStreamingMultimodalSupport:
 
     def test_converter_content_blocks_include_images(self):
         """Verify the converter's _build_content produces image_url parts."""
-        from agentflow.core.state.message_block import ImageBlock, MediaRef, TextBlock
-        from agentflow.utils.converter import _build_content
+        from tenxgraph.core.state.message_block import ImageBlock, MediaRef, TextBlock
+        from tenxgraph.utils.converter import _build_content
 
         blocks = [
             TextBlock(text="Look at this:"),

@@ -17,9 +17,9 @@ from uuid import UUID
 import pytest
 from pydantic import BaseModel, Field
 
-from agentflow.core.graph import ToolNode
-from agentflow.core.graph.tool_node import UnsupportedToolParameterError
-from agentflow.utils import tool
+from tenxgraph.core.graph import ToolNode
+from tenxgraph.core.graph.tool_node import UnsupportedToolParameterError
+from tenxgraph.utils import tool
 
 
 class Priority(str, enum.Enum):

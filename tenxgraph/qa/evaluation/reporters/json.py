@@ -10,11 +10,11 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agentflow.qa.evaluation.reporters.base import BaseReporter
+from tenxgraph.qa.evaluation.reporters.base import BaseReporter
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.eval_result import EvalReport
+    from tenxgraph.qa.evaluation.eval_result import EvalReport
 
 
 class JSONReporter(BaseReporter):
@@ -209,7 +209,7 @@ class JUnitXMLReporter(BaseReporter):
         import json
         import xml.etree.ElementTree as ET
 
-        from agentflow.qa.evaluation.reporters._utils import format_timestamp
+        from tenxgraph.qa.evaluation.reporters._utils import format_timestamp
 
         # Create root element
         testsuite = ET.Element("testsuite")

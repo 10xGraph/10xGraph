@@ -12,10 +12,10 @@ from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any
 
-from agentflow.utils import metrics
+from tenxgraph.utils import metrics
 
 
-logger = logging.getLogger("agentflow.utils")
+logger = logging.getLogger("tenxgraph.utils")
 
 # Cap on in-flight background tasks (publisher emits, mostly).
 #

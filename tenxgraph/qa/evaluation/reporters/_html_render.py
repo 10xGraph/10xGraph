@@ -10,7 +10,7 @@ import html as _html
 import json as _json
 from typing import TYPE_CHECKING, Any
 
-from agentflow.qa.evaluation.reporters._utils import (
+from tenxgraph.qa.evaluation.reporters._utils import (
     case_display_name,
     case_status_info,
     format_tool_calls,
@@ -18,7 +18,7 @@ from agentflow.qa.evaluation.reporters._utils import (
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.eval_result import EvalCaseResult
+    from tenxgraph.qa.evaluation.eval_result import EvalCaseResult
 
 
 # ── Score bar colour (hue: 0 = red  →  120 = green) ─────────────────────────

@@ -4,7 +4,7 @@ Batches run asynchronously at reduced cost and are a poor fit for the graph
 execution model (a graph run is interactive and stateful; a batch is neither),
 so this is a standalone utility rather than an ``Agent`` method.
 
-    from agentflow.core.llm.anthropic_batch import AnthropicBatch
+    from tenxgraph.core.llm.anthropic_batch import AnthropicBatch
 
     batch = AnthropicBatch(model="claude-haiku-4-5")
     batch.add("row-1", [{"role": "user", "content": "Summarise: ..."}])
@@ -25,8 +25,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from agentflow.core.llm.batch_common import BatchResult
-from agentflow.core.llm.client_factory import create_llm_client
+from tenxgraph.core.llm.batch_common import BatchResult
+from tenxgraph.core.llm.client_factory import create_llm_client
 
 
 # ``core.graph`` imports this package, so these are resolved lazily inside
@@ -34,7 +34,7 @@ from agentflow.core.llm.client_factory import create_llm_client
 DEFAULT_MAX_TOKENS = 16000
 
 
-logger = logging.getLogger("agentflow.llm.anthropic_batch")
+logger = logging.getLogger("tenxgraph.llm.anthropic_batch")
 
 _TERMINAL_STATUS = "ended"
 
@@ -67,7 +67,7 @@ class AnthropicBatch:
         translation as a live call, so system prompts and tool results are
         shaped correctly.
         """
-        from agentflow.core.graph.agent_internal.anthropic_request import (
+        from tenxgraph.core.graph.agent_internal.anthropic_request import (
             convert_tools,
             drop_trailing_assistant,
             merge_tool_results,

@@ -8,13 +8,13 @@ from typing import Any, TypeVar
 
 from injectq import InjectQ
 
-from agentflow.core.exceptions.storage_exceptions import (
+from tenxgraph.core.exceptions.storage_exceptions import (
     SchemaVersionError,
     StaleStateError,
     StorageError,
     TransientStorageError,
 )
-from agentflow.utils import ThreadInfo, metrics
+from tenxgraph.utils import ThreadInfo, metrics
 
 
 try:
@@ -36,12 +36,12 @@ except ImportError:
     ConnectionPool = None  # type: ignore
     Redis = None  # type: ignore
 
-from agentflow.core.state import AgentState, Message
+from tenxgraph.core.state import AgentState, Message
 
 from .base_checkpointer import BaseCheckpointer
 
 
-logger = logging.getLogger("agentflow.checkpointer.pg")
+logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
 def _rows_affected(status: Any) -> int | None:
@@ -202,13 +202,13 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if not HAS_ASYNCPG:
             raise ImportError(
                 "PgCheckpointer requires 'asyncpg' package. "
-                "Install with: pip install 10xscale-agentflow[pg_checkpoint]"
+                "Install with: pip install 10xgraph[pg_checkpoint]"
             )
 
         if not HAS_REDIS:
             raise ImportError(
                 "PgCheckpointer requires 'redis' package. "
-                "Install with: pip install 10xscale-agentflow[pg_checkpoint]"
+                "Install with: pip install 10xgraph[pg_checkpoint]"
             )
 
         self.user_id_type = kwargs.get("user_id_type", "string")
@@ -1995,7 +1995,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Returns:
             Message: Message object.
         """
-        from agentflow.core.state.message import TokenUsages
+        from tenxgraph.core.state.message import TokenUsages
 
         # Handle usages JSONB
         usages = None

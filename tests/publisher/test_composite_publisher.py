@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from agentflow.runtime.publisher.composite_publisher import CompositePublisher
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.runtime.publisher.events import EventModel
+from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.events import EventModel
 
 
 @pytest.mark.asyncio

@@ -8,8 +8,8 @@ import tempfile
 
 import pytest
 
-from agentflow.qa.evaluation.dataset.builder import EvalSetBuilder
-from agentflow.qa.evaluation.dataset.eval_set import EvalSet, ToolCall
+from tenxgraph.qa.evaluation.dataset.builder import EvalSetBuilder
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet, ToolCall
 
 
 class TestEvalSetBuilderInit:

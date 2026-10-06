@@ -32,7 +32,7 @@ import pydantic
 from injectq import InjectQ
 from pydantic import BaseModel, Field
 
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     ContentBlock,
     DocumentBlock,
@@ -44,7 +44,7 @@ from agentflow.core.state.message_block import (
 )
 
 
-logger = logging.getLogger("agentflow.state")
+logger = logging.getLogger("tenxgraph.state")
 
 
 def generate_id(default_id: str | int | None) -> str | int:

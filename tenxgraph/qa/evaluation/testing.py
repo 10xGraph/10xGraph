@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.compiled_graph import CompiledGraph
-    from agentflow.qa.evaluation.config.eval_config import EvalConfig
-    from agentflow.qa.evaluation.eval_result import EvalReport
+    from tenxgraph.core.graph.compiled_graph import CompiledGraph
+    from tenxgraph.qa.evaluation.config.eval_config import EvalConfig
+    from tenxgraph.qa.evaluation.eval_result import EvalReport
 
 
 class EvalTestCase:
@@ -81,8 +81,8 @@ def eval_test(
         async def wrapper(*args, **kwargs):
             import pytest
 
-            from agentflow.qa.evaluation import AgentEvaluator
-            from agentflow.qa.evaluation.config.eval_config import EvalConfig
+            from tenxgraph.qa.evaluation import AgentEvaluator
+            from tenxgraph.qa.evaluation.config.eval_config import EvalConfig
 
             # Call the test function to get the graph and collector
             result = await func(*args, **kwargs)
@@ -215,7 +215,7 @@ def parametrize_eval_cases(eval_file: str) -> Callable:
     """
     import pytest
 
-    from agentflow.qa.evaluation.dataset.eval_set import EvalSet
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet
 
     eval_set = EvalSet.from_file(eval_file)
     cases = [(case.eval_id, case) for case in eval_set.eval_cases]
@@ -235,7 +235,7 @@ class EvalFixtures:
     Example:
         ```python
         # conftest.py
-        from agentflow.qa.evaluation.testing import EvalFixtures
+        from tenxgraph.qa.evaluation.testing import EvalFixtures
 
         fixtures = EvalFixtures()
         fixtures.register()
@@ -256,8 +256,8 @@ class EvalFixtures:
         Returns:
             Factory function that creates AgentEvaluator instances.
         """
-        from agentflow.qa.evaluation import AgentEvaluator
-        from agentflow.qa.evaluation.config.eval_config import EvalConfig
+        from tenxgraph.qa.evaluation import AgentEvaluator
+        from tenxgraph.qa.evaluation.config.eval_config import EvalConfig
 
         default = self.default_config
 
@@ -325,8 +325,8 @@ async def run_eval(
             assert report.summary.pass_rate == 1.0
         ```
     """
-    from agentflow.qa.evaluation import AgentEvaluator
-    from agentflow.qa.evaluation.config.eval_config import EvalConfig as _EvalConfig
+    from tenxgraph.qa.evaluation import AgentEvaluator
+    from tenxgraph.qa.evaluation.config.eval_config import EvalConfig as _EvalConfig
 
     evaluator = AgentEvaluator(graph, collector, config or _EvalConfig.default())
     return await evaluator.evaluate(eval_set_path, verbose=verbose)
@@ -353,7 +353,7 @@ def create_eval_app(
     Example:
         ```python
         # conftest.py
-        from agentflow.qa.evaluation.testing import create_eval_app
+        from tenxgraph.qa.evaluation.testing import create_eval_app
 
 
         @pytest.fixture(scope="session")
@@ -362,8 +362,8 @@ def create_eval_app(
             return create_eval_app(graph)
         ```
     """
-    from agentflow.qa.evaluation.collectors import TrajectoryCollector, make_trajectory_callback
-    from agentflow.storage.checkpointer import InMemoryCheckpointer
+    from tenxgraph.qa.evaluation.collectors import TrajectoryCollector, make_trajectory_callback
+    from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
     collector = TrajectoryCollector(capture_all_events=capture_all_events)
     _, callback_mgr = make_trajectory_callback(collector)
@@ -398,7 +398,7 @@ def create_simple_eval_set(
         )
         ```
     """
-    from agentflow.qa.evaluation.dataset.eval_set import EvalCase, EvalSet
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet
 
     eval_cases = []
     for i, (query, expected, name) in enumerate(cases):

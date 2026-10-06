@@ -5,14 +5,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from agentflow.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node import ToolNode
 
 
 if TYPE_CHECKING:
-    from agentflow.storage.store.memory_config import MemoryConfig
+    from tenxgraph.storage.store.memory_config import MemoryConfig
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 class AgentMemoryMixin:
@@ -32,11 +32,11 @@ class AgentMemoryMixin:
         if memory is None:
             return
 
-        from agentflow.storage.store.long_term_memory import (
+        from tenxgraph.storage.store.long_term_memory import (
             MemoryIntegration,
             get_agent_memory_system_prompt,
         )
-        from agentflow.storage.store.memory_config import MemoryConfig
+        from tenxgraph.storage.store.memory_config import MemoryConfig
 
         if not isinstance(memory, MemoryConfig):
             raise TypeError(f"Expected MemoryConfig, got {type(memory)}")
@@ -96,13 +96,13 @@ class AgentMemoryMixin:
         config: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """Load and format memory context for preload mode."""
-        from agentflow.prebuilt.tools.memory import (
+        from tenxgraph.prebuilt.tools.memory import (
             _memory_scope_config,
             _memory_scope_limit,
             _memory_scope_score_threshold,
             _memory_scope_store,
         )
-        from agentflow.storage.store.long_term_memory import (
+        from tenxgraph.storage.store.long_term_memory import (
             ReadMode,
             _format_search_results,
             _strip_thread_id,

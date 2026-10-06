@@ -7,10 +7,10 @@ and message processing rates.
 
 import pytest
 
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
 
 
 class TestSimpleGraphPerformance:

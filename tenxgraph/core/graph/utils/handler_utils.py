@@ -23,19 +23,19 @@ from typing import Any, TypeVar
 
 from injectq import Inject
 
-from agentflow.core.state import AgentState, ExecutionStatus
-from agentflow.core.state.execution_state import StopRequestStatus
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import RemoteToolCallBlock
-from agentflow.runtime.publisher.events import EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.storage.checkpointer import BaseCheckpointer
-from agentflow.utils import (
+from tenxgraph.core.state import AgentState, ExecutionStatus
+from tenxgraph.core.state.execution_state import StopRequestStatus
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import RemoteToolCallBlock
+from tenxgraph.runtime.publisher.events import EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils import (
     START,
 )
-from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
-from agentflow.utils.injection import fresh
-from agentflow.utils.interrupt import (
+from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
+from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.interrupt import (
     RESUME_KEY,
     Interrupt,
     pause_at,
@@ -48,7 +48,7 @@ from .utils import reload_state, sync_data
 
 StateT = TypeVar("StateT", bound=AgentState)
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 async def check_interrupted[StateT: AgentState](

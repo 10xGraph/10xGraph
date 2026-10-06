@@ -2,7 +2,7 @@
 
 These are the tools that are registered with the agent's ToolNode and exposed
 to the LLM.  Lower-level helpers (``MemoryIntegration``, preload-node factory,
-read-mode constants) live in ``agentflow.storage.store.long_term_memory``.
+read-mode constants) live in ``tenxgraph.storage.store.long_term_memory``.
 
 Public API
 ----------
@@ -29,20 +29,20 @@ from typing import Any, Literal
 
 from injectq import Inject
 
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.long_term_memory import (
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.long_term_memory import (
     _do_write,
     _flush_pending_writes,
     _format_search_results,
     _strip_thread_id,
     _validate_memory_type,
 )
-from agentflow.utils.background_task_manager import BackgroundTaskManager
-from agentflow.utils.decorators import tool
-from agentflow.utils.injection import fresh
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.decorators import tool
+from tenxgraph.utils.injection import fresh
 
 
-logger = logging.getLogger("agentflow.prebuilt.tools.memory")
+logger = logging.getLogger("tenxgraph.prebuilt.tools.memory")
 
 
 # ---------------------------------------------------------------------------

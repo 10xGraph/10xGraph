@@ -4,15 +4,15 @@ from typing import TYPE_CHECKING, TypeVar, Union
 
 from injectq import InjectQ
 
-from agentflow.core.exceptions import GraphError
-from agentflow.core.state import AgentState, BaseContextManager
-from agentflow.runtime.publisher import BasePublisher
-from agentflow.runtime.publisher.composite_publisher import CompositePublisher
-from agentflow.storage.checkpointer import BaseCheckpointer
-from agentflow.storage.store import BaseStore
-from agentflow.utils import END, START, CallbackManager
-from agentflow.utils.background_task_manager import BackgroundTaskManager
-from agentflow.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
+from tenxgraph.core.exceptions import GraphError
+from tenxgraph.core.state import AgentState, BaseContextManager
+from tenxgraph.runtime.publisher import BasePublisher
+from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
+from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.storage.store import BaseStore
+from tenxgraph.utils import END, START, CallbackManager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 from .agent import Agent
 from .base_agent import BaseAgent
@@ -22,7 +22,7 @@ from .tool_node import ToolNode
 
 
 if TYPE_CHECKING:
-    from agentflow.storage.media.storage.base import BaseMediaStore
+    from tenxgraph.storage.media.storage.base import BaseMediaStore
 
     from .compiled_graph import CompiledGraph
 
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # Generic type variable bound to AgentState for state
 StateT = TypeVar("StateT", bound=AgentState)
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class StateGraph[StateT: AgentState]:
@@ -489,7 +489,7 @@ class StateGraph[StateT: AgentState]:
         # Import here to avoid circular import at module import time
         # Now update Checkpointer
         if checkpointer is None:
-            from agentflow.storage.checkpointer import InMemoryCheckpointer
+            from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
             checkpointer = InMemoryCheckpointer[StateT]()
             logger.debug("No checkpointer provided, using InMemoryCheckpointer")
@@ -514,7 +514,7 @@ class StateGraph[StateT: AgentState]:
         )
         # Bind media store for multimodal content
         if media_store is not None:
-            from agentflow.storage.media.storage.base import BaseMediaStore
+            from tenxgraph.storage.media.storage.base import BaseMediaStore
 
             self._container.bind_instance(
                 BaseMediaStore,
@@ -603,7 +603,7 @@ class StateGraph[StateT: AgentState]:
         are registered immediately.  After this call the runtime
         ``_resolve_tools`` path needs no DI lookup for those agents.
         """
-        from agentflow.core.graph.tool_node import ToolNode
+        from tenxgraph.core.graph.tool_node import ToolNode
 
         for node in self.nodes.values():
             agent = node.func

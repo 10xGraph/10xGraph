@@ -20,18 +20,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.storage.media.config import MultimodalConfig
-from agentflow.storage.media.offload import (
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.storage.media.config import MultimodalConfig
+from tenxgraph.storage.media.offload import (
     MediaOffloadPolicy,
     ensure_media_offloaded,
 )
-from agentflow.storage.media.resolver import MediaRefResolver
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.storage.media.storage.local_store import LocalFileMediaStore, _mime_to_ext
-from agentflow.storage.media.storage.memory_store import InMemoryMediaStore
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import (
+from tenxgraph.storage.media.resolver import MediaRefResolver
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.storage.local_store import LocalFileMediaStore, _mime_to_ext
+from tenxgraph.storage.media.storage.memory_store import InMemoryMediaStore
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     DocumentBlock,
     ImageBlock,
@@ -39,7 +39,7 @@ from agentflow.core.state.message_block import (
     TextBlock,
     VideoBlock,
 )
-from agentflow.utils.converter import resolve_media_refs
+from tenxgraph.utils.converter import resolve_media_refs
 
 
 # ===========================================================================

@@ -8,7 +8,7 @@ from typing import Any
 from .constants import CALL_EXCLUDED_KWARGS
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 def _to_responses_content(content: Any) -> Any:

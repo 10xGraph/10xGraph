@@ -22,12 +22,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from agentflow.core.state.message import (
+from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
     generate_id,
 )
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     ImageBlock,
     MediaRef,
@@ -42,7 +42,7 @@ from .reasoning_utils import (
 )
 
 
-logger = logging.getLogger("agentflow.adapters.openai_responses")
+logger = logging.getLogger("tenxgraph.adapters.openai_responses")
 
 
 @dataclass

@@ -8,11 +8,11 @@ Pattern::
     RESEARCHER --[no handoff]---------> END
     WRITER --[no handoff]-------------> END
 
-Each member is a **pre-built** :class:`~agentflow.core.graph.agent.Agent` (or
-any :class:`~agentflow.core.graph.base_agent.BaseAgent` subclass) configured
+Each member is a **pre-built** :class:`~tenxgraph.core.graph.agent.Agent` (or
+any :class:`~tenxgraph.core.graph.base_agent.BaseAgent` subclass) configured
 independently by the caller.  ``SwarmAgent`` auto-generates
 ``transfer_to_<name>`` handoff tools and injects them into each member's
-:class:`~agentflow.core.graph.tool_node.ToolNode` so the LLM can call them.
+:class:`~tenxgraph.core.graph.tool_node.ToolNode` so the LLM can call them.
 
 After each member runs, a per-member routing function inspects
 ``state.context[-1].tools_calls`` via :func:`is_handoff_tool`.  If a handoff
@@ -21,9 +21,9 @@ tool call is found the graph routes to that target; otherwise control goes to
 
 Example::
 
-    from agentflow.core.graph import Agent, ToolNode
-    from agentflow.prebuilt.agent import SwarmAgent
-    from agentflow.prebuilt.agent.swarm import SwarmMemberConfig
+    from tenxgraph.core.graph import Agent, ToolNode
+    from tenxgraph.prebuilt.agent import SwarmAgent
+    from tenxgraph.prebuilt.agent.swarm import SwarmMemberConfig
 
 
     def web_search(query: str) -> str: ...
@@ -76,23 +76,23 @@ from typing import TypeVar
 
 from injectq import InjectQ
 
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.graph.state_graph import StateGraph
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.prebuilt.tools.handoff import create_handoff_tool, is_handoff_tool
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.utils.constants import END
-from agentflow.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.graph.state_graph import StateGraph
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.prebuilt.tools.handoff import create_handoff_tool, is_handoff_tool
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
-logger = logging.getLogger("agentflow.prebuilt.swarm")
+logger = logging.getLogger("tenxgraph.prebuilt.swarm")
 
 StateT = TypeVar("StateT", bound=AgentState)
 
@@ -112,10 +112,10 @@ class SwarmMemberConfig:
     being forced on every member.
 
     Args:
-        agent: A fully-configured :class:`~agentflow.core.graph.agent.Agent`
-            (or any :class:`~agentflow.core.graph.base_agent.BaseAgent`
+        agent: A fully-configured :class:`~tenxgraph.core.graph.agent.Agent`
+            (or any :class:`~tenxgraph.core.graph.base_agent.BaseAgent`
             subclass).  **Do not** include handoff tools in its
-            :class:`~agentflow.core.graph.tool_node.ToolNode`; they are
+            :class:`~tenxgraph.core.graph.tool_node.ToolNode`; they are
             injected automatically by :class:`SwarmAgent`.
         can_handoff_to: Names of other members this member may hand off to.
             ``None`` means it can hand off to *all* other members.
@@ -182,7 +182,7 @@ def _make_member_route(
 class SwarmAgent[StateT: AgentState]:
     """Peer-to-peer multi-agent handoff pattern.
 
-    Each member is a **pre-built** :class:`~agentflow.core.graph.agent.Agent`
+    Each member is a **pre-built** :class:`~tenxgraph.core.graph.agent.Agent`
     so every member can be configured independently (different models,
     ``skills``, ``memory``, ``multimodal_config``, ``retry_config``, etc.).
 
@@ -190,15 +190,15 @@ class SwarmAgent[StateT: AgentState]:
 
     * generates ``transfer_to_<name>`` handoff tools for each member's
       allowed targets and injects them into the member's
-      :class:`~agentflow.core.graph.tool_node.ToolNode`;
+      :class:`~tenxgraph.core.graph.tool_node.ToolNode`;
     * wires per-member conditional edges that inspect the last assistant
       message for a handoff tool call and route accordingly.
 
     Usage::
 
-        from agentflow.core.graph import Agent, ToolNode
-        from agentflow.prebuilt.agent import SwarmAgent
-        from agentflow.prebuilt.agent.swarm import SwarmMemberConfig
+        from tenxgraph.core.graph import Agent, ToolNode
+        from tenxgraph.prebuilt.agent import SwarmAgent
+        from tenxgraph.prebuilt.agent.swarm import SwarmMemberConfig
 
         swarm = SwarmAgent(
             members={
@@ -224,7 +224,7 @@ class SwarmAgent[StateT: AgentState]:
         members: Mapping of node names (UPPER-CASE recommended) to
             :class:`SwarmMemberConfig`.
         entry: Name of the member that receives the first message.
-        state: Optional custom :class:`~agentflow.core.state.AgentState`
+        state: Optional custom :class:`~tenxgraph.core.state.AgentState`
             subclass instance.
         context_manager: Optional custom context-trimming manager.
         publisher: Optional event publisher.
@@ -297,9 +297,9 @@ class SwarmAgent[StateT: AgentState]:
         """Inject handoff tools into the member agent's ToolNode.
 
         If the agent has no ``tool_node`` yet, a new
-        :class:`~agentflow.core.graph.tool_node.ToolNode` is created for the
+        :class:`~tenxgraph.core.graph.tool_node.ToolNode` is created for the
         handoff tools.  If it already has one, each handoff tool is added via
-        :meth:`~agentflow.core.graph.tool_node.ToolNode.add_tool`.
+        :meth:`~tenxgraph.core.graph.tool_node.ToolNode.add_tool`.
 
         Note:
             The agent's ``tool_node`` is mutated in-place.  This is safe

@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from agentflow.core.state.message_block import MediaRef
+from tenxgraph.core.state.message_block import MediaRef
 
 
 class BaseMediaStore(ABC):

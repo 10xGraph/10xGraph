@@ -1,4 +1,4 @@
-"""Unit tests for agentflow.runtime.publisher.exporters.
+"""Unit tests for tenxgraph.runtime.publisher.exporters.
 
 All external dependencies (logfire, opentelemetry SDK / OTLP exporter) are
 fully mocked so the tests run without any optional extras installed.
@@ -103,7 +103,7 @@ class TestGuardLogfire:
             # Remove from sys.modules so the import attempt actually fails
             saved = sys.modules.pop("logfire", ...)
             try:
-                from agentflow.runtime.publisher.exporters import _guard_logfire
+                from tenxgraph.runtime.publisher.exporters import _guard_logfire
 
                 with pytest.raises(ImportError, match="logfire"):
                     _guard_logfire()
@@ -114,7 +114,7 @@ class TestGuardLogfire:
     def test_passes_when_logfire_present(self):
         fake_lf = _fake_logfire_module()
         with patch.dict(sys.modules, {"logfire": fake_lf}):
-            from agentflow.runtime.publisher.exporters import _guard_logfire
+            from tenxgraph.runtime.publisher.exporters import _guard_logfire
 
             _guard_logfire()  # should not raise
 
@@ -125,7 +125,7 @@ class TestGuardOtlpHttp:
         saved = sys.modules.pop(key, ...)
         try:
             sys.modules[key] = None  # type: ignore[assignment]
-            from agentflow.runtime.publisher.exporters import _guard_otlp_http
+            from tenxgraph.runtime.publisher.exporters import _guard_otlp_http
 
             with pytest.raises(ImportError, match="opentelemetry-exporter-otlp-proto-http"):
                 _guard_otlp_http()
@@ -138,7 +138,7 @@ class TestGuardOtlpHttp:
     def test_passes_when_package_present(self):
         mods = _fake_otel_modules()
         with patch.dict(sys.modules, mods):
-            from agentflow.runtime.publisher.exporters import _guard_otlp_http
+            from tenxgraph.runtime.publisher.exporters import _guard_otlp_http
 
             _guard_otlp_http()  # should not raise
 
@@ -148,7 +148,7 @@ class TestGuardOtelSdk:
         saved = sys.modules.pop("opentelemetry.sdk.trace", ...)
         try:
             sys.modules["opentelemetry.sdk.trace"] = None  # type: ignore[assignment]
-            from agentflow.runtime.publisher.exporters import _guard_otel_sdk
+            from tenxgraph.runtime.publisher.exporters import _guard_otel_sdk
 
             with pytest.raises(ImportError, match="opentelemetry-sdk"):
                 _guard_otel_sdk()
@@ -161,7 +161,7 @@ class TestGuardOtelSdk:
     def test_passes_when_sdk_present(self):
         mods = _fake_otel_modules()
         with patch.dict(sys.modules, mods):
-            from agentflow.runtime.publisher.exporters import _guard_otel_sdk
+            from tenxgraph.runtime.publisher.exporters import _guard_otel_sdk
 
             _guard_otel_sdk()  # should not raise
 
@@ -177,9 +177,9 @@ class TestSetupLogfire:
         all_mods = {**fake_otel_mods, "logfire": fake_lf}
         with patch.dict(sys.modules, all_mods):
             with patch(
-                "agentflow.runtime.publisher.exporters.setup_tracing"
+                "tenxgraph.runtime.publisher.exporters.setup_tracing"
             ) as mock_setup:
-                from agentflow.runtime.publisher.exporters import setup_logfire
+                from tenxgraph.runtime.publisher.exporters import setup_logfire
 
                 setup_logfire(graph, **kwargs)
                 return mock_setup
@@ -287,7 +287,7 @@ class TestSetupLogfire:
         saved = sys.modules.pop("logfire", ...)
         try:
             sys.modules.pop("logfire", None)
-            from agentflow.runtime.publisher.exporters import setup_logfire
+            from tenxgraph.runtime.publisher.exporters import setup_logfire
 
             with pytest.raises(ImportError, match="logfire"):
                 setup_logfire(graph)
@@ -296,7 +296,7 @@ class TestSetupLogfire:
                 sys.modules["logfire"] = saved
 
     def test_level_passed_to_setup_tracing(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         graph = _make_graph()
         fake_lf = _fake_logfire_module()
@@ -305,9 +305,9 @@ class TestSetupLogfire:
 
         with patch.dict(sys.modules, all_mods):
             with patch(
-                "agentflow.runtime.publisher.exporters.setup_tracing"
+                "tenxgraph.runtime.publisher.exporters.setup_tracing"
             ) as mock_setup:
-                from agentflow.runtime.publisher.exporters import setup_logfire
+                from tenxgraph.runtime.publisher.exporters import setup_logfire
 
                 setup_logfire(graph, level=ObservabilityLevel.FULL)
                 _, kwargs = mock_setup.call_args
@@ -325,9 +325,9 @@ class TestSetupLangsmith:
             env = env or {}
             with patch.dict("os.environ", env, clear=False):
                 with patch(
-                    "agentflow.runtime.publisher.exporters.setup_tracing"
+                    "tenxgraph.runtime.publisher.exporters.setup_tracing"
                 ) as mock_setup:
-                    from agentflow.runtime.publisher.exporters import setup_langsmith
+                    from tenxgraph.runtime.publisher.exporters import setup_langsmith
 
                     setup_langsmith(graph, **kwargs)
                     return (
@@ -450,7 +450,7 @@ class TestSetupLangsmith:
 
             env_backup = os.environ.pop("LANGSMITH_API_KEY", None)
             try:
-                from agentflow.runtime.publisher.exporters import setup_langsmith
+                from tenxgraph.runtime.publisher.exporters import setup_langsmith
 
                 with pytest.raises(ValueError, match="LANGSMITH_API_KEY"):
                     setup_langsmith(graph)
@@ -463,7 +463,7 @@ class TestSetupLangsmith:
         saved = sys.modules.pop("opentelemetry.sdk.trace", ...)
         try:
             sys.modules["opentelemetry.sdk.trace"] = None  # type: ignore[assignment]
-            from agentflow.runtime.publisher.exporters import setup_langsmith
+            from tenxgraph.runtime.publisher.exporters import setup_langsmith
 
             with pytest.raises(ImportError, match="opentelemetry-sdk"):
                 setup_langsmith(graph, api_key="key")
@@ -481,16 +481,16 @@ class TestSetupObservability:
     """Tests for setup_observability()."""
 
     def _mock_setup_logfire(self):
-        return patch("agentflow.runtime.publisher.exporters.setup_logfire")
+        return patch("tenxgraph.runtime.publisher.exporters.setup_logfire")
 
     def _mock_setup_langsmith(self):
-        return patch("agentflow.runtime.publisher.exporters.setup_langsmith")
+        return patch("tenxgraph.runtime.publisher.exporters.setup_langsmith")
 
     # ── neither enabled ──
 
     def test_neither_enabled_returns_early(self):
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith() as ls:
             setup_observability(graph, {})
@@ -499,7 +499,7 @@ class TestSetupObservability:
 
     def test_null_sub_configs_treated_as_disabled(self):
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith() as ls:
             setup_observability(
@@ -512,7 +512,7 @@ class TestSetupObservability:
 
     def test_logfire_only(self):
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith() as ls:
             setup_observability(
@@ -535,7 +535,7 @@ class TestSetupObservability:
 
     def test_logfire_only_default_params(self):
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith() as ls:
             setup_observability(graph, {"logfire": {"enabled": True}})
@@ -550,7 +550,7 @@ class TestSetupObservability:
 
     def test_langsmith_only(self):
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith() as ls:
             setup_observability(
@@ -571,7 +571,7 @@ class TestSetupObservability:
 
     def test_langsmith_only_null_endpoint_uses_default(self):
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith() as ls:
             setup_observability(
@@ -594,9 +594,9 @@ class TestSetupObservability:
         with patch.dict(sys.modules, all_mods):
             with patch.dict("os.environ", {"LANGSMITH_API_KEY": "ls-key"}):
                 with patch(
-                    "agentflow.runtime.publisher.exporters.setup_logfire"
+                    "tenxgraph.runtime.publisher.exporters.setup_logfire"
                 ) as mock_lf:
-                    from agentflow.runtime.publisher.exporters import setup_observability
+                    from tenxgraph.runtime.publisher.exporters import setup_observability
 
                     setup_observability(
                         graph,
@@ -623,7 +623,7 @@ class TestSetupObservability:
         env_backup = os.environ.pop("LANGSMITH_API_KEY", None)
         try:
             with patch.dict(sys.modules, all_mods):
-                from agentflow.runtime.publisher.exporters import setup_observability
+                from tenxgraph.runtime.publisher.exporters import setup_observability
 
                 with pytest.raises(ValueError, match="LANGSMITH_API_KEY"):
                     setup_observability(
@@ -646,9 +646,9 @@ class TestSetupObservability:
         with patch.dict(sys.modules, all_mods):
             with patch.dict("os.environ", {"LANGSMITH_API_KEY": "key"}):
                 with patch(
-                    "agentflow.runtime.publisher.exporters.setup_logfire"
+                    "tenxgraph.runtime.publisher.exporters.setup_logfire"
                 ):
-                    from agentflow.runtime.publisher.exporters import setup_observability
+                    from tenxgraph.runtime.publisher.exporters import setup_observability
 
                     # Should not raise even when project is specified
                     setup_observability(
@@ -670,10 +670,10 @@ class TestSetupObservability:
     # ── level resolution ──
 
     def test_valid_level_string_resolved(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith():
             setup_observability(
@@ -683,10 +683,10 @@ class TestSetupObservability:
             assert call_kwargs["level"] == ObservabilityLevel.FULL
 
     def test_invalid_level_defaults_to_standard(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith():
             setup_observability(
@@ -697,10 +697,10 @@ class TestSetupObservability:
             assert call_kwargs["level"] == ObservabilityLevel.STANDARD
 
     def test_missing_level_defaults_to_standard(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         graph = _make_graph()
-        from agentflow.runtime.publisher.exporters import setup_observability
+        from tenxgraph.runtime.publisher.exporters import setup_observability
 
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith():
             setup_observability(graph, {"logfire": {"enabled": True}})

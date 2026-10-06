@@ -13,17 +13,17 @@ from pathlib import Path
 
 import pytest
 
-from agentflow.core.graph import StateGraph, ToolNode
-from agentflow.core.skills import SkillConfig, SkillsRegistry
-from agentflow.core.skills.activation import (
+from tenxgraph.core.graph import StateGraph, ToolNode
+from tenxgraph.core.skills import SkillConfig, SkillsRegistry
+from tenxgraph.core.skills.activation import (
     get_active_skills,
     make_activate_skill_tool,
     make_read_skill_resource_tool,
     skill_content_marker,
 )
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import CallbackManager, InvocationType
-from agentflow.utils.constants import END
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import CallbackManager, InvocationType
+from tenxgraph.utils.constants import END
 
 
 def _write_skill(root: Path, name: str, files: dict[str, str] | None = None) -> None:

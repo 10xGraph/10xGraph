@@ -10,9 +10,9 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from agentflow.core.state import Message
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.store_schema import (
+from tenxgraph.core.state import Message
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.store_schema import (
     DistanceMetric,
     MemorySearchResult,
     MemoryType,
@@ -20,7 +20,7 @@ from agentflow.storage.store.store_schema import (
 )
 
 
-logger = logging.getLogger("agentflow.testing")
+logger = logging.getLogger("tenxgraph.testing")
 
 
 class InMemoryStore(BaseStore):

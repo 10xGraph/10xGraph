@@ -140,7 +140,7 @@ def build_html(
                         &#x1F4BE; GitHub
                     </a>
                     <span class="footer-sep" aria-hidden="true">&#x2022;</span>
-                    <a class="footer-link" href="https://pypi.org/project/10xscale-agentflow/" target="_blank" rel="noopener">
+                    <a class="footer-link" href="https://pypi.org/project/10xgraph/" target="_blank" rel="noopener">
                         &#x1F4E6; PyPI
                     </a>
                 </div>

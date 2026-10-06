@@ -2,9 +2,9 @@
 
 import pytest
 
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.realtime.live_agent import LiveAgent
-from agentflow.prebuilt.agent.audio import AudioAgent
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.realtime.live_agent import LiveAgent
+from tenxgraph.prebuilt.agent.audio import AudioAgent
 
 MODEL = "gemini-2.5-flash-live"
 
@@ -29,7 +29,7 @@ class TestAudioAgentBuild:
         assert agent._agent._resolve_tool_node() is not None
 
     def test_realtime_config_passthrough(self):
-        from agentflow.core.realtime.base import RealtimeConfig
+        from tenxgraph.core.realtime.base import RealtimeConfig
 
         cfg = RealtimeConfig(model=MODEL, voice="Puck", response_modalities=["AUDIO"])
         agent = AudioAgent(MODEL, realtime_config=cfg)
@@ -39,8 +39,8 @@ class TestAudioAgentBuild:
     @pytest.mark.asyncio
     async def test_compiled_live_agent_runs_via_arun(self):
         # End-to-end-ish: the LiveAgent inside the compiled graph drives a fake socket.
-        from agentflow.core.realtime.base import AudioDeltaEvent, TurnCompleteEvent
-        from agentflow.core.realtime.queue import LiveInputQueue
+        from tenxgraph.core.realtime.base import AudioDeltaEvent, TurnCompleteEvent
+        from tenxgraph.core.realtime.queue import LiveInputQueue
         from tests.realtime.test_live_agent import FakeRealtimeClient, _factory
 
         client = FakeRealtimeClient([AudioDeltaEvent(data=b"\x01"), TurnCompleteEvent()])

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from agentflow.utils.decorators import tool
+from tenxgraph.utils.decorators import tool
 
 
 _DEFAULT_MAX_READ_CHARS = 20_000

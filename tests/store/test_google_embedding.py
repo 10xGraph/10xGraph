@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from agentflow.storage.store.embedding.google_embedding import GoogleEmbedding
+from tenxgraph.storage.store.embedding.google_embedding import GoogleEmbedding
 
 
 class TestGoogleEmbeddingAvailability:
@@ -13,7 +13,7 @@ class TestGoogleEmbeddingAvailability:
 
     def test_raises_import_error_without_google(self):
         """Test that ImportError is raised when google-genai is not available."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", False):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", False):
             with pytest.raises(ImportError, match="google-genai"):
                 GoogleEmbedding(api_key="test-key")
 
@@ -23,10 +23,10 @@ class TestGoogleEmbeddingInit:
 
     def test_init_with_api_key(self):
         """Test initialization with explicit API key."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_genai.Client.return_value = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 emb = GoogleEmbedding(api_key="test-api-key")
                 assert emb.model == "gemini-embedding-001"
                 assert emb.api_key == "test-api-key"
@@ -34,10 +34,10 @@ class TestGoogleEmbeddingInit:
 
     def test_init_with_google_api_key_env(self):
         """Test initialization with GOOGLE_API_KEY env variable."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_genai.Client.return_value = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 with patch.dict(os.environ, {"GOOGLE_API_KEY": "env-google-key"}, clear=False):
                     # Ensure GEMINI_API_KEY doesn't interfere
                     env = {k: v for k, v in os.environ.items() if k != "GEMINI_API_KEY"}
@@ -48,10 +48,10 @@ class TestGoogleEmbeddingInit:
 
     def test_init_with_gemini_api_key_env(self):
         """Test initialization with GEMINI_API_KEY env variable."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_genai.Client.return_value = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 env = {k: v for k, v in os.environ.items() if k not in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
                 env["GEMINI_API_KEY"] = "gemini-env-key"
                 with patch.dict(os.environ, env, clear=True):
@@ -60,9 +60,9 @@ class TestGoogleEmbeddingInit:
 
     def test_init_no_api_key_raises(self):
         """Test that ValueError is raised when no API key available."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 env = {k: v for k, v in os.environ.items()
                        if k not in ("GOOGLE_API_KEY", "GEMINI_API_KEY")}
                 with patch.dict(os.environ, env, clear=True):
@@ -71,10 +71,10 @@ class TestGoogleEmbeddingInit:
 
     def test_init_with_custom_model(self):
         """Test initialization with custom model."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_genai.Client.return_value = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 emb = GoogleEmbedding(
                     model="gemini-embedding-001",
                     api_key="test-key",
@@ -83,10 +83,10 @@ class TestGoogleEmbeddingInit:
 
     def test_init_with_output_dimensionality(self):
         """Test initialization with custom output dimensionality."""
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_genai.Client.return_value = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 emb = GoogleEmbedding(api_key="test-key", output_dimensionality=512)
                 assert emb._output_dimensionality == 512
 
@@ -95,10 +95,10 @@ class TestGoogleEmbeddingDimension:
     """Test GoogleEmbedding.dimension property."""
 
     def _make_embedding(self, model="text-embedding-004", dim=None):
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_genai.Client.return_value = MagicMock()
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 return GoogleEmbedding(model=model, api_key="test-key", output_dimensionality=dim)
 
     def test_dimension_text_embedding_004(self):
@@ -131,11 +131,11 @@ class TestGoogleEmbeddingAembed:
     """Test GoogleEmbedding.aembed() method."""
 
     def _make_embedding(self, dim=None):
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_client = MagicMock()
             mock_genai.Client.return_value = mock_client
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 return GoogleEmbedding(api_key="test-key", output_dimensionality=dim), mock_client
 
     @pytest.mark.asyncio
@@ -190,11 +190,11 @@ class TestGoogleEmbeddingAembedBatch:
     """Test GoogleEmbedding.aembed_batch() method."""
 
     def _make_embedding(self, dim=None):
-        with patch("agentflow.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
             mock_genai = MagicMock()
             mock_client = MagicMock()
             mock_genai.Client.return_value = mock_client
-            with patch("agentflow.storage.store.embedding.google_embedding.genai", mock_genai):
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
                 return GoogleEmbedding(api_key="test-key", output_dimensionality=dim), mock_client
 
     @pytest.mark.asyncio

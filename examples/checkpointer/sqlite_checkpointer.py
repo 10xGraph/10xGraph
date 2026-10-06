@@ -9,15 +9,15 @@ where each user has their own process and their own database file.
 Run it twice with the same `thread_id`; the conversation is restored from disk
 on the second run because the `.db` file persists between processes.
 
-Requires: pip install 10xscale-agentflow[sqlite_checkpoint]
+Requires: pip install 10xgraph[sqlite_checkpoint]
 """
 
 from dotenv import load_dotenv
 
-from agentflow.core import Agent, StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer import SqliteCheckpointer
-from agentflow.utils.constants import END
+from tenxgraph.core import Agent, StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer import SqliteCheckpointer
+from tenxgraph.utils.constants import END
 
 
 load_dotenv()

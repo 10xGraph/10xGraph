@@ -4,7 +4,7 @@ from typing import Any
 from .node_error import NodeError
 
 
-logger = logging.getLogger("agentflow.exceptions")
+logger = logging.getLogger("tenxgraph.exceptions")
 
 
 class NodeTimeoutError(NodeError):

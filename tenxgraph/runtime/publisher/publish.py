@@ -2,13 +2,13 @@ import logging
 
 from injectq import Inject
 
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.runtime.publisher.events import EventModel
-from agentflow.utils.background_task_manager import BackgroundTaskManager
-from agentflow.utils.injection import fresh
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.events import EventModel
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.injection import fresh
 
 
-logger = logging.getLogger("agentflow.publisher")
+logger = logging.getLogger("tenxgraph.publisher")
 
 
 async def _publish_event_task(

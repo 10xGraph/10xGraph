@@ -7,7 +7,7 @@ The first time it runs, it stops the graph. The graph saves its state, reports t
 
 Resume by running the same thread again with a ``resume`` value::
 
-    from agentflow.utils import interrupt
+    from tenxgraph.utils import interrupt
 
 
     async def refund(amount: float) -> str:
@@ -45,7 +45,7 @@ from pydantic import BaseModel, Field
 
 
 if TYPE_CHECKING:
-    from agentflow.core.state import AgentState
+    from tenxgraph.core.state import AgentState
 
 
 # Input key that resumes a paused thread: ``app.invoke({"resume": value}, config)``.
@@ -231,7 +231,7 @@ def clear_resume_values(state: AgentState) -> None:
 
 def pause_at(state: AgentState, request: Interrupt) -> None:
     """Mark ``state`` as paused before ``request.node`` so resuming re-runs it (internal)."""
-    from agentflow.core.state.execution_state import ExecutionStatus
+    from tenxgraph.core.state.execution_state import ExecutionStatus
 
     state.set_interrupt(
         request.node,

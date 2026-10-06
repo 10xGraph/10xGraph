@@ -3,8 +3,8 @@ import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.otel_publisher import (
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.otel_publisher import (
     ObservabilityLevel,
     OtelPublisher,
     SpanRegistry,
@@ -204,7 +204,7 @@ def test_llm_handlers_and_error_paths():
 
 def test_setup_tracing_attaches_publisher():
     graph = SimpleNamespace(_publisher=None)
-    with patch("agentflow.runtime.publisher.otel_publisher._guard", return_value=None):
+    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
         pub = setup_tracing(graph)
     assert graph._publisher is pub
 
@@ -291,7 +291,7 @@ def test_close_and_sync_close_paths():
 
 
 def test_guard_raises_when_opentelemetry_missing(monkeypatch):
-    from agentflow.runtime.publisher import otel_publisher as op
+    from tenxgraph.runtime.publisher import otel_publisher as op
 
     real_import = __import__
 

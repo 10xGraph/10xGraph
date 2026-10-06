@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import asyncio
 
-from agentflow.core.graph.agent import Agent
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.prebuilt.agent.swarm import SwarmAgent, SwarmMemberConfig
+from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.prebuilt.agent.swarm import SwarmAgent, SwarmMemberConfig
 
 
 # ---------------------------------------------------------------------------

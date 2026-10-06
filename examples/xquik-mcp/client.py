@@ -5,7 +5,7 @@ import os
 
 from fastmcp import Client
 
-from agentflow.core import ToolNode
+from tenxgraph.core import ToolNode
 
 
 MCP_URL = "https://xquik.com/mcp"

@@ -2,9 +2,9 @@
 
 This package provides the runtime infrastructure for agent execution:
 
-- ``agentflow.runtime.adapters``   - LLM response converters
-- ``agentflow.runtime.publisher``  - event publishers (console, Redis, Kafka, RabbitMQ)
-- ``agentflow.runtime.protocols``  - agent communication protocol packages
+- ``tenxgraph.runtime.adapters``   - LLM response converters
+- ``tenxgraph.runtime.publisher``  - event publishers (console, Redis, Kafka, RabbitMQ)
+- ``tenxgraph.runtime.protocols``  - agent communication protocol packages
 """
 
 from . import adapters, protocols, publisher

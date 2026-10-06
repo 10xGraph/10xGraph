@@ -11,7 +11,7 @@ from .base_publisher import BasePublisher
 from .events import EventModel
 
 
-logger = logging.getLogger("agentflow.publisher")
+logger = logging.getLogger("tenxgraph.publisher")
 
 
 class ConsolePublisher(BasePublisher):
@@ -25,14 +25,14 @@ class ConsolePublisher(BasePublisher):
     By default events are written to stdout via ``print`` so they are visible in
     a quick script without any logging setup. In a server context, where writing
     to stdout is undesirable, set ``use_logger=True`` to route events through the
-    ``agentflow.publisher`` logger at ``INFO`` level instead, so they respect your
+    ``tenxgraph.publisher`` logger at ``INFO`` level instead, so they respect your
     logging configuration.
 
     Attributes:
         format: Output format ('json' by default).
         include_timestamp: Whether to include timestamp (True by default).
         indent: Indentation for output (2 by default).
-        use_logger: Emit via the ``agentflow.publisher`` logger instead of stdout
+        use_logger: Emit via the ``tenxgraph.publisher`` logger instead of stdout
             (False by default).
     """
 
@@ -56,7 +56,7 @@ class ConsolePublisher(BasePublisher):
     async def publish(self, event: EventModel) -> Any:
         """Publish an event to the console.
 
-        Writes to stdout by default, or emits via the ``agentflow.publisher``
+        Writes to stdout by default, or emits via the ``tenxgraph.publisher``
         logger when ``use_logger=True`` was set in the config.
 
         Args:

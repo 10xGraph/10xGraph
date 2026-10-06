@@ -1,18 +1,18 @@
 """Public Agent facade for graph-based LLM interactions.
 
-The public import path remains ``agentflow.graph.agent.Agent`` while the
-implementation lives in smaller internal modules under ``agentflow.graph.agent_internal``.
+The public import path remains ``tenxgraph.graph.agent.Agent`` while the
+implementation lives in smaller internal modules under ``tenxgraph.graph.agent_internal``.
 """
 
 import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.skills.models import SkillConfig
-from agentflow.core.state.message import Message
-from agentflow.storage.media.config import MultimodalConfig
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.skills.models import SkillConfig
+from tenxgraph.core.state.message import Message
+from tenxgraph.storage.media.config import MultimodalConfig
 
 from .agent_internal.anthropic import AgentAnthropicMixin
 from .agent_internal.constants import DEFAULT_RETRY_CONFIG, REASONING_DEFAULT, RetryConfig
@@ -25,10 +25,10 @@ from .agent_internal.skills import AgentSkillsMixin
 
 
 if TYPE_CHECKING:
-    from agentflow.storage.store.memory_config import MemoryConfig
+    from tenxgraph.storage.store.memory_config import MemoryConfig
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 class Agent(

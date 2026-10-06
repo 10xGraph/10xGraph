@@ -19,16 +19,16 @@ import html as _html_lib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agentflow.qa.evaluation.reporters._html_css import CSS_CONTENT
-from agentflow.qa.evaluation.reporters._html_js import JS_CONTENT
-from agentflow.qa.evaluation.reporters._html_render import render_case
-from agentflow.qa.evaluation.reporters._html_template import build_html
-from agentflow.qa.evaluation.reporters._utils import format_timestamp
-from agentflow.qa.evaluation.reporters.base import BaseReporter
+from tenxgraph.qa.evaluation.reporters._html_css import CSS_CONTENT
+from tenxgraph.qa.evaluation.reporters._html_js import JS_CONTENT
+from tenxgraph.qa.evaluation.reporters._html_render import render_case
+from tenxgraph.qa.evaluation.reporters._html_template import build_html
+from tenxgraph.qa.evaluation.reporters._utils import format_timestamp
+from tenxgraph.qa.evaluation.reporters.base import BaseReporter
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.eval_result import EvalCaseResult, EvalReport
+    from tenxgraph.qa.evaluation.eval_result import EvalCaseResult, EvalReport
 
 
 class HTMLReporter(BaseReporter):

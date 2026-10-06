@@ -7,12 +7,12 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, cast
 
-from agentflow.core.state.message import (
+from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
     generate_id,
 )
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     ImageBlock,
     MediaRef,
@@ -26,7 +26,7 @@ from .openai_responses_converter import OpenAIResponsesConverter, is_responses_a
 from .reasoning_utils import parse_think_tags, parse_thought_tags
 
 
-logger = logging.getLogger("agentflow.adapters.openai")
+logger = logging.getLogger("tenxgraph.adapters.openai")
 
 
 try:

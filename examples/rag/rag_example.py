@@ -21,16 +21,16 @@ from __future__ import annotations
 import asyncio
 import os
 
-from agentflow.core.graph.agent import Agent
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.message import Message
-from agentflow.prebuilt.agent.rag import (
+from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.message import Message
+from tenxgraph.prebuilt.agent.rag import (
     RAGAgent,
     CohereReranker,
     CrossEncoderReranker,
 )
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.store_schema import MemorySearchResult
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.store_schema import MemorySearchResult
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +56,8 @@ class StubStore(BaseStore):
 
     In production use QdrantStore::
 
-        from agentflow.storage import create_local_qdrant_store
-        from agentflow.storage.store.embedding import OpenAIEmbedding
+        from tenxgraph.storage import create_local_qdrant_store
+        from tenxgraph.storage.store.embedding import OpenAIEmbedding
 
         store = create_local_qdrant_store(
             path="./knowledge_base",
@@ -218,8 +218,8 @@ async def scenario_local_reranker():
 """
 PRODUCTION SETUP — swap StubStore for QdrantStore:
 
-    from agentflow.storage import create_local_qdrant_store
-    from agentflow.storage.store.embedding import OpenAIEmbedding
+    from tenxgraph.storage import create_local_qdrant_store
+    from tenxgraph.storage.store.embedding import OpenAIEmbedding
 
     # 1. Create the store
     store = create_local_qdrant_store(

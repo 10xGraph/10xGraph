@@ -1,7 +1,7 @@
 """Gemini Live provider client.
 
 Wraps ``client.aio.live.connect(...)`` (an async context manager yielding a live
-session) behind the provider-neutral :class:`~agentflow.core.realtime.base.RealtimeClient`
+session) behind the provider-neutral :class:`~tenxgraph.core.realtime.base.RealtimeClient`
 protocol. ``normalize_message`` maps a google ``LiveServerMessage`` to the framework's
 :data:`RealtimeEvent` union; it is duck-typed and imports no provider SDK, so it is unit
 testable with lightweight stand-ins.
@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
-from agentflow.core.realtime.base import (
+from tenxgraph.core.realtime.base import (
     INPUT_SAMPLE_RATE,
     OUTPUT_SAMPLE_RATE,
     AudioDeltaEvent,
@@ -163,7 +163,7 @@ class GeminiLiveClient:
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
                 "google-genai SDK is required for Gemini realtime. "
-                "Install it with: pip install 10xscale-agentflow[realtime]"
+                "Install it with: pip install 10xgraph[realtime]"
             ) from exc
         return genai, types
 
@@ -174,7 +174,7 @@ class GeminiLiveClient:
 
     def _build_client(self) -> Any:
         """Construct a google-genai client, supporting both auth modes (mirrors the
-        turn-based factory in ``agentflow.core.llm.client_factory``).
+        turn-based factory in ``tenxgraph.core.llm.client_factory``).
 
         - Vertex AI / service account: ``use_vertex_ai=True`` with ``GOOGLE_CLOUD_PROJECT``
           (and optional ``GOOGLE_CLOUD_LOCATION``); credentials come from Application

@@ -28,13 +28,13 @@ import typing as t
 
 from injectq import Inject
 
-from agentflow.core.state import AgentState, ErrorBlock, Message, ToolCallBlock, ToolResultBlock
-from agentflow.core.state.message_block import RemoteToolCallBlock
-from agentflow.core.state.stream_emitter import StreamEmitter
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.utils import CallbackManager
-from agentflow.utils.injection import fresh
+from tenxgraph.core.state import AgentState, ErrorBlock, Message, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.message_block import RemoteToolCallBlock
+from tenxgraph.core.state.stream_emitter import StreamEmitter
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.injection import fresh
 
 from . import deps
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
@@ -42,7 +42,7 @@ from .run_tools import run_remote_tools, tool_name
 from .schema import SchemaMixin
 
 
-logger = logging.getLogger("agentflow.graph.tool_node")
+logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 
 class ToolNode(
@@ -114,7 +114,7 @@ class ToolNode(
 
         Note:
             When using MCP client functionality, ensure you have installed the required
-            dependencies with: `pip install 10xscale-agentflow[mcp]`
+            dependencies with: `pip install 10xgraph[mcp]`
 
         Example:
             ```python
@@ -135,15 +135,15 @@ class ToolNode(
         logger.info("Initializing ToolNode with %d tools", len(list(tools)))
 
         if client is not None:
-            # Read flags dynamically so tests can patch agentflow.graph.tool_node.HAS_*
-            mod = sys.modules.get("agentflow.graph.tool_node")
+            # Read flags dynamically so tests can patch tenxgraph.graph.tool_node.HAS_*
+            mod = sys.modules.get("tenxgraph.graph.tool_node")
             has_fastmcp = getattr(mod, "HAS_FASTMCP", deps.HAS_FASTMCP) if mod else deps.HAS_FASTMCP
             has_mcp = getattr(mod, "HAS_MCP", deps.HAS_MCP) if mod else deps.HAS_MCP
 
             if not has_fastmcp or not has_mcp:
                 raise ImportError(
                     "MCP client functionality requires 'fastmcp' and 'mcp' packages. "
-                    "Install with: pip install 10xscale-agentflow[mcp]"
+                    "Install with: pip install 10xgraph[mcp]"
                 )
             logger.debug("ToolNode initialized with MCP client")
 

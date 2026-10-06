@@ -10,7 +10,7 @@ including:
 
 Example:
     ```python
-    from agentflow.qa.testing import TestAgent, TestContext, MockToolRegistry
+    from tenxgraph.qa.testing import TestAgent, TestContext, MockToolRegistry
 
     # Use TestAgent as a drop-in replacement for Agent
     test_agent = TestAgent(responses=["Hello from test!"])
@@ -28,7 +28,7 @@ Example:
     assert tools.was_called("get_weather")
 
     # Use MockMCPClient for testing MCP tools
-    from agentflow.qa.testing import MockMCPClient
+    from tenxgraph.qa.testing import MockMCPClient
 
     mock_mcp = MockMCPClient()
     mock_mcp.add_tool(
@@ -54,7 +54,7 @@ from .test_agent import TestAgent
 from .test_result import TestResult
 
 
-logger = logging.getLogger("agentflow.testing")
+logger = logging.getLogger("tenxgraph.testing")
 
 
 class TestContext:
@@ -108,7 +108,7 @@ class TestContext:
         Returns:
             New StateGraph instance with test container
         """
-        from agentflow.core.graph import StateGraph
+        from tenxgraph.core.graph import StateGraph
 
         return StateGraph(state=state, container=self.container)
 

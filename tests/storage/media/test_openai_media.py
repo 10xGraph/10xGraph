@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentflow.core.state.message_block import ImageBlock, MediaRef
+from tenxgraph.core.state.message_block import ImageBlock, MediaRef
 
 
 class TestMediaRefResolverOpenAI:
@@ -13,7 +13,7 @@ class TestMediaRefResolverOpenAI:
 
     @pytest.fixture
     def resolver(self):
-        from agentflow.storage.media.resolver import MediaRefResolver
+        from tenxgraph.storage.media.resolver import MediaRefResolver
         return MediaRefResolver()
 
     @pytest.mark.asyncio
@@ -43,7 +43,7 @@ class TestMediaRefResolverOpenAI:
     @pytest.mark.asyncio
     async def test_text_only_model_raises(self, resolver):
         """OpenAI text-only model raises UnsupportedMediaInputError."""
-        from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
+        from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
 
         ref = MediaRef(kind="url", url="https://example.com/image.png")
 
@@ -79,7 +79,7 @@ class TestImageBlockToOpenAI:
 
     def test_data_block(self):
         """ImageBlock with base64 data converts to data URI."""
-        from agentflow.utils.converter import _image_block_to_openai
+        from tenxgraph.utils.converter import _image_block_to_openai
 
         b64 = base64.b64encode(b"fake-png").decode()
         block = ImageBlock(
@@ -97,7 +97,7 @@ class TestImageBlockToOpenAI:
 
     def test_url_block(self):
         """ImageBlock with URL passes through."""
-        from agentflow.utils.converter import _image_block_to_openai
+        from tenxgraph.utils.converter import _image_block_to_openai
 
         block = ImageBlock(
             media=MediaRef(
@@ -114,7 +114,7 @@ class TestImageBlockToOpenAI:
 
     def test_file_id_block(self):
         """ImageBlock with file_id passes through."""
-        from agentflow.utils.converter import _image_block_to_openai
+        from tenxgraph.utils.converter import _image_block_to_openai
 
         block = ImageBlock(
             media=MediaRef(
@@ -135,7 +135,7 @@ class TestMediaResolverOpenAI:
     @pytest.mark.asyncio
     async def test_gpt4o_mini_supports_images(self):
         """gpt-4o-mini supports images."""
-        from agentflow.storage.media.media_resolver import MediaResolver
+        from tenxgraph.storage.media.media_resolver import MediaResolver
 
         resolver = MediaResolver()
         ref = MediaRef(kind="url", url="https://example.com/image.png")
@@ -147,7 +147,7 @@ class TestMediaResolverOpenAI:
     @pytest.mark.asyncio
     async def test_o1_supports_images(self):
         """o1 supports images."""
-        from agentflow.storage.media.media_resolver import MediaResolver
+        from tenxgraph.storage.media.media_resolver import MediaResolver
 
         resolver = MediaResolver()
         ref = MediaRef(kind="url", url="https://example.com/image.png")

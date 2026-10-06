@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.exceptions")
+logger = logging.getLogger("tenxgraph.exceptions")
 
 
 class GraphError(Exception):
@@ -18,7 +18,7 @@ class GraphError(Exception):
         context (dict): Additional contextual information about the error
 
     Example:
-        >>> from agentflow.exceptions.graph_error import GraphError
+        >>> from tenxgraph.exceptions.graph_error import GraphError
         >>> raise GraphError(
         ...     message="Invalid graph structure",
         ...     error_code="GRAPH_001",

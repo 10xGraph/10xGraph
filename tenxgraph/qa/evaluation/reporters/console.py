@@ -9,16 +9,16 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING, TextIO
 
-from agentflow.qa.evaluation.reporters._utils import (
+from tenxgraph.qa.evaluation.reporters._utils import (
     case_display_name,
     format_timestamp,
     format_tool_calls,
 )
-from agentflow.qa.evaluation.reporters.base import BaseReporter
+from tenxgraph.qa.evaluation.reporters.base import BaseReporter
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.eval_result import EvalCaseResult, EvalReport
+    from tenxgraph.qa.evaluation.eval_result import EvalCaseResult, EvalReport
 
 
 # ---------------------------------------------------------------------------

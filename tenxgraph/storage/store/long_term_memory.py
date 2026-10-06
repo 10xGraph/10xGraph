@@ -30,7 +30,7 @@ Quick start
 ~~~~~~~~~~~
     .. code-block:: python
 
-        from agentflow.store import MemoryIntegration, QdrantStore, OpenAIEmbedding
+        from tenxgraph.store import MemoryIntegration, QdrantStore, OpenAIEmbedding
 
         store = QdrantStore(embedding=OpenAIEmbedding(), path="./memory_data")
         memory = MemoryIntegration(store=store, retrieval_mode="preload")
@@ -63,16 +63,16 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from injectq import InjectQ
 
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.store_schema import MemorySearchResult, MemoryType
-from agentflow.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.state_graph import StateGraph
+    from tenxgraph.core.graph.state_graph import StateGraph
 
-logger = logging.getLogger("agentflow.store.long_term_memory")
+logger = logging.getLogger("tenxgraph.store.long_term_memory")
 
 
 _VALID_MEMORY_TYPES = {m.value for m in MemoryType}
@@ -632,7 +632,7 @@ class MemoryIntegration:
         """
         # Lazy import avoids a circular dependency:
         # prebuilt.tools.memory → storage.store.long_term_memory
-        from agentflow.prebuilt.tools.memory import memory_tool
+        from tenxgraph.prebuilt.tools.memory import memory_tool
 
         return [memory_tool]
 

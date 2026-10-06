@@ -1,4 +1,4 @@
-"""Unit tests for agentflow.runtime.publisher.langsmith_publisher.LangsmithPublisher.
+"""Unit tests for tenxgraph.runtime.publisher.langsmith_publisher.LangsmithPublisher.
 
 All external dependencies (opentelemetry) are fully mocked so the tests run
 without any optional extras installed.
@@ -58,15 +58,15 @@ class TestLangsmithPublisher:
     def test_is_subclass_of_otel_publisher(self):
         mods, *_ = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
-            from agentflow.runtime.publisher.otel_publisher import OtelPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher
 
             assert issubclass(LangsmithPublisher, OtelPublisher)
 
     def test_env_var_key_used(self):
         mods, _prov, _trace, exporter_trace = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "env-key"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher()
 
@@ -76,7 +76,7 @@ class TestLangsmithPublisher:
     def test_explicit_api_key_overrides_env(self):
         mods, _prov, _trace, exporter_trace = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "env-key"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher(api_key="explicit-key")
 
@@ -86,7 +86,7 @@ class TestLangsmithPublisher:
     def test_project_header_added(self):
         mods, _prov, _trace, exporter_trace = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher(project="my-project")
 
@@ -96,7 +96,7 @@ class TestLangsmithPublisher:
     def test_no_project_header_when_absent(self):
         mods, _prov, _trace, exporter_trace = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher()
 
@@ -106,7 +106,7 @@ class TestLangsmithPublisher:
     def test_default_endpoint_gets_traces_suffix(self):
         mods, _prov, _trace, exporter_trace = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher()
 
@@ -116,7 +116,7 @@ class TestLangsmithPublisher:
     def test_custom_endpoint_gets_traces_suffix(self):
         mods, _prov, _trace, exporter_trace = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher(endpoint="https://eu.api.smith.langchain.com/otel/")
 
@@ -126,7 +126,7 @@ class TestLangsmithPublisher:
     def test_new_provider_created_and_set_global_when_none(self):
         mods, provider_instance, trace_mod, _exp = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             LangsmithPublisher()
 
@@ -137,7 +137,7 @@ class TestLangsmithPublisher:
         mods, _prov, trace_mod, _exp = _fake_otel_modules()
         existing_provider = MagicMock(name="existing_provider")
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             pub = LangsmithPublisher(tracer_provider=existing_provider)
 
@@ -148,22 +148,22 @@ class TestLangsmithPublisher:
         assert pub._tracer_arg is existing_provider.get_tracer.return_value
 
     def test_level_stored_on_publisher(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         mods, *_ = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             pub = LangsmithPublisher(level=ObservabilityLevel.FULL)
 
         assert pub._level == ObservabilityLevel.FULL
 
     def test_default_level_is_standard(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         mods, *_ = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             pub = LangsmithPublisher()
 
@@ -172,7 +172,7 @@ class TestLangsmithPublisher:
     def test_raises_value_error_when_no_key(self):
         mods, *_ = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {}, clear=True):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             with pytest.raises(ValueError, match="LANGSMITH_API_KEY"):
                 LangsmithPublisher()
@@ -184,7 +184,7 @@ class TestLangsmithPublisher:
         mods, *_ = _fake_otel_modules()
         mods["opentelemetry.exporter.otlp.proto.http.trace_exporter"] = None
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             with pytest.raises(ImportError, match="opentelemetry-exporter-otlp-proto-http"):
                 LangsmithPublisher()
@@ -194,7 +194,7 @@ class TestLangsmithPublisher:
         mods, *_ = _fake_otel_modules()
         mods["opentelemetry.sdk.trace"] = None
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            from agentflow.runtime.publisher.langsmith_publisher import LangsmithPublisher
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 
             with pytest.raises(ImportError, match="opentelemetry-sdk"):
                 LangsmithPublisher()

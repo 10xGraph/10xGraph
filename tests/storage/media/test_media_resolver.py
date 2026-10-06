@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
-from agentflow.core.state.message_block import MediaRef
-from agentflow.storage.media.capabilities import MediaTransportMode
-from agentflow.storage.media.media_resolver import MediaResolver, _source_kind
+from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
+from tenxgraph.core.state.message_block import MediaRef
+from tenxgraph.storage.media.capabilities import MediaTransportMode
+from tenxgraph.storage.media.media_resolver import MediaResolver, _source_kind
 
 
 class FakeMediaStore:
@@ -179,7 +179,7 @@ class TestMediaRefResolverCapabilityAware:
             "image/png",
             direct_url="https://signed.example.com/image.png",
         )
-        from agentflow.storage.media.resolver import MediaRefResolver
+        from tenxgraph.storage.media.resolver import MediaRefResolver
         return MediaRefResolver(media_store=store)
 
     @pytest.mark.asyncio

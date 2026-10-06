@@ -11,14 +11,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentflow.qa.evaluation.config.eval_config import CriterionConfig, Rubric
-from agentflow.qa.evaluation.criteria.llm_judge import LLMJudgeCriterion
-from agentflow.qa.evaluation.criteria.llm_utils import LLMCallerMixin, _parse_model_provider
-from agentflow.qa.evaluation.token_usage import TokenUsage
-from agentflow.qa.evaluation.criteria.rubric import RubricBasedCriterion
-from agentflow.qa.evaluation.criteria.simulation_goals import SimulationGoalsCriterion
-from agentflow.qa.evaluation.dataset.eval_set import EvalCase, ToolCall
-from agentflow.qa.evaluation.execution.result import ExecutionResult
+from tenxgraph.qa.evaluation.config.eval_config import CriterionConfig, Rubric
+from tenxgraph.qa.evaluation.criteria.llm_judge import LLMJudgeCriterion
+from tenxgraph.qa.evaluation.criteria.llm_utils import LLMCallerMixin, _parse_model_provider
+from tenxgraph.qa.evaluation.token_usage import TokenUsage
+from tenxgraph.qa.evaluation.criteria.rubric import RubricBasedCriterion
+from tenxgraph.qa.evaluation.criteria.simulation_goals import SimulationGoalsCriterion
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, ToolCall
+from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
 
 # ---------------------------------------------------------------------------

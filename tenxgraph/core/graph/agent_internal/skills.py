@@ -6,15 +6,15 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from agentflow.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node import ToolNode
 
 
 if TYPE_CHECKING:
-    from agentflow.core.skills.models import SkillConfig
-    from agentflow.core.skills.registry import SkillsRegistry
+    from tenxgraph.core.skills.models import SkillConfig
+    from tenxgraph.core.skills.registry import SkillsRegistry
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 
 class AgentSkillsMixin:
@@ -45,14 +45,14 @@ class AgentSkillsMixin:
         if skills is None:
             return
 
-        from agentflow.core.skills.activation import (
+        from tenxgraph.core.skills.activation import (
             build_catalog_prompt,
             has_bundled_files,
             make_activate_skill_tool,
             make_read_skill_resource_tool,
         )
-        from agentflow.core.skills.models import SkillConfig
-        from agentflow.core.skills.registry import SkillsRegistry
+        from tenxgraph.core.skills.models import SkillConfig
+        from tenxgraph.core.skills.registry import SkillsRegistry
 
         if not isinstance(skills, SkillConfig):
             raise TypeError(f"Expected SkillConfig, got {type(skills)}")
@@ -154,7 +154,7 @@ class AgentSkillsMixin:
         if not config or not registry or len(registry) == 0:
             return effective_system_prompt
 
-        from agentflow.core.skills.activation import (
+        from tenxgraph.core.skills.activation import (
             format_skill_content,
             get_active_skills,
             skill_in_context,

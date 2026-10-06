@@ -6,11 +6,11 @@
 
 # Install the extra:
 
-#     pip install 10xscale-agentflow[a2a_sdk]
+#     pip install 10xgraph[a2a_sdk]
 
 # Quick start - server:
 
-#     from agentflow.runtime.protocols.a2a import (
+#     from tenxgraph.runtime.protocols.a2a import (
 #         AgentFlowExecutor,
 #         create_a2a_server,
 #         make_agent_card,
@@ -18,7 +18,7 @@
 
 # Quick start - client:
 
-#     from agentflow.runtime.protocols.a2a import delegate_to_a2a_agent
+#     from tenxgraph.runtime.protocols.a2a import delegate_to_a2a_agent
 # """
 
 # from .client import create_a2a_client_node, delegate_to_a2a_agent

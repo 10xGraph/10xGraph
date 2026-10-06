@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 T = TypeVar("T")
 

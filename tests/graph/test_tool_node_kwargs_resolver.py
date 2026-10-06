@@ -2,7 +2,7 @@ import inspect
 
 import pytest
 
-from agentflow.core.graph.tool_node.kwargs_resolver import KwargsResolverMixin
+from tenxgraph.core.graph.tool_node.kwargs_resolver import KwargsResolverMixin
 
 
 class _Resolver(KwargsResolverMixin):

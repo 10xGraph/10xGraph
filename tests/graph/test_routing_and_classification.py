@@ -2,12 +2,12 @@
 
 import pytest
 
-from agentflow.core.exceptions import GraphError
-from agentflow.core.graph.agent_internal.execution import AgentExecutionMixin as AgentExecution
-from agentflow.core.graph.edge import Edge
-from agentflow.core.graph.utils.utils import get_next_node
-from agentflow.core.state import AgentState
-from agentflow.utils.constants import END, DEFAULT_ANONYMOUS_USER_ID
+from tenxgraph.core.exceptions import GraphError
+from tenxgraph.core.graph.agent_internal.execution import AgentExecutionMixin as AgentExecution
+from tenxgraph.core.graph.edge import Edge
+from tenxgraph.core.graph.utils.utils import get_next_node
+from tenxgraph.core.state import AgentState
+from tenxgraph.utils.constants import END, DEFAULT_ANONYMOUS_USER_ID
 
 
 class TestConditionalEdgeFailsLoudly:

@@ -7,15 +7,15 @@ from collections.abc import Callable
 
 from injectq import inject, Inject
 
-from agentflow.core.exceptions import (
+from tenxgraph.core.exceptions import (
     GraphRecursionError,
     GraphStopRequested,
     NodeTimeoutError,
 )
-from agentflow.core.graph.edge import Edge
-from agentflow.core.graph.node import Node
-from agentflow.core.graph.utils.guards import execute_with_guards, resolve_timeout
-from agentflow.core.graph.utils.utils import (
+from tenxgraph.core.graph.edge import Edge
+from tenxgraph.core.graph.node import Node
+from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
+from tenxgraph.core.graph.utils.utils import (
     calculate_token_usage,
     call_realtime_sync,
     get_next_node,
@@ -23,15 +23,15 @@ from agentflow.core.graph.utils.utils import (
     parse_response,
     sync_data,
 )
-from agentflow.storage.checkpointer import BaseCheckpointer
-from agentflow.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END, ResponseGranularity, metrics
-from agentflow.utils.logging import bind_log_context_from_config, set_log_context
-from agentflow.core.state.reducers import add_messages
-from agentflow.utils.callbacks import CallbackManager, GraphLifecycleContext
+from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END, ResponseGranularity, metrics
+from tenxgraph.utils.logging import bind_log_context_from_config, set_log_context
+from tenxgraph.core.state.reducers import add_messages
+from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 
 from .handler_utils import (
     check_and_handle_interrupt,
@@ -47,8 +47,8 @@ from .handler_mixins import (
     BaseLoggingMixin,
     InterruptConfigMixin,
 )
-from agentflow.utils.injection import fresh
-from agentflow.utils.interrupt import (
+from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.interrupt import (
     GraphInterrupt,
     clear_resume_values,
     node_scope,
@@ -58,7 +58,7 @@ from agentflow.utils.interrupt import (
 
 StateT = TypeVar("StateT", bound=AgentState)
 
-logger = logging.getLogger("agentflow.graph")
+logger = logging.getLogger("tenxgraph.graph")
 
 
 class InvokeHandler[StateT: AgentState](
@@ -118,10 +118,10 @@ class InvokeHandler[StateT: AgentState](
         # latency distribution. The timer tags each observation with its outcome,
         # so success and failure latencies can be separated.
         attrs = {"node": node_name}
-        metrics.counter("agentflow.node.executions").inc(attributes=attrs)
+        metrics.counter("tenxgraph.node.executions").inc(attributes=attrs)
 
         try:
-            with metrics.timer("agentflow.node.duration", attributes=attrs):
+            with metrics.timer("tenxgraph.node.duration", attributes=attrs):
                 return await execute_with_guards(
                     node.execute(config, state),  # type: ignore[arg-type]
                     timeout=timeout,
@@ -137,13 +137,13 @@ class InvokeHandler[StateT: AgentState](
                     on_stop=lambda: GraphStopRequested(node_name),
                 )
         except NodeTimeoutError:
-            metrics.counter("agentflow.node.timeouts").inc(attributes=attrs)
+            metrics.counter("tenxgraph.node.timeouts").inc(attributes=attrs)
             raise
         except GraphStopRequested:
-            metrics.counter("agentflow.node.stopped").inc(attributes=attrs)
+            metrics.counter("tenxgraph.node.stopped").inc(attributes=attrs)
             raise
         except Exception:
-            metrics.counter("agentflow.node.errors").inc(attributes=attrs)
+            metrics.counter("tenxgraph.node.errors").inc(attributes=attrs)
             raise
 
     async def _execute_graph(  # noqa: PLR0911, PLR0912, PLR0915

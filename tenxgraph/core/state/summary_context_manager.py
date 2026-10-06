@@ -21,17 +21,17 @@ import asyncio
 import logging
 from typing import Literal, TypeVar
 
-from agentflow.core.llm.caller import call_llm
-from agentflow.core.llm.client_factory import detect_provider
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.core.state.message import Message
-from agentflow.core.state.reducers import remove_tool_messages
+from tenxgraph.core.llm.caller import call_llm
+from tenxgraph.core.llm.client_factory import detect_provider
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.reducers import remove_tool_messages
 
 
 S = TypeVar("S", bound=AgentState)
 
-logger = logging.getLogger("agentflow.state.summary")
+logger = logging.getLogger("tenxgraph.state.summary")
 
 _DEFAULT_SUMMARY_PROMPT = (
     "You are a conversation summarizer. "
@@ -105,7 +105,7 @@ class SummaryContextManager(BaseContextManager[S]):
 
     Example::
 
-        from agentflow.core.state import SummaryContextManager
+        from tenxgraph.core.state import SummaryContextManager
 
         manager = SummaryContextManager(
             model="gemini-2.0-flash",

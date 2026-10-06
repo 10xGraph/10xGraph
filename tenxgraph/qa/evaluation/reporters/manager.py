@@ -13,14 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agentflow.qa.evaluation.reporters._utils import format_timestamp
+from tenxgraph.qa.evaluation.reporters._utils import format_timestamp
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.config.eval_config import ReporterConfig
-    from agentflow.qa.evaluation.eval_result import EvalReport
+    from tenxgraph.qa.evaluation.config.eval_config import ReporterConfig
+    from tenxgraph.qa.evaluation.eval_result import EvalReport
 
-logger = logging.getLogger("agentflow.evaluation.reporters")
+logger = logging.getLogger("tenxgraph.evaluation.reporters")
 
 
 @dataclass
@@ -61,8 +61,8 @@ class ReporterManager:
 
     Example:
         ```python
-        from agentflow.qa.evaluation.config.eval_config import ReporterConfig
-        from agentflow.qa.evaluation.reporters.manager import ReporterManager
+        from tenxgraph.qa.evaluation.config.eval_config import ReporterConfig
+        from tenxgraph.qa.evaluation.reporters.manager import ReporterManager
 
         manager = ReporterManager(ReporterConfig())
         output = manager.run_all(report)
@@ -144,7 +144,7 @@ class ReporterManager:
 
     def _run_console(self, report: EvalReport, output: ReporterOutput) -> bool:
         try:
-            from agentflow.qa.evaluation.reporters.console import ConsoleReporter
+            from tenxgraph.qa.evaluation.reporters.console import ConsoleReporter
 
             reporter = ConsoleReporter(
                 use_color=True,
@@ -167,7 +167,7 @@ class ReporterManager:
         output: ReporterOutput,
     ) -> str | None:
         try:
-            from agentflow.qa.evaluation.reporters.json import JSONReporter
+            from tenxgraph.qa.evaluation.reporters.json import JSONReporter
 
             reporter = JSONReporter(
                 indent=2,
@@ -194,7 +194,7 @@ class ReporterManager:
         output: ReporterOutput,
     ) -> str | None:
         try:
-            from agentflow.qa.evaluation.reporters.html import HTMLReporter
+            from tenxgraph.qa.evaluation.reporters.html import HTMLReporter
 
             reporter = HTMLReporter(
                 include_details=self.config.include_details,
@@ -220,7 +220,7 @@ class ReporterManager:
         output: ReporterOutput,
     ) -> str | None:
         try:
-            from agentflow.qa.evaluation.reporters.json import JUnitXMLReporter
+            from tenxgraph.qa.evaluation.reporters.json import JUnitXMLReporter
 
             reporter = JUnitXMLReporter()
             path = str(Path(out_dir) / f"{stem}_junit.xml")

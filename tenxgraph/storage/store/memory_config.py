@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agentflow.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.base_store import BaseStore
 
 from .long_term_memory import ReadMode
 
@@ -122,7 +122,7 @@ class MemoryConfig(BaseModel):
         if self.retrieval_mode != ReadMode.POSTLOAD:
             return []
 
-        from agentflow.prebuilt.tools.memory import make_agent_memory_tool, make_user_memory_tool
+        from tenxgraph.prebuilt.tools.memory import make_agent_memory_tool, make_user_memory_tool
 
         tools: list[Any] = []
         if self.user_memory and self.user_memory.enabled:

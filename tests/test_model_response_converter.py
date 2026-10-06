@@ -7,15 +7,15 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
 import pytest
 
-from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
-from agentflow.runtime.adapters.llm.base_converter import BaseConverter
-from agentflow.core.state.message import Message
+from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter
+from tenxgraph.core.state.message import Message
 
 
 class TestModelResponseConverter:
     """Test suite for ModelResponseConverter."""
 
-    @patch('agentflow.runtime.adapters.llm.openai_converter.OpenAIConverter')
+    @patch('tenxgraph.runtime.adapters.llm.openai_converter.OpenAIConverter')
     def test_initialization_with_string_converter(self, MockConverter):
         """Test initialization with string converter identifier."""
         response = "test response"
@@ -80,7 +80,7 @@ class TestModelResponseConverter:
 
         converter = ModelResponseConverter(None, mock_converter)
 
-        with caplog.at_level(logging.WARNING, logger="agentflow.adapters"):
+        with caplog.at_level(logging.WARNING, logger="tenxgraph.adapters"):
             await converter.invoke()
 
         assert "Received empty response while converting a model response" in caplog.text
@@ -213,7 +213,7 @@ class TestModelResponseConverter:
         mock_converter.convert_streaming_response = Mock(return_value=mock_stream_generator())
         converter = ModelResponseConverter(None, mock_converter)
 
-        with caplog.at_level(logging.WARNING, logger="agentflow.adapters"):
+        with caplog.at_level(logging.WARNING, logger="tenxgraph.adapters"):
             results = []
             async for message in converter.stream(config, node_name):
                 results.append(message)
@@ -489,7 +489,7 @@ class TestModelResponseConverter:
             assert len(results) == 1
             assert results[0].text() == f"Stream: stream_{i}"
 
-    @patch('agentflow.runtime.adapters.llm.google_genai_converter.GoogleGenAIConverter')
+    @patch('tenxgraph.runtime.adapters.llm.google_genai_converter.GoogleGenAIConverter')
     def test_google_converter_import_and_creation(self, MockGoogle):
         """Test that GoogleGenAIConverter is properly imported and created."""
         mock_instance = Mock(spec=BaseConverter)

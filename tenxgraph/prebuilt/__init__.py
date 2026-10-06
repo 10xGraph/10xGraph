@@ -1,14 +1,14 @@
 """Prebuilt tools and agent packages for Agentflow.
 
-Import concrete agent implementations from ``agentflow.prebuilt.agent`` and
-tool helpers from ``agentflow.prebuilt.tools``.
+Import concrete agent implementations from ``tenxgraph.prebuilt.agent`` and
+tool helpers from ``tenxgraph.prebuilt.tools``.
 """
 
 from __future__ import annotations
 
 # Context managers
-from agentflow.core.state.message_context_manager import MessageContextManager
-from agentflow.core.state.summary_context_manager import SummaryContextManager
+from tenxgraph.core.state.message_context_manager import MessageContextManager
+from tenxgraph.core.state.summary_context_manager import SummaryContextManager
 
 # Agents
 from .agent import (

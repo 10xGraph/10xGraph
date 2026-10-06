@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentflow.runtime.adapters.llm.openai_responses_converter import (
+from tenxgraph.runtime.adapters.llm.openai_responses_converter import (
     OpenAIResponsesConverter,
     is_responses_api_response,
 )
-from agentflow.core.state.message_block import ReasoningBlock, TextBlock, ToolCallBlock
+from tenxgraph.core.state.message_block import ReasoningBlock, TextBlock, ToolCallBlock
 
 
 # ---------------------------------------------------------------------------
@@ -212,18 +212,18 @@ class TestResponsesConverterStreaming:
 
 class TestConverterRegistration:
     def test_openai_responses_key(self):
-        from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+        from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
         mrc = ModelResponseConverter(response="dummy", converter="openai_responses")
         assert isinstance(mrc.converter, OpenAIResponsesConverter)
 
     def test_openai_key_still_works(self):
-        from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
-        from agentflow.runtime.adapters.llm.openai_converter import OpenAIConverter
+        from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+        from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
         mrc = ModelResponseConverter(response="dummy", converter="openai")
         assert isinstance(mrc.converter, OpenAIConverter)
 
     def test_invalid_key_raises(self):
-        from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+        from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
         with pytest.raises(ValueError, match="Unsupported converter"):
             ModelResponseConverter(response="dummy", converter="not_real")
 
@@ -232,7 +232,7 @@ class TestConverterRegistration:
 class TestAutoDetectionBridge:
     async def test_responses_api_delegated_via_openai_converter(self):
         """Responses API response passed to OpenAIConverter is auto-delegated."""
-        from agentflow.runtime.adapters.llm.openai_converter import OpenAIConverter
+        from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
         msg = await OpenAIConverter().convert_response(
             _make_response(output=[_make_message_item("Delegated!")])
         )

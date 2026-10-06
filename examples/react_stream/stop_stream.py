@@ -5,10 +5,10 @@ import time
 
 from dotenv import load_dotenv
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils.constants import END
 
 
 # Example: Stop a running streaming graph from the frontend (or caller).

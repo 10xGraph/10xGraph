@@ -2,9 +2,9 @@
 
 The agent owns the full retrieval pipeline so users only need to bring:
 
-* a **store** (``QdrantStore`` or any :class:`~agentflow.storage.store.BaseStore`)
+* a **store** (``QdrantStore`` or any :class:`~tenxgraph.storage.store.BaseStore`)
   that backs the knowledge base;
-* a **pre-built agent** (``Agent`` or any :class:`~agentflow.core.graph.base_agent.BaseAgent`)
+* a **pre-built agent** (``Agent`` or any :class:`~tenxgraph.core.graph.base_agent.BaseAgent`)
   that generates the final answer;
 * an optional **reranker** to improve precision before synthesis.
 
@@ -22,10 +22,10 @@ LLM, keeping the agent's own ``system_prompt`` untouched.
 
 Example — no reranker::
 
-    from agentflow.core.graph import Agent
-    from agentflow.prebuilt.agent import RAGAgent
-    from agentflow.storage import create_local_qdrant_store
-    from agentflow.storage.store.embedding import OpenAIEmbedding
+    from tenxgraph.core.graph import Agent
+    from tenxgraph.prebuilt.agent import RAGAgent
+    from tenxgraph.storage import create_local_qdrant_store
+    from tenxgraph.storage.store.embedding import OpenAIEmbedding
 
     store = create_local_qdrant_store(
         path="./knowledge_base",
@@ -40,7 +40,7 @@ Example — no reranker::
 
 Example — with Cohere Rerank::
 
-    from agentflow.prebuilt.agent.rag import CohereReranker
+    from tenxgraph.prebuilt.agent.rag import CohereReranker
 
     rag = RAGAgent(
         store=store,
@@ -53,7 +53,7 @@ Example — with Cohere Rerank::
 
 Example — fully local with CrossEncoder::
 
-    from agentflow.prebuilt.agent.rag import CrossEncoderReranker
+    from tenxgraph.prebuilt.agent.rag import CrossEncoderReranker
 
     rag = RAGAgent(
         store=store,
@@ -72,23 +72,23 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from injectq import InjectQ
 
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.graph.state_graph import StateGraph
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.core.state.message import Message
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.store_schema import RetrievalStrategy
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.utils.constants import END
-from agentflow.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.graph.state_graph import StateGraph
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.message import Message
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.store_schema import RetrievalStrategy
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
-logger = logging.getLogger("agentflow.prebuilt.rag")
+logger = logging.getLogger("tenxgraph.prebuilt.rag")
 
 StateT = TypeVar("StateT", bound=AgentState)
 
@@ -247,9 +247,9 @@ class RAGAgent[StateT: AgentState]:
 
     The agent owns the full retrieval pipeline.  Users provide:
 
-    * ``store`` — the knowledge base (:class:`~agentflow.storage.store.BaseStore`)
+    * ``store`` — the knowledge base (:class:`~tenxgraph.storage.store.BaseStore`)
     * ``agent`` — the LLM that generates the answer
-        (:class:`~agentflow.core.graph.base_agent.BaseAgent`)
+        (:class:`~tenxgraph.core.graph.base_agent.BaseAgent`)
     * ``reranker`` — optional :class:`BaseReranker` for improved precision
 
     Args:
@@ -269,7 +269,7 @@ class RAGAgent[StateT: AgentState]:
         top_n: Documents forwarded to the LLM after reranking (default ``3``).
             Ignored when no reranker is provided — all ``top_k`` docs are used.
         retrieval_strategy: Vector search strategy passed to ``store.asearch``
-            (default :attr:`~agentflow.storage.store.store_schema.RetrievalStrategy.SIMILARITY`).
+            (default :attr:`~tenxgraph.storage.store.store_schema.RetrievalStrategy.SIMILARITY`).
         score_threshold: Minimum similarity score; ``None`` means no cutoff.
         store_config: Extra key/value pairs passed as the ``config`` argument
             to every ``store.asearch`` call (e.g. ``{"user_id": "u42"}``).
@@ -463,7 +463,7 @@ class RAGAgent[StateT: AgentState]:
             shutdown_timeout: Graceful shutdown timeout (seconds).
 
         Returns:
-            A compiled, invocable :class:`~agentflow.core.graph.CompiledGraph`.
+            A compiled, invocable :class:`~tenxgraph.core.graph.CompiledGraph`.
         """
         self._configure_graph()
         return self._graph.compile(

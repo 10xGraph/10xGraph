@@ -2,9 +2,9 @@
 
 This package provides all persistence and media-handling infrastructure:
 
-- ``agentflow.storage.checkpointer`` — agent state persistence (in-memory, Postgres, SQLite)
-- ``agentflow.storage.store``        — vector/long-term memory stores (Qdrant, Mem0, ...)
-- ``agentflow.storage.media``        — multimodal media processing, storage, and resolution
+- ``tenxgraph.storage.checkpointer`` — agent state persistence (in-memory, Postgres, SQLite)
+- ``tenxgraph.storage.store``        — vector/long-term memory stores (Qdrant, Mem0, ...)
+- ``tenxgraph.storage.media``        — multimodal media processing, storage, and resolution
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ _MEMORY_TOOL_EXPORTS = {
 def __getattr__(name: str) -> _Any:
     """Keep prebuilt memory tools lazy at the storage package boundary."""
     if name in _MEMORY_TOOL_EXPORTS:
-        memory_tools = _import_module("agentflow.prebuilt.tools.memory")
+        memory_tools = _import_module("tenxgraph.prebuilt.tools.memory")
         value = getattr(memory_tools, name)
         globals()[name] = value
         return value

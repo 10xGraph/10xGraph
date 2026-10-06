@@ -8,11 +8,11 @@ graph that ever ran in a process decided which checkpointer every later graph pe
 import pytest
 from injectq import Inject, InjectQ
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer import BaseCheckpointer, InMemoryCheckpointer
-from agentflow.utils.constants import END
-from agentflow.utils.injection import fresh
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer import BaseCheckpointer, InMemoryCheckpointer
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.injection import fresh
 
 
 class _Service:
@@ -70,6 +70,6 @@ async def test_each_graph_persists_to_its_own_checkpointer():
 
 
 def test_fresh_returns_none_for_an_unbound_abstract_service():
-    from agentflow.runtime.publisher.base_publisher import BasePublisher
+    from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 
     assert fresh(Inject[BasePublisher]) is None

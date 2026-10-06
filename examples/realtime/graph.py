@@ -15,9 +15,9 @@ import os
 
 from dotenv import find_dotenv, load_dotenv
 
-from agentflow.core.realtime.base import RealtimeConfig
-from agentflow.prebuilt.agent import AudioAgent
-from agentflow.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.realtime.base import RealtimeConfig
+from tenxgraph.prebuilt.agent import AudioAgent
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
 
 # Load .env reliably regardless of the launch directory.

@@ -1,8 +1,8 @@
 from unittest.mock import MagicMock, patch
 
-from agentflow.qa.evaluation.config.eval_config import ReporterConfig
-from agentflow.qa.evaluation.eval_result import CriterionResult, EvalCaseResult, EvalReport
-from agentflow.qa.evaluation.reporters.manager import ReporterManager, ReporterOutput
+from tenxgraph.qa.evaluation.config.eval_config import ReporterConfig
+from tenxgraph.qa.evaluation.eval_result import CriterionResult, EvalCaseResult, EvalReport
+from tenxgraph.qa.evaluation.reporters.manager import ReporterManager, ReporterOutput
 
 
 def _sample_report() -> EvalReport:
@@ -46,10 +46,10 @@ def test_run_all_executes_enabled_reporters_and_generates_paths(tmp_path):
     manager = ReporterManager(config)
     report = _sample_report()
 
-    with patch("agentflow.qa.evaluation.reporters.console.ConsoleReporter") as console_cls, patch(
-        "agentflow.qa.evaluation.reporters.json.JSONReporter"
-    ) as json_cls, patch("agentflow.qa.evaluation.reporters.html.HTMLReporter") as html_cls, patch(
-        "agentflow.qa.evaluation.reporters.json.JUnitXMLReporter"
+    with patch("tenxgraph.qa.evaluation.reporters.console.ConsoleReporter") as console_cls, patch(
+        "tenxgraph.qa.evaluation.reporters.json.JSONReporter"
+    ) as json_cls, patch("tenxgraph.qa.evaluation.reporters.html.HTMLReporter") as html_cls, patch(
+        "tenxgraph.qa.evaluation.reporters.json.JUnitXMLReporter"
     ) as junit_cls:
         console_inst = MagicMock()
         json_inst = MagicMock()
@@ -87,8 +87,8 @@ def test_run_all_collects_reporter_errors_and_continues(tmp_path):
     )
     manager = ReporterManager(config)
 
-    with patch("agentflow.qa.evaluation.reporters.console.ConsoleReporter") as console_cls, patch(
-        "agentflow.qa.evaluation.reporters.json.JSONReporter"
+    with patch("tenxgraph.qa.evaluation.reporters.console.ConsoleReporter") as console_cls, patch(
+        "tenxgraph.qa.evaluation.reporters.json.JSONReporter"
     ) as json_cls:
         console_inst = MagicMock()
         console_inst.report.side_effect = RuntimeError("console boom")
@@ -130,7 +130,7 @@ def test_run_all_records_directory_creation_error(monkeypatch, tmp_path):
 
     monkeypatch.setattr("pathlib.Path.mkdir", _boom)
 
-    with patch("agentflow.qa.evaluation.reporters.console.ConsoleReporter") as console_cls:
+    with patch("tenxgraph.qa.evaluation.reporters.console.ConsoleReporter") as console_cls:
         console_inst = MagicMock()
         console_cls.return_value = console_inst
         out = manager.run_all(_sample_report())

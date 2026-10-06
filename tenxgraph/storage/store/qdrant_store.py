@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from agentflow.core.state import Message
+from tenxgraph.core.state import Message
 
 from .base_store import BaseStore
 from .embedding.base_embedding import BaseEmbedding
@@ -33,7 +33,7 @@ try:
 except ImportError:
     pass
 
-logger = logging.getLogger("agentflow.store")
+logger = logging.getLogger("tenxgraph.store")
 
 # Payload fields the store owns. Caller metadata is stored alongside them but can never
 # replace them -- in particular ``user_id``, which every read filters on.
@@ -106,7 +106,7 @@ class QdrantStore(BaseStore):
         if not HAS_QDRANT:
             raise ImportError(
                 "qdrant-client package is required for QdrantStore. "
-                "Install with `pip install 'agentflow[qdrant]'`."
+                "Install with `pip install '10xgraph[qdrant]'`."
             )
         self.embedding = embedding
 

@@ -3,7 +3,7 @@
 Uses aiokafka to publish events to a Kafka topic.
 
 Dependency: aiokafka
-Not installed by default; install extra: `pip install 10xscale-agentflow[kafka]`.
+Not installed by default; install extra: `pip install 10xgraph[kafka]`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .base_publisher import BasePublisher
 from .events import EventModel
 
 
-logger = logging.getLogger("agentflow.publisher")
+logger = logging.getLogger("tenxgraph.publisher")
 
 
 class KafkaPublisher(BasePublisher):
@@ -47,7 +47,7 @@ class KafkaPublisher(BasePublisher):
         Args:
             config: Configuration dictionary. Supported keys:
                 - bootstrap_servers: Kafka bootstrap servers (default: "localhost:9092").
-                - topic: Kafka topic to publish to (default: "agentflow.events").
+                - topic: Kafka topic to publish to (default: "tenxgraph.events").
                 - client_id: Client ID for the producer.
                 - max_batch_size: Maximum batch size in bytes (default: 16384).
                 - linger_ms: Linger time in milliseconds (default: 0).
@@ -56,7 +56,7 @@ class KafkaPublisher(BasePublisher):
         """
         super().__init__(config or {})
         self.bootstrap_servers: str = self.config.get("bootstrap_servers", "localhost:9092")
-        self.topic: str = self.config.get("topic", "agentflow.events")
+        self.topic: str = self.config.get("topic", "tenxgraph.events")
         self.client_id: str | None = self.config.get("client_id")
         self.max_batch_size: int = self.config.get("max_batch_size", 16384)
         self.linger_ms: int = self.config.get("linger_ms", 0)
@@ -89,7 +89,7 @@ class KafkaPublisher(BasePublisher):
             except Exception as exc:
                 raise RuntimeError(
                     "KafkaPublisher requires the 'aiokafka' package. Install with "
-                    "'pip install 10xscale-agentflow[kafka]' or 'pip install aiokafka'."
+                    "'pip install 10xgraph[kafka]' or 'pip install aiokafka'."
                 ) from exc
 
             producer_cls = aiokafka.AIOKafkaProducer

@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
 
 
 class TestCheckpointerIntegration:
@@ -181,7 +181,7 @@ class TestCheckpointerIntegration:
         thread_id = "test_checkpoint_error_recovery"
 
         # First execution should fail
-        from agentflow.core.exceptions import NodeError
+        from tenxgraph.core.exceptions import NodeError
 
         with pytest.raises(NodeError):
             await compiled.ainvoke({"messages": messages}, config={"thread_id": thread_id})

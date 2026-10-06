@@ -15,7 +15,7 @@ process and died with it.
 at the call site.
 
 Usage:
-    from agentflow.utils.metrics import counter, timer, setup_otel_metrics
+    from tenxgraph.utils.metrics import counter, timer, setup_otel_metrics
 
     setup_otel_metrics()  # once, at startup, if you want OTEL export
 
@@ -24,7 +24,7 @@ Usage:
         ...
 
     # With attributes (dimensions), for OTEL:
-    counter('agentflow.node.executions').inc(attributes={"node": "agent"})
+    counter('tenxgraph.node.executions').inc(attributes={"node": "agent"})
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-logger = logging.getLogger("agentflow.metrics")
+logger = logging.getLogger("tenxgraph.metrics")
 
 _LOCK = threading.RLock()
 _COUNTERS: dict[str, Counter] = {}

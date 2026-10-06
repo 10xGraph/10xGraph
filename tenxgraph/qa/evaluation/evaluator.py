@@ -14,27 +14,27 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agentflow.qa.evaluation.collectors.trajectory_collector import (
+from tenxgraph.qa.evaluation.collectors.trajectory_collector import (
     TrajectoryCollector,
     make_trajectory_callback,
 )
-from agentflow.qa.evaluation.config.eval_config import CriterionConfig, EvalConfig
-from agentflow.qa.evaluation.criteria import CRITERIA_REGISTRY
-from agentflow.qa.evaluation.criteria.base import BaseCriterion
-from agentflow.qa.evaluation.dataset.eval_set import EvalCase, EvalSet
-from agentflow.qa.evaluation.eval_result import (
+from tenxgraph.qa.evaluation.config.eval_config import CriterionConfig, EvalConfig
+from tenxgraph.qa.evaluation.criteria import CRITERIA_REGISTRY
+from tenxgraph.qa.evaluation.criteria.base import BaseCriterion
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet
+from tenxgraph.qa.evaluation.eval_result import (
     CriterionResult,
     EvalCaseResult,
     EvalReport,
 )
-from agentflow.qa.evaluation.execution.result import ExecutionResult, NodeResponseData
-from agentflow.utils.callbacks import CallbackManager
+from tenxgraph.qa.evaluation.execution.result import ExecutionResult, NodeResponseData
+from tenxgraph.utils.callbacks import CallbackManager
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.compiled_graph import CompiledGraph
+    from tenxgraph.core.graph.compiled_graph import CompiledGraph
 
-logger = logging.getLogger("agentflow.evaluation")
+logger = logging.getLogger("tenxgraph.evaluation")
 
 
 class AgentEvaluator:
@@ -55,8 +55,8 @@ class AgentEvaluator:
 
     Example:
         ```python
-        from agentflow.qa.evaluation import AgentEvaluator, EvalConfig
-        from agentflow.qa.evaluation.collectors import TrajectoryCollector, make_trajectory_callback
+        from tenxgraph.qa.evaluation import AgentEvaluator, EvalConfig
+        from tenxgraph.qa.evaluation.collectors import TrajectoryCollector, make_trajectory_callback
 
         collector = TrajectoryCollector(capture_all_events=True)
         _, callback_mgr = make_trajectory_callback(collector)
@@ -245,7 +245,7 @@ class AgentEvaluator:
             output_dir: Optional override for the report output directory.
         """
         try:
-            from agentflow.qa.evaluation.reporters.manager import ReporterManager
+            from tenxgraph.qa.evaluation.reporters.manager import ReporterManager
 
             reporter_cfg = self.config.reporter
             if not reporter_cfg.enabled:
@@ -411,7 +411,7 @@ class AgentEvaluator:
         Returns either a tuple of (ExecutionResult, turn_results) on success,
         or an EvalCaseResult failure if a turn raises an exception.
         """
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
 
         cumulative_messages: list[Any] = []
         turn_results: list[dict[str, Any]] = []
@@ -554,7 +554,7 @@ class AgentEvaluator:
             criterion_results = await self._evaluate_criteria(execution, case)
 
             # Aggregate agent + judge token usage
-            from agentflow.qa.evaluation.token_usage import TokenUsage
+            from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
             agent_token_usage = execution.token_usage
             criteria_token_usage = sum((cr.token_usage for cr in criterion_results), TokenUsage())
@@ -660,7 +660,7 @@ class AgentEvaluator:
         """
         graph = cls._load_graph(agent_module)
         config = cls._load_config(config_file) if config_file else None
-        from agentflow.qa.evaluation.collectors import TrajectoryCollector, make_trajectory_callback
+        from tenxgraph.qa.evaluation.collectors import TrajectoryCollector, make_trajectory_callback
 
         collector = TrajectoryCollector(capture_all_events=True)
         _, callback_mgr = make_trajectory_callback(collector)
@@ -787,7 +787,7 @@ class EvaluationRunner:
     def _run_reporters(self, config: EvalConfig) -> None:
         """Run reporters for each collected report."""
         try:
-            from agentflow.qa.evaluation.reporters.manager import ReporterManager
+            from tenxgraph.qa.evaluation.reporters.manager import ReporterManager
 
             reporter_cfg = config.reporter
             if not reporter_cfg.enabled:

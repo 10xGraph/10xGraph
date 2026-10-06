@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.eval_result import EvalCaseResult
+    from tenxgraph.qa.evaluation.eval_result import EvalCaseResult
 
 
 def format_timestamp(ts: float, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:

@@ -8,12 +8,12 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
 
-from agentflow.core.state.message import (
+from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
     generate_id,
 )
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message_block import (
     ReasoningBlock,
     TextBlock,
     ToolCallBlock,
@@ -22,7 +22,7 @@ from agentflow.core.state.message_block import (
 from .base_converter import BaseConverter
 
 
-logger = logging.getLogger("agentflow.adapters.anthropic")
+logger = logging.getLogger("tenxgraph.adapters.anthropic")
 
 # A refusal is a successful HTTP 200 whose content may be empty or partial.
 _REFUSAL = "refusal"

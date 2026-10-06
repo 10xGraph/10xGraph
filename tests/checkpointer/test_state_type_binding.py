@@ -13,11 +13,11 @@ from enum import Enum
 import pytest
 from pydantic import BaseModel
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.storage.checkpointer.base_checkpointer import STATE_META_KEY
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.storage.checkpointer.base_checkpointer import STATE_META_KEY
+from tenxgraph.utils.constants import END
 
 
 class Level(Enum):
@@ -119,7 +119,7 @@ def test_legacy_class_path_row_loads_without_importing_it():
     # Rows written before this change carry a module path. It must be ignored,
     # not imported: this one points at a module that does not exist.
     row = _candidate().model_dump(mode="json")
-    row["__class_path__"] = "agentflow.gone.module.CandidateState"
+    row["__class_path__"] = "tenxgraph.gone.module.CandidateState"
     restored = _bound(CandidateState)._decode_state(row)
     assert type(restored) is CandidateState
     assert restored.current_location == "Dhaka"

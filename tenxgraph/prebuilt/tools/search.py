@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import Any
 
-from agentflow.utils.decorators import tool
+from tenxgraph.utils.decorators import tool
 
 
 _DEFAULT_MODEL = "gemini-2.5-flash"
@@ -53,7 +53,7 @@ def _google_web_search_sync(query: str, model: str, max_chars: int) -> dict[str,
         return {
             "error": (
                 "google-genai is required for google_web_search. "
-                "Install with: pip install 10xscale-agentflow[google-genai]"
+                "Install with: pip install 10xgraph[google-genai]"
             )
         }
 
@@ -83,7 +83,7 @@ def _vertex_ai_search_sync(
         return {
             "error": (
                 "google-genai is required for vertex_ai_search. "
-                "Install with: pip install 10xscale-agentflow[google-genai]"
+                "Install with: pip install 10xgraph[google-genai]"
             )
         }
 

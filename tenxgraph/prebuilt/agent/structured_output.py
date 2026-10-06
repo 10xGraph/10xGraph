@@ -18,26 +18,26 @@ from typing import Any, TypeVar
 import pydantic
 from injectq import InjectQ
 
-from agentflow.core.graph.agent import Agent
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.graph.state_graph import StateGraph
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.skills.models import SkillConfig
-from agentflow.core.state.agent_state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.core.state.message import Message
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from agentflow.storage.media.config import MultimodalConfig
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.storage.store.base_store import BaseStore
-from agentflow.storage.store.memory_config import MemoryConfig
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.utils.constants import END
-from agentflow.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
+from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.graph.state_graph import StateGraph
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.skills.models import SkillConfig
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.message import Message
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.config import MultimodalConfig
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.memory_config import MemoryConfig
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
-logger = logging.getLogger("agentflow.prebuilt.structured_output")
+logger = logging.getLogger("tenxgraph.prebuilt.structured_output")
 
 StateT = TypeVar("StateT", bound=AgentState)
 
@@ -210,7 +210,7 @@ class StructuredOutputAgent[StateT: AgentState]:
     Usage::
 
         from pydantic import BaseModel
-        from agentflow.prebuilt.agent import StructuredOutputAgent
+        from tenxgraph.prebuilt.agent import StructuredOutputAgent
 
 
         class MovieReview(BaseModel):
@@ -440,7 +440,7 @@ class StructuredOutputAgent[StateT: AgentState]:
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
     ) -> CompiledGraph:
-        """Wire the graph and return a :class:`~agentflow.core.graph.CompiledGraph`.
+        """Wire the graph and return a :class:`~tenxgraph.core.graph.CompiledGraph`.
 
         Args:
             checkpointer: Persistence backend for state snapshots.

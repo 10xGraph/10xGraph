@@ -6,20 +6,20 @@ Reduces evaluation setup from ~50 lines to ~5 lines with presets and builders.
 import logging
 from typing import TYPE_CHECKING
 
-from agentflow.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
-from agentflow.qa.evaluation.config.eval_config import EvalConfig
-from agentflow.qa.evaluation.config.presets import EvalPresets
-from agentflow.qa.evaluation.dataset.builder import EvalSetBuilder
-from agentflow.qa.evaluation.dataset.eval_set import EvalCase, EvalSet, ToolCall
-from agentflow.qa.evaluation.eval_result import EvalReport
-from agentflow.qa.evaluation.evaluator import AgentEvaluator
-from agentflow.qa.evaluation.reporters.console import print_report
+from tenxgraph.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
+from tenxgraph.qa.evaluation.config.eval_config import EvalConfig
+from tenxgraph.qa.evaluation.config.presets import EvalPresets
+from tenxgraph.qa.evaluation.dataset.builder import EvalSetBuilder
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet, ToolCall
+from tenxgraph.qa.evaluation.eval_result import EvalReport
+from tenxgraph.qa.evaluation.evaluator import AgentEvaluator
+from tenxgraph.qa.evaluation.reporters.console import print_report
 
 
 if TYPE_CHECKING:
-    from agentflow.core.graph.compiled_graph import CompiledGraph
+    from tenxgraph.core.graph.compiled_graph import CompiledGraph
 
-logger = logging.getLogger("agentflow.evaluation")
+logger = logging.getLogger("tenxgraph.evaluation")
 
 
 class QuickEval:

@@ -17,8 +17,8 @@ Main Components:
 
 Example:
     ```python
-    from agentflow.qa.evaluation import AgentEvaluator, EvalConfig, CriterionConfig
-    from agentflow.qa.evaluation.dataset import EvalCase, ToolCall
+    from tenxgraph.qa.evaluation import AgentEvaluator, EvalConfig, CriterionConfig
+    from tenxgraph.qa.evaluation.dataset import EvalCase, ToolCall
 
     case = EvalCase.single_turn(
         eval_id="test_1",
@@ -43,15 +43,15 @@ Example:
 
 # --- Dataset ---
 # --- Collectors (event-based trajectory capture via callback_manager) ---
-from agentflow.qa.evaluation.collectors.event_collector import EventCollector
-from agentflow.qa.evaluation.collectors.trajectory_collector import (
+from tenxgraph.qa.evaluation.collectors.event_collector import EventCollector
+from tenxgraph.qa.evaluation.collectors.trajectory_collector import (
     PublisherCallback,
     TrajectoryCollector,
     make_trajectory_callback,
 )
 
 # --- Config ---
-from agentflow.qa.evaluation.config.eval_config import (
+from tenxgraph.qa.evaluation.config.eval_config import (
     CriteriaConfig,
     CriterionConfig,
     EvalConfig,
@@ -60,43 +60,43 @@ from agentflow.qa.evaluation.config.eval_config import (
     Rubric,
     UserSimulatorConfig,
 )
-from agentflow.qa.evaluation.config.presets import EvalPresets
+from tenxgraph.qa.evaluation.config.presets import EvalPresets
 
 # --- Criteria: base ---
-from agentflow.qa.evaluation.criteria.base import (
+from tenxgraph.qa.evaluation.criteria.base import (
     BaseCriterion,
     CompositeCriterion,
     SyncCriterion,
     WeightedCriterion,
 )
-from agentflow.qa.evaluation.criteria.factual_accuracy import FactualAccuracyCriterion
+from tenxgraph.qa.evaluation.criteria.factual_accuracy import FactualAccuracyCriterion
 
 # --- Criteria: advanced ---
-from agentflow.qa.evaluation.criteria.hallucination import HallucinationCriterion
-from agentflow.qa.evaluation.criteria.llm_judge import LLMJudgeCriterion
-from agentflow.qa.evaluation.criteria.llm_utils import LLMCallerMixin
+from tenxgraph.qa.evaluation.criteria.hallucination import HallucinationCriterion
+from tenxgraph.qa.evaluation.criteria.llm_judge import LLMJudgeCriterion
+from tenxgraph.qa.evaluation.criteria.llm_utils import LLMCallerMixin
 
 # --- Criteria: response ---
-from agentflow.qa.evaluation.criteria.response import (
+from tenxgraph.qa.evaluation.criteria.response import (
     ContainsKeywordsCriterion,
     ExactMatchCriterion,
     ResponseMatchCriterion,
     RougeMatchCriterion,
 )
-from agentflow.qa.evaluation.criteria.rubric import RubricBasedCriterion
-from agentflow.qa.evaluation.criteria.safety import SafetyCriterion
+from tenxgraph.qa.evaluation.criteria.rubric import RubricBasedCriterion
+from tenxgraph.qa.evaluation.criteria.safety import SafetyCriterion
 
 # --- Criteria: LLM-as-judge ---
-from agentflow.qa.evaluation.criteria.simulation_goals import SimulationGoalsCriterion
+from tenxgraph.qa.evaluation.criteria.simulation_goals import SimulationGoalsCriterion
 
 # --- Criteria: trajectory ---
-from agentflow.qa.evaluation.criteria.trajectory import (
+from tenxgraph.qa.evaluation.criteria.trajectory import (
     NodeOrderMatchCriterion,
     ToolNameMatchCriterion,
     TrajectoryMatchCriterion,
 )
-from agentflow.qa.evaluation.dataset.builder import EvalSetBuilder
-from agentflow.qa.evaluation.dataset.eval_set import (
+from tenxgraph.qa.evaluation.dataset.builder import EvalSetBuilder
+from tenxgraph.qa.evaluation.dataset.eval_set import (
     EvalCase,
     EvalSet,
     Invocation,
@@ -108,7 +108,7 @@ from agentflow.qa.evaluation.dataset.eval_set import (
 )
 
 # --- Results ---
-from agentflow.qa.evaluation.eval_result import (
+from tenxgraph.qa.evaluation.eval_result import (
     CriterionResult,
     EvalCaseResult,
     EvalReport,
@@ -117,21 +117,21 @@ from agentflow.qa.evaluation.eval_result import (
 )
 
 # --- Evaluator ---
-from agentflow.qa.evaluation.evaluator import AgentEvaluator, EvaluationRunner
+from tenxgraph.qa.evaluation.evaluator import AgentEvaluator, EvaluationRunner
 
 # --- Execution ---
-from agentflow.qa.evaluation.execution.result import ExecutionResult, NodeResponseData
-from agentflow.qa.evaluation.quick_eval import QuickEval
+from tenxgraph.qa.evaluation.execution.result import ExecutionResult, NodeResponseData
+from tenxgraph.qa.evaluation.quick_eval import QuickEval
 
 # --- Reporters ---
-from agentflow.qa.evaluation.reporters.base import BaseReporter
-from agentflow.qa.evaluation.reporters.console import Colors, ConsoleReporter, print_report
-from agentflow.qa.evaluation.reporters.html import HTMLReporter
-from agentflow.qa.evaluation.reporters.json import JSONReporter, JUnitXMLReporter
-from agentflow.qa.evaluation.reporters.manager import ReporterManager, ReporterOutput
+from tenxgraph.qa.evaluation.reporters.base import BaseReporter
+from tenxgraph.qa.evaluation.reporters.console import Colors, ConsoleReporter, print_report
+from tenxgraph.qa.evaluation.reporters.html import HTMLReporter
+from tenxgraph.qa.evaluation.reporters.json import JSONReporter, JUnitXMLReporter
+from tenxgraph.qa.evaluation.reporters.manager import ReporterManager, ReporterOutput
 
 # --- Simulators ---
-from agentflow.qa.evaluation.simulators import (
+from tenxgraph.qa.evaluation.simulators import (
     BatchSimulator,
     ConversationScenario,
     SimulationResult,
@@ -139,7 +139,7 @@ from agentflow.qa.evaluation.simulators import (
 )
 
 # --- Testing helpers ---
-from agentflow.qa.evaluation.testing import (
+from tenxgraph.qa.evaluation.testing import (
     EvalFixtures,
     EvalPlugin,
     EvalTestCase,
@@ -153,7 +153,7 @@ from agentflow.qa.evaluation.testing import (
 )
 
 # --- Token usage ---
-from agentflow.qa.evaluation.token_usage import TokenUsage
+from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
 
 __all__ = [

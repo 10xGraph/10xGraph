@@ -5,8 +5,8 @@ Covers both single-turn cases (for evaluate_case / evaluate) and
 multi-turn conversation flows.
 """
 
-from agentflow.qa.evaluation.dataset import EvalCase, ToolCall
-from agentflow.qa.evaluation.dataset.eval_set import EvalSet
+from tenxgraph.qa.evaluation.dataset import EvalCase, ToolCall
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet
 
 
 # ── Single-turn cases (used by evaluate_case / evaluate) ────────────

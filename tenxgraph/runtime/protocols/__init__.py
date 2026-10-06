@@ -1,7 +1,7 @@
 """Agent communication protocols for Agentflow.
 
 Import protocol implementations from their concrete packages, such as
-``agentflow.runtime.protocols.a2a``.
+``tenxgraph.runtime.protocols.a2a``.
 """
 
 # from . import a2a

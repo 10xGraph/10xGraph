@@ -2,15 +2,15 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, TypeVar, get_args
 
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import run_coroutine
-from agentflow.utils.thread_info import ThreadInfo
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import run_coroutine
+from tenxgraph.utils.thread_info import ThreadInfo
 
 
-logger = logging.getLogger("agentflow.checkpointer")
+logger = logging.getLogger("tenxgraph.checkpointer")
 
 if TYPE_CHECKING:
-    from agentflow.core.state import AgentState, Message
+    from tenxgraph.core.state import AgentState, Message
 
 
 StateT = TypeVar("StateT", bound="AgentState")
@@ -714,7 +714,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     def _isolation_enabled(self, config: dict[str, Any] | None, user_id: Any) -> bool:
         """Whether this operation must be scoped to ``user_id``.
 
-        Driven by the trusted ``config["authz"]`` policy (see :mod:`agentflow.core.authz`):
+        Driven by the trusted ``config["authz"]`` policy (see :mod:`tenxgraph.core.authz`):
 
         - ``scope == "owner"`` -> isolate (when a ``user_id`` is present to scope by);
         - ``scope == "none"``  -> do not isolate (allow_all / single-user);
@@ -722,7 +722,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
           backend's own ``enforce_user_isolation`` setting (default off for backends that
           do not define one).
         """
-        from agentflow.core.authz import SCOPE_NONE, SCOPE_OWNER, isolation_scope
+        from tenxgraph.core.authz import SCOPE_NONE, SCOPE_OWNER, isolation_scope
 
         scope = isolation_scope(config)
         if scope == SCOPE_OWNER:

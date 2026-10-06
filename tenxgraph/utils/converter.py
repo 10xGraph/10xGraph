@@ -3,8 +3,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Union
 
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import (
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     DocumentBlock,
     ImageBlock,
@@ -16,10 +16,10 @@ from agentflow.core.state.message_block import (
 
 
 if TYPE_CHECKING:
-    from agentflow.core.state import AgentState
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.core.state import AgentState
+    from tenxgraph.storage.media.resolver import MediaRefResolver
 
-logger = logging.getLogger("agentflow.utils")
+logger = logging.getLogger("tenxgraph.utils")
 
 
 _AGENTFLOW_SCHEME = "agentflow://media/"

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agentflow.qa.evaluation.criteria.llm_base import TemplatedLLMCriterion
-from agentflow.qa.evaluation.eval_result import CriterionResult
+from tenxgraph.qa.evaluation.criteria.llm_base import TemplatedLLMCriterion
+from tenxgraph.qa.evaluation.eval_result import CriterionResult
 
 
 if TYPE_CHECKING:
-    from agentflow.qa.evaluation.dataset.eval_set import EvalCase
-    from agentflow.qa.evaluation.execution.result import ExecutionResult
+    from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase
+    from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
 
 SEMANTIC_MATCH_PROMPT = """

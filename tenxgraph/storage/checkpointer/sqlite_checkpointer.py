@@ -14,11 +14,11 @@ It is the right choice for:
 
 It is **not** the right choice for multi-user servers where many users share one
 backend. SQLite serializes writers and does not scale horizontally; use
-:class:`~agentflow.storage.checkpointer.pg_checkpointer.PgCheckpointer` there.
+:class:`~tenxgraph.storage.checkpointer.pg_checkpointer.PgCheckpointer` there.
 
 Install with::
 
-    pip install 10xscale-agentflow[sqlite_checkpoint]
+    pip install 10xgraph[sqlite_checkpoint]
 """
 
 import asyncio
@@ -31,10 +31,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
 
-from agentflow.core.exceptions import StorageError
-from agentflow.core.state import AgentState, Message
-from agentflow.utils.callable_utils import run_coroutine
-from agentflow.utils.thread_info import ThreadInfo
+from tenxgraph.core.exceptions import StorageError
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils.callable_utils import run_coroutine
+from tenxgraph.utils.thread_info import ThreadInfo
 
 from .base_checkpointer import BaseCheckpointer
 
@@ -47,7 +47,7 @@ except ImportError:
     HAS_AIOSQLITE = False
     aiosqlite = None  # type: ignore[assignment]
 
-logger = logging.getLogger("agentflow.checkpointer.sqlite")
+logger = logging.getLogger("tenxgraph.checkpointer.sqlite")
 
 StateT = TypeVar("StateT", bound="AgentState")
 
@@ -129,7 +129,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     Rows store state data only. On read they are rebuilt into the state class
     bound by ``StateGraph.compile()`` (see :meth:`BaseCheckpointer.bind_state_type`),
-    matching :class:`~agentflow.storage.checkpointer.pg_checkpointer.PgCheckpointer`.
+    matching :class:`~tenxgraph.storage.checkpointer.pg_checkpointer.PgCheckpointer`.
 
     Args:
         db_path: Path to the SQLite database file. Defaults to
@@ -151,7 +151,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         if not HAS_AIOSQLITE:
             raise ImportError(
                 "SqliteCheckpointer requires 'aiosqlite'. "
-                "Install with: pip install 10xscale-agentflow[sqlite_checkpoint]"
+                "Install with: pip install 10xgraph[sqlite_checkpoint]"
             )
 
         if db_path == ":memory:":

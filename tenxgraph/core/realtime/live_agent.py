@@ -24,12 +24,12 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from agentflow.core.graph.agent_internal.memory import AgentMemoryMixin
-from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.llm import detect_provider
-from agentflow.core.realtime.base import (
+from tenxgraph.core.graph.agent_internal.memory import AgentMemoryMixin
+from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.llm import detect_provider
+from tenxgraph.core.realtime.base import (
     ErrorEvent,
     InputTranscriptEvent,
     OutputTranscriptEvent,
@@ -38,12 +38,12 @@ from agentflow.core.realtime.base import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from agentflow.core.realtime.providers.gemini_live import GeminiLiveClient
-from agentflow.core.state import AgentState, Message, TextBlock, add_messages
-from agentflow.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from agentflow.runtime.publisher.publish import publish_event
-from agentflow.utils import CallbackManager
-from agentflow.utils.callbacks import GraphLifecycleContext
+from tenxgraph.core.realtime.providers.gemini_live import GeminiLiveClient
+from tenxgraph.core.state import AgentState, Message, TextBlock, add_messages
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.callbacks import GraphLifecycleContext
 
 
 # Event kinds that constitute model/user turn content. A turn starts on the first of these
@@ -55,10 +55,10 @@ _TURN_CONTENT_TYPES = frozenset(
 
 
 if TYPE_CHECKING:
-    from agentflow.core.realtime.base import RealtimeEvent
-    from agentflow.core.realtime.queue import LiveInputQueue
-    from agentflow.core.state import BaseContextManager
-    from agentflow.storage.checkpointer import BaseCheckpointer
+    from tenxgraph.core.realtime.base import RealtimeEvent
+    from tenxgraph.core.realtime.queue import LiveInputQueue
+    from tenxgraph.core.state import BaseContextManager
+    from tenxgraph.storage.checkpointer import BaseCheckpointer
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +354,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         like the turn-based path (via :func:`convert_messages`), so a system prompt that reads
         from state behaves identically here.
         """
-        from agentflow.utils.converter import _interpolate_system_prompts
+        from tenxgraph.utils.converter import _interpolate_system_prompts
 
         base = list(self.system_prompt)
         if not base and rt.system_instruction:
@@ -594,7 +594,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     ) -> None:
         if checkpointer is None:
             return
-        from agentflow.utils.thread_info import ThreadInfo
+        from tenxgraph.utils.thread_info import ThreadInfo
 
         try:
             thread = await checkpointer.aget_thread(config)

@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agentflow.storage.media.capabilities import MediaTransportMode
+from tenxgraph.storage.media.capabilities import MediaTransportMode
 
 
-logger = logging.getLogger("agentflow.exceptions.media")
+logger = logging.getLogger("tenxgraph.exceptions.media")
 
 
 class UnsupportedMediaInputError(Exception):

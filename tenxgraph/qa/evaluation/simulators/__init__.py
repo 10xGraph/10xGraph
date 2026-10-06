@@ -5,7 +5,7 @@ This module provides AI-powered user simulation for testing agents
 with dynamic, realistic conversations rather than fixed prompts.
 """
 
-from agentflow.qa.evaluation.simulators.user_simulator import (
+from tenxgraph.qa.evaluation.simulators.user_simulator import (
     BatchSimulator,
     ConversationScenario,
     SimulationResult,

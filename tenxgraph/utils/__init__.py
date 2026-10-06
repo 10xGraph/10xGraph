@@ -16,7 +16,7 @@ Main Exports:
     - Converter (convert_messages)
 """
 
-from agentflow.core.state.reducers import (
+from tenxgraph.core.state.reducers import (
     add_messages,
     append_items,
     replace_messages,

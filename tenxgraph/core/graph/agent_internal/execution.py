@@ -10,21 +10,21 @@ from typing import Any
 from injectq import Inject, InjectQ
 from injectq.utils.exceptions import DependencyNotFoundError
 
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.runtime.adapters.llm.model_response_converter import ModelResponseConverter
-from agentflow.utils.converter import (
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.utils.converter import (
     convert_messages,
     strip_media_blocks,
 )
-from agentflow.utils.injection import fresh
+from tenxgraph.utils.injection import fresh
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
 
 
-logger = logging.getLogger("agentflow.agent")
+logger = logging.getLogger("tenxgraph.agent")
 
 # Valid HTTP status range, used to sanity-check anything parsed out of a message.
 HTTP_STATUS_MIN = 100
@@ -650,13 +650,13 @@ class AgentExecutionMixin:
         # additional tools (e.g., Gemini 2.5+ with sequential tool calls)
         tools = await self._resolve_tools(container, config)
 
-        from agentflow.runtime.publisher.events import (
+        from tenxgraph.runtime.publisher.events import (
             ContentType,
             Event,
             EventModel,
             EventType,
         )
-        from agentflow.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import publish_event
 
         node_name = config.get("_node_name", "unknown")
 
@@ -735,7 +735,7 @@ class AgentExecutionMixin:
         if media_store is None:
             return messages
 
-        from agentflow.storage.media.resolver import MediaRefResolver
+        from tenxgraph.storage.media.resolver import MediaRefResolver
 
         resolver = MediaRefResolver(media_store=media_store)
         provider = getattr(self, "provider", None)

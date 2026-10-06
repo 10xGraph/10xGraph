@@ -13,10 +13,10 @@ import datetime
 import logging
 import sys
 
-from agentflow.core import Agent, StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.shutdown import GracefulShutdownManager
+from tenxgraph.core import Agent, StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.shutdown import GracefulShutdownManager
 
 
 # Configure logging

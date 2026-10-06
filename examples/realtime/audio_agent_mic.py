@@ -17,7 +17,7 @@ Echo / feedback
     true full duplex with barge-in (speak over the agent to interrupt it).
 
 Setup
-    pip install "10xscale-agentflow[realtime]" sounddevice
+    pip install "10xgraph[realtime]" sounddevice
     export GEMINI_API_KEY=...                                # or Vertex AI env (see README)
     export GEMINI_LIVE_MODEL=...                             # optional, see README
 
@@ -33,9 +33,9 @@ import sys
 
 from dotenv import find_dotenv, load_dotenv
 
-from agentflow.core.realtime.base import INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, RealtimeConfig
-from agentflow.core.realtime.queue import LiveInputQueue
-from agentflow.prebuilt.agent import AudioAgent
+from tenxgraph.core.realtime.base import INPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, RealtimeConfig
+from tenxgraph.core.realtime.queue import LiveInputQueue
+from tenxgraph.prebuilt.agent import AudioAgent
 
 
 # Load .env reliably no matter where you launch from: the one next to this script first,

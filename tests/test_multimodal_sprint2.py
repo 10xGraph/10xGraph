@@ -9,9 +9,9 @@ import io
 
 import pytest
 
-from agentflow.storage.media.config import MultimodalConfig
-from agentflow.storage.media.processor import MediaProcessor, _pil_format
-from agentflow.core.state.message_block import ImageBlock, MediaRef
+from tenxgraph.storage.media.config import MultimodalConfig
+from tenxgraph.storage.media.processor import MediaProcessor, _pil_format
+from tenxgraph.core.state.message_block import ImageBlock, MediaRef
 
 
 # ---------------------------------------------------------------------------

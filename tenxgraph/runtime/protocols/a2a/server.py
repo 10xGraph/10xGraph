@@ -21,7 +21,7 @@
 #     from a2a.types import AgentCard, AgentSkill
 #     from starlette.applications import Starlette
 
-#     from agentflow.core.graph.compiled_graph import CompiledGraph
+#     from tenxgraph.core.graph.compiled_graph import CompiledGraph
 
 
 # # ---------------------------------------------------------------------- #

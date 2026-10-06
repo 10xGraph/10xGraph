@@ -15,8 +15,8 @@ Usage:
 import asyncio
 import os
 
-from agentflow.runtime.adapters.llm import GoogleGenAIConverter
-from agentflow.core.state import AgentState
+from tenxgraph.runtime.adapters.llm import GoogleGenAIConverter
+from tenxgraph.core.state import AgentState
 
 
 async def example_standard_response():

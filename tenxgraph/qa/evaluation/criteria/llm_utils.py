@@ -4,7 +4,7 @@ Shared LLM calling utilities for evaluation criteria.
 Provides LLMCallerMixin with _call_llm_score() used by
 LLMJudgeCriterion, RubricBasedCriterion, and others.
 
-Delegates to agentflow.core.llm.caller.call_llm so that all single-turn
+Delegates to tenxgraph.core.llm.caller.call_llm so that all single-turn
 provider dispatch lives in one place.
 """
 
@@ -14,12 +14,12 @@ import json
 import logging
 import os
 
-from agentflow.core.llm.caller import call_llm
-from agentflow.core.llm.client_factory import detect_provider
-from agentflow.qa.evaluation.token_usage import TokenUsage
+from tenxgraph.core.llm.caller import call_llm
+from tenxgraph.core.llm.client_factory import detect_provider
+from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
 
-logger = logging.getLogger("agentflow.evaluation")
+logger = logging.getLogger("tenxgraph.evaluation")
 
 
 def _resolve_use_vertex_ai(config: object) -> bool:
