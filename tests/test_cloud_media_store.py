@@ -224,7 +224,7 @@ class TestCloudMediaStore:
     async def test_to_media_ref(self, store):
         ref = store.to_media_ref("abc123", "image/jpeg")
         assert ref.kind == "url"
-        assert ref.url == "agentflow://media/abc123"
+        assert ref.url == "graph://media/abc123"
         assert ref.mime_type == "image/jpeg"
 
     # ---- cloud path layout -----------------------------------------------

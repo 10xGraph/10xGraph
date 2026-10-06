@@ -13,6 +13,7 @@ from tenxgraph.core.state.message_block import (
     ToolResultBlock,
     VideoBlock,
 )
+from tenxgraph.utils.media_scheme import MEDIA_SCHEMES, strip_media_scheme
 
 
 if TYPE_CHECKING:
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tenxgraph.utils")
 
 
-_AGENTFLOW_SCHEME = "agentflow://media/"
 
 _MEDIA_BLOCK_TYPES = ImageBlock | AudioBlock | VideoBlock | DocumentBlock
 _MEDIA_DICT_TYPES = {"image", "audio", "video", "document"}
@@ -71,11 +71,11 @@ async def resolve_media_refs(
     provider: str | None = None,
     model: str | None = None,
 ) -> list[Message]:
-    """Pre-resolve ``agentflow://media/`` URLs in message media blocks.
+    """Pre-resolve ``graph://media/`` URLs in message media blocks.
 
     Replaces internal media refs with inline base64 so the sync converter
     pipeline can handle them without async calls.  Only touches blocks
-    whose ``media.url`` starts with ``agentflow://media/``.
+    whose ``media.url`` starts with ``graph://media/``.
 
     When *provider* and *model* are provided, uses the capability-aware
     resolution path (e.g. Google will not use signed URLs, will fall back
@@ -89,7 +89,7 @@ async def resolve_media_refs(
             if not isinstance(block, _MEDIA_BLOCK_TYPES):
                 continue
             media = block.media  # type: ignore[union-attr]
-            if not (media.kind == "url" and media.url and media.url.startswith(_AGENTFLOW_SCHEME)):
+            if not (media.kind == "url" and media.url and media.url.startswith(MEDIA_SCHEMES)):
                 continue
 
             # Use capability-aware resolution when provider+model are known
@@ -133,7 +133,7 @@ async def resolve_media_refs(
                 continue
 
             # Resolve internal URL -> inline base64
-            key = media.url.removeprefix(_AGENTFLOW_SCHEME)
+            key = strip_media_scheme(media.url)
             data, mime = await resolver.media_store.retrieve(key)  # type: ignore[union-attr]
             b64 = base64.b64encode(data).decode()
             block.media = media.model_copy(  # type: ignore[union-attr]

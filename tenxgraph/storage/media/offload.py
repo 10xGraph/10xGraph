@@ -3,7 +3,7 @@
 This utility runs at the message ingestion boundary (NOT in the checkpointer).
 If a message contains large inline ``data_base64`` and a ``MediaStore`` is
 configured, the blob is stored externally and replaced with a lightweight
-``agentflow://media/{key}`` reference.
+``graph://media/{key}`` reference.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ Custom executor for the CurrencyAgent.
 Extends AgentFlowExecutor to emit INPUT_REQUIRED when the LLM asks
 for missing information (e.g. "Which currency do you want to convert to?").
 
-Referenced in agentflow.json as:
+Referenced in 10xgraph.json as:
     "executor": "executor:CurrencyAgentExecutor"
 """
 

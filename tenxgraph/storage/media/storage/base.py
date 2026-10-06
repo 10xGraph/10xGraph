@@ -80,12 +80,12 @@ class BaseMediaStore(ABC):
     ) -> MediaRef:
         """Convert a storage key into a ``MediaRef`` for embedding in messages.
 
-        The URL uses the ``agentflow://media/{key}`` scheme so that resolvers
+        The URL uses the ``graph://media/{key}`` scheme so that resolvers
         can identify internally-stored media.
         """
         return MediaRef(
             kind="url",
-            url=f"agentflow://media/{storage_key}",
+            url=f"graph://media/{storage_key}",
             mime_type=mime_type,
             **kwargs,
         )

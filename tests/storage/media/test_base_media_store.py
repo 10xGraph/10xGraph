@@ -54,5 +54,5 @@ def test_to_media_ref():
     ref = store.to_media_ref("key", "image/png")
     assert isinstance(ref, MediaRef)
     assert ref.kind == "url"
-    assert ref.url == "agentflow://media/key"
+    assert ref.url == "graph://media/key"
     assert ref.mime_type == "image/png"

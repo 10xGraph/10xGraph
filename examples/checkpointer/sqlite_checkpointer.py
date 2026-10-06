@@ -22,7 +22,7 @@ from tenxgraph.utils.constants import END
 
 load_dotenv()
 
-# One local file holds all state. Defaults to ~/.agentflow/checkpointer.db when
+# One local file holds all state. Defaults to ~/.10xgraph/checkpointer.db when
 # no path is given; here we keep it beside the script.
 checkpointer = SqliteCheckpointer("agent_state.db")
 

@@ -52,7 +52,7 @@ class ModelMediaCapabilities:
         supports_provider_file: Whether the provider has a native file
             upload API (e.g. Google File API).
         can_convert_internal_to_remote: Whether internal storage URLs
-            (``agentflow://media/...``) can be converted to public/signed
+            (``graph://media/...``) can be converted to public/signed
             remote URLs.
     """
 

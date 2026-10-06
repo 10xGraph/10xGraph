@@ -238,7 +238,7 @@ def setup_langsmith(
 
 
 def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> None:
-    """Unified observability entry point for declarative ``agentflow.json`` config.
+    """Unified observability entry point for declarative ``10xgraph.json`` config.
 
     Reads the ``observability`` block and enables Logfire and/or LangSmith,
     ensuring they share one ``TracerProvider`` when both are active.
@@ -248,7 +248,7 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
     because it binds the publisher into the DI container before the graph is
     compiled (the only reliable attach point).
 
-    Expected ``config`` shape (mirrors ``agentflow.json``)::
+    Expected ``config`` shape (mirrors ``10xgraph.json``)::
 
         {
             "level": "standard",

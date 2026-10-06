@@ -52,7 +52,17 @@ logger = logging.getLogger("tenxgraph.checkpointer.sqlite")
 StateT = TypeVar("StateT", bound="AgentState")
 
 # Default database location for desktop / single-user agents.
-DEFAULT_DB_PATH = str(Path.home() / ".agentflow" / "checkpointer.db")
+def _default_home_dir() -> Path:
+    """Return ``~/.10xgraph``, falling back to a pre-existing legacy ``~/.agentflow``."""
+    home = Path.home()
+    new_dir = home / ".10xgraph"
+    legacy_dir = home / ".agentflow"
+    if not new_dir.exists() and legacy_dir.exists():
+        return legacy_dir
+    return new_dir
+
+
+DEFAULT_DB_PATH = str(_default_home_dir() / "checkpointer.db")
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -133,7 +143,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     Args:
         db_path: Path to the SQLite database file. Defaults to
-            ``~/.agentflow/checkpointer.db``. Parent directories are created on
+            ``~/.10xgraph/checkpointer.db`` (or ``~/.agentflow/checkpointer.db``
+            when only the legacy directory exists). Parent directories are created on
             setup. Use ``":memory:"`` for an ephemeral in-process database
             (useful for tests).
 

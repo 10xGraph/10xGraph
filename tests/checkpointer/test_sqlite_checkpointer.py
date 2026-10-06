@@ -342,7 +342,7 @@ async def test_persists_to_disk_across_release(tmp_path):
 
 @pytest.mark.asyncio
 async def test_default_path_used_when_none(monkeypatch, tmp_path):
-    fake_default = tmp_path / "home" / ".agentflow" / "checkpointer.db"
+    fake_default = tmp_path / "home" / ".10xgraph" / "checkpointer.db"
     monkeypatch.setattr(
         "tenxgraph.storage.checkpointer.sqlite_checkpointer.DEFAULT_DB_PATH",
         str(fake_default),
@@ -436,3 +436,17 @@ async def test_sqlite_owner_only_messages(cp):
 async def test_sqlite_no_policy_backward_compatible(cp):
     await cp.aput_state({"thread_id": "t1", "user_id": "A"}, MyState())
     assert await cp.aget_state({"thread_id": "t1", "user_id": "B"}) is not None
+
+
+def test_default_home_dir_prefers_new_and_falls_back_to_legacy(monkeypatch, tmp_path):
+    from tenxgraph.storage.checkpointer.sqlite_checkpointer import _default_home_dir
+
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+    # neither exists -> new dir
+    assert _default_home_dir() == tmp_path / ".10xgraph"
+    # only legacy exists -> legacy dir
+    (tmp_path / ".agentflow").mkdir()
+    assert _default_home_dir() == tmp_path / ".agentflow"
+    # both exist -> new dir
+    (tmp_path / ".10xgraph").mkdir()
+    assert _default_home_dir() == tmp_path / ".10xgraph"

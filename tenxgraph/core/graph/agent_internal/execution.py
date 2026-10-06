@@ -630,7 +630,7 @@ class AgentExecutionMixin:
             extra_messages=self.extra_messages or [],
         )
 
-        # Resolve internal media refs (agentflow://media/...) before provider call.
+        # Resolve internal media refs (graph://media/...) before provider call.
         # This converts internal refs to signed URLs or inline base64, using the
         # capability-aware path when provider+model are known.
         messages = await self._resolve_media_in_messages(messages)
@@ -720,7 +720,7 @@ class AgentExecutionMixin:
     ) -> list[dict[str, Any]]:
         """Resolve internal media refs in converted message dicts.
 
-        For messages that contain ``agentflow://media/`` URLs in their
+        For messages that contain ``graph://media/`` URLs in their
         content parts, this method resolves them to signed URLs or inline
         base64 using the capability-aware resolver.
 
@@ -756,7 +756,7 @@ class AgentExecutionMixin:
                 part_type = part.get("type", "")
                 if part_type == "image_url":
                     url = part.get("image_url", {}).get("url", "")
-                    if url.startswith("agentflow://media/"):
+                    if url.startswith(("graph://media/", "agentflow://media/")):
                         ref_media = type(
                             "MediaRef",
                             (),
@@ -810,7 +810,7 @@ class AgentExecutionMixin:
                 elif part_type in ("document", "video"):
                     media_info = part.get(part_type, {})
                     url = media_info.get("url", "")
-                    if url and url.startswith("agentflow://media/"):
+                    if url and url.startswith(("graph://media/", "agentflow://media/")):
                         ref_media = type(
                             "MediaRef",
                             (),

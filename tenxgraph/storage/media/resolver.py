@@ -23,13 +23,13 @@ from tenxgraph.storage.media.capabilities import (
     MediaTransportMode,
     get_capabilities,
 )
+from tenxgraph.utils.media_scheme import MEDIA_SCHEMES, strip_media_scheme
 
 from .storage.base import BaseMediaStore
 
 
 logger = logging.getLogger("tenxgraph.media.resolver")
 
-_AGENTFLOW_SCHEME = "agentflow://media/"
 
 
 class MediaRefResolver:
@@ -37,7 +37,7 @@ class MediaRefResolver:
 
     Args:
         media_store: Optional media store for resolving internal
-            ``agentflow://media/{key}`` references.  If ``None``,
+            ``graph://media/{key}`` references.  If ``None``,
             internal references will raise.
     """
 
@@ -95,7 +95,7 @@ class MediaRefResolver:
 
     async def _resolve_openai_legacy(self, ref: MediaRef) -> dict[str, Any]:
         """Legacy OpenAI resolution (no capability check)."""
-        if ref.kind == "url" and ref.url and ref.url.startswith(_AGENTFLOW_SCHEME):
+        if ref.kind == "url" and ref.url and ref.url.startswith(MEDIA_SCHEMES):
             direct_url = await self._get_direct_url(ref)
             if direct_url:
                 return _openai_image_url(direct_url)
@@ -148,7 +148,7 @@ class MediaRefResolver:
         """Legacy Google resolution (no capability check)."""
         from google.genai import types
 
-        if ref.kind == "url" and ref.url and ref.url.startswith(_AGENTFLOW_SCHEME):
+        if ref.kind == "url" and ref.url and ref.url.startswith(MEDIA_SCHEMES):
             direct_url = await self._get_direct_url(ref)
             if direct_url:
                 mime = ref.mime_type or "application/octet-stream"
@@ -265,7 +265,7 @@ class MediaRefResolver:
     ) -> Any | None:
         """Resolve to a remote URL (signed or direct)."""
         if ref.kind == "url" and ref.url:
-            if ref.url.startswith(_AGENTFLOW_SCHEME):
+            if ref.url.startswith(MEDIA_SCHEMES):
                 if caps.can_convert_internal_to_remote:
                     url = await self._get_direct_url(ref)
                     if url:
@@ -371,7 +371,7 @@ class MediaRefResolver:
     async def _retrieve_bytes(self, ref: MediaRef) -> tuple[bytes, str]:
         """Retrieve bytes for a media reference."""
         if ref.kind == "url" and ref.url:
-            if ref.url.startswith(_AGENTFLOW_SCHEME):
+            if ref.url.startswith(MEDIA_SCHEMES):
                 return await self._retrieve(ref.url)
             return await self._fetch_external_url(ref.url)
 
@@ -402,7 +402,7 @@ class MediaRefResolver:
                 f"Cannot resolve internal media URL {agentflow_url!r} — "
                 "no MediaStore configured. Pass a media_store to the resolver."
             )
-        key = agentflow_url.removeprefix(_AGENTFLOW_SCHEME)
+        key = strip_media_scheme(agentflow_url)
         return await self.media_store.retrieve(key)
 
     async def _get_direct_url(self, ref: MediaRef) -> str | None:
@@ -410,7 +410,7 @@ class MediaRefResolver:
         if self.media_store is None or not ref.url:
             return None
 
-        key = ref.url.removeprefix(_AGENTFLOW_SCHEME)
+        key = strip_media_scheme(ref.url)
         mime_type = ref.mime_type or "application/octet-stream"
         cache_key = f"{key}:{mime_type}:{self.direct_url_expiration_seconds}"
         cached_url = await self._get_cached_signed_url(cache_key)
@@ -462,7 +462,7 @@ class MediaRefResolver:
 def _source_kind(ref: MediaRef) -> str:
     """Determine the source kind for error reporting."""
     if ref.kind == "url":
-        if ref.url and ref.url.startswith(_AGENTFLOW_SCHEME):
+        if ref.url and ref.url.startswith(MEDIA_SCHEMES):
             return "internal_ref"
         return "url"
     if ref.kind == "data":

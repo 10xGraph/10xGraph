@@ -95,6 +95,6 @@ class LangsmithPublisher(OtelPublisher):
         else:
             tracer_provider.add_span_processor(processor)
             # Bind to the supplied provider explicitly (it may not be global).
-            tracer = tracer_provider.get_tracer("agentflow")
+            tracer = tracer_provider.get_tracer("10xgraph")
 
         super().__init__(tracer=tracer, level=level)

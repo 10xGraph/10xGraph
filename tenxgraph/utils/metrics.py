@@ -81,7 +81,7 @@ def setup_otel_metrics(meter: Any = None) -> bool:
                 "Install the 'otel' extra to export them."
             )
             return False
-        meter = otel_metrics.get_meter("agentflow")
+        meter = otel_metrics.get_meter("10xgraph")
 
     with _LOCK:
         _OTEL_METER = meter

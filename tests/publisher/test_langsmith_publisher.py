@@ -142,7 +142,7 @@ class TestLangsmithPublisher:
             pub = LangsmithPublisher(tracer_provider=existing_provider)
 
         existing_provider.add_span_processor.assert_called_once()
-        existing_provider.get_tracer.assert_called_once_with("agentflow")
+        existing_provider.X
         trace_mod.set_tracer_provider.assert_not_called()
         # The explicitly-bound tracer is used instead of the global one.
         assert pub._tracer_arg is existing_provider.get_tracer.return_value

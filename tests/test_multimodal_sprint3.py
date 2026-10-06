@@ -106,7 +106,7 @@ class TestInMemoryMediaStore:
         store = InMemoryMediaStore()
         ref = store.to_media_ref("abc123", "image/jpeg")
         assert ref.kind == "url"
-        assert ref.url == "agentflow://media/abc123"
+        assert ref.url == "graph://media/abc123"
         assert ref.mime_type == "image/jpeg"
 
     def test_to_media_ref_with_extras(self):
@@ -251,7 +251,7 @@ class TestMediaRefResolverOpenAI:
         key = await store.store(b"image data", "image/jpeg")
 
         resolver = MediaRefResolver(media_store=store)
-        ref = MediaRef(kind="url", url=f"agentflow://media/{key}", mime_type="image/jpeg")
+        ref = MediaRef(kind="url", url=f"graph://media/{key}", mime_type="image/jpeg")
         result = await resolver.resolve_for_openai(ref)
 
         expected_b64 = base64.b64encode(b"image data").decode()
@@ -263,7 +263,7 @@ class TestMediaRefResolverOpenAI:
         store.get_direct_url = AsyncMock(return_value="https://signed.example.com/image.jpg")
 
         resolver = MediaRefResolver(media_store=store)
-        ref = MediaRef(kind="url", url="agentflow://media/abc123", mime_type="image/jpeg")
+        ref = MediaRef(kind="url", url="graph://media/abc123", mime_type="image/jpeg")
         result = await resolver.resolve_for_openai(ref)
 
         assert result == {
@@ -284,7 +284,7 @@ class TestMediaRefResolverOpenAI:
             cache_backend=cache,
             direct_url_expiration_seconds=3600,
         )
-        ref = MediaRef(kind="url", url="agentflow://media/abc123", mime_type="image/jpeg")
+        ref = MediaRef(kind="url", url="graph://media/abc123", mime_type="image/jpeg")
 
         first = await resolver.resolve_for_openai(ref)
         second = await resolver.resolve_for_openai(ref)
@@ -299,7 +299,7 @@ class TestMediaRefResolverOpenAI:
     @pytest.mark.asyncio
     async def test_resolve_internal_url_no_store_raises(self):
         resolver = MediaRefResolver()  # no store
-        ref = MediaRef(kind="url", url="agentflow://media/abc123")
+        ref = MediaRef(kind="url", url="graph://media/abc123")
         with pytest.raises(RuntimeError, match="no MediaStore configured"):
             await resolver.resolve_for_openai(ref)
 
@@ -336,7 +336,7 @@ class TestAutoOffload:
         img_block = result.content[1]
         assert isinstance(img_block, ImageBlock)
         assert img_block.media.kind == "url"
-        assert img_block.media.url.startswith("agentflow://media/")
+        assert img_block.media.url.startswith("graph://media/")
         assert img_block.media.data_base64 is None
 
         # Store should have the data
@@ -480,7 +480,7 @@ class TestResolveMediaRefs:
             role="user",
             content=[
                 TextBlock(text="Describe"),
-                ImageBlock(media=MediaRef(kind="url", url=f"agentflow://media/{key}")),
+                ImageBlock(media=MediaRef(kind="url", url=f"graph://media/{key}")),
             ],
         )
 
@@ -549,7 +549,7 @@ class TestMessageWithImage:
         assert msg.content[0].text == "Describe this"
         assert isinstance(msg.content[1], ImageBlock)
         assert msg.content[1].media.kind == "url"
-        assert msg.content[1].media.url.startswith("agentflow://media/")
+        assert msg.content[1].media.url.startswith("graph://media/")
         assert msg.content[1].media.size_bytes == 9
         assert len(store) == 1
 
@@ -577,7 +577,7 @@ class TestMessageWithFile:
             assert len(msg.content) == 2
             assert isinstance(msg.content[0], TextBlock)
             assert isinstance(msg.content[1], ImageBlock)
-            assert msg.content[1].media.url.startswith("agentflow://media/")
+            assert msg.content[1].media.url.startswith("graph://media/")
             assert msg.content[1].media.filename == os.path.basename(path)
             assert len(store) == 1
         finally:
@@ -596,7 +596,7 @@ class TestMessageWithFile:
             msg = await Message.with_file(path, store=store)
             assert len(msg.content) == 1
             assert isinstance(msg.content[0], DocumentBlock)
-            assert msg.content[0].media.url.startswith("agentflow://media/")
+            assert msg.content[0].media.url.startswith("graph://media/")
         finally:
             os.unlink(path)
 
@@ -654,7 +654,7 @@ class TestEndToEnd:
 
         # But the actual data is still retrievable
         img_ref = msg.content[1].media
-        key = img_ref.url.removeprefix("agentflow://media/")
+        key = img_ref.url.removeprefix("graph://media/")
         data, mime = await store.retrieve(key)
         assert len(data) == 1_000_000
         assert mime == "image/jpeg"
@@ -699,7 +699,7 @@ class TestEndToEnd:
             assert mime == "text/plain"
 
             ref = store.to_media_ref(key, "text/plain")
-            assert ref.url == f"agentflow://media/{key}"
+            assert ref.url == f"graph://media/{key}"
 
             await store.delete(key)
             assert not await store.exists(key)

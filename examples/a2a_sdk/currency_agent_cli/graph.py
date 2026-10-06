@@ -2,7 +2,7 @@
 Currency agent graph
 
 Uses the Frankfurter API (free, no key needed) for live exchange rates.
-The compiled graph is exposed as ``app`` — referenced in agentflow.json as
+The compiled graph is exposed as ``app`` — referenced in 10xgraph.json as
 ``"agent": "graph:app"``.
 """
 

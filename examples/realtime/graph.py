@@ -1,6 +1,6 @@
 """Realtime AudioAgent exposed through the Agentflow API server.
 
-``agentflow.json`` points the server at ``app`` below. Once running, the server serves a
+``10xgraph.json`` points the server at ``app`` below. Once running, the server serves a
 WebSocket at ``/v1/graph/live`` that bridges browser/client audio to this agent (binary
 PCM16 frames upstream, model audio back as binary, transcripts/tool-calls/events as JSON).
 

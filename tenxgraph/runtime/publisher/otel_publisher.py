@@ -181,7 +181,7 @@ class OtelPublisher(BasePublisher):
         if self._tracer is None:
             from opentelemetry import trace
 
-            self._tracer = self._tracer_arg or trace.get_tracer("agentflow")
+            self._tracer = self._tracer_arg or trace.get_tracer("10xgraph")
         return self._tracer
 
     async def publish(self, event: EventModel) -> None:
@@ -243,7 +243,7 @@ class OtelPublisher(BasePublisher):
                 "tenxgraph.graph",
                 start_time=_ns(event.timestamp),
             )
-            span.set_attribute(GEN_AI_SYSTEM, "agentflow")
+            span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
             span.set_attribute(GEN_AI_OPERATION, "graph")
             _set_common_attrs(span, event)
             span.set_status(StatusCode.ERROR, "validation_rejected")
@@ -255,7 +255,7 @@ class OtelPublisher(BasePublisher):
             "tenxgraph.graph",
             start_time=_ns(event.timestamp),
         )
-        span.set_attribute(GEN_AI_SYSTEM, "agentflow")
+        span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
         span.set_attribute(GEN_AI_OPERATION, "graph")
         _set_common_attrs(span, event)
         # Expose thread_id as session.id so Langfuse groups multi-turn conversations
