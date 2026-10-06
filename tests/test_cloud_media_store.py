@@ -258,3 +258,65 @@ class TestCloudMediaStoreInterface:
         methods = ["store", "retrieve", "delete", "exists", "to_media_ref"]
         for m in methods:
             assert hasattr(CloudMediaStore, m), f"Missing method: {m}"
+
+
+class TestLegacyPrefixFallback:
+    """Objects stored under the pre-rename ``agentflow-media`` prefix stay readable."""
+
+    @staticmethod
+    def _make(legacy_key_prefix: str):
+        storage = AsyncMock()
+        storage.upload = AsyncMock(side_effect=lambda fp, cp: cp)
+        storage.delete = AsyncMock(return_value=True)
+
+        async def signed(path, expiration=3600):
+            return f"https://signed.example.com/{path}"
+
+        storage.get_public_url = AsyncMock(side_effect=signed)
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_new_writes_use_new_prefix(self):
+        storage = self._make("")
+        store = CloudMediaStore(storage)
+        await store.store(b"x", "image/png")
+        assert all(c.args[1].startswith("10xgraph-media/") for c in storage.upload.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_reads_fall_back_to_legacy_prefix(self):
+        storage = self._make("")
+        store = CloudMediaStore(storage)
+        key = "ab" * 16
+        meta = json.dumps({"mime_type": "image/png", "ext": ".png"}).encode()
+
+        async def download(url):
+            if url.endswith(f"agentflow-media/ab/ab/{key}.meta.json"):
+                return meta
+            if "10xgraph-media" in url:
+                raise OSError("404")
+            return b"PNGDATA"
+
+        with patch.object(CloudMediaStore, "_download_from_url", side_effect=download):
+            data, mime = await store.retrieve(key)
+            assert (data, mime) == (b"PNGDATA", "image/png")
+            assert await store.exists(key) is True
+            url = await store.get_public_url(key)
+            assert "agentflow-media/ab/ab/" in url and url.endswith(".png")
+            direct = await store.get_direct_url(key, "image/png")
+            assert "agentflow-media/" in direct
+            assert await store.delete(key) is True
+        deleted = [c.args[0] for c in storage.delete.call_args_list]
+        assert all(p.startswith("agentflow-media/") for p in deleted)
+
+    @pytest.mark.asyncio
+    async def test_custom_prefix_has_no_fallback(self):
+        storage = self._make("")
+        store = CloudMediaStore(storage, prefix="custom")
+
+        async def download(url):
+            raise OSError("404")
+
+        with patch.object(CloudMediaStore, "_download_from_url", side_effect=download):
+            assert await store.exists("ab" * 16) is False
+        paths = [c.args[0] for c in storage.get_public_url.call_args_list]
+        assert all(p.startswith("custom/") for p in paths)

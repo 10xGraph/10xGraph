@@ -15,7 +15,7 @@ from tenxgraph.utils.decorators import tool
 
 
 _DEFAULT_MAX_CHARS = 20_000
-_USER_AGENT = "agentflow-prebuilt-tools/1.0"
+_USER_AGENT = "10xgraph-prebuilt-tools/1.0"
 
 
 class _HTMLTextParser(HTMLParser):

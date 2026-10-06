@@ -2,14 +2,14 @@
 
 ## Supported versions
 
-`10xscale-agentflow` is pre-1.0 and ships from a single release line. Security
+`10xgraph` (formerly `10xscale-agentflow`) is pre-1.0 and ships from a single release line. Security
 fixes are applied to the latest published release only. Pin a known-good version
 in production and upgrade promptly when a security release is announced.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.7.x   | :white_check_mark: |
-| < 0.7   | :x:                |
+| 0.10.x  | :white_check_mark: |
+| < 0.10  | :x:                |
 
 ## Reporting a vulnerability
 
@@ -18,14 +18,14 @@ in production and upgrade promptly when a security release is announced.
 Report privately through either channel:
 
 - **GitHub Security Advisories** (preferred): open a private report at
-  https://github.com/10xHub/agentflow/security/advisories/new
+  https://github.com/10xGraph/10xGraph/security/advisories/new
 - **Email:** contact@10xscale.ai (you may also CC shudiptotrafder@gmail.com)
 
 Include as much of the following as you can:
 
 - A description of the issue and the impact you believe it has.
 - The affected version(s) and, if known, the affected module/import path
-  (e.g. `agentflow.core.llm.client_factory`).
+  (e.g. `tenxgraph.core.llm.client_factory`).
 - A minimal reproduction or proof of concept.
 - Any suggested remediation.
 
@@ -38,8 +38,8 @@ Include as much of the following as you can:
 
 ## Scope
 
-This policy covers the `10xscale-agentflow` core Python package in this
-repository. Issues in the API server (`10xscale-agentflow-cli`), the TypeScript
+This policy covers the `10xgraph` core Python package in this
+repository. Issues in the API server (`10xscale-agentflow-cli`, to be renamed), the TypeScript
 client, or third-party dependencies should be reported against their respective
 projects, though we are happy to help route a report.
 

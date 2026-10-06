@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 # Set agentflow logger to DEBUG explicitly
-logging.getLogger("agentflow").setLevel(logging.DEBUG)
+logging.getLogger("tenxgraph").setLevel(logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 

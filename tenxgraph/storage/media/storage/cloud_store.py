@@ -64,6 +64,10 @@ def _mime_to_ext(mime_type: str) -> str:
     return _FALLBACK_EXT.get(mime_type, ".bin")
 
 
+DEFAULT_PREFIX = "10xgraph-media"
+LEGACY_PREFIX = "agentflow-media"
+
+
 class CloudMediaStore(BaseMediaStore):
     """S3 / GCS media store backed by ``cloud-storage-manager``.
 
@@ -82,16 +86,20 @@ class CloudMediaStore(BaseMediaStore):
         storage: A ``BaseCloudStorage`` instance (from
             :func:`cloud_storage_manager.CloudStorageFactory.get_storage`).
         prefix: Top-level "directory" in the bucket.  Defaults to
-            ``"agentflow-media"``.
+            ``"10xgraph-media"``. When the default is used, objects
+            stored under the legacy ``"agentflow-media"`` prefix are still found
+            on read (new writes always go to the new prefix).
     """
 
     def __init__(
         self,
         storage: Any,
-        prefix: str = "agentflow-media",
+        prefix: str = DEFAULT_PREFIX,
     ) -> None:
         self._storage = storage
         self._prefix = prefix
+        # Only the default prefix falls back to the pre-rename location.
+        self._legacy_prefix = LEGACY_PREFIX if prefix == DEFAULT_PREFIX else None
 
     # ------------------------------------------------------------------
     # BaseMediaStore interface
@@ -140,13 +148,13 @@ class CloudMediaStore(BaseMediaStore):
         return key
 
     async def retrieve(self, storage_key: str) -> tuple[bytes, str]:
-        meta = await self._download_meta(storage_key)
+        meta, prefix = await self._locate(storage_key)
         if meta is None:
             raise KeyError(f"Media not found: {storage_key}")
 
         mime_type = meta["mime_type"]
         ext = meta.get("ext", _mime_to_ext(mime_type))
-        blob_path = self._cloud_path(storage_key, ext)
+        blob_path = self._cloud_path(storage_key, ext, prefix)
 
         url = await self._storage.get_public_url(blob_path, expiration=300)
         data = await self._download_from_url(url)
@@ -154,14 +162,14 @@ class CloudMediaStore(BaseMediaStore):
         return data, mime_type
 
     async def delete(self, storage_key: str) -> bool:
-        meta = await self._download_meta(storage_key)
+        meta, prefix = await self._locate(storage_key)
         if meta is None:
             return False
 
         mime_type = meta["mime_type"]
         ext = meta.get("ext", _mime_to_ext(mime_type))
-        blob_path = self._cloud_path(storage_key, ext)
-        meta_path = self._meta_cloud_path(storage_key)
+        blob_path = self._cloud_path(storage_key, ext, prefix)
+        meta_path = self._meta_cloud_path(storage_key, prefix)
 
         deleted = False
         try:
@@ -179,11 +187,12 @@ class CloudMediaStore(BaseMediaStore):
         return deleted
 
     async def exists(self, storage_key: str) -> bool:
-        meta = await self._download_meta(storage_key)
+        meta, _ = await self._locate(storage_key)
         return meta is not None
 
     async def get_metadata(self, storage_key: str) -> dict[str, Any] | None:
-        return await self._download_meta(storage_key)
+        meta, _ = await self._locate(storage_key)
+        return meta
 
     # ------------------------------------------------------------------
     # Bonus: direct URL access
@@ -206,12 +215,12 @@ class CloudMediaStore(BaseMediaStore):
         Raises:
             KeyError: If the storage key does not exist.
         """
-        meta = await self._download_meta(storage_key)
+        meta, prefix = await self._locate(storage_key)
         if meta is None:
             raise KeyError(f"Media not found: {storage_key}")
 
         ext = meta.get("ext", _mime_to_ext(meta["mime_type"]))
-        blob_path = self._cloud_path(storage_key, ext)
+        blob_path = self._cloud_path(storage_key, ext, prefix)
         return await self._storage.get_public_url(blob_path, expiration=expiration)
 
     async def get_direct_url(
@@ -229,7 +238,11 @@ class CloudMediaStore(BaseMediaStore):
         """
         if mime_type:
             ext = _mime_to_ext(mime_type)
-            blob_path = self._cloud_path(storage_key, ext)
+            prefix = self._prefix
+            if self._legacy_prefix is not None:
+                # Legacy objects live under the old prefix; one sidecar lookup decides.
+                _, prefix = await self._locate(storage_key)
+            blob_path = self._cloud_path(storage_key, ext, prefix)
             return await self._storage.get_public_url(blob_path, expiration=expiration)
 
         return await self.get_public_url(storage_key, expiration=expiration)
@@ -238,15 +251,31 @@ class CloudMediaStore(BaseMediaStore):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _cloud_path(self, key: str, ext: str) -> str:
-        return f"{self._prefix}/{key[:2]}/{key[2:4]}/{key}{ext}"
+    def _cloud_path(self, key: str, ext: str, prefix: str | None = None) -> str:
+        return f"{prefix or self._prefix}/{key[:2]}/{key[2:4]}/{key}{ext}"
 
-    def _meta_cloud_path(self, key: str) -> str:
-        return f"{self._prefix}/{key[:2]}/{key[2:4]}/{key}.meta.json"
+    def _meta_cloud_path(self, key: str, prefix: str | None = None) -> str:
+        return f"{prefix or self._prefix}/{key[:2]}/{key[2:4]}/{key}.meta.json"
 
-    async def _download_meta(self, storage_key: str) -> dict[str, Any] | None:
+    async def _locate(self, storage_key: str) -> tuple[dict[str, Any] | None, str]:
+        """Find the sidecar metadata and the prefix it lives under.
+
+        Tries the configured prefix first, then the legacy prefix (default
+        prefix only). Returns ``(None, configured_prefix)`` when not found.
+        """
+        meta = await self._download_meta(storage_key)
+        if meta is not None or self._legacy_prefix is None:
+            return meta, self._prefix
+        legacy_meta = await self._download_meta(storage_key, self._legacy_prefix)
+        if legacy_meta is not None:
+            return legacy_meta, self._legacy_prefix
+        return None, self._prefix
+
+    async def _download_meta(
+        self, storage_key: str, prefix: str | None = None
+    ) -> dict[str, Any] | None:
         """Download and parse the sidecar metadata JSON."""
-        meta_path = self._meta_cloud_path(storage_key)
+        meta_path = self._meta_cloud_path(storage_key, prefix)
         try:
             url = await self._storage.get_public_url(meta_path, expiration=60)
             raw = await self._download_from_url(url)

@@ -1,20 +1,30 @@
+# 10xGraph (rename release, unreleased)
+
+Agentflow is now 10xGraph. Install with `pip install 10xgraph` and import `tenxgraph`.
+`import agentflow` keeps working as a deprecated alias until 2.0. Uninstall
+`10xscale-agentflow` before installing `10xgraph`. See `CHANGELOG.md` (`[Unreleased]`)
+for the renamed identifiers (telemetry names, media scheme, home directory, cloud media
+prefix, config file) and their fallbacks.
+
+---
+
 # 10xscale-agentflow 0.10.0
 
-## This is the final release of `10xscale-agentflow`
+## The final release of `10xscale-agentflow` is 0.10.1
 
 Agentflow is now **10xGraph**. The project continues under a new name because
 "Agentflow" is shared by several unrelated projects, which made it hard to find.
 Nothing about the framework, its license or its maintainers changes.
 
-No further versions of `10xscale-agentflow` will be published to PyPI. Existing
-installs keep working; pin `10xscale-agentflow==0.10.0` if you need to stay on it.
+No versions after 0.10.1 of `10xscale-agentflow` will be published to PyPI. Existing
+installs keep working; pin `10xscale-agentflow==0.10.1` if you need to stay on it.
 
 | | Before | After |
 |---|---|---|
 | PyPI package | `10xscale-agentflow` | `10xgraph` |
 | Import | `import agentflow` | `import tenxgraph` |
 | Website | agentflow.10xscale.ai | [10xgraph.com](https://10xgraph.com) |
-| GitHub | github.com/10xHub | [github.com/10xGraph](https://github.com/10xGraph) |
+| GitHub | github.com/10xHub/agentflow | [github.com/10xGraph/10xGraph](https://github.com/10xGraph/10xGraph) |
 
 The import name is `tenxgraph` because a Python identifier cannot start with a digit.
 `10xgraph` keeps `agentflow` importable as a deprecated alias until 2.0, so existing
@@ -33,8 +43,7 @@ from tenxgraph import StateGraph
 ```
 
 The API server/CLI (`10xscale-agentflow-cli`) and the TypeScript client
-(`@10xscale/agentflow-client`) are renamed too. Their new package names are announced
-in the 10xGraph repositories.
+(`@10xscale/agentflow-client`) get their 10xGraph names in a later release.
 
 ## Highlights
 
