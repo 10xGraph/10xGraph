@@ -29,7 +29,6 @@ from .storage.base import BaseMediaStore
 logger = logging.getLogger("tenxgraph.media.media_resolver")
 
 
-
 class MediaResolver:
     """Unified media resolver that selects transport by provider/model capability.
 

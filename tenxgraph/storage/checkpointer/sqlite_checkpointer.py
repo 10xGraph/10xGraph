@@ -51,6 +51,7 @@ logger = logging.getLogger("tenxgraph.checkpointer.sqlite")
 
 StateT = TypeVar("StateT", bound="AgentState")
 
+
 # Default database location for desktop / single-user agents.
 def _default_home_dir() -> Path:
     """Return ``~/.10xgraph``, falling back to a pre-existing legacy ``~/.agentflow``."""

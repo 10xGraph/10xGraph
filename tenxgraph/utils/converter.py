@@ -23,7 +23,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tenxgraph.utils")
 
 
-
 _MEDIA_BLOCK_TYPES = ImageBlock | AudioBlock | VideoBlock | DocumentBlock
 _MEDIA_DICT_TYPES = {"image", "audio", "video", "document"}
 

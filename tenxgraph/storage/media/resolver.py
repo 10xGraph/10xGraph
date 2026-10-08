@@ -31,7 +31,6 @@ from .storage.base import BaseMediaStore
 logger = logging.getLogger("tenxgraph.media.resolver")
 
 
-
 class MediaRefResolver:
     """Resolve ``MediaRef`` objects to provider-specific content parts.
 
