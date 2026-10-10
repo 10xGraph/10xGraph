@@ -283,7 +283,7 @@ Other renamed identifiers (old values still work where noted):
 |---|---|---|---|
 | Core framework, `10xgraph` | Graph engine, state and checkpointing, memory, tools, MCP, publishers, evaluation | `pip install 10xgraph` | this repository |
 | API server, `10xgraph-api` (formerly `10xscale-agentflow-cli`) | Generates the production server around your graph: REST, SSE, WebSocket, JWT auth, scoped authorization, rate limiting, Docker and Kubernetes files | `pip install 10xgraph-api` | [10xGraph/10xgraph-api](https://github.com/10xGraph/10xgraph-api) |
-| TypeScript client, `10xgraph-client` (formerly `@10xscale/agentflow-client`) | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install 10xgraph-client` (until it is published, `@10xscale/agentflow-client`) | [10xHub/agentflow-client](https://github.com/10xHub/agentflow-client) |
+| TypeScript client, `10xgraph-client` (formerly `@10xscale/agentflow-client`) | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install 10xgraph-client` | [10xGraph/10xgraph-client](https://github.com/10xGraph/10xgraph-client) |
 | Playground | React UI to chat with agents and inspect graphs, threads and state | `10xgraph play` | [10xHub/agentflow-playground](https://github.com/10xHub/agentflow-playground) |
 | Documentation | Tutorials, guides, concepts, reference | [10xgraph.com](https://10xgraph.com) | [10xGraph/10xgraph-docs](https://github.com/10xGraph/10xgraph-docs) |
 
