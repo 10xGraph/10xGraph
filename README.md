@@ -283,7 +283,7 @@ Other renamed identifiers (old values still work where noted):
 |---|---|---|---|
 | Core framework, `10xgraph` | Graph engine, state and checkpointing, memory, tools, MCP, publishers, evaluation | `pip install 10xgraph` | this repository |
 | API server, `10xgraph-api` (formerly `10xscale-agentflow-cli`) | Generates the production server around your graph: REST, SSE, WebSocket, JWT auth, scoped authorization, rate limiting, Docker and Kubernetes files | `pip install 10xgraph-api` | [10xGraph/10xgraph-api](https://github.com/10xGraph/10xgraph-api) |
-| TypeScript client, `10xgraph-client` (formerly `@10xscale/agentflow-client`) | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install 10xgraph-client` | [10xGraph/10xgraph-client](https://github.com/10xGraph/10xgraph-client) |
+| TypeScript client, `10xgraph-client` (formerly `@10xscale/agentflow-client`) | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install 10xgraph-client` (until it is published, `@10xscale/agentflow-client`) | [10xHub/agentflow-client](https://github.com/10xHub/agentflow-client) |
 | Playground | React UI to chat with agents and inspect graphs, threads and state | `10xgraph play` | [10xHub/agentflow-playground](https://github.com/10xHub/agentflow-playground) |
 | Documentation | Tutorials, guides, concepts, reference | [10xgraph.com](https://10xgraph.com) | [10xGraph/10xgraph-docs](https://github.com/10xGraph/10xgraph-docs) |
 
@@ -364,7 +364,22 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 
 ## Contributing
 
-10xGraph is built in the open and contributions are welcome: bug reports with a clean reproduction, docs and examples, provider coverage, persistence backends, and typing (removing a module from the `mypy` ignore list is a welcome pull request).
+**Your avatar belongs on this wall.**
+
+<a href="https://github.com/10xGraph/10xGraph/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=10xGraph/10xGraph" alt="People who have contributed to 10xGraph" />
+</a>
+
+Every person above shipped code that now runs inside production agents. Merge one pull request and you join them, here and on the contributor page at [10xgraph.com/maintainers](https://10xgraph.com/maintainers).
+
+Your first pull request can be small. These are real, self-contained, and useful today:
+
+- **Type one module.** `pyproject.toml` lists the modules `mypy` still skips. Pick one, fix its types, delete its line. The list only gets shorter.
+- **Add the example you wish had existed.** A runnable script in [`examples/`](https://github.com/10xGraph/10xGraph/tree/main/examples) for a real use case: a support agent, a research pipeline, an approval flow.
+- **Turn a bug into a failing test.** A test that reproduces the problem is the most useful bug report there is. Open it as a draft pull request; the fix can come later.
+- **Fix the docs where you got stuck.** Every page on [10xgraph.com](https://10xgraph.com) has an "Edit this page" link.
+
+From clone to a passing check:
 
 ```bash
 git clone https://github.com/10xGraph/10xGraph.git
@@ -375,7 +390,7 @@ uv run ruff check .
 uv run mypy tenxgraph/
 ```
 
-Read [CONTRIBUTING.md](https://github.com/10xGraph/10xGraph/blob/main/CONTRIBUTING.md) for the full workflow and the [Code of Conduct](https://github.com/10xGraph/10xGraph/blob/main/CODE_OF_CONDUCT.md). Questions and ideas go to [Discussions](https://github.com/10xGraph/10xGraph/discussions).
+Draft pull requests are welcome, so open early and ask questions in the PR. For bigger changes, start a thread in [Discussions](https://github.com/10xGraph/10xGraph/discussions) first so the work does not overlap. [CONTRIBUTING.md](https://github.com/10xGraph/10xGraph/blob/main/CONTRIBUTING.md) has the full workflow, and the [Code of Conduct](https://github.com/10xGraph/10xGraph/blob/main/CODE_OF_CONDUCT.md) applies everywhere.
 
 ---
 
