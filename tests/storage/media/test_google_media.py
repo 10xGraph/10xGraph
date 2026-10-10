@@ -11,7 +11,7 @@ class TestImagePartToGoogle:
 
     @pytest.fixture
     def converter(self):
-        from agentflow.core.graph.agent_internal.google import AgentGoogleMixin
+        from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
 
         class TestConverter(AgentGoogleMixin):
             pass
@@ -111,7 +111,7 @@ class TestBinaryOrUriPartsToGoogle:
 
     @pytest.fixture
     def converter(self):
-        from agentflow.core.graph.agent_internal.google import AgentGoogleMixin
+        from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
 
         class TestConverter(AgentGoogleMixin):
             pass

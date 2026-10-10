@@ -10,15 +10,15 @@ import sys
 sys.path.insert(0, "/home/shudipto/projects/agentflow")
 
 # Import logging setup first
-from agentflow.utils.logging import configure_logging
+from tenxgraph.utils.logging import configure_logging
 
 
 # Configure logging to DEBUG level to see all logs
 configure_logging(level=logging.DEBUG)
 
 # Test imports and basic functionality
-from agentflow.core.graph import StateGraph
-from agentflow.utils import Message
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.utils import Message
 
 
 def simple_node(state, config):

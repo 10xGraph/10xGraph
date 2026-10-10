@@ -2,7 +2,7 @@
 EvalCase definitions for test2 — single-turn all-criteria evaluation.
 """
 
-from agentflow.qa.evaluation.dataset import EvalCase, ToolCall
+from tenxgraph.qa.evaluation.dataset import EvalCase, ToolCall
 
 
 # ── Weather query (expects get_weather) ──────────────────────────────

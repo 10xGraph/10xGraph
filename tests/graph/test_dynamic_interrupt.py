@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from agentflow.core.graph import StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message, StreamEvent, ToolCallBlock
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.utils import ResponseGranularity
-from agentflow.utils.constants import END
-from agentflow.utils.interrupt import GraphInterrupt, interrupt, pending_interrupt
+from tenxgraph.core.graph import StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message, StreamEvent, ToolCallBlock
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils import ResponseGranularity
+from tenxgraph.utils.constants import END
+from tenxgraph.utils.interrupt import GraphInterrupt, interrupt, pending_interrupt
 
 
 def _config(thread_id: str) -> dict:

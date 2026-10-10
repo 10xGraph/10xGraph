@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.qa.evaluation import (
+from tenxgraph.qa.evaluation import (
     AgentEvaluator,
     CriteriaConfig,
     CriterionConfig,
@@ -26,9 +26,9 @@ from agentflow.qa.evaluation import (
     MessageContent,
     TrajectoryCollector,
 )
-from agentflow.qa.evaluation.reporters.console import ConsoleReporter, Colors, print_report
-from agentflow.qa.evaluation.reporters.json import JSONReporter, JUnitXMLReporter
-from agentflow.qa.evaluation.reporters.html import HTMLReporter
+from tenxgraph.qa.evaluation.reporters.console import ConsoleReporter, Colors, print_report
+from tenxgraph.qa.evaluation.reporters.json import JSONReporter, JUnitXMLReporter
+from tenxgraph.qa.evaluation.reporters.html import HTMLReporter
 
 
 # ============================================================================
@@ -134,7 +134,7 @@ class TestAgentEvaluator:
 
     def test_execution_from_collector(self):
         """Test building ExecutionResult from collector fields."""
-        from agentflow.qa.evaluation import ToolCall as EvalToolCall
+        from tenxgraph.qa.evaluation import ToolCall as EvalToolCall
 
         collector = TrajectoryCollector()
         collector.tool_calls = [
@@ -488,9 +488,9 @@ class TestHTMLReporter:
 # Additional Reporter Tests for Coverage
 # ============================================================================
 
-from agentflow.qa.evaluation.dataset.eval_set import ToolCall, TrajectoryStep, StepType
-from agentflow.qa.evaluation.eval_result import NodeDetail
-from agentflow.qa.evaluation.token_usage import TokenUsage
+from tenxgraph.qa.evaluation.dataset.eval_set import ToolCall, TrajectoryStep, StepType
+from tenxgraph.qa.evaluation.eval_result import NodeDetail
+from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
 class NodeResponseObj:
     node_name = "object_node"

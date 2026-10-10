@@ -1,4 +1,4 @@
-"""Unit tests for agentflow.runtime.publisher.logfire_publisher.LogfirePublisher.
+"""Unit tests for tenxgraph.runtime.publisher.logfire_publisher.LogfirePublisher.
 
 All external dependencies (logfire, opentelemetry) are fully mocked so the
 tests run without any optional extras installed.
@@ -63,7 +63,7 @@ class TestLogfirePublisher:
     def _make_publisher(self, fake_lf, otel_mods, **kwargs):
         all_mods = {**otel_mods, "logfire": fake_lf}
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             return LogfirePublisher(**kwargs), fake_lf
 
@@ -73,8 +73,8 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
-            from agentflow.runtime.publisher.otel_publisher import OtelPublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher
 
             assert issubclass(LogfirePublisher, OtelPublisher)
 
@@ -84,7 +84,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher()
 
@@ -96,7 +96,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher()
 
@@ -109,7 +109,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(token="mytoken")
 
@@ -122,7 +122,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(token=None)
 
@@ -135,7 +135,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(service_name="my-svc")
 
@@ -148,7 +148,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(service_name=None)
 
@@ -161,7 +161,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(console=False)
 
@@ -174,7 +174,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(console=None)
 
@@ -188,7 +188,7 @@ class TestLogfirePublisher:
         fake_proc = MagicMock()
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(additional_span_processors=[fake_proc])
 
@@ -201,7 +201,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(additional_span_processors=[])
 
@@ -214,7 +214,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(environment="staging")
 
@@ -222,28 +222,28 @@ class TestLogfirePublisher:
         assert call_kwargs["environment"] == "staging"
 
     def test_level_stored_on_publisher(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         fake_lf = _fake_logfire_module()
         otel_mods = _fake_otel_modules()
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             pub = LogfirePublisher(level=ObservabilityLevel.FULL)
 
         assert pub._level == ObservabilityLevel.FULL
 
     def test_default_level_is_standard(self):
-        from agentflow.runtime.publisher.otel_publisher import ObservabilityLevel
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         fake_lf = _fake_logfire_module()
         otel_mods = _fake_otel_modules()
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             pub = LogfirePublisher()
 
@@ -253,7 +253,7 @@ class TestLogfirePublisher:
         saved = sys.modules.pop("logfire", ...)
         try:
             sys.modules.pop("logfire", None)
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             with pytest.raises(ImportError, match="logfire"):
                 LogfirePublisher()
@@ -267,7 +267,7 @@ class TestLogfirePublisher:
         all_mods = {**otel_mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            from agentflow.runtime.publisher.logfire_publisher import LogfirePublisher
+            from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             LogfirePublisher(send_to_logfire=False)
 

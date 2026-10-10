@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.prebuilt.tools import (
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.prebuilt.tools import (
     fetch_url,
     file_read,
     file_search,
@@ -19,7 +19,7 @@ from agentflow.prebuilt.tools import (
     safe_calculator,
     vertex_ai_search,
 )
-from agentflow.prebuilt.tools import fetch as fetch_module
+from tenxgraph.prebuilt.tools import fetch as fetch_module
 
 
 def test_safe_calculator_evaluates_basic_math() -> None:

@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from agentflow.runtime.adapters.llm.openai_converter import OpenAIConverter
-from agentflow.core.state.message import Message, TokenUsages
-from agentflow.core.state.message_block import (
+from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
+from tenxgraph.core.state.message import Message, TokenUsages
+from tenxgraph.core.state.message_block import (
     AudioBlock,
     ImageBlock,
     ReasoningBlock,
@@ -78,7 +78,7 @@ class TestOpenAIConverter:
         """Provide OpenAIConverter instance."""
         return OpenAIConverter()
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_basic_text_conversion(self, converter):
         """Test basic text message conversion."""
@@ -110,7 +110,7 @@ class TestOpenAIConverter:
         assert isinstance(message.content[0], TextBlock)
         assert message.content[0].text == "Hello, world!"
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_audio_conversion(self, converter):
         """Test audio content conversion."""
@@ -141,7 +141,7 @@ class TestOpenAIConverter:
         assert message.content[1].transcript == "Hello from audio"
         assert message.content[1].media.data_base64 == "base64encodeddata"
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_images_conversion(self, converter):
         """Test image content conversion."""
@@ -172,7 +172,7 @@ class TestOpenAIConverter:
         assert message.content[1].media.url == "https://example.com/image1.png"
         assert message.content[2].media.url == "https://example.com/image2.png"
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_tool_calls_conversion(self, converter):
         """Test tool call conversion."""
@@ -207,7 +207,7 @@ class TestOpenAIConverter:
         assert message.content[0].args == {"location": "SF"}
         assert message.content[0].id == "call_123"
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_empty_content(self, converter):
         """Test handling of empty/null content."""
@@ -229,7 +229,7 @@ class TestOpenAIConverter:
         assert isinstance(message, Message)
         assert len(message.content) == 0
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_token_usage(self, converter):
         """Test token usage extraction."""
@@ -257,7 +257,7 @@ class TestOpenAIConverter:
         assert message.usages.completion_tokens == 50
         assert message.usages.total_tokens == 150
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     @pytest.mark.asyncio
     async def test_metadata_extraction(self, converter):
         """Test metadata extraction."""
@@ -292,7 +292,7 @@ class TestOpenAIConverter:
 class TestOpenAIReasoningExtraction:
     """Test reasoning block extraction from ChatCompletion responses."""
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_reasoning_content_field(self):
         """reasoning_content field → ReasoningBlock."""
         response = MockModelResponse({
@@ -314,7 +314,7 @@ class TestOpenAIReasoningExtraction:
         assert "power rule" in reasoning_blocks[0].summary
         assert msg.reasoning != ""
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_think_tag_extraction(self):
         """<think> tags stripped from text, reasoning extracted."""
         response = MockModelResponse({
@@ -336,7 +336,7 @@ class TestOpenAIReasoningExtraction:
         assert len(reasoning_blocks) == 1
         assert "Rayleigh" in reasoning_blocks[0].summary
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_reasoning_content_takes_precedence(self):
         """Field value wins over <think> tags when both present."""
         response = MockModelResponse({
@@ -355,7 +355,7 @@ class TestOpenAIReasoningExtraction:
         assert len(reasoning_blocks) == 1
         assert reasoning_blocks[0].summary == "Field reasoning"
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_no_reasoning_no_block(self):
         """Standard response produces zero ReasoningBlocks."""
         response = MockModelResponse({
@@ -383,7 +383,7 @@ class TestOpenAIReasoningExtraction:
 class TestTokenUsageDetails:
     """Test token usage extraction including reasoning and cache tokens."""
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_reasoning_tokens_extracted(self):
         """completion_tokens_details.reasoning_tokens mapped correctly."""
         response = MockModelResponse({
@@ -401,7 +401,7 @@ class TestTokenUsageDetails:
         assert msg.usages.reasoning_tokens == 35
         assert msg.usages.completion_tokens == 60
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_cache_read_token_mapping(self):
         """cached_tokens → cache_read_input_tokens (not cache_creation)."""
         response = MockModelResponse({
@@ -419,7 +419,7 @@ class TestTokenUsageDetails:
         assert msg.usages.cache_read_input_tokens == 40
         assert msg.usages.cache_creation_input_tokens == 0
 
-    @patch("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
+    @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_no_token_details_defaults_to_zero(self):
         """None details → reasoning_tokens == 0, cache_read == 0."""
         response = MockModelResponse({
@@ -447,7 +447,7 @@ def converter():
 
 @pytest.mark.asyncio
 async def test_openai_converter_import_errors(monkeypatch):
-    monkeypatch.setattr("agentflow.runtime.adapters.llm.openai_converter.HAS_OPENAI", False)
+    monkeypatch.setattr("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", False)
     converter = OpenAIConverter()
     
     with pytest.raises(ImportError, match="openai is not installed"):
@@ -469,7 +469,7 @@ def test_extract_image_blocks_various_types(converter):
     assert len(blocks) == 1
     assert blocks[0].media.url == img
     
-    with patch("agentflow.runtime.adapters.llm.openai_converter.isinstance", side_effect=TypeError("mock error")):
+    with patch("tenxgraph.runtime.adapters.llm.openai_converter.isinstance", side_effect=TypeError("mock error")):
         blocks2 = converter._extract_image_blocks("url")
         assert blocks2 == []
 
@@ -596,7 +596,7 @@ async def test_convert_streaming_response_chat_completion(converter):
     }
     response = MockModelResponse(response_data)
     messages = []
-    with patch("agentflow.runtime.adapters.llm.openai_converter.ChatCompletion", MockModelResponse):
+    with patch("tenxgraph.runtime.adapters.llm.openai_converter.ChatCompletion", MockModelResponse):
         async for msg in converter.convert_streaming_response({}, "node", response):
             messages.append(msg)
     

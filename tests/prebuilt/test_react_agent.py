@@ -3,12 +3,12 @@
 import pytest
 from unittest.mock import Mock, patch
 
-from agentflow.core.graph import ToolNode, CompiledGraph
-from agentflow.prebuilt.agent.react import ReactAgent, _make_should_use_tools, _should_use_tools
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph import ToolNode, CompiledGraph
+from tenxgraph.prebuilt.agent.react import ReactAgent, _make_should_use_tools, _should_use_tools
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.core.graph.base_agent import BaseAgent
 
 
 class FakeManagedAgent(BaseAgent):
@@ -49,7 +49,7 @@ class TestReactAgent:
     def test_init_with_state(self):
         """Test ReactAgent initialization with custom state."""
         state = AgentState()
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             agent = ReactAgent[AgentState](model="fake-model", provider="openai", state=state)
         assert agent is not None
         assert agent._graph is not None
@@ -65,7 +65,7 @@ class TestReactAgent:
         def lookup_weather(location: str) -> str:
             return f"Weather for {location}"
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](
                 model="fake-model",
                 provider="openai",
@@ -83,7 +83,7 @@ class TestReactAgent:
         def lookup_weather(location: str) -> str:
             return f"Weather for {location}"
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](
                 model="fake-model",
                 provider="openai",
@@ -100,7 +100,7 @@ class TestReactAgent:
         """Test compiling ReactAgent with checkpointer."""
         checkpointer = Mock()
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](model="fake-model", provider="openai")
 
         compiled = react_agent.compile(checkpointer=checkpointer)
@@ -111,7 +111,7 @@ class TestReactAgent:
         """Test compiling ReactAgent with callback manager."""
         callback_manager = CallbackManager()
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](model="fake-model", provider="openai")
 
         compiled = react_agent.compile(callback_manager=callback_manager)
@@ -121,7 +121,7 @@ class TestReactAgent:
     def test_compile_with_interrupts(self):
         """Test compiling ReactAgent with interrupt configurations."""
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](model="fake-model", provider="openai")
 
         compiled = react_agent.compile(
@@ -134,7 +134,7 @@ class TestReactAgent:
     def test_compile_without_tools_skips_tool_node(self):
         """ReactAgent should compile a single-node graph when no tools are configured."""
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](model="fake-model", provider="openai")
 
         compiled = react_agent.compile()
@@ -149,7 +149,7 @@ class TestReactAgent:
         def lookup_weather(location: str) -> str:
             return f"Weather for {location}"
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](
                 model="fake-model",
                 provider="openai",
@@ -170,11 +170,11 @@ class TestReactAgent:
         media_store = Mock()
         compiled_graph = Mock(spec=CompiledGraph)
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](model="fake-model", provider="openai")
 
         with patch(
-            "agentflow.prebuilt.agent.react.StateGraph.compile",
+            "tenxgraph.prebuilt.agent.react.StateGraph.compile",
             autospec=True,
             return_value=compiled_graph,
         ) as compile_mock:
@@ -192,8 +192,8 @@ class TestReactAgent:
 
         client = object()
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent), patch(
-            "agentflow.prebuilt.agent.react.ToolNode",
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent), patch(
+            "tenxgraph.prebuilt.agent.react.ToolNode",
             FakeToolNode,
         ):
             react_agent = ReactAgent[AgentState](
@@ -337,7 +337,7 @@ class TestReactAgentIntegration:
     def test_tool_node_not_created_without_tools_or_client(self):
         """ReactAgent should skip ToolNode creation when no tools or MCP client are supplied."""
 
-        with patch("agentflow.prebuilt.agent.react.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent):
             react_agent = ReactAgent[AgentState](
                 model="fake-model",
                 provider="openai",

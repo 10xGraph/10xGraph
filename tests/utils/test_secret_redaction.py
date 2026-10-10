@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agentflow.utils.logging import (
+from tenxgraph.utils.logging import (
     SecretRedactionFilter,
     install_secret_redaction,
     mask_secrets,
@@ -62,7 +62,7 @@ class TestSecretRedactionFilter:
 
     def test_filter_redacts_record_message(self):
         record = logging.LogRecord(
-            name="agentflow.test",
+            name="tenxgraph.test",
             level=logging.INFO,
             pathname=__file__,
             lineno=1,
@@ -76,7 +76,7 @@ class TestSecretRedactionFilter:
 
     def test_filter_redacts_args_interpolated_message(self):
         record = logging.LogRecord(
-            name="agentflow.test",
+            name="tenxgraph.test",
             level=logging.INFO,
             pathname=__file__,
             lineno=1,
@@ -88,11 +88,11 @@ class TestSecretRedactionFilter:
         assert "secret-token-value" not in record.getMessage()
 
     def test_install_attaches_filter_to_handlers(self):
-        log = logging.getLogger("agentflow.test.install")
+        log = logging.getLogger("tenxgraph.test.install")
         handler = logging.StreamHandler()
         log.addHandler(handler)
         try:
-            redactor = install_secret_redaction("agentflow.test.install")
+            redactor = install_secret_redaction("tenxgraph.test.install")
             assert redactor in log.filters
             assert redactor in handler.filters
         finally:

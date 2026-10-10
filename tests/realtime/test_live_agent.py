@@ -10,7 +10,7 @@ import asyncio
 import pytest
 from injectq import InjectQ
 
-from agentflow.core.realtime.base import (
+from tenxgraph.core.realtime.base import (
     AudioDeltaEvent,
     GoAwayEvent,
     InputTranscriptEvent,
@@ -22,14 +22,14 @@ from agentflow.core.realtime.base import (
     ToolResultEvent,
     TurnCompleteEvent,
 )
-from agentflow.core.realtime.live_agent import LiveAgent
-from agentflow.core.realtime.queue import LiveInputQueue
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.utils import CallbackManager
-from agentflow.utils.background_task_manager import BackgroundTaskManager
-from agentflow.utils.callbacks import GraphLifecycleHook
+from tenxgraph.core.realtime.live_agent import LiveAgent
+from tenxgraph.core.realtime.queue import LiveInputQueue
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.callbacks import GraphLifecycleHook
 
 MODEL = "gemini-2.5-flash-live"
 
@@ -234,7 +234,7 @@ class TestBargeIn:
 class TestTranscriptPersistence:
     @pytest.mark.asyncio
     async def test_finished_transcripts_persist_as_messages_no_audio(self):
-        from agentflow.storage.checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
         client = FakeRealtimeClient(
             [
@@ -265,7 +265,7 @@ class TestTranscriptPersistence:
 class TestTranscriptAccumulation:
     @pytest.mark.asyncio
     async def test_partial_chunks_accumulate_and_flush_on_finished(self):
-        from agentflow.storage.checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
         # Streamed as partials (finished=False) then a finish marker with empty text.
         client = FakeRealtimeClient(
@@ -341,8 +341,8 @@ class TestTranscriptAccumulation:
 class TestReseedGating:
     @pytest.mark.asyncio
     async def test_reseed_skipped_when_resumed_from_handle(self):
-        from agentflow.storage.checkpointer import InMemoryCheckpointer
-        from agentflow.utils.thread_info import ThreadInfo
+        from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+        from tenxgraph.utils.thread_info import ThreadInfo
 
         cp = InMemoryCheckpointer()
         config = {"thread_id": "t-resumed", "user_id": "u1"}
@@ -388,7 +388,7 @@ class TestReconnectBackoff:
         assert fatal[0].code == "reconnect_failed"
 
     def test_reconnect_settings_seeded_from_realtime_config(self):
-        from agentflow.core.realtime.base import ReconnectConfig
+        from tenxgraph.core.realtime.base import ReconnectConfig
 
         cfg = RealtimeConfig(
             model=MODEL,
@@ -402,7 +402,7 @@ class TestReconnectBackoff:
 
     @pytest.mark.asyncio
     async def test_max_attempts_zero_disables_error_driven_reconnect(self):
-        from agentflow.core.realtime.base import ReconnectConfig
+        from tenxgraph.core.realtime.base import ReconnectConfig
 
         class DroppingClient(FakeRealtimeClient):
             attempts = 0
@@ -506,7 +506,7 @@ class TestSystemInstruction:
 
     @pytest.mark.asyncio
     async def test_session_skill_content_reaches_system_instruction(self, tmp_path):
-        from agentflow.core.skills.models import SkillConfig
+        from tenxgraph.core.skills.models import SkillConfig
 
         skill_dir = tmp_path / "weather"
         skill_dir.mkdir()
@@ -652,7 +652,7 @@ class TestToolAdvertising:
 
     @pytest.mark.asyncio
     async def test_advertised_tools_filtered_by_tools_tags(self):
-        from agentflow.utils import tool
+        from tenxgraph.utils import tool
 
         @tool(tags=["weather"])
         def get_weather(city: str) -> str:
@@ -728,7 +728,7 @@ class TestClientHangup:
 class TestResumption:
     @pytest.mark.asyncio
     async def test_session_update_caches_and_persists_handle(self):
-        from agentflow.storage.checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
         client = FakeRealtimeClient([SessionUpdateEvent(resumption_handle="H1")])
         agent = LiveAgent(MODEL, realtime_client_factory=_factory(client))
@@ -770,7 +770,7 @@ class TestResumption:
 
     @pytest.mark.asyncio
     async def test_cross_session_reseeds_history(self):
-        from agentflow.storage.checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
         cp = InMemoryCheckpointer()
         config = {"thread_id": "t-cross", "user_id": "u1"}

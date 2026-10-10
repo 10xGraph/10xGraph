@@ -4,15 +4,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from agentflow.core.graph import (
+from tenxgraph.core.graph import (
     CompiledGraph,
     Edge,
     Node,
     StateGraph,
     ToolNode,
 )
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
 
 
 class TestNode:

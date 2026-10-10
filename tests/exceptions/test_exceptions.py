@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentflow.core.exceptions import (
+from tenxgraph.core.exceptions import (
     GraphError,
     GraphRecursionError,
     MetricsError,

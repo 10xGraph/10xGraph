@@ -1,20 +1,22 @@
-# agentflow (core Python library) — Engineering Guide
+# 10xGraph core (Python library) — Engineering Guide
 
-This file documents the **core Python framework** only (`10xscale-agentflow`, the package that
-lives in this folder). For the API/CLI, TS client, docs, or playground, see the CLAUDE.md in
+This file documents the **core Python framework** only (`10xgraph`, formerly `10xscale-agentflow`, the
+package that lives in this repo). For the API/CLI, TS client, docs, or playground, see the CLAUDE.md in
 their respective folders and the workspace-root `CLAUDE.md` for the monorepo overview.
 
-- Package name (PyPI): `10xscale-agentflow`
-- Version: `1.0.0` (single source of truth: `pyproject.toml`; `agentflow.__version__`
+- Package name (PyPI): `10xgraph` (old name `10xscale-agentflow`, last release 0.10.1)
+- Repo: https://github.com/10xGraph/10xGraph (this folder is the repo root)
+- Version: see `pyproject.toml` (0.10.1 at the time of the rename) (single source of truth: `pyproject.toml`; `tenxgraph.__version__`
   resolves from installed distribution metadata, so it cannot drift from this file)
 - Requires: Python >= 3.12
-- Importable top-level package lives at `agentflow/agentflow/` (this folder is the repo root;
-  the importable package is the nested `agentflow/` directory).
+- Importable top-level package is `tenxgraph/` at the repo root. `agentflow/` is a deprecated
+  alias shim (same module objects, one `DeprecationWarning`) kept until 2.0; do not add code there.
+  Uninstall `10xscale-agentflow` before installing `10xgraph`: both provide the `agentflow` module.
 
 ## What this package is
 
 A graph-based orchestration engine for multi-agent LLM systems. It is **LLM-agnostic**: you bring
-the provider SDK (OpenAI / Google GenAI), and Agentflow provides the workflow engine, state,
+the provider SDK (OpenAI / Google GenAI), and 10xGraph provides the workflow engine, state,
 persistence, tools, memory, evaluation, and event publishing. Inspired by LangGraph but simpler.
 
 ## Working principles for this codebase
@@ -31,7 +33,7 @@ persistence, tools, memory, evaluation, and event publishing. Inspired by LangGr
 
 ## Package layout (real, current)
 
-The importable package is `agentflow/agentflow/`. Top-level subpackages:
+The importable package is `tenxgraph/`. Top-level subpackages:
 
 | Subpackage | What lives there |
 |---|---|
@@ -45,48 +47,49 @@ The importable package is `agentflow/agentflow/`. Top-level subpackages:
 ## Import Map (verified) — this is the part that bites people
 
 The package was restructured into `core/`, `storage/`, `runtime/`, `qa/`. **There are no
-top-level `agentflow.graph`, `agentflow.state`, `agentflow.checkpointer`, `agentflow.skills`,
-`agentflow.evaluation`, `agentflow.testing`, `agentflow.adapters`, or `agentflow.publisher`
+top-level `tenxgraph.graph`, `tenxgraph.state`, `tenxgraph.checkpointer`, `tenxgraph.skills`,
+`tenxgraph.evaluation`, `tenxgraph.testing`, `tenxgraph.adapters`, or `tenxgraph.publisher`
 shims.** Those paths raise `ModuleNotFoundError`. Use the canonical paths:
 
 ```python
 # Graph engine
-from agentflow.core.graph import Agent, StateGraph, ToolNode, CompiledGraph, Node, Edge, RetryConfig
-# or the aggregate: from agentflow.core import StateGraph, Agent, ToolNode, AgentState, Message, ...
+from tenxgraph.core.graph import Agent, StateGraph, ToolNode, CompiledGraph, Node, Edge, RetryConfig
+# or the aggregate: from tenxgraph.core import StateGraph, Agent, ToolNode, AgentState, Message, ...
 
 # State and messages
-from agentflow.core.state import AgentState, Message, TextBlock, ToolResultBlock, add_messages
+from tenxgraph.core.state import AgentState, Message, TextBlock, ToolResultBlock, add_messages
 
 # LLM client/provider helpers
-from agentflow.core.llm import call_llm, create_llm_client, detect_provider
+from tenxgraph.core.llm import call_llm, create_llm_client, detect_provider
 
 # Skills
-from agentflow.core.skills import SkillConfig, SkillMeta, SkillsRegistry
+from tenxgraph.core.skills import SkillConfig, SkillMeta, SkillsRegistry
 
 # Persistence
-from agentflow.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer, BaseCheckpointer
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer, BaseCheckpointer
 # Vector / long-term memory
-from agentflow.storage.store import QdrantStore, Mem0Store, MemoryConfig, AgentMemoryConfig
+from tenxgraph.storage.store import QdrantStore, Mem0Store, MemoryConfig, AgentMemoryConfig
 
 # Publishers / converters
-from agentflow.runtime.publisher import ConsolePublisher, RedisPublisher, KafkaPublisher, RabbitMQPublisher
-from agentflow.runtime.adapters.llm import OpenAIConverter, GoogleGenAIConverter, OpenAIResponsesConverter
+from tenxgraph.runtime.publisher import ConsolePublisher, RedisPublisher, KafkaPublisher, RabbitMQPublisher
+from tenxgraph.runtime.adapters.llm import OpenAIConverter, GoogleGenAIConverter, OpenAIResponsesConverter
 
 # Prebuilt
-from agentflow.prebuilt.agent import ReactAgent, RAGAgent, SwarmAgent, SupervisorTeamAgent
-from agentflow.prebuilt.tools import safe_calculator, fetch_url, create_handoff_tool, memory_tool
+from tenxgraph.prebuilt.agent import ReactAgent, RAGAgent, SwarmAgent, SupervisorTeamAgent
+from tenxgraph.prebuilt.tools import safe_calculator, fetch_url, create_handoff_tool, memory_tool
 
 # QA
-from agentflow.qa.evaluation import AgentEvaluator, EvalConfig, EvalCase, EvalSet
-from agentflow.qa.testing import TestAgent, MockMCPClient, MockToolRegistry
+from tenxgraph.qa.evaluation import AgentEvaluator, EvalConfig, EvalCase, EvalSet
+from tenxgraph.qa.testing import TestAgent, MockMCPClient, MockToolRegistry
 
 # Utils
-from agentflow.utils import tool, convert_messages, Command
-from agentflow.utils.constants import START, END, ResponseGranularity
+from tenxgraph.utils import tool, convert_messages, Command
+from tenxgraph.utils.constants import START, END, ResponseGranularity
 ```
 
-Note: the root `agentflow/__init__.py` is intentionally empty. Importing the package does not
-eagerly pull in submodules; import the subpackage you need.
+Note: the root `tenxgraph/__init__.py` exports `StateGraph`, `Agent`, `ToolNode`, `AgentState`,
+`Message`, `START`, `END` lazily and does not eagerly import submodules. `import agentflow` and
+`agentflow.*` still work as a deprecated alias until 2.0.
 
 ## Core concepts
 
@@ -97,7 +100,7 @@ eagerly pull in submodules; import the subpackage you need.
 
 **CompiledGraph execution API:** `invoke` / `ainvoke` (run), `stream` / `astream` (incremental),
 `stop` / `astop` (interrupt), `override_node`, `attach_remote_tools`, `generate_graph`, `aclose`.
-- Pause from inside a node or tool with `agentflow.utils.interrupt(value, message=..., ...)`; the
+- Pause from inside a node or tool with `tenxgraph.utils.interrupt(value, message=..., ...)`; the
   run saves the thread paused before that node. Resume with `invoke({"resume": value}, config)`:
   the node re-runs and `interrupt()` returns `value`. `GraphInterrupt` is a `BaseException`.
 - Per-run client tools: `config["remote_tools"]` (flat or OpenAI schemas) are offered by the
@@ -105,14 +108,14 @@ eagerly pull in submodules; import the subpackage you need.
   client tool call pauses the graph after the tool node; the client's `ToolResultBlock`
   resumes it after that node.
 - Core functions take DI deps as `Inject[...]` defaults and call `fresh()` (in
-  `agentflow.utils.injection`) at the top: the proxy caches its first resolution for the
+  `tenxgraph.utils.injection`) at the top: the proxy caches its first resolution for the
   process otherwise. New code taking an `Inject[...]` default must do the same.
 - Input shape: `{"messages": [Message...]}`.
 - Config keys: `user_id`, `thread_id`, `run_id`, `recursion_limit` (default 25).
 - `response_granularity`: `LOW` (messages only, default), `PARTIAL` (context+summary+messages),
   `FULL` (full state).
 
-**Agent class** (`agentflow.core.graph.Agent`) — the high-level node that wraps LLM calls,
+**Agent class** (`tenxgraph.core.graph.Agent`) — the high-level node that wraps LLM calls,
 message conversion, and tool integration. Key constructor params:
 `model` (required), `output_type="text"`, `system_prompt`, `tool_node` (name or ToolNode),
 `extra_messages`, `trim_context`, `tools_tags`, `reasoning_config`, `skills`, `memory`,
@@ -172,21 +175,22 @@ are recorded in `execution_meta.internal_data["active_skills"]` and re-injected 
 **Publishers.** Emit execution events to Console, Redis Pub/Sub, Kafka, RabbitMQ, or OTEL.
 `CompositePublisher` fans out to several. OTEL publisher provides tracing (`setup_tracing`).
 
-**QA.** `agentflow.qa.evaluation` is a full eval framework (criteria incl. LLM-as-judge,
+**QA.** `tenxgraph.qa.evaluation` is a full eval framework (criteria incl. LLM-as-judge,
 trajectory matching, rubric, safety, hallucination; datasets; console/JSON/HTML/JUnit reporters;
-user simulators). `agentflow.qa.testing` provides `TestAgent`, `MockMCPClient`, `MockToolRegistry`,
+user simulators). `tenxgraph.qa.testing` provides `TestAgent`, `MockMCPClient`, `MockToolRegistry`,
 `TestContext` for unit-testing graphs without live LLMs.
 
 ## Development workflow
 
-This repo root is `agentflow/`; the importable package is `agentflow/agentflow/`. A `.venv` is
+This repo root is the 10xGraph repo; the importable package is `tenxgraph/`. A `.venv` is
 already present.
 
 ```bash
-# from this folder (agentflow/)
+# from the repo root
 .venv/bin/python -m pytest               # full suite (enforces coverage >= 80%)
 .venv/bin/python -m pytest tests/graph   # one area
 ruff check . && ruff format .            # lint + format (line-length 100, py312)
+uv run mypy tenxgraph/                   # type check
 # editable install with extras for local dev:
 pip install -e ".[google-genai,openai,anthropic,mcp,pg_checkpoint]"
 ```
@@ -201,12 +205,22 @@ pip install -e ".[google-genai,openai,anthropic,mcp,pg_checkpoint]"
 
 ## Known doc drift (do not copy from these without checking)
 
-- **README.md import paths are stale.** It imports `agentflow.graph`, `agentflow.state`,
-  `agentflow.checkpointer` — all removed. Real paths are `agentflow.core.*` / `agentflow.storage.*`.
-- **`Message.from_text` does not exist** (README uses it). Use `Message.text_message`.
-- **`ToolNode(functions=...)`** keyword is wrong (README MCP example). The param is `tools`.
-- A few `examples/` files still use dead paths (`agentflow.state.message`, `agentflow.graph.tool_node`,
-  `agentflow.evaluation.*`). Treat those specific files as broken until fixed.
+- **`Message.from_text` does not exist.** Use `Message.text_message`.
+- **`ToolNode(functions=...)`** is wrong. The param is `tools`.
+- Some `examples/` files still use pre-rename or dead paths (`agentflow.*`, `agentflow.state.message`,
+  `agentflow.graph.tool_node`, `agentflow.evaluation.*`). `agentflow.*` works through the alias with a
+  `DeprecationWarning`; the dead ones are broken. Use `tenxgraph.*` in new code.
+
+## Renamed identifiers (fallbacks kept)
+
+- OTEL tracer/meter name and `GEN_AI_SYSTEM`: `10xgraph`. Logger names: `tenxgraph.*`.
+- Media URI scheme `graph://media/` (old `agentflow://media/` still read).
+- Default home dir `~/.10xgraph` (falls back to `~/.agentflow` if only that exists); used by the
+  `SqliteCheckpointer` default path.
+- Cloud media prefix `10xgraph-media` (old `agentflow-media` objects still read).
+- Prebuilt tools user-agent `10xgraph-prebuilt-tools/1.0`.
+- Server config file is `10xgraph.json` (the CLI package falls back to `agentflow.json`). The CLI
+  (`10xscale-agentflow-cli`, command `agentflow`) and TS client are not renamed yet.
 
 When you touch any of the above, prefer fixing the doc/example to match the code rather than the
 reverse, unless the export path itself is the bug.

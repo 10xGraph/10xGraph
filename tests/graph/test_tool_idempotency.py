@@ -8,8 +8,8 @@ again -- the double-charge scenario. These tests pin the ledger that prevents it
 
 import pytest
 
-from agentflow.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from agentflow.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
 
 class TestLedgerKey:
@@ -75,7 +75,7 @@ class TestCheckpointerLedger:
         # A custom checkpointer that does not implement the ledger inherits the
         # base no-op: idempotency is simply off (old at-least-once behaviour),
         # not an exception.
-        from agentflow.storage.checkpointer import BaseCheckpointer
+        from tenxgraph.storage.checkpointer import BaseCheckpointer
 
         assert BaseCheckpointer.aget_tool_result.__doc__ is not None
         cp = InMemoryCheckpointer()

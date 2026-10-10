@@ -15,8 +15,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from agentflow.core.skills.models import SkillConfig, SkillMeta
-from agentflow.core.skills.registry import SkillsRegistry
+from tenxgraph.core.skills.models import SkillConfig, SkillMeta
+from tenxgraph.core.skills.registry import SkillsRegistry
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ def _make_skill_dir(
 
 def _make_mixin(tool_node=None):
     """Return a fresh AgentSkillsMixin with a pre-set _tool_node."""
-    from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
+    from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
 
     mixin = AgentSkillsMixin()
     mixin._tool_node = tool_node
@@ -131,7 +131,7 @@ class TestSetupSkillsSessionMode:
         """activate_skill must not be queued or attached in session mode."""
         _make_skill_dir(tmp_path, "fashion")
 
-        from agentflow.core.graph.tool_node import ToolNode
+        from tenxgraph.core.graph.tool_node import ToolNode
 
         tool_node = ToolNode([])
         mixin = _make_mixin(tool_node=tool_node)
@@ -154,7 +154,7 @@ class TestSetupSkillsSessionMode:
         assert getattr(mixin, "_extra_tools", None) is None
 
     def test_session_mode_registers_resource_tool_for_bundled_files(self, tmp_path: Path):
-        from agentflow.core.graph.tool_node import ToolNode
+        from tenxgraph.core.graph.tool_node import ToolNode
 
         skill_dir = _make_skill_dir(tmp_path, "fashion")
         (skill_dir / "references").mkdir()
@@ -376,7 +376,7 @@ class TestBuildSkillPromptsSessionMode:
 
 class TestOnDemandModeRegression:
     def test_catalog_still_appended_in_on_demand(self, tmp_path: Path):
-        from agentflow.core.graph.tool_node import ToolNode
+        from tenxgraph.core.graph.tool_node import ToolNode
 
         _make_skill_dir(tmp_path, "support", triggers=["need help"])
 
@@ -393,7 +393,7 @@ class TestOnDemandModeRegression:
 
     def test_on_demand_does_not_use_state_for_skill_selection(self, tmp_path: Path):
         """State.SKILL_NAME is irrelevant in on-demand mode."""
-        from agentflow.core.graph.tool_node import ToolNode
+        from tenxgraph.core.graph.tool_node import ToolNode
 
         _make_skill_dir(tmp_path, "support", triggers=["need help"])
 

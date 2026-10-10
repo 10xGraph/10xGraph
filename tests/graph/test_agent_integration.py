@@ -2,9 +2,9 @@
 
 import pytest
 
-from agentflow.core.graph import Agent, StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
+from tenxgraph.core.graph import Agent, StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
 
 
 pytestmark = pytest.mark.asyncio
@@ -135,6 +135,6 @@ class TestAgentIntegration:
 
     def test_agent_export_from_graph_module(self):
         """Test that Agent is properly exported from graph module."""
-        from agentflow.core.graph import Agent as ExportedAgent
+        from tenxgraph.core.graph import Agent as ExportedAgent
 
         assert ExportedAgent is Agent

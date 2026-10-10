@@ -1,4 +1,4 @@
-"""Tests for agentflow.store.long_term_memory module."""
+"""Tests for tenxgraph.store.long_term_memory module."""
 
 import asyncio
 import json
@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.store.long_term_memory import (
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.store.long_term_memory import (
     DEFAULT_READ_MODE,
     _IDENTICAL_SCORE_THRESHOLD,
     MemoryIntegration,
@@ -22,18 +22,18 @@ from agentflow.storage.store.long_term_memory import (
     create_memory_preload_node,
     get_memory_system_prompt,
 )
-from agentflow.prebuilt.tools.memory import (
+from tenxgraph.prebuilt.tools.memory import (
     make_agent_memory_tool,
     make_user_memory_tool,
     memory_tool,
 )
-from agentflow.storage.store.memory_config import (
+from tenxgraph.storage.store.memory_config import (
     AgentMemoryConfig,
     MemoryConfig,
     UserMemoryConfig,
 )
-from agentflow.storage.store.store_schema import MemorySearchResult, MemoryType
-from agentflow.core.graph.tool_node import ToolNode
+from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
+from tenxgraph.core.graph.tool_node import ToolNode
 
 
 # ---------------------------------------------------------------------------
@@ -770,7 +770,7 @@ class TestMemoryIntegrationTools:
 
 class TestMemoryIntegrationWire:
     def test_wire_preload_adds_node_and_entry(self, mock_store):
-        from agentflow.core.graph import StateGraph
+        from tenxgraph.core.graph import StateGraph
 
         mi = MemoryIntegration(store=mock_store, retrieval_mode="preload")
         graph = StateGraph(AgentState())
@@ -785,7 +785,7 @@ class TestMemoryIntegrationWire:
         assert "memory_preload" in graph.nodes
 
     def test_wire_no_retrieval_sets_entry_directly(self, mock_store):
-        from agentflow.core.graph import StateGraph
+        from tenxgraph.core.graph import StateGraph
 
         mi = MemoryIntegration(store=mock_store, retrieval_mode="no_retrieval")
         graph = StateGraph(AgentState())
@@ -800,7 +800,7 @@ class TestMemoryIntegrationWire:
         assert "memory_preload" not in graph.nodes
 
     def test_wire_postload_sets_entry_directly(self, mock_store):
-        from agentflow.core.graph import StateGraph
+        from tenxgraph.core.graph import StateGraph
 
         mi = MemoryIntegration(store=mock_store, retrieval_mode="postload")
         graph = StateGraph(AgentState())
@@ -814,7 +814,7 @@ class TestMemoryIntegrationWire:
         assert graph.entry_point == "main"
 
     def test_wire_custom_preload_name(self, mock_store):
-        from agentflow.core.graph import StateGraph
+        from tenxgraph.core.graph import StateGraph
 
         mi = MemoryIntegration(store=mock_store, retrieval_mode="preload")
         graph = StateGraph(AgentState())
@@ -829,7 +829,7 @@ class TestMemoryIntegrationWire:
         assert "mem_load" in graph.nodes
 
     def test_wire_preload_creates_edge(self, mock_store):
-        from agentflow.core.graph import StateGraph
+        from tenxgraph.core.graph import StateGraph
 
         mi = MemoryIntegration(store=mock_store, retrieval_mode="preload")
         graph = StateGraph(AgentState())

@@ -6,12 +6,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from agentflow.core.graph import CompiledGraph, ToolNode
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.prebuilt.agent.plan_act_reflect import (
+from tenxgraph.core.graph import CompiledGraph, ToolNode
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.prebuilt.agent.plan_act_reflect import (
     DEFAULT_PLAN_SYSTEM_PROMPT,
     DEFAULT_REFLECT_SYSTEM_PROMPT,
     PlanActReflectAgent,
@@ -231,30 +231,30 @@ class TestMakeReflectRoute:
 
 class TestPlanActReflectAgentInit:
     def test_basic_init(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         assert agent is not None
         assert agent._model == "fake-model"
 
     def test_default_max_iterations(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         assert agent._max_iterations == 3
 
     def test_custom_max_iterations(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", max_iterations=7, provider="openai")
         assert agent._max_iterations == 7
 
     def test_default_prompts_used_when_none_given(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         assert agent._plan_system_prompt == DEFAULT_PLAN_SYSTEM_PROMPT
         assert agent._reflect_system_prompt == DEFAULT_REFLECT_SYSTEM_PROMPT
 
     def test_custom_plan_prompt_overrides_default(self):
         custom = [{"role": "system", "content": "Custom planner."}]
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", plan_system_prompt=custom, provider="openai"
             )
@@ -263,7 +263,7 @@ class TestPlanActReflectAgentInit:
 
     def test_custom_reflect_prompt_overrides_default(self):
         custom = [{"role": "system", "content": "Custom reflector."}]
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", reflect_system_prompt=custom, provider="openai"
             )
@@ -271,7 +271,7 @@ class TestPlanActReflectAgentInit:
         assert agent._plan_system_prompt == DEFAULT_PLAN_SYSTEM_PROMPT
 
     def test_no_tools_creates_no_tool_node(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         assert agent._tool_node is None
 
@@ -279,7 +279,7 @@ class TestPlanActReflectAgentInit:
         def dummy_tool(x: str) -> str:
             return x
 
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", tools=[dummy_tool], provider="openai"
             )
@@ -293,7 +293,7 @@ class TestPlanActReflectAgentInit:
     def test_mcp_client_creates_tool_node(self):
         """Passing only client (no tools) should still create a ToolNode."""
         fake_client = Mock()
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", client=fake_client, provider="openai"
             )
@@ -307,13 +307,13 @@ class TestPlanActReflectAgentInit:
 
 class TestPlanActReflectAgentCompile:
     def test_compile_returns_compiled_graph(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         compiled = agent.compile()
         assert isinstance(compiled, CompiledGraph)
 
     def test_graph_has_plan_and_reflect_without_tools(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         agent.compile()
         assert "PLAN" in agent._graph.nodes
@@ -324,7 +324,7 @@ class TestPlanActReflectAgentCompile:
         def dummy_tool(x: str) -> str:
             return x
 
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", tools=[dummy_tool], provider="openai"
             )
@@ -334,14 +334,14 @@ class TestPlanActReflectAgentCompile:
         assert "REFLECT" in agent._graph.nodes
 
     def test_plan_node_is_agent(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
             agent._configure_graph()
         plan_node = agent._graph.nodes["PLAN"]
         assert isinstance(plan_node.func, FakeManagedAgent)
 
     def test_reflect_node_is_agent(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
             agent._configure_graph()
         # REFLECT is now wrapped in _make_reflect_node(); the node func is a
@@ -355,7 +355,7 @@ class TestPlanActReflectAgentCompile:
         def dummy_tool(x: str) -> str:
             return x
 
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", tools=[dummy_tool], provider="openai"
             )
@@ -374,19 +374,19 @@ class TestPlanActReflectAgentCompile:
 
     def test_compile_with_checkpointer(self):
         checkpointer = Mock()
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         compiled = agent.compile(checkpointer=checkpointer)
         assert isinstance(compiled, CompiledGraph)
 
     def test_compile_with_callback_manager(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         compiled = agent.compile(callback_manager=CallbackManager())
         assert isinstance(compiled, CompiledGraph)
 
     def test_compile_with_interrupt_options(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         compiled = agent.compile(
             interrupt_before=["PLAN"],
@@ -398,11 +398,11 @@ class TestPlanActReflectAgentCompile:
         media_store = Mock()
         compiled_graph = Mock(spec=CompiledGraph)
 
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
 
         with patch(
-            "agentflow.prebuilt.agent.plan_act_reflect.StateGraph.compile",
+            "tenxgraph.prebuilt.agent.plan_act_reflect.StateGraph.compile",
             autospec=True,
             return_value=compiled_graph,
         ) as compile_mock:
@@ -414,7 +414,7 @@ class TestPlanActReflectAgentCompile:
 
     def test_compile_multiple_times_resets_graph(self):
         """Each compile() call should produce a fresh graph to avoid node duplication."""
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         compiled1 = agent.compile()
         compiled2 = agent.compile()
@@ -423,7 +423,7 @@ class TestPlanActReflectAgentCompile:
 
     def test_compile_stores_not_forwarded_when_none(self):
         """Calling compile() without a store should not raise."""
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
         compiled = agent.compile()
         assert isinstance(compiled, CompiledGraph)
@@ -440,7 +440,7 @@ class TestPlanActReflectPromptPassthrough:
         return agent_node.func._system_prompt  # type: ignore
 
     def test_default_plan_prompt_used(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
             agent._configure_graph()
 
@@ -448,7 +448,7 @@ class TestPlanActReflectPromptPassthrough:
         assert plan_agent.system_prompt == DEFAULT_PLAN_SYSTEM_PROMPT
 
     def test_default_reflect_prompt_used(self):
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
             agent._configure_graph()
 
@@ -457,7 +457,7 @@ class TestPlanActReflectPromptPassthrough:
 
     def test_custom_plan_prompt_passed_to_plan_agent(self):
         custom = [{"role": "system", "content": "Custom plan."}]
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", plan_system_prompt=custom, provider="openai"
             )
@@ -468,7 +468,7 @@ class TestPlanActReflectPromptPassthrough:
 
     def test_custom_reflect_prompt_passed_to_reflect_agent(self):
         custom = [{"role": "system", "content": "Custom reflect."}]
-        with patch("agentflow.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(
                 model="fake-model", reflect_system_prompt=custom, provider="openai"
             )

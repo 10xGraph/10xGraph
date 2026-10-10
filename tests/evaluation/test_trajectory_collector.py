@@ -4,10 +4,10 @@ Tests for the TrajectoryCollector.
 
 import pytest
 
-from agentflow.qa.evaluation import StepType, ToolCall, TrajectoryStep
-from agentflow.qa.evaluation.collectors.event_collector import EventCollector
-from agentflow.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
-from agentflow.runtime.publisher.events import Event, EventModel, EventType
+from tenxgraph.qa.evaluation import StepType, ToolCall, TrajectoryStep
+from tenxgraph.qa.evaluation.collectors.event_collector import EventCollector
+from tenxgraph.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
+from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
 
 
 def create_event(

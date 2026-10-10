@@ -1,7 +1,7 @@
 import pytest
 from typing import Any
-from agentflow.storage.media.storage.base import BaseMediaStore
-from agentflow.core.state.message_block import MediaRef
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.core.state.message_block import MediaRef
 
 class ConcreteMediaStore(BaseMediaStore):
     """A concrete implementation of BaseMediaStore for testing."""
@@ -54,5 +54,5 @@ def test_to_media_ref():
     ref = store.to_media_ref("key", "image/png")
     assert isinstance(ref, MediaRef)
     assert ref.kind == "url"
-    assert ref.url == "agentflow://media/key"
+    assert ref.url == "graph://media/key"
     assert ref.mime_type == "image/png"

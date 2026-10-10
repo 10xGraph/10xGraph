@@ -9,12 +9,12 @@ from unittest.mock import Mock, patch
 import pydantic
 import pytest
 
-from agentflow.core.graph import CompiledGraph, ToolNode
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.prebuilt.agent.structured_output import (
+from tenxgraph.core.graph import CompiledGraph, ToolNode
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.prebuilt.agent.structured_output import (
     StructuredOutputAgent,
     _build_type_adapter,
     _make_repair_fn,
@@ -303,7 +303,7 @@ class TestMakeRepairFn:
 
 class TestStructuredOutputAgentInit:
     def test_basic_init(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -314,7 +314,7 @@ class TestStructuredOutputAgentInit:
         assert agent._max_attempts == 2  # default
 
     def test_custom_max_attempts(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -324,7 +324,7 @@ class TestStructuredOutputAgentInit:
         assert agent._max_attempts == 5
 
     def test_no_tools_creates_no_tool_node(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -336,7 +336,7 @@ class TestStructuredOutputAgentInit:
         def dummy_tool(x: str) -> str:
             return x
 
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -362,7 +362,7 @@ class TestStructuredOutputAgentInit:
 
 class TestStructuredOutputAgentCompile:
     def test_compile_returns_compiled_graph(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -372,7 +372,7 @@ class TestStructuredOutputAgentCompile:
         assert isinstance(compiled, CompiledGraph)
 
     def test_graph_has_generate_and_repair_nodes_without_tools(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -387,7 +387,7 @@ class TestStructuredOutputAgentCompile:
         def dummy_tool(x: str) -> str:
             return x
 
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -401,7 +401,7 @@ class TestStructuredOutputAgentCompile:
 
     def test_compile_with_checkpointer(self):
         checkpointer = Mock()
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -411,7 +411,7 @@ class TestStructuredOutputAgentCompile:
         assert isinstance(compiled, CompiledGraph)
 
     def test_compile_with_callback_manager(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -421,7 +421,7 @@ class TestStructuredOutputAgentCompile:
         assert isinstance(compiled, CompiledGraph)
 
     def test_compile_with_interrupt_options(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -437,7 +437,7 @@ class TestStructuredOutputAgentCompile:
         media_store = Mock()
         compiled_graph = Mock(spec=CompiledGraph)
 
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -445,7 +445,7 @@ class TestStructuredOutputAgentCompile:
             )
 
         with patch(
-            "agentflow.prebuilt.agent.structured_output.StateGraph.compile",
+            "tenxgraph.prebuilt.agent.structured_output.StateGraph.compile",
             autospec=True,
             return_value=compiled_graph,
         ) as compile_mock:
@@ -457,7 +457,7 @@ class TestStructuredOutputAgentCompile:
 
     def test_compile_multiple_times_resets_graph(self):
         """Each compile() call should produce a fresh graph to avoid node duplication."""
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -477,7 +477,7 @@ class TestStructuredOutputAgentCompile:
 class TestRepairNodeSelection:
     def test_default_repair_is_function_node(self):
         """Without repair_system_prompt, REPAIR should be a coroutine function node."""
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -491,7 +491,7 @@ class TestRepairNodeSelection:
 
     def test_repair_system_prompt_uses_agent_node(self):
         """With repair_system_prompt, REPAIR should be an Agent instance."""
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=MovieReview,
@@ -512,7 +512,7 @@ class TestRepairNodeSelection:
 
 class TestTypedDictSchema:
     def test_compile_with_typeddict_schema(self):
-        with patch("agentflow.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
+        with patch("tenxgraph.prebuilt.agent.structured_output.Agent", FakeManagedAgent):
             agent = StructuredOutputAgent(
                 model="fake-model",
                 output_schema=PersonInfo,

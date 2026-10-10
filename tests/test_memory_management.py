@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from agentflow.runtime.publisher.base_publisher import BasePublisher
-from agentflow.runtime.publisher.console_publisher import ConsolePublisher
-from agentflow.runtime.publisher.events import Event, EventModel, EventType
-from agentflow.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.console_publisher import ConsolePublisher
+from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 
 
 logger = logging.getLogger(__name__)
@@ -319,7 +319,7 @@ class TestPublisherConnectionPooling:
     async def test_redis_publisher_connection_pooling_config(self):
         """Test RedisPublisher accepts connection pooling configuration."""
         try:
-            from agentflow.runtime.publisher.redis_publisher import RedisPublisher
+            from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
         except ImportError:
             pytest.skip("redis package not installed")
 
@@ -343,7 +343,7 @@ class TestPublisherConnectionPooling:
     async def test_kafka_publisher_connection_config(self):
         """Test KafkaPublisher accepts connection configuration."""
         try:
-            from agentflow.runtime.publisher.kafka_publisher import KafkaPublisher
+            from tenxgraph.runtime.publisher.kafka_publisher import KafkaPublisher
         except ImportError:
             pytest.skip("aiokafka package not installed")
 
@@ -365,7 +365,7 @@ class TestPublisherConnectionPooling:
     async def test_rabbitmq_publisher_connection_config(self):
         """Test RabbitMQPublisher accepts connection configuration."""
         try:
-            from agentflow.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
+            from tenxgraph.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
         except ImportError:
             pytest.skip("aio-pika package not installed")
 

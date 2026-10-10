@@ -1,9 +1,9 @@
-"""Unit tests for provider-neutral realtime contracts (agentflow.core.realtime.base)."""
+"""Unit tests for provider-neutral realtime contracts (tenxgraph.core.realtime.base)."""
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from agentflow.core.realtime.base import (
+from tenxgraph.core.realtime.base import (
     AgentChangedEvent,
     AudioDeltaEvent,
     ErrorEvent,

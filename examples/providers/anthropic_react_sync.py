@@ -1,7 +1,7 @@
 """Anthropic provider example using a ReAct agent with tools.
 
 Prerequisites:
-    1. Install the extra:  pip install "10xscale-agentflow[anthropic]"
+    1. Install the extra:  pip install "10xgraph[anthropic]"
     2. An Anthropic API key from https://console.anthropic.com.
     3. Environment variables (set in .env or shell):
         ANTHROPIC_API_KEY=<your-api-key>
@@ -25,10 +25,10 @@ Install the matching extra (``anthropic-vertex`` / ``anthropic-bedrock``).
 
 from dotenv import load_dotenv
 
-from agentflow.core import Agent, StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.utils.constants import END
+from tenxgraph.core import Agent, StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils.constants import END
 
 
 load_dotenv()

@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 
-from agentflow.core.state import AgentState, Message
-from agentflow.prebuilt.agent import ReactAgent
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.prebuilt.agent import ReactAgent
 
 
 load_dotenv()

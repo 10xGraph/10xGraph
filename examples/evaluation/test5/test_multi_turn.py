@@ -22,7 +22,7 @@ pytest.skip(
     allow_module_level=True,
 )
 
-from agentflow.qa.evaluation import (
+from tenxgraph.qa.evaluation import (
     AgentEvaluator,
     CriterionConfig,
     EvalConfig,
@@ -32,7 +32,7 @@ from agentflow.qa.evaluation import (
     ReporterConfig,
     Rubric,
 )
-from agentflow.qa.evaluation.dataset.eval_set import EvalSet
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet
 
 from .samples import NO_TOOL_CASE, SMALL_EVAL_SET, WEATHER_CASE
 

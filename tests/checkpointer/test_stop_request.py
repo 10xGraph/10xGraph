@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentflow.core.state import AgentState
-from agentflow.core.state.execution_state import StopRequestStatus
-from agentflow.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
-from agentflow.storage.checkpointer.pg_checkpointer import PgCheckpointer
+from tenxgraph.core.state import AgentState
+from tenxgraph.core.state.execution_state import StopRequestStatus
+from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 
 
 CONFIG = {"thread_id": "t1", "user_id": "u1"}
@@ -91,8 +91,8 @@ class TestStopRequestConsumption:
         state cache, so the only surviving record of the stop is the dedicated
         key.
         """
-        from agentflow.core.graph.utils import handler_utils
-        from agentflow.runtime.publisher.events import ContentType, EventModel
+        from tenxgraph.core.graph.utils import handler_utils
+        from tenxgraph.runtime.publisher.events import ContentType, EventModel
 
         cp, callback_mgr = stop_deps
         state = AgentState()
@@ -126,8 +126,8 @@ class TestStopRequestConsumption:
 
     @pytest.mark.asyncio
     async def test_no_stop_requested_continues(self, stop_deps, monkeypatch):
-        from agentflow.core.graph.utils import handler_utils
-        from agentflow.runtime.publisher.events import ContentType, EventModel
+        from tenxgraph.core.graph.utils import handler_utils
+        from tenxgraph.runtime.publisher.events import ContentType, EventModel
 
         cp, callback_mgr = stop_deps
         state = AgentState()

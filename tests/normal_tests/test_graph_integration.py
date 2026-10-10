@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state.agent_state import AgentState
-from agentflow.utils import Message
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state.agent_state import AgentState
+from tenxgraph.utils import Message
 
 
 def test_graph_integration():

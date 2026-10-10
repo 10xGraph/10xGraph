@@ -5,7 +5,7 @@ import signal
 
 import pytest
 
-from agentflow.utils.shutdown import (
+from tenxgraph.utils.shutdown import (
     SIGNAL_NAMES,
     DelayedKeyboardInterrupt,
     GracefulShutdownManager,

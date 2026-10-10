@@ -2,8 +2,8 @@
 
 import pytest
 
-from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
-from agentflow.storage.media.capabilities import MediaTransportMode
+from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
+from tenxgraph.storage.media.capabilities import MediaTransportMode
 
 
 class TestUnsupportedMediaInputError:

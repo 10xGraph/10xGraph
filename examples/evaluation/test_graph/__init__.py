@@ -26,9 +26,9 @@ def build_weather_graph():
     Returns:
         StateGraph: The uncompiled graph.
     """
-    from agentflow.core.graph import Agent, StateGraph, ToolNode
-    from agentflow.core.state import AgentState
-    from agentflow.utils.constants import END
+    from tenxgraph.core.graph import Agent, StateGraph, ToolNode
+    from tenxgraph.core.state import AgentState
+    from tenxgraph.utils.constants import END
 
     # ── Tools ────────────────────────────────────────────────────────
     def get_weather(location: str) -> str:
@@ -94,6 +94,6 @@ def create_app_and_collector():
         tuple[CompiledGraph, TrajectoryCollector]: Ready-to-invoke app and
         the wired collector.
     """
-    from agentflow.qa.evaluation.testing import create_eval_app
+    from tenxgraph.qa.evaluation.testing import create_eval_app
 
     return create_eval_app(build_weather_graph())

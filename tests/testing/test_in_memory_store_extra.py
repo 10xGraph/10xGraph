@@ -2,9 +2,9 @@
 
 import pytest
 
-from agentflow.qa.testing.in_memory_store import InMemoryStore
-from agentflow.core.state import Message
-from agentflow.storage.store.store_schema import MemorySearchResult, MemoryType
+from tenxgraph.qa.testing.in_memory_store import InMemoryStore
+from tenxgraph.core.state import Message
+from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
 
 
 class TestInMemoryStoreAsetup:

@@ -7,7 +7,7 @@ from io import StringIO
 
 import pytest
 
-from agentflow.utils import (
+from tenxgraph.utils import (
     END,
     START,
     CallbackContext,
@@ -19,9 +19,9 @@ from agentflow.utils import (
     replace_messages,
     replace_value,
 )
-from agentflow.core.state.reducers import append_items
-from agentflow.utils.background_task_manager import BackgroundTaskManager
-from agentflow.utils.id_generator import (
+from tenxgraph.core.state.reducers import append_items
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.id_generator import (
     AsyncIDGenerator,
     BigIntIDGenerator,
     DefaultIDGenerator,
@@ -32,9 +32,9 @@ from agentflow.utils.id_generator import (
     TimestampIDGenerator,
     UUIDGenerator,
 )
-from agentflow.utils.logging import logger as agentflow_logger
-from agentflow.core.state.message import Message, TokenUsages, generate_id
-from agentflow.core.state.message_block import TextBlock, ToolResultBlock
+from tenxgraph.utils.logging import logger as agentflow_logger
+from tenxgraph.core.state.message import Message, TokenUsages, generate_id
+from tenxgraph.core.state.message_block import TextBlock, ToolResultBlock
 
 
 class TestMessage:
@@ -426,7 +426,7 @@ class TestConverter:
 
     def test_convert_messages_with_state_context_summary(self):
         """Test convert_messages with state having context summary."""
-        from agentflow.core.state import AgentState
+        from tenxgraph.core.state import AgentState
 
         system_prompts = [{"role": "system", "content": "Test"}]
         state = AgentState()
@@ -438,7 +438,7 @@ class TestConverter:
 
     def test_convert_messages_with_state_context(self):
         """Test convert_messages with state having context messages."""
-        from agentflow.core.state import AgentState
+        from tenxgraph.core.state import AgentState
 
         system_prompts = [{"role": "system", "content": "Test"}]
         state = AgentState()
@@ -465,7 +465,7 @@ class TestConverter:
 
     def test_convert_messages_tool_message(self):
         """Test converting tool messages."""
-        from agentflow.core.state import AgentState
+        from tenxgraph.core.state import AgentState
 
         system_prompts = [{"role": "system", "content": "Test"}]
         state = AgentState()
@@ -604,7 +604,7 @@ class TestLogging:
     def test_agentflow_logger_exists(self):
         """Test that agentflow logger is available."""
         assert agentflow_logger is not None
-        assert agentflow_logger.name == "agentflow"
+        assert agentflow_logger.name == "tenxgraph"
 
     def test_agentflow_logger_has_nullhandler(self):
         """Test that agentflow logger has NullHandler by default."""
@@ -619,7 +619,7 @@ class TestLogging:
     def test_user_can_configure_logging(self):
         """Test that users can configure logging for agentflow."""
         # Get the agentflow logger
-        logger = logging.getLogger("agentflow")
+        logger = logging.getLogger("tenxgraph")
         
         # Save original state
         original_level = logger.level
@@ -638,12 +638,12 @@ class TestLogging:
             logger.addHandler(handler)
             
             # Test that it works
-            test_logger = logging.getLogger("agentflow.test")
+            test_logger = logging.getLogger("tenxgraph.test")
             test_logger.debug("Test message")
             
             # Check output
             output = string_stream.getvalue()
-            assert "DEBUG - agentflow.test: Test message" in output
+            assert "DEBUG - tenxgraph.test: Test message" in output
             
         finally:
             # Restore original state
@@ -655,10 +655,10 @@ class TestLogging:
     def test_module_loggers_work(self):
         """Test that module-level loggers work correctly."""
         # Create a module logger (as would be done in agentflow modules)
-        module_logger = logging.getLogger("agentflow.test_module")
+        module_logger = logging.getLogger("tenxgraph.test_module")
         
-        # It should inherit from agentflow logger
-        assert module_logger.parent.name == "agentflow"
+        # It should inherit from tenxgraph logger
+        assert module_logger.parent.name == "tenxgraph"
         
         # Save state
         agentflow_logger_handlers = agentflow_logger.handlers.copy()
@@ -687,7 +687,7 @@ class TestLogging:
     def test_logging_with_no_user_configuration(self):
         """Test that logging doesn't raise errors when user doesn't configure."""
         # Create a logger
-        test_logger = logging.getLogger("agentflow.unconfigured")
+        test_logger = logging.getLogger("tenxgraph.unconfigured")
         
         # This should not raise any errors or warnings
         # (Thanks to NullHandler)
@@ -699,7 +699,7 @@ class TestLogging:
     def test_configure_logging_with_all_custom_params(self):
         """Test that users can configure logging with custom parameters."""
         # Get the agentflow logger
-        logger = logging.getLogger("agentflow")
+        logger = logging.getLogger("tenxgraph")
         
         # Save original state
         original_level = logger.level
@@ -718,12 +718,12 @@ class TestLogging:
             logger.setLevel(logging.WARNING)
             
             # Test logging
-            test_logger = logging.getLogger("agentflow.test")
+            test_logger = logging.getLogger("tenxgraph.test")
             test_logger.warning("warning message")
             
             # Verify output
             output = string_stream.getvalue()
-            assert "agentflow.test - WARNING: warning message" in output
+            assert "tenxgraph.test - WARNING: warning message" in output
             
         finally:
             # Restore
@@ -735,7 +735,7 @@ class TestLogging:
     def test_default_configuration_on_import(self):
         """Test that default configuration is applied on module import."""
         # The agentflow logger should exist and have a NullHandler
-        logger = logging.getLogger("agentflow")
+        logger = logging.getLogger("tenxgraph")
         
         # Should have at least one handler (NullHandler)
         assert len(logger.handlers) >= 1
@@ -749,7 +749,7 @@ class TestLogging:
     def test_logger_hierarchy(self):
         """Test that module-specific loggers work correctly."""
         # Create module-specific logger
-        module_logger = logging.getLogger("agentflow.test_module")
+        module_logger = logging.getLogger("tenxgraph.test_module")
         
         # Module logger should propagate to agentflow logger
         assert module_logger.propagate
@@ -772,7 +772,7 @@ class TestLogging:
             # Verify output
             output = log_output.getvalue()
             assert "Test message" in output
-            assert "agentflow.test_module" in output
+            assert "tenxgraph.test_module" in output
             
         finally:
             # Restore
@@ -782,7 +782,7 @@ class TestLogging:
 
     def test_logging_output_capture(self):
         """Test that logging actually outputs to the configured stream."""
-        logger = logging.getLogger("agentflow")
+        logger = logging.getLogger("tenxgraph")
         
         # Save original state
         original_handlers = logger.handlers.copy()
@@ -804,7 +804,7 @@ class TestLogging:
             output = string_stream.getvalue()
             assert "Test log message" in output
             assert "INFO" in output
-            assert "agentflow" in output
+            assert "tenxgraph" in output
             
         finally:
             # Restore
@@ -818,7 +818,7 @@ class TestLogging:
         import os
         import tempfile
         
-        logger = logging.getLogger("agentflow")
+        logger = logging.getLogger("tenxgraph")
         
         # Save original state
         original_handlers = logger.handlers.copy()

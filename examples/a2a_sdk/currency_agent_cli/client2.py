@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import asyncio
 
-from agentflow.a2a_integration.client import create_a2a_client_node
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState
-from agentflow.core.state.message import Message as AFMessage
-from agentflow.utils.constants import END
+from tenxgraph.a2a_integration.client import create_a2a_client_node
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState
+from tenxgraph.core.state.message import Message as AFMessage
+from tenxgraph.utils.constants import END
 
 SERVER_URL = "http://localhost:10000"
 

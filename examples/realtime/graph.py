@@ -1,6 +1,6 @@
 """Realtime AudioAgent exposed through the Agentflow API server.
 
-``agentflow.json`` points the server at ``app`` below. Once running, the server serves a
+``10xgraph.json`` points the server at ``app`` below. Once running, the server serves a
 WebSocket at ``/v1/graph/live`` that bridges browser/client audio to this agent (binary
 PCM16 frames upstream, model audio back as binary, transcripts/tool-calls/events as JSON).
 
@@ -15,9 +15,9 @@ import os
 
 from dotenv import find_dotenv, load_dotenv
 
-from agentflow.core.realtime.base import RealtimeConfig
-from agentflow.prebuilt.agent import AudioAgent
-from agentflow.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.core.realtime.base import RealtimeConfig
+from tenxgraph.prebuilt.agent import AudioAgent
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
 
 # Load .env reliably regardless of the launch directory.

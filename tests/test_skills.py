@@ -17,16 +17,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from agentflow.core.graph.agent_internal.skills import AgentSkillsMixin
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.skills import (
+from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.skills import (
     SkillConfig,
     SkillMeta,
     SkillResourceError,
     SkillsRegistry,
     validate_skill,
 )
-from agentflow.core.skills.activation import (
+from tenxgraph.core.skills.activation import (
     ACTIVE_SKILLS_KEY,
     build_catalog_prompt,
     get_active_skills,
@@ -35,7 +35,7 @@ from agentflow.core.skills.activation import (
     mark_skill_active,
     skill_content_marker,
 )
-from agentflow.core.skills.loader import (
+from tenxgraph.core.skills.loader import (
     discover_skills,
     iter_skill_dirs,
     load_skill,
@@ -44,7 +44,7 @@ from agentflow.core.skills.loader import (
     read_skill_file,
     split_frontmatter,
 )
-from agentflow.core.state import AgentState, Message, ToolResult
+from tenxgraph.core.state import AgentState, Message, ToolResult
 
 
 # ────────────────────────────────────────────────────────────────────────────

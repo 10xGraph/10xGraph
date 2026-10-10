@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentflow.runtime.adapters.llm.anthropic_converter import AnthropicConverter
+from tenxgraph.runtime.adapters.llm.anthropic_converter import AnthropicConverter
 
 
 def _usage(**overrides):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentflow.core.authz import (
+from tenxgraph.core.authz import (
     CHECKPOINT_READ,
     GRAPH_INVOKE,
     SCOPE_NONE,
@@ -76,7 +76,7 @@ def test_get_authz_top_level_still_used_without_user_block():
 
 
 def _min_store():
-    from agentflow.storage.store.base_store import BaseStore
+    from tenxgraph.storage.store.base_store import BaseStore
 
     class _S(BaseStore):
         async def asetup(self):

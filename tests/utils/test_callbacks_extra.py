@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentflow.utils.callbacks import (
+from tenxgraph.utils.callbacks import (
     AfterInvokeCallback,
     BaseValidator,
     BeforeInvokeCallback,
@@ -11,7 +11,7 @@ from agentflow.utils.callbacks import (
     InvocationType,
     OnErrorCallback,
 )
-from agentflow.core.state.message import Message
+from tenxgraph.core.state.message import Message
 
 
 # Concrete implementations of abstract classes for testing

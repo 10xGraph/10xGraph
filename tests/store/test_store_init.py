@@ -16,7 +16,7 @@ class TestStoreModuleImports:
     
     def test_base_store_import(self):
         """Test that BaseStore can be imported from store module."""
-        from agentflow.storage.store import BaseStore
+        from tenxgraph.storage.store import BaseStore
         
         # Should be able to import without errors
         assert BaseStore is not None
@@ -27,7 +27,7 @@ class TestStoreModuleImports:
     
     def test_store_schemas_import(self):
         """Test that store schemas can be imported."""
-        from agentflow.storage.store import (
+        from tenxgraph.storage.store import (
             MemoryRecord,
             MemorySearchResult,
             MemoryType,
@@ -41,18 +41,18 @@ class TestStoreModuleImports:
         assert DistanceMetric is not None
         
         # RetrievalStrategy is not exported but should be importable directly
-        from agentflow.storage.store.store_schema import RetrievalStrategy
+        from tenxgraph.storage.store.store_schema import RetrievalStrategy
         assert RetrievalStrategy is not None
     
     def test_embedding_classes_import(self):
         """Test that embedding classes can be imported."""
-        from agentflow.storage.store import BaseEmbedding
+        from tenxgraph.storage.store import BaseEmbedding
         
         assert BaseEmbedding is not None
         
         # Test optional OpenAIEmbedding import
         try:
-            from agentflow.storage.store import OpenAIEmbedding
+            from tenxgraph.storage.store import OpenAIEmbedding
             assert OpenAIEmbedding is not None
         except ImportError:
             # Should only fail if openai is not installed
@@ -60,7 +60,7 @@ class TestStoreModuleImports:
     
     def test_store_module_structure(self):
         """Test the overall structure of the store module."""
-        import agentflow.storage.store as store_module
+        import tenxgraph.storage.store as store_module
         
         # Should have the main components
         assert hasattr(store_module, 'BaseStore')
@@ -73,12 +73,12 @@ class TestStoreModuleImports:
         assert hasattr(store_module, 'DistanceMetric')
         
         # RetrievalStrategy is not in the main __init__.py but exists in schema
-        from agentflow.storage.store.store_schema import RetrievalStrategy
+        from tenxgraph.storage.store.store_schema import RetrievalStrategy
         assert RetrievalStrategy is not None
     
     def test_all_exports(self):
         """Test that __all__ is properly defined."""
-        import agentflow.storage.store as store_module
+        import tenxgraph.storage.store as store_module
         
         # Should have __all__ defined
         if hasattr(store_module, '__all__'):
@@ -101,12 +101,12 @@ class TestOptionalDependencies:
         
         if openai_available:
             # Should be able to import OpenAIEmbedding
-            from agentflow.storage.store import OpenAIEmbedding
+            from tenxgraph.storage.store import OpenAIEmbedding
             assert OpenAIEmbedding is not None
         else:
             # Should either not be available or import gracefully
             try:
-                from agentflow.storage.store import OpenAIEmbedding
+                from tenxgraph.storage.store import OpenAIEmbedding
                 # If it imports, it should work
                 assert OpenAIEmbedding is not None
             except (ImportError, AttributeError):
@@ -117,13 +117,13 @@ class TestOptionalDependencies:
     def test_graceful_degradation_without_openai(self):
         """Test that store module works without openai package."""
         # Force reimport without openai
-        if 'agentflow.storage.store' in sys.modules:
-            del sys.modules['agentflow.storage.store']
-        if 'agentflow.storage.store.embedding.openai_embedding' in sys.modules:
-            del sys.modules['agentflow.storage.store.embedding.openai_embedding']
+        if 'tenxgraph.storage.store' in sys.modules:
+            del sys.modules['tenxgraph.storage.store']
+        if 'tenxgraph.storage.store.embedding.openai_embedding' in sys.modules:
+            del sys.modules['tenxgraph.storage.store.embedding.openai_embedding']
         
         # Should still be able to import basic store functionality
-        from agentflow.storage.store import BaseStore, MemoryRecord
+        from tenxgraph.storage.store import BaseStore, MemoryRecord
         
         assert BaseStore is not None
         assert MemoryRecord is not None
@@ -131,9 +131,9 @@ class TestOptionalDependencies:
     def test_store_functionality_without_optional_deps(self):
         """Test that core store functionality works without optional dependencies."""
         # Core classes should always be available
-        from agentflow.storage.store.base_store import BaseStore
-        from agentflow.storage.store.store_schema import MemoryRecord, MemorySearchResult
-        from agentflow.storage.store.embedding.base_embedding import BaseEmbedding
+        from tenxgraph.storage.store.base_store import BaseStore
+        from tenxgraph.storage.store.store_schema import MemoryRecord, MemorySearchResult
+        from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding
         
         # Should be able to create instances (where applicable)
         record = MemoryRecord(content="test")
@@ -155,7 +155,7 @@ class TestStoreModuleConstants:
     
     def test_has_openai_flag(self):
         """Test that HAS_OPENAI flag is properly set."""
-        from agentflow.storage.store.embedding.openai_embedding import HAS_OPENAI
+        from tenxgraph.storage.store.embedding.openai_embedding import HAS_OPENAI
         
         # Should be a boolean
         assert isinstance(HAS_OPENAI, bool)
@@ -171,7 +171,7 @@ class TestStoreModuleConstants:
     
     def test_embedding_module_constants(self):
         """Test constants in embedding modules."""
-        from agentflow.storage.store.embedding import BaseEmbedding
+        from tenxgraph.storage.store.embedding import BaseEmbedding
         
         # BaseEmbedding should have proper abstract methods
         assert BaseEmbedding.__abstractmethods__
@@ -181,7 +181,7 @@ class TestStoreModuleConstants:
     
     def test_store_schema_enums(self):
         """Test that enums have expected values."""
-        from agentflow.storage.store.store_schema import MemoryType, DistanceMetric, RetrievalStrategy
+        from tenxgraph.storage.store.store_schema import MemoryType, DistanceMetric, RetrievalStrategy
         
         # MemoryType should have core types
         memory_types = [mt.value for mt in MemoryType]
@@ -210,8 +210,8 @@ class TestStoreModuleCompatibility:
         assert sys.version_info >= (3, 10), "Store module requires Python 3.10+"
         
         # Import should work
-        import agentflow.storage.store
-        assert agentflow.storage.store is not None
+        import tenxgraph.storage.store
+        assert tenxgraph.storage.store is not None
     
     def test_import_performance(self):
         """Test that imports are reasonably fast."""
@@ -220,10 +220,10 @@ class TestStoreModuleCompatibility:
         start_time = time.time()
         
         # Fresh import
-        if 'agentflow.storage.store' in sys.modules:
-            del sys.modules['agentflow.storage.store']
+        if 'tenxgraph.storage.store' in sys.modules:
+            del sys.modules['tenxgraph.storage.store']
         
-        import agentflow.storage.store
+        import tenxgraph.storage.store
         
         import_time = time.time() - start_time
         
@@ -233,11 +233,11 @@ class TestStoreModuleCompatibility:
     def test_circular_imports(self):
         """Test that there are no circular import issues."""
         # These imports should all work without circular dependency errors
-        from agentflow.storage.store import BaseStore
-        from agentflow.storage.store import BaseEmbedding
-        from agentflow.storage.store import MemoryRecord, MemorySearchResult
-        from agentflow.storage.store.base_store import BaseStore as BaseStoreFromModule
-        from agentflow.storage.store.embedding.base_embedding import BaseEmbedding as BaseEmbeddingFromModule
+        from tenxgraph.storage.store import BaseStore
+        from tenxgraph.storage.store import BaseEmbedding
+        from tenxgraph.storage.store import MemoryRecord, MemorySearchResult
+        from tenxgraph.storage.store.base_store import BaseStore as BaseStoreFromModule
+        from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding as BaseEmbeddingFromModule
         
         # Should be the same objects
         assert BaseStore is BaseStoreFromModule
@@ -249,7 +249,7 @@ class TestStoreModuleDocumentation:
     
     def test_module_docstring(self):
         """Test that store module has documentation."""
-        import agentflow.storage.store as store_module
+        import tenxgraph.storage.store as store_module
         
         # Module docstring may be None, that's acceptable for an __init__.py
         # Just check that the module can be imported
@@ -257,7 +257,7 @@ class TestStoreModuleDocumentation:
     
     def test_class_docstrings(self):
         """Test that main classes have docstrings."""
-        from agentflow.storage.store import BaseStore, BaseEmbedding, MemoryRecord
+        from tenxgraph.storage.store import BaseStore, BaseEmbedding, MemoryRecord
         
         # Main classes should exist (docstrings may be None)
         assert BaseStore is not None
@@ -272,8 +272,8 @@ class TestStoreModuleDocumentation:
     
     def test_enum_docstrings(self):
         """Test that enums have proper documentation."""
-        from agentflow.storage.store import MemoryType, DistanceMetric
-        from agentflow.storage.store.store_schema import RetrievalStrategy
+        from tenxgraph.storage.store import MemoryType, DistanceMetric
+        from tenxgraph.storage.store.store_schema import RetrievalStrategy
         
         # Enums should have docstrings
         assert MemoryType.__doc__ is not None
@@ -290,15 +290,15 @@ class TestStoreModuleEdgeCases:
         with patch.dict(sys.modules, {'nonexistent_package': None}):
             # Store module should still import successfully
             try:
-                import agentflow.storage.store
-                assert agentflow.storage.store is not None
+                import tenxgraph.storage.store
+                assert tenxgraph.storage.store is not None
             except ImportError as e:
                 # If there is an ImportError, it should be specific and clear
                 assert 'nonexistent_package' not in str(e)
     
     def test_namespace_pollution(self):
         """Test that store module doesn't pollute namespace."""
-        import agentflow.storage.store as store_module
+        import tenxgraph.storage.store as store_module
         
         # Should not have internal implementation details exposed
         internal_names = ['sys', 'os', 'typing', 'import_module', '__builtins__']
@@ -313,7 +313,7 @@ class TestStoreModuleEdgeCases:
     def test_module_reload_safety(self):
         """Test that module can be safely reloaded."""
         import importlib
-        import agentflow.storage.store as store_module
+        import tenxgraph.storage.store as store_module
         
         # Get original BaseStore
         original_base_store = store_module.BaseStore
@@ -332,11 +332,11 @@ class TestStoreModuleEdgeCases:
         """Test that import order doesn't matter."""
         # Clear any existing imports
         modules_to_clear = [
-            'agentflow.storage.store',
-            'agentflow.storage.store.base_store',
-            'agentflow.storage.store.store_schema',
-            'agentflow.storage.store.embedding',
-            'agentflow.storage.store.embedding.base_embedding'
+            'tenxgraph.storage.store',
+            'tenxgraph.storage.store.base_store',
+            'tenxgraph.storage.store.store_schema',
+            'tenxgraph.storage.store.embedding',
+            'tenxgraph.storage.store.embedding.base_embedding'
         ]
         
         for module in modules_to_clear:
@@ -344,9 +344,9 @@ class TestStoreModuleEdgeCases:
                 del sys.modules[module]
         
         # Import in different order
-        from agentflow.storage.store.store_schema import MemoryRecord
-        from agentflow.storage.store.base_store import BaseStore
-        from agentflow.storage.store.embedding.base_embedding import BaseEmbedding
+        from tenxgraph.storage.store.store_schema import MemoryRecord
+        from tenxgraph.storage.store.base_store import BaseStore
+        from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding
         
         # All should work
         assert MemoryRecord is not None
@@ -354,7 +354,7 @@ class TestStoreModuleEdgeCases:
         assert BaseEmbedding is not None
         
         # Top-level import should also work
-        from agentflow.storage.store import BaseStore as TopLevelBaseStore
+        from tenxgraph.storage.store import BaseStore as TopLevelBaseStore
         
         # Should be the same class
         assert BaseStore is TopLevelBaseStore

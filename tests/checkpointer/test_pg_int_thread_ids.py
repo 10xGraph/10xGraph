@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentflow.storage.checkpointer.pg_checkpointer import PgCheckpointer
+from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 
 
 def _checkpointer(id_type: str) -> PgCheckpointer:

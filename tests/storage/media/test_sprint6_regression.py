@@ -11,7 +11,7 @@ class TestTempCacheCleanupOnStartup:
     @pytest.mark.asyncio
     async def test_cleanup_returns_zero_when_no_entries(self):
         """Cleanup should return 0 when no expired entries exist."""
-        from agentflow.storage.media.temp_cache import TemporaryMediaCache
+        from tenxgraph.storage.media.temp_cache import TemporaryMediaCache
 
         class FakeCheckpointer:
             async def alist_cache_keys(self, namespace, prefix=None):
@@ -26,7 +26,7 @@ class TestTempCacheCleanupOnStartup:
     async def test_cleanup_handles_missing_media_store(self):
         """Cleanup should be safe when no media store is available."""
         import time
-        from agentflow.storage.media.temp_cache import (
+        from tenxgraph.storage.media.temp_cache import (
             TEMP_CACHE_NAMESPACE,
             TempCacheEntry,
             TemporaryMediaCache,
@@ -74,7 +74,7 @@ class TestUnsupportedMediaInputErrorHandling:
 
     def test_error_to_dict(self):
         """Error should be serializable for API responses."""
-        from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
+        from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
 
         error = UnsupportedMediaInputError(
             provider="openai",
@@ -90,7 +90,7 @@ class TestUnsupportedMediaInputErrorHandling:
 
     def test_error_message_is_actionable(self):
         """Error message should guide the user to a fix."""
-        from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
+        from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
 
         error = UnsupportedMediaInputError(
             provider="openai",
@@ -109,8 +109,8 @@ class TestRegressionFileIdWorkflow:
     @pytest.mark.asyncio
     async def test_openai_file_id_passes_through(self):
         """file_id references should work for OpenAI vision models."""
-        from agentflow.core.state.message_block import MediaRef
-        from agentflow.storage.media.resolver import MediaRefResolver
+        from tenxgraph.core.state.message_block import MediaRef
+        from tenxgraph.storage.media.resolver import MediaRefResolver
 
         resolver = MediaRefResolver()
         ref = MediaRef(kind="file_id", file_id="file-abc123")
@@ -127,8 +127,8 @@ class TestRegressionSignedUrlPath:
     @pytest.mark.asyncio
     async def test_internal_ref_with_signed_url(self):
         """Internal refs should resolve to signed URLs for OpenAI."""
-        from agentflow.core.state.message_block import MediaRef
-        from agentflow.storage.media.resolver import MediaRefResolver
+        from tenxgraph.core.state.message_block import MediaRef
+        from tenxgraph.storage.media.resolver import MediaRefResolver
 
         class FakeStore:
             async def get_direct_url(self, key, **kwargs):
@@ -154,8 +154,8 @@ class TestRegressionMultimodalConversion:
     """Test that message conversion still works for all cases."""
 
     def test_image_block_to_openai(self):
-        from agentflow.core.state.message_block import ImageBlock, MediaRef
-        from agentflow.utils.converter import _image_block_to_openai
+        from tenxgraph.core.state.message_block import ImageBlock, MediaRef
+        from tenxgraph.utils.converter import _image_block_to_openai
 
         block = ImageBlock(
             media=MediaRef(
@@ -171,7 +171,7 @@ class TestRegressionMultimodalConversion:
         assert result["image_url"]["url"] == "https://example.com/image.png"  # noqa: S101
 
     def test_strip_media_blocks(self):
-        from agentflow.utils.converter import strip_media_blocks
+        from tenxgraph.utils.converter import strip_media_blocks
 
         messages = [
             {

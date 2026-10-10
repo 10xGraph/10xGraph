@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from agentflow.core.graph.tool_node import ToolNode
-from agentflow.core.state import AgentState
-from agentflow.utils.decorators import get_tool_metadata, has_tool_decorator, tool
+from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.state import AgentState
+from tenxgraph.utils.decorators import get_tool_metadata, has_tool_decorator, tool
 
 
 class TestToolDecorator:

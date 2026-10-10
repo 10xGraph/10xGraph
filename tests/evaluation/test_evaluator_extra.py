@@ -5,11 +5,11 @@ import json
 
 import pytest
 
-from agentflow.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
-from agentflow.qa.evaluation.config.eval_config import EvalConfig
-from agentflow.qa.evaluation.dataset.eval_set import EvalCase, EvalSet
-from agentflow.qa.evaluation.eval_result import CriterionResult, EvalCaseResult
-from agentflow.qa.evaluation.evaluator import AgentEvaluator, EvaluationRunner
+from tenxgraph.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
+from tenxgraph.qa.evaluation.config.eval_config import EvalConfig
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet
+from tenxgraph.qa.evaluation.eval_result import CriterionResult, EvalCaseResult
+from tenxgraph.qa.evaluation.evaluator import AgentEvaluator, EvaluationRunner
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ def test_run_reporters_handles_pipeline_exception():
     evaluator = AgentEvaluator(MagicMock(), TrajectoryCollector(), config=EvalConfig.default())
     report = MagicMock()
 
-    with patch("agentflow.qa.evaluation.reporters.manager.ReporterManager", side_effect=RuntimeError("x")):
+    with patch("tenxgraph.qa.evaluation.reporters.manager.ReporterManager", side_effect=RuntimeError("x")):
         evaluator._run_reporters(report)
 
 
@@ -126,7 +126,7 @@ async def test_runner_run_reporters_is_best_effort():
     runner.results = {"s1": MagicMock(), "s2": MagicMock()}
     cfg = EvalConfig.default()
 
-    with patch("agentflow.qa.evaluation.reporters.manager.ReporterManager") as mgr_cls:
+    with patch("tenxgraph.qa.evaluation.reporters.manager.ReporterManager") as mgr_cls:
         mgr = MagicMock()
         mgr.run_all.side_effect = RuntimeError("boom")
         mgr_cls.return_value = mgr

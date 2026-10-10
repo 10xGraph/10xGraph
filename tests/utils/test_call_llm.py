@@ -1,4 +1,4 @@
-"""Tests for agentflow.core.llm.caller.call_llm."""
+"""Tests for tenxgraph.core.llm.caller.call_llm."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.core.llm.caller import (
+from tenxgraph.core.llm.caller import (
     _extract_responses_text,
     call_llm,
     _call_google,
@@ -22,11 +22,11 @@ from agentflow.core.llm.caller import (
 
 # call_llm resolves provider *and* model together, so a recognised
 # "provider/" prefix is stripped before the name reaches the SDK.
-_RESOLVE = "agentflow.core.llm.caller.resolve_provider_and_model"
-_CREATE = "agentflow.core.llm.caller.create_llm_client"
-_CALL_GOOGLE = "agentflow.core.llm.caller._call_google"
-_CALL_RESP = "agentflow.core.llm.caller._call_openai_responses"
-_CALL_CHAT = "agentflow.core.llm.caller._call_openai_chat"
+_RESOLVE = "tenxgraph.core.llm.caller.resolve_provider_and_model"
+_CREATE = "tenxgraph.core.llm.caller.create_llm_client"
+_CALL_GOOGLE = "tenxgraph.core.llm.caller._call_google"
+_CALL_RESP = "tenxgraph.core.llm.caller._call_openai_responses"
+_CALL_CHAT = "tenxgraph.core.llm.caller._call_openai_chat"
 
 _DUMMY = ("text", 10, 5, 0)
 
@@ -302,7 +302,7 @@ async def test_call_openai_chat_implementation():
 # Anthropic
 # ---------------------------------------------------------------------------
 
-_CALL_ANTHROPIC = "agentflow.core.llm.caller._call_anthropic"
+_CALL_ANTHROPIC = "tenxgraph.core.llm.caller._call_anthropic"
 
 
 @pytest.mark.anyio
@@ -321,7 +321,7 @@ async def test_claude_model_dispatches_to_anthropic():
 @pytest.mark.anyio
 async def test_anthropic_drops_temperature_for_rejecting_models():
     """call_llm defaults temperature=0.3; current Claude models 400 on it."""
-    from agentflow.core.llm.caller import _call_anthropic
+    from tenxgraph.core.llm.caller import _call_anthropic
 
     client = MagicMock()
     client.messages.create = AsyncMock(
@@ -346,7 +346,7 @@ async def test_anthropic_drops_temperature_for_rejecting_models():
 
 @pytest.mark.anyio
 async def test_anthropic_keeps_temperature_for_older_models():
-    from agentflow.core.llm.caller import _call_anthropic
+    from tenxgraph.core.llm.caller import _call_anthropic
 
     client = MagicMock()
     client.messages.create = AsyncMock(
@@ -367,7 +367,7 @@ async def test_anthropic_keeps_temperature_for_older_models():
 
 @pytest.mark.anyio
 async def test_anthropic_returns_text_and_usage():
-    from agentflow.core.llm.caller import _call_anthropic
+    from tenxgraph.core.llm.caller import _call_anthropic
 
     client = MagicMock()
     client.messages.create = AsyncMock(

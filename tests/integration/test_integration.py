@@ -1,11 +1,11 @@
 """Integration tests for TAF framework."""
 
-from agentflow.core.graph import CompiledGraph, StateGraph, ToolNode
-from agentflow.runtime.publisher import ConsolePublisher
-from agentflow.runtime.publisher.events import Event, EventModel, EventType
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.core.state.message import ToolResultBlock
+from tenxgraph.core.graph import CompiledGraph, StateGraph, ToolNode
+from tenxgraph.runtime.publisher import ConsolePublisher
+from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.core.state.message import ToolResultBlock
 
 
 def dummy_ai_agent(state: AgentState) -> dict:
@@ -158,7 +158,7 @@ class TestBasicIntegration:
 
     def test_callback_system_usage(self):
         """Test callback system usage."""
-        from agentflow.utils import CallbackContext, CallbackManager, InvocationType
+        from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
 
         manager = CallbackManager()
 
@@ -172,7 +172,7 @@ class TestBasicIntegration:
 
     def test_error_handling_integration(self):
         """Test error handling with custom exceptions."""
-        from agentflow.core.exceptions import GraphError, NodeError
+        from tenxgraph.core.exceptions import GraphError, NodeError
 
         # Test exception creation and inheritance
         graph_error = GraphError("Graph failed")
@@ -191,9 +191,9 @@ class TestBasicIntegration:
 def test_framework_import_coverage():
     """Test importing various framework components for coverage."""
     # Import and instantiate various components
-    from agentflow.core.graph import Edge
-    from agentflow.core.state import ExecutionState, MessageContextManager
-    from agentflow.utils import Command, add_messages
+    from tenxgraph.core.graph import Edge
+    from tenxgraph.core.state import ExecutionState, MessageContextManager
+    from tenxgraph.utils import Command, add_messages
 
     # Test Edge creation
     edge = Edge(from_node="a", to_node="b")

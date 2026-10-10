@@ -1,10 +1,10 @@
-"""Unit tests for the upstream decoupler (agentflow.core.realtime.queue)."""
+"""Unit tests for the upstream decoupler (tenxgraph.core.realtime.queue)."""
 
 import asyncio
 
 import pytest
 
-from agentflow.core.realtime.queue import LiveInput, LiveInputQueue
+from tenxgraph.core.realtime.queue import LiveInput, LiveInputQueue
 
 
 class TestLiveInputQueuePut:

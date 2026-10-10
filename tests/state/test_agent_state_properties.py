@@ -7,12 +7,12 @@ invariants in AgentState, reducers, and execution metadata.
 import pytest
 from hypothesis import given, strategies as st
 
-from agentflow.core.state import AgentState, ExecutionStatus, Message
-from agentflow.core.state.execution_state import ExecutionState, StopRequestStatus
-from agentflow.core.state.reducers import add_messages, remove_tool_messages
-from agentflow.core.state.message import TokenUsages
-from agentflow.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
-from agentflow.utils import START, END
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.core.state.execution_state import ExecutionState, StopRequestStatus
+from tenxgraph.core.state.reducers import add_messages, remove_tool_messages
+from tenxgraph.core.state.message import TokenUsages
+from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
+from tenxgraph.utils import START, END
 
 
 # Hypothesis strategies for generating test data

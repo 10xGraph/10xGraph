@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
 from pathlib import Path
 
-from agentflow.qa.evaluation.testing import (
+from tenxgraph.qa.evaluation.testing import (
     EvalTestCase,
     eval_test,
     assert_eval_passed,
@@ -17,8 +17,8 @@ from agentflow.qa.evaluation.testing import (
     create_eval_app,
     create_simple_eval_set,
 )
-from agentflow.qa.evaluation.eval_result import EvalReport
-from agentflow.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.qa.evaluation.eval_result import EvalReport
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
 
 def test_eval_test_case_repr():
     case = EvalTestCase(eval_id="id1", name="name1", description="desc1")
@@ -38,8 +38,8 @@ async def test_eval_test_decorator_success():
     mock_evaluator = MagicMock()
     mock_evaluator.evaluate = AsyncMock(return_value=mock_report)
 
-    with patch("agentflow.qa.evaluation.AgentEvaluator", return_value=mock_evaluator) as mock_class:
-        with patch("agentflow.qa.evaluation.testing.Path.exists", return_value=True):
+    with patch("tenxgraph.qa.evaluation.AgentEvaluator", return_value=mock_evaluator) as mock_class:
+        with patch("tenxgraph.qa.evaluation.testing.Path.exists", return_value=True):
             @eval_test(eval_file="dummy.json", threshold=0.8)
             async def my_test():
                 return "graph", "collector"
@@ -83,8 +83,8 @@ async def test_eval_test_decorator_fails_threshold_not_met():
     mock_evaluator = MagicMock()
     mock_evaluator.evaluate = AsyncMock(return_value=mock_report)
 
-    with patch("agentflow.qa.evaluation.AgentEvaluator", return_value=mock_evaluator):
-        with patch("agentflow.qa.evaluation.testing.Path.exists", return_value=True):
+    with patch("tenxgraph.qa.evaluation.AgentEvaluator", return_value=mock_evaluator):
+        with patch("tenxgraph.qa.evaluation.testing.Path.exists", return_value=True):
             @eval_test(eval_file="dummy.json", threshold=0.9)
             async def my_fail_threshold_test():
                 return "graph", "collector"
@@ -99,8 +99,8 @@ async def test_eval_test_decorator_auto_detect_path():
     mock_evaluator = MagicMock()
     mock_evaluator.evaluate = AsyncMock(return_value=mock_report)
 
-    with patch("agentflow.qa.evaluation.AgentEvaluator", return_value=mock_evaluator):
-        with patch("agentflow.qa.evaluation.testing.Path.exists", return_value=True):
+    with patch("tenxgraph.qa.evaluation.AgentEvaluator", return_value=mock_evaluator):
+        with patch("tenxgraph.qa.evaluation.testing.Path.exists", return_value=True):
             @eval_test()
             async def test_my_custom_scenario():
                 return "graph", "collector"
@@ -136,7 +136,7 @@ def test_parametrize_eval_cases():
     mock_case = MagicMock(eval_id="case1")
     mock_set.eval_cases = [mock_case]
 
-    with patch("agentflow.qa.evaluation.dataset.eval_set.EvalSet.from_file", return_value=mock_set) as mock_from_file:
+    with patch("tenxgraph.qa.evaluation.dataset.eval_set.EvalSet.from_file", return_value=mock_set) as mock_from_file:
         decorator = parametrize_eval_cases("dummy_path.json")
         assert decorator is not None
         mock_from_file.assert_called_once_with("dummy_path.json")
@@ -145,7 +145,7 @@ def test_eval_fixtures():
     fixtures = EvalFixtures(default_config="my_config")
     assert fixtures.default_config == "my_config"
 
-    with patch("agentflow.qa.evaluation.AgentEvaluator") as mock_eval:
+    with patch("tenxgraph.qa.evaluation.AgentEvaluator") as mock_eval:
         factory = fixtures.evaluator_factory()
         factory("graph", "collector")
         mock_eval.assert_called_once_with("graph", "collector", config="my_config")
@@ -157,7 +157,7 @@ def test_eval_plugin_noop():
 
 @pytest.mark.asyncio
 async def test_run_eval_success():
-    with patch("agentflow.qa.evaluation.AgentEvaluator") as mock_eval_class:
+    with patch("tenxgraph.qa.evaluation.AgentEvaluator") as mock_eval_class:
         mock_eval = mock_eval_class.return_value
         mock_eval.evaluate = AsyncMock(return_value="eval_report")
 

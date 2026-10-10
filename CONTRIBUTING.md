@@ -1,14 +1,13 @@
-# Contributing to Agentflow
+# Contributing to 10xGraph
 
-Thanks for your interest in improving `10xscale-agentflow`. This guide covers the
-core Python framework that lives in this folder. For the API server, TypeScript
-client, docs, or playground, see the `CONTRIBUTING`/`CLAUDE.md` in their
-respective packages.
+Thanks for your interest in improving `10xgraph` (formerly `10xscale-agentflow`). This guide covers the
+core Python framework in this repository. The API server/CLI, TypeScript
+client, docs, and playground live in their own repositories.
 
-- Package (PyPI): `10xscale-agentflow`
+- Package (PyPI): `10xgraph`
 - Requires: Python >= 3.12
-- The importable package is the nested `agentflow/` directory; this folder is the
-  repo root for the core library.
+- The importable package is `tenxgraph/` at the repo root. The `agentflow/`
+  directory is a deprecated alias shim kept until 2.0.
 
 By participating in this project you agree to abide by our
 [Code of Conduct](CODE_OF_CONDUCT.md).
@@ -19,7 +18,8 @@ We use [`uv`](https://docs.astral.sh/uv/) for environment and dependency
 management.
 
 ```bash
-# from this folder (the core library root)
+# from the repo root
+git clone https://github.com/10xGraph/10xGraph.git && cd 10xGraph
 uv sync --dev          # create .venv and install the package + dev tools
 uv run pre-commit install   # enable the git hooks (optional but recommended)
 ```
@@ -43,7 +43,7 @@ You can also run pieces individually:
 
 ```bash
 uv run ruff check . && uv run ruff format .
-uv run mypy agentflow/
+uv run mypy tenxgraph/
 uv run pytest tests/graph             # one area
 ```
 
@@ -66,20 +66,20 @@ uv run pytest tests/graph             # one area
   `chaos/`, `benchmarks/`, `integration/`).
 - Markers: `asyncio`, `integration` (needs real databases — Redis/Postgres),
   `slow`. Integration tests are skipped unless their backends are available.
-- Prefer the in-repo test helpers in `agentflow.qa.testing` (`TestAgent`,
+- Prefer the in-repo test helpers in `tenxgraph.qa.testing` (`TestAgent`,
   `MockMCPClient`, `MockToolRegistry`) to exercise graphs without live LLM calls.
 
 ## Import paths (read this before referencing symbols)
 
 The package is organised into `core/`, `storage/`, `runtime/`, `qa/`. There are
-**no** top-level `agentflow.graph` / `agentflow.state` / `agentflow.checkpointer`
+**no** top-level `tenxgraph.graph` / `tenxgraph.state` / `tenxgraph.checkpointer`
 shims — use the canonical paths:
 
 ```python
-from agentflow.core.graph import StateGraph, Agent, ToolNode, CompiledGraph
-from agentflow.core.state import AgentState, Message
-from agentflow.core.llm import call_llm, create_llm_client, detect_provider
-from agentflow.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer
+from tenxgraph.core.graph import StateGraph, Agent, ToolNode, CompiledGraph
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.llm import call_llm, create_llm_client, detect_provider
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer
 ```
 
 `examples/` uses current import paths and is the most reliable usage reference.
@@ -89,7 +89,7 @@ from agentflow.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer
 Provider SDKs (OpenAI, Google GenAI), MCP, Postgres, Redis, Qdrant, Mem0, Kafka,
 RabbitMQ, OTEL, and a2a are all **extras**. Guard their imports inside the
 functions that need them so the core package never hard-imports an optional
-dependency. See `agentflow/core/llm/client_factory.py` for the pattern.
+dependency. See `tenxgraph/core/llm/client_factory.py` for the pattern.
 
 ## Commit and PR conventions
 
@@ -105,11 +105,11 @@ dependency. See `agentflow/core/llm/client_factory.py` for the pattern.
 ## Reporting bugs and security issues
 
 - **Bugs / feature requests:** open an issue at
-  https://github.com/10xHub/agentflow/issues with a minimal reproduction.
+  https://github.com/10xGraph/10xGraph/issues with a minimal reproduction.
 - **Security vulnerabilities:** do **not** open a public issue — follow
   [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-Agentflow is [MIT licensed](LICENSE) and made by [10xScale](https://10xscale.ai). Contributions
+10xGraph is [MIT licensed](LICENSE) and made by [10xScale](https://10xscale.ai). Contributions
 are accepted under the same license.

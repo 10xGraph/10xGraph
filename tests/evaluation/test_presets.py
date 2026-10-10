@@ -2,8 +2,8 @@
 
 import pytest
 
-from agentflow.qa.evaluation.config.presets import EvalPresets
-from agentflow.qa.evaluation.config.eval_config import EvalConfig, MatchType
+from tenxgraph.qa.evaluation.config.presets import EvalPresets
+from tenxgraph.qa.evaluation.config.eval_config import EvalConfig, MatchType
 
 
 class TestEvalPresetsResponseQuality:

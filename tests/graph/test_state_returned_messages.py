@@ -7,11 +7,11 @@ because the "before" and "after" states were one object.
 
 import pytest
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.state import AgentState, Message, StreamEvent
-from agentflow.utils import ResponseGranularity
-from agentflow.utils.command import Command
-from agentflow.utils.constants import END
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.state import AgentState, Message, StreamEvent
+from tenxgraph.utils import ResponseGranularity
+from tenxgraph.utils.command import Command
+from tenxgraph.utils.constants import END
 
 
 class NoteState(AgentState):

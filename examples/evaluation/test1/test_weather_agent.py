@@ -12,8 +12,8 @@
 
 # import pytest
 
-# from agentflow.qa.evaluation import AgentEvaluator, CriterionConfig, EvalConfig, MatchType
-# from agentflow.core.state import Message
+# from tenxgraph.qa.evaluation import AgentEvaluator, CriterionConfig, EvalConfig, MatchType
+# from tenxgraph.core.state import Message
 
 # from .samples import CAPITAL_QUESTION, LONDON, NYC
 

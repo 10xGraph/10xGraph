@@ -1,14 +1,14 @@
 """Tests for the state module."""
 
-from agentflow.core.state import (
+from tenxgraph.core.state import (
     AgentState,
     BaseContextManager,
     ExecutionState,
     ExecutionStatus,
     MessageContextManager,
 )
-from agentflow.utils import START
-from agentflow.core.state.message import Message
+from tenxgraph.utils import START
+from tenxgraph.core.state.message import Message
 
 
 class TestAgentState:

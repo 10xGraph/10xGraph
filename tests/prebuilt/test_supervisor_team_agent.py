@@ -7,12 +7,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from agentflow.core.graph import CompiledGraph, ToolNode
-from agentflow.core.graph.base_agent import BaseAgent
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
-from agentflow.utils.callbacks import CallbackManager
-from agentflow.prebuilt.agent.supervisor_team import (
+from tenxgraph.core.graph import CompiledGraph, ToolNode
+from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
+from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.prebuilt.agent.supervisor_team import (
     SupervisorTeamAgent,
     WorkerConfig,
     _build_supervisor_prompt,
@@ -273,7 +273,7 @@ class TestSupervisorNode:
 
 class TestSupervisorTeamAgentInit:
     def test_basic_init(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -289,7 +289,7 @@ class TestSupervisorTeamAgentInit:
             SupervisorTeamAgent(supervisor_model="gpt-4o", workers=bad_workers)
 
     def test_stores_workers_and_model(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -297,21 +297,21 @@ class TestSupervisorTeamAgentInit:
         assert set(agent._workers.keys()) == {"RESEARCHER", "CODER"}
 
     def test_default_max_rounds(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
         assert agent._max_rounds == 10
 
     def test_custom_max_rounds(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers(), max_rounds=5
             )
         assert agent._max_rounds == 5
 
     def test_auto_generated_supervisor_prompt(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -322,7 +322,7 @@ class TestSupervisorTeamAgentInit:
 
     def test_custom_supervisor_prompt(self):
         custom = [{"role": "system", "content": "Custom supervisor instructions."}]
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o",
                 workers=_two_workers(),
@@ -331,7 +331,7 @@ class TestSupervisorTeamAgentInit:
         assert agent._supervisor_system_prompt == custom
 
     def test_single_worker_allowed(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_single_worker()
             )
@@ -345,14 +345,14 @@ class TestSupervisorTeamAgentInit:
 
 class TestSupervisorTeamAgentCompile:
     def test_compile_returns_compiled_graph(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
         assert isinstance(agent.compile(), CompiledGraph)
 
     def test_graph_has_supervisor_node(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -360,7 +360,7 @@ class TestSupervisorTeamAgentCompile:
         assert _SUPERVISOR_NODE in agent._graph.nodes
 
     def test_graph_has_all_worker_nodes(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -370,7 +370,7 @@ class TestSupervisorTeamAgentCompile:
 
     def test_worker_nodes_are_the_provided_agents(self):
         workers = _two_workers()
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             sta = SupervisorTeamAgent(supervisor_model="gpt-4o", workers=workers)
         sta._configure_graph()
         for name, cfg in workers.items():
@@ -378,21 +378,21 @@ class TestSupervisorTeamAgentCompile:
 
     def test_compile_with_checkpointer(self):
         checkpointer = Mock()
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
         assert isinstance(agent.compile(checkpointer=checkpointer), CompiledGraph)
 
     def test_compile_with_callback_manager(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
         assert isinstance(agent.compile(callback_manager=CallbackManager()), CompiledGraph)
 
     def test_compile_with_interrupt_options(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -406,13 +406,13 @@ class TestSupervisorTeamAgentCompile:
         media_store = Mock()
         compiled_graph = Mock(spec=CompiledGraph)
 
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
 
         with patch(
-            "agentflow.prebuilt.agent.supervisor_team.StateGraph.compile",
+            "tenxgraph.prebuilt.agent.supervisor_team.StateGraph.compile",
             autospec=True,
             return_value=compiled_graph,
         ) as compile_mock:
@@ -423,7 +423,7 @@ class TestSupervisorTeamAgentCompile:
         assert compile_mock.call_args.kwargs["shutdown_timeout"] == 60.0
 
     def test_compile_multiple_times_resets_graph(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )
@@ -442,7 +442,7 @@ class TestSupervisorAgentConfiguration:
     def test_supervisor_has_correct_model(self):
         # The SUPERVISOR node is now a wrapper that drives the supervisor Agent
         # internally, so assert the model on the agent the builder produces.
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             agent = SupervisorTeamAgent(
                 supervisor_model="gpt-4o-turbo", workers=_two_workers()
             )
@@ -451,7 +451,7 @@ class TestSupervisorAgentConfiguration:
 
     def test_supervisor_system_prompt_is_set(self):
         custom = [{"role": "system", "content": "Custom prompt."}]
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             sta = SupervisorTeamAgent(
                 supervisor_model="gpt-4o",
                 workers=_two_workers(),
@@ -470,7 +470,7 @@ class TestSupervisorAgentConfiguration:
                 captured_kwargs.update(kwargs)
 
         with patch(
-            "agentflow.prebuilt.agent.supervisor_team.Agent", CapturingFakeAgent
+            "tenxgraph.prebuilt.agent.supervisor_team.Agent", CapturingFakeAgent
         ):
             sta = SupervisorTeamAgent(
                 supervisor_model="gpt-4o",
@@ -492,7 +492,7 @@ class TestSupervisorAgentConfiguration:
             "A": WorkerConfig(agent=agent_a, description="Agent A"),
             "B": WorkerConfig(agent=agent_b, description="Agent B"),
         }
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             sta = SupervisorTeamAgent(supervisor_model="gpt-4o", workers=workers)
         sta._configure_graph()
 
@@ -540,7 +540,7 @@ class TestSupervisorIntegration:
         assert cmd.goto == END
 
     def test_compiled_swarm_has_correct_nodes(self):
-        with patch("agentflow.prebuilt.agent.supervisor_team.Agent", FakeAgent):
+        with patch("tenxgraph.prebuilt.agent.supervisor_team.Agent", FakeAgent):
             sta = SupervisorTeamAgent(
                 supervisor_model="gpt-4o", workers=_two_workers()
             )

@@ -8,11 +8,11 @@ but with multiple specialized agents that hand off work between each other.
 
 from dotenv import load_dotenv
 
-from agentflow.core import Agent, StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.prebuilt.tools import create_handoff_tool
-from agentflow.storage.checkpointer import InMemoryCheckpointer
-from agentflow.utils.constants import END
+from tenxgraph.core import Agent, StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.prebuilt.tools import create_handoff_tool
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils.constants import END
 
 
 load_dotenv()

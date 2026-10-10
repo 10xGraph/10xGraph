@@ -9,10 +9,10 @@ import sys
 from typing import Any
 
 
-# Add the project root to the path so we can import agentflow
+# Add the project root to the path so we can import tenxgraph
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agentflow.utils import (
+from tenxgraph.utils import (
     AfterInvokeCallback,
     BeforeInvokeCallback,
     CallbackContext,

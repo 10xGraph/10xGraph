@@ -17,9 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.storage.checkpointer.pg_checkpointer import PgCheckpointer
-from agentflow.core.state import AgentState, Message
-from agentflow.utils.thread_info import ThreadInfo
+from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils.thread_info import ThreadInfo
 
 
 class _Txn:

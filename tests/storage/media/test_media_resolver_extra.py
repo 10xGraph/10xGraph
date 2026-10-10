@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentflow.core.exceptions.media_exceptions import UnsupportedMediaInputError
-from agentflow.core.state.message_block import MediaRef
-from agentflow.storage.media.capabilities import MediaTransportMode
-from agentflow.storage.media.media_resolver import MediaResolver, _openai_image_url
+from tenxgraph.core.exceptions.media_exceptions import UnsupportedMediaInputError
+from tenxgraph.core.state.message_block import MediaRef
+from tenxgraph.storage.media.capabilities import MediaTransportMode
+from tenxgraph.storage.media.media_resolver import MediaResolver, _openai_image_url
 
 
 class _Store:
@@ -161,7 +161,7 @@ async def test_transport_provider_file_handles_google_uri_and_data(monkeypatch):
         return {"uploaded": True, "mime": mime, "size": len(data)}
 
     with patch("google.genai.types.Part", _Part), patch(
-        "agentflow.storage.media.provider_media.upload_to_google_file_api",
+        "tenxgraph.storage.media.provider_media.upload_to_google_file_api",
         new=_upload,
     ):
         gs = await resolver._transport_provider_file(
@@ -186,7 +186,7 @@ async def test_transport_provider_file_handles_internal_and_external_url_uploads
     async def _upload(data, mime):
         return {"uploaded": True, "mime": mime, "size": len(data)}
 
-    with patch("agentflow.storage.media.provider_media.upload_to_google_file_api", new=_upload), patch.object(
+    with patch("tenxgraph.storage.media.provider_media.upload_to_google_file_api", new=_upload), patch.object(
         resolver,
         "_retrieve_bytes",
         new=AsyncMock(side_effect=[(b"in", "image/png"), (b"out", "image/jpeg")]),
@@ -221,7 +221,7 @@ async def test_transport_provider_file_returns_none_on_non_google_and_errors(mon
     async def _broken(*args, **kwargs):
         raise RuntimeError("upload failed")
 
-    with patch("agentflow.storage.media.provider_media.upload_to_google_file_api", new=_broken):
+    with patch("tenxgraph.storage.media.provider_media.upload_to_google_file_api", new=_broken):
         out = await resolver._transport_provider_file(
             MediaRef(kind="data", data_base64=base64.b64encode(b"abc").decode(), mime_type="image/png"),
             provider="google",
@@ -287,7 +287,7 @@ def test_openai_image_url_helper_shape():
 
 
 def test_with_cache_configures_resolver():
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.storage.media.resolver import MediaRefResolver
     resolver = MediaRefResolver()
     cache = object()
     out = resolver.with_cache(cache, expiration_seconds=1800, refresh_buffer_seconds=30)
@@ -299,7 +299,7 @@ def test_with_cache_configures_resolver():
 
 @pytest.mark.asyncio
 async def test_resolve_openai_legacy_fallback_reftypes_and_empty():
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.storage.media.resolver import MediaRefResolver
     resolver = MediaRefResolver()
     ref_empty = MediaRef.model_construct(kind="unknown")
     res = await resolver._resolve_openai_legacy(ref_empty)
@@ -308,7 +308,7 @@ async def test_resolve_openai_legacy_fallback_reftypes_and_empty():
 
 @pytest.mark.asyncio
 async def test_resolve_google_legacy_various_refs():
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.storage.media.resolver import MediaRefResolver
     resolver = MediaRefResolver(media_store=_Store())
     
     class _Part:
@@ -353,7 +353,7 @@ async def test_resolve_google_legacy_various_refs():
 
 @pytest.mark.asyncio
 async def test_try_transport_modes():
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.storage.media.resolver import MediaRefResolver
     resolver = MediaRefResolver()
     
     result = await resolver._try_transport(MediaRef(kind="url"), MediaTransportMode.provider_file, "openai", object())
@@ -377,7 +377,7 @@ async def test_try_transport_modes():
 
 @pytest.mark.asyncio
 async def test_transport_inline_bytes_url_retrieve_fail():
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.storage.media.resolver import MediaRefResolver
     resolver = MediaRefResolver()
     async def _fail(*args):
         raise ValueError("fetch fail")
@@ -388,7 +388,7 @@ async def test_transport_inline_bytes_url_retrieve_fail():
 
 @pytest.mark.asyncio
 async def test_get_cached_signed_url_expired_or_invalid():
-    from agentflow.storage.media.resolver import MediaRefResolver
+    from tenxgraph.storage.media.resolver import MediaRefResolver
     resolver = MediaRefResolver(cache_backend=_Cache())
     resolver.cache_backend.values[("media:signed-url", "k")] = "not-a-dict"
     res1 = await resolver._get_cached_signed_url("k")
@@ -405,7 +405,7 @@ async def test_get_cached_signed_url_expired_or_invalid():
 
 
 def test_source_kind_helper_variations():
-    from agentflow.storage.media.resolver import _source_kind
+    from tenxgraph.storage.media.resolver import _source_kind
     assert _source_kind(MediaRef(kind="url", url="agentflow://media/k")) == "internal_ref"
     assert _source_kind(MediaRef(kind="url", url="https://x")) == "url"
     assert _source_kind(MediaRef(kind="data")) == "data"

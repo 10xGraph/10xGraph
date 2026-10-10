@@ -23,16 +23,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Top-level module prefixes removed in the package restructure. Any import that starts with one
 # of these (followed by "." or end of token) is a dead path. Note that the canonical paths
-# (agentflow.core.state, agentflow.core.graph, ...) do NOT start with any of these.
+# (tenxgraph.core.state, tenxgraph.core.graph, ...) do NOT start with any of these.
 DEAD_PREFIXES = (
-    "agentflow.graph",
-    "agentflow.state",
-    "agentflow.checkpointer",
-    "agentflow.evaluation",
-    "agentflow.skills",
-    "agentflow.testing",
-    "agentflow.adapters",
-    "agentflow.publisher",
+    "tenxgraph.graph",
+    "tenxgraph.state",
+    "tenxgraph.checkpointer",
+    "tenxgraph.evaluation",
+    "tenxgraph.skills",
+    "tenxgraph.testing",
+    "tenxgraph.adapters",
+    "tenxgraph.publisher",
 )
 
 # API call patterns that reference symbols/keywords that do not exist.
@@ -42,7 +42,7 @@ BAD_API_PATTERNS = {
     r"\btool_node_name\s*=": "Agent uses `tool_node=`, not `tool_node_name=`",
 }
 
-_IMPORT_RE = re.compile(r"^\s*(?:from\s+(agentflow[\w.]*)\s+import|import\s+(agentflow[\w.]*))")
+_IMPORT_RE = re.compile(r"^\s*(?:from\s+(tenxgraph[\w.]*)\s+import|import\s+(tenxgraph[\w.]*))")
 _PY_FENCE_RE = re.compile(r"```(?:python|py)\s*\n(.*?)```", re.DOTALL)
 
 
@@ -87,7 +87,7 @@ def test_no_dead_import_paths_in_docs():
             if _is_dead(mod):
                 violations.append(f"{f.relative_to(REPO_ROOT)}: {mod}")
     assert not violations, (
-        "Dead import paths found (use agentflow.core.* / agentflow.storage.* / agentflow.qa.*):\n"
+        "Dead import paths found (use tenxgraph.core.* / tenxgraph.storage.* / tenxgraph.qa.*):\n"
         + "\n".join(violations)
     )
 
@@ -105,11 +105,11 @@ def test_no_nonexistent_api_patterns_in_docs():
 
 def test_canonical_readme_symbols_are_real():
     """The canonical symbols the README advertises import and exist."""
-    from agentflow.core.graph import Agent, StateGraph, ToolNode  # noqa: F401
-    from agentflow.core.state import AgentState, Message  # noqa: F401
-    from agentflow.storage.checkpointer import InMemoryCheckpointer  # noqa: F401
-    from agentflow.utils import ResponseGranularity, convert_messages  # noqa: F401
-    from agentflow.utils.constants import END  # noqa: F401
+    from tenxgraph.core.graph import Agent, StateGraph, ToolNode  # noqa: F401
+    from tenxgraph.core.state import AgentState, Message  # noqa: F401
+    from tenxgraph.storage.checkpointer import InMemoryCheckpointer  # noqa: F401
+    from tenxgraph.utils import ResponseGranularity, convert_messages  # noqa: F401
+    from tenxgraph.utils.constants import END  # noqa: F401
 
     assert hasattr(Message, "text_message")
     assert not hasattr(Message, "from_text")

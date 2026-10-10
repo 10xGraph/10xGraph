@@ -8,11 +8,11 @@ import logging
 
 import pytest
 
-from agentflow.runtime.adapters.llm.google_genai_converter import GoogleGenAIConverter
-from agentflow.runtime.adapters.llm.openai_converter import OpenAIConverter
-from agentflow.runtime.adapters.llm.openai_responses_converter import OpenAIResponsesConverter
-from agentflow.core.state.message import Message
-from agentflow.core.state.message_block import ReasoningBlock, TextBlock, ToolCallBlock
+from tenxgraph.runtime.adapters.llm.google_genai_converter import GoogleGenAIConverter
+from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
+from tenxgraph.runtime.adapters.llm.openai_responses_converter import OpenAIResponsesConverter
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import ReasoningBlock, TextBlock, ToolCallBlock
 
 
 class MockPart:
@@ -209,7 +209,7 @@ class TestGoogleGenAIConverter:
 
         # Assertions
         assert len(message.content) == 1
-        from agentflow.core.state.message_block import ImageBlock
+        from tenxgraph.core.state.message_block import ImageBlock
 
         assert isinstance(message.content[0], ImageBlock)
         assert message.content[0].media.data_base64 == "base64_image_data"
@@ -232,7 +232,7 @@ class TestGoogleGenAIConverter:
 
         # Assertions
         assert len(message.content) == 1
-        from agentflow.core.state.message_block import VideoBlock
+        from tenxgraph.core.state.message_block import VideoBlock
 
         assert isinstance(message.content[0], VideoBlock)
         assert message.content[0].media.url == "gs://bucket/video.mp4"
@@ -263,7 +263,7 @@ class TestGoogleGenAIConverter:
         response.choices = []
         response.usage = None
 
-        with caplog.at_level(logging.WARNING, logger="agentflow.adapters.openai"):
+        with caplog.at_level(logging.WARNING, logger="tenxgraph.adapters.openai"):
             message = await OpenAIConverter().convert_response(response)
 
         assert isinstance(message, Message)
@@ -282,7 +282,7 @@ class TestGoogleGenAIConverter:
         response.usage = None
         response.model_dump.return_value = {}
 
-        with caplog.at_level(logging.WARNING, logger="agentflow.adapters.openai_responses"):
+        with caplog.at_level(logging.WARNING, logger="tenxgraph.adapters.openai_responses"):
             message = await OpenAIResponsesConverter().convert_response(response)
 
         assert isinstance(message, Message)

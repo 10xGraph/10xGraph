@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `10xscale-agentflow` are documented here.
+All notable changes to `10xgraph` (formerly `10xscale-agentflow`) are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project uses [Semantic Versioning](https://semver.org/). From `1.0.0` on, the
@@ -19,6 +19,56 @@ Starting from this release:
   `agentflow.checkpointer` moves in an earlier release shipped with no shims and
   simply started raising `ModuleNotFoundError`; that will not happen again.)
 - Breaking changes are listed under a `### Breaking` heading, with the migration.
+
+---
+
+## [Unreleased]
+
+### Breaking
+
+- **The project is renamed from Agentflow to 10xGraph.** The PyPI distribution is now
+  `10xgraph` (was `10xscale-agentflow`, whose last release is 0.10.1). The importable
+  package is now `tenxgraph` (a Python identifier cannot start with a digit). All
+  canonical paths are the old ones with `agentflow` replaced by `tenxgraph`, for example
+  `tenxgraph.core.graph`, `tenxgraph.core.state`, `tenxgraph.storage.checkpointer`,
+  `tenxgraph.prebuilt.agent` and `tenxgraph.utils`. The top level also exports
+  `StateGraph`, `Agent`, `ToolNode`, `AgentState`, `Message`, `START` and `END` lazily.
+- **Observable identifiers changed.** If dashboards, alerts or log filters match the old
+  values, update them:
+  - OpenTelemetry tracer name, meter name and `GEN_AI_SYSTEM`: `agentflow` -> `10xgraph`.
+  - Logger names: `agentflow.*` -> `tenxgraph.*`.
+  - Prebuilt tools HTTP user-agent: now `10xgraph-prebuilt-tools/1.0`.
+
+### Changed
+
+- **`agentflow` stays importable as a deprecated alias until 2.0.** `import agentflow`
+  and `agentflow.*` resolve to the same module objects as `tenxgraph.*` and emit one
+  `DeprecationWarning`. Existing code runs unchanged while you migrate imports.
+- **Media URI scheme** `agentflow://media/` -> `graph://media/`. Old URIs are still read.
+- **Default home directory** `~/.agentflow` -> `~/.10xgraph`. If only `~/.agentflow`
+  exists it is used instead. This affects the default `SqliteCheckpointer` path.
+- **Cloud media prefix** `agentflow-media` -> `10xgraph-media`. Old objects are still read.
+- The server config file is now `10xgraph.json`. The CLI falls back to `agentflow.json`.
+  The CLI package is not renamed yet: it is still `10xscale-agentflow-cli` with the
+  `agentflow` command, and gets its 10xGraph name in a later release, as does the
+  TypeScript client.
+
+### Migration
+
+```bash
+pip uninstall 10xscale-agentflow
+pip install 10xgraph
+```
+
+Uninstall first: both distributions provide the `agentflow` module and must not be
+installed side by side. Then replace `agentflow` with `tenxgraph` in imports:
+
+```python
+# before
+from agentflow.core.graph import StateGraph
+# after
+from tenxgraph import StateGraph
+```
 
 ---
 

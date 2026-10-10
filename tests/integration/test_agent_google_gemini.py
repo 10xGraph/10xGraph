@@ -12,9 +12,9 @@ import os
 
 import pytest
 
-from agentflow.core.graph import Agent, StateGraph, ToolNode
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END, ResponseGranularity
+from tenxgraph.core.graph import Agent, StateGraph, ToolNode
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END, ResponseGranularity
 
 
 # Skip all tests if GEMINI_API_KEY is not set

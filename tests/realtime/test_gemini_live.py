@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentflow.core.realtime.base import (
+from tenxgraph.core.realtime.base import (
     AudioDeltaEvent,
     ErrorEvent,
     GoAwayEvent,
@@ -21,7 +21,7 @@ from agentflow.core.realtime.base import (
     ToolCallEvent,
     TurnCompleteEvent,
 )
-from agentflow.core.realtime.providers.gemini_live import GeminiLiveClient, normalize_message
+from tenxgraph.core.realtime.providers.gemini_live import GeminiLiveClient, normalize_message
 
 
 # --------------------------------------------------------------------------- #
@@ -226,7 +226,7 @@ class TestGeminiLiveClientLifecycle:
 
     @pytest.mark.asyncio
     async def test_reseed_history_maps_messages_to_send_client_content(self, config):
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
 
         session = FakeLiveSession()
         client = GeminiLiveClient(connector=FakeConnector(session))
@@ -245,7 +245,7 @@ class TestGeminiLiveClientLifecycle:
 
     @pytest.mark.asyncio
     async def test_reseed_skips_system_and_tool_roles(self, config):
-        from agentflow.core.state import Message
+        from tenxgraph.core.state import Message
 
         session = FakeLiveSession()
         client = GeminiLiveClient(connector=FakeConnector(session))
@@ -324,7 +324,7 @@ class TestBuildConnectConfig:
 
     @pytest.mark.asyncio
     async def test_disabled_vad_sets_manual_activity_detection(self):
-        from agentflow.core.realtime.base import RealtimeConfig, VADConfig
+        from tenxgraph.core.realtime.base import RealtimeConfig, VADConfig
 
         cfg = RealtimeConfig(model="m", vad=VADConfig(enabled=False))
         connector = FakeConnector(FakeLiveSession())
@@ -336,7 +336,7 @@ class TestBuildConnectConfig:
 
     @pytest.mark.asyncio
     async def test_context_window_compression_enabled(self):
-        from agentflow.core.realtime.base import RealtimeConfig
+        from tenxgraph.core.realtime.base import RealtimeConfig
 
         cfg = RealtimeConfig(model="m", context_window_compression=True)
         connector = FakeConnector(FakeLiveSession())

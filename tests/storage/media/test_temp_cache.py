@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agentflow.storage.media.temp_cache import (
+from tenxgraph.storage.media.temp_cache import (
     DEFAULT_TTL_SECONDS,
     TEMP_CACHE_NAMESPACE,
     TempCacheEntry,
@@ -315,7 +315,7 @@ class TestInMemoryCheckpointerListCacheKeys:
 
     @pytest.mark.asyncio
     async def test_lists_keys_for_namespace(self):
-        from agentflow.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
 
         cp = InMemoryCheckpointer()
 
@@ -330,7 +330,7 @@ class TestInMemoryCheckpointerListCacheKeys:
 
     @pytest.mark.asyncio
     async def test_lists_keys_with_prefix(self):
-        from agentflow.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
 
         cp = InMemoryCheckpointer()
 
@@ -346,7 +346,7 @@ class TestInMemoryCheckpointerListCacheKeys:
 
     @pytest.mark.asyncio
     async def test_empty_namespace_returns_empty(self):
-        from agentflow.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+        from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
 
         cp = InMemoryCheckpointer()
         keys = await cp.alist_cache_keys("nonexistent")
@@ -358,7 +358,7 @@ class TestBaseCheckpointerListCacheKeysDefault:
 
     @pytest.mark.asyncio
     async def test_base_returns_empty_list(self):
-        from agentflow.storage.checkpointer.base_checkpointer import BaseCheckpointer
+        from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 
         # Create a minimal concrete subclass
         class DummyCheckpointer(BaseCheckpointer):

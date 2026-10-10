@@ -24,8 +24,8 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from agentflow.core.exceptions import StaleStateError, StorageError
-from agentflow.core.state import AgentState, Message
+from tenxgraph.core.exceptions import StaleStateError, StorageError
+from tenxgraph.core.state import AgentState, Message
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -39,7 +39,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/1")
 @pytest_asyncio.fixture
 async def cp():
     """A checkpointer wired to real services, with its schema created."""
-    from agentflow.storage.checkpointer import PgCheckpointer
+    from tenxgraph.storage.checkpointer import PgCheckpointer
 
     checkpointer = PgCheckpointer(
         postgres_dsn=POSTGRES_DSN,
@@ -59,7 +59,7 @@ def cfg():
 
 class TestSchemaAndMigrations:
     async def test_setup_creates_schema_at_current_version(self, cp):
-        from agentflow.storage.checkpointer.pg_checkpointer import CURRENT_SCHEMA_VERSION
+        from tenxgraph.storage.checkpointer.pg_checkpointer import CURRENT_SCHEMA_VERSION
 
         async with (await cp._get_pg_pool()).acquire() as conn:
             version = await cp._get_recorded_schema_version(conn)

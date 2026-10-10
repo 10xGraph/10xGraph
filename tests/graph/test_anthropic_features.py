@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentflow.core.graph.agent_internal.anthropic import AgentAnthropicMixin
-from agentflow.core.graph.agent_internal.anthropic_request import (
+from tenxgraph.core.graph.agent_internal.anthropic import AgentAnthropicMixin
+from tenxgraph.core.graph.agent_internal.anthropic_request import (
     apply_cache_control,
     strip_bedrock_prefix,
 )
-from agentflow.core.graph.agent_internal.anthropic_server_tools import (
+from tenxgraph.core.graph.agent_internal.anthropic_server_tools import (
     CODE_EXECUTION,
     WEB_FETCH_BASIC,
     WEB_FETCH_DYNAMIC,
@@ -23,7 +23,7 @@ from agentflow.core.graph.agent_internal.anthropic_server_tools import (
     web_fetch_tool,
     web_search_tool,
 )
-from agentflow.core.llm.anthropic_batch import AnthropicBatch, BatchResult
+from tenxgraph.core.llm.anthropic_batch import AnthropicBatch, BatchResult
 
 
 class TestStripBedrockPrefix:

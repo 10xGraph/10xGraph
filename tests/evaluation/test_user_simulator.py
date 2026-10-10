@@ -6,16 +6,16 @@ from typing import Any
 import json
 import uuid
 
-from agentflow.qa.evaluation.simulators.user_simulator import (
+from tenxgraph.qa.evaluation.simulators.user_simulator import (
     UserSimulator,
     BatchSimulator,
     ConversationScenario,
     SimulationResult
 )
-from agentflow.qa.evaluation.config.eval_config import UserSimulatorConfig
-from agentflow.qa.evaluation.criteria.base import BaseCriterion, CriterionResult
-from agentflow.core.graph.compiled_graph import CompiledGraph
-from agentflow.core.state import Message
+from tenxgraph.qa.evaluation.config.eval_config import UserSimulatorConfig
+from tenxgraph.qa.evaluation.criteria.base import BaseCriterion, CriterionResult
+from tenxgraph.core.graph.compiled_graph import CompiledGraph
+from tenxgraph.core.state import Message
 
 class MockCriterion(BaseCriterion):
     """Mock criterion for evaluation."""
@@ -76,7 +76,7 @@ async def test_user_simulator_run_success():
     criterion = MockCriterion("test_criterion")
     sim = UserSimulator(criteria=[criterion])
 
-    with patch("agentflow.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
+    with patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
         mock_call.return_value = (mock_result_json, 10, 20, 0)
         
         result = await sim.run(mock_graph, scenario)
@@ -102,7 +102,7 @@ async def test_user_simulator_run_no_starting_prompt():
 
     sim = UserSimulator()
 
-    with patch("agentflow.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
+    with patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
         mock_call.side_effect = [
             ("Start prompt", 5, 5, 0),
             (json.dumps({"achieved": True, "reasoning": "Done"}), 10, 10, 0)
@@ -128,7 +128,7 @@ async def test_user_simulator_run_max_turns():
 
     sim = UserSimulator()
 
-    with patch("agentflow.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
+    with patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
         mock_call.side_effect = [
             (json.dumps({"achieved": False, "reasoning": "Not yet"}), 5, 5, 0),
             ("User follow-up", 5, 5, 0),
@@ -164,7 +164,7 @@ async def test_user_simulator_check_goals_fallback():
         {"role": "assistant", "content": "the magic word is banana"}
     ]
     
-    with patch("agentflow.qa.evaluation.simulators.user_simulator.call_llm", side_effect=Exception("LLM down")):
+    with patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm", side_effect=Exception("LLM down")):
         achieved, usage = await sim._check_goals(
             all_goals=["banana", "apple"],
             achieved=[],
@@ -220,7 +220,7 @@ async def test_batch_simulator():
         ConversationScenario(scenario_id="s2", starting_prompt="p2", goals=["g2"])
     ]
 
-    with patch("agentflow.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
+    with patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm") as mock_call:
         mock_call.return_value = (json.dumps({"achieved": True, "reasoning": "ok"}), 1, 1, 0)
         
         results = await batch.run_batch(mock_graph, scenarios)

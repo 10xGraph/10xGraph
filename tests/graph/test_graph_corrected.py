@@ -2,15 +2,15 @@
 
 import pytest
 
-from agentflow.core.graph import (
+from tenxgraph.core.graph import (
     CompiledGraph,
     Edge,
     Node,
     StateGraph,
     ToolNode,
 )
-from agentflow.core.state import AgentState, Message
-from agentflow.utils import END
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.utils import END
 
 
 class TestEdge:
@@ -132,7 +132,7 @@ class TestStateGraph:
 
     def test_state_graph_creation_with_publisher(self):
         """Test creating a StateGraph with publisher."""
-        from agentflow.runtime.publisher import ConsolePublisher
+        from tenxgraph.runtime.publisher import ConsolePublisher
 
         publisher = ConsolePublisher()
         graph = StateGraph[AgentState](AgentState(), publisher=publisher)

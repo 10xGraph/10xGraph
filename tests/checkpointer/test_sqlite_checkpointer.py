@@ -12,9 +12,9 @@ import time
 
 import pytest
 
-from agentflow.core.state import AgentState, Message
-from agentflow.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
-from agentflow.utils.thread_info import ThreadInfo
+from tenxgraph.core.state import AgentState, Message
+from tenxgraph.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
+from tenxgraph.utils.thread_info import ThreadInfo
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ async def test_legacy_class_path_row_is_not_imported(cp, cfg1):
     # Rows written before the class was bound by the graph carry a module path.
     # It must be ignored, not imported: this one names a module that does not exist.
     legacy = MyState(counter=9, label="old").model_dump(mode="json")
-    legacy["__class_path__"] = "agentflow.gone.module.MyState"
+    legacy["__class_path__"] = "tenxgraph.gone.module.MyState"
     await cp.asetup()
     conn = await cp._get_conn()
     await conn.execute(
@@ -342,9 +342,9 @@ async def test_persists_to_disk_across_release(tmp_path):
 
 @pytest.mark.asyncio
 async def test_default_path_used_when_none(monkeypatch, tmp_path):
-    fake_default = tmp_path / "home" / ".agentflow" / "checkpointer.db"
+    fake_default = tmp_path / "home" / ".10xgraph" / "checkpointer.db"
     monkeypatch.setattr(
-        "agentflow.storage.checkpointer.sqlite_checkpointer.DEFAULT_DB_PATH",
+        "tenxgraph.storage.checkpointer.sqlite_checkpointer.DEFAULT_DB_PATH",
         str(fake_default),
     )
     cp = SqliteCheckpointer()
@@ -389,7 +389,7 @@ def test_sync_state_message_thread_roundtrip():
 
 def test_missing_aiosqlite_raises(monkeypatch):
     monkeypatch.setattr(
-        "agentflow.storage.checkpointer.sqlite_checkpointer.HAS_AIOSQLITE", False
+        "tenxgraph.storage.checkpointer.sqlite_checkpointer.HAS_AIOSQLITE", False
     )
     with pytest.raises(ImportError, match="aiosqlite"):
         SqliteCheckpointer(":memory:")
@@ -409,14 +409,14 @@ async def test_aget_thread_owner_sqlite(cp):
 
 
 def _sqlite_owner_cfg(thread_id, user_id):
-    from agentflow.core.authz import build_authz
+    from tenxgraph.core.authz import build_authz
 
     return {"thread_id": thread_id, "user_id": user_id, "authz": build_authz(user_id, scope="owner")}
 
 
 @pytest.mark.asyncio
 async def test_sqlite_owner_only_state(cp):
-    from agentflow.core.exceptions import StorageError
+    from tenxgraph.core.exceptions import StorageError
 
     await cp.aput_state(_sqlite_owner_cfg("t1", "A"), MyState())
     assert await cp.aget_state(_sqlite_owner_cfg("t1", "B")) is None
@@ -436,3 +436,17 @@ async def test_sqlite_owner_only_messages(cp):
 async def test_sqlite_no_policy_backward_compatible(cp):
     await cp.aput_state({"thread_id": "t1", "user_id": "A"}, MyState())
     assert await cp.aget_state({"thread_id": "t1", "user_id": "B"}) is not None
+
+
+def test_default_home_dir_prefers_new_and_falls_back_to_legacy(monkeypatch, tmp_path):
+    from tenxgraph.storage.checkpointer.sqlite_checkpointer import _default_home_dir
+
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+    # neither exists -> new dir
+    assert _default_home_dir() == tmp_path / ".10xgraph"
+    # only legacy exists -> legacy dir
+    (tmp_path / ".agentflow").mkdir()
+    assert _default_home_dir() == tmp_path / ".agentflow"
+    # both exist -> new dir
+    (tmp_path / ".10xgraph").mkdir()
+    assert _default_home_dir() == tmp_path / ".10xgraph"

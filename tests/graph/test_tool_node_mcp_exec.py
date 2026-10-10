@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentflow.core.graph.tool_node.mcp_exec import MCPMixin
-from agentflow.core.state import Message
+from tenxgraph.core.graph.tool_node.mcp_exec import MCPMixin
+from tenxgraph.core.state import Message
 
 
 class _Node(MCPMixin):
@@ -108,7 +108,7 @@ async def test_mcp_execute_returns_error_message_when_client_missing():
     node = _Node(client=None)
     cb = _callback_manager()
 
-    with patch("agentflow.core.graph.tool_node.mcp_exec.publish_event"):
+    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
         result = await node._mcp_execute(
             name="tool",
             args={"x": 1},
@@ -127,7 +127,7 @@ async def test_mcp_execute_calls_tool_and_injects_user_info_when_enabled():
     node = _Node(client=client, pass_user=True)
     cb = _callback_manager()
 
-    with patch("agentflow.core.graph.tool_node.mcp_exec.publish_event"):
+    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
         result = await node._mcp_execute(
             name="tool",
             args={"x": 1},

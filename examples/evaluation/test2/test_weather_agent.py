@@ -15,7 +15,7 @@ pytest.skip(
     allow_module_level=True,
 )
 
-from agentflow.qa.evaluation import (
+from tenxgraph.qa.evaluation import (
     AgentEvaluator,
     CriterionConfig,
     EvalConfig,

@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from agentflow.core.state.stream_chunks import StreamEvent
-from agentflow.core.state.stream_emitter import StreamEmitter
+from tenxgraph.core.state.stream_chunks import StreamEvent
+from tenxgraph.core.state.stream_emitter import StreamEmitter
 
 
 @pytest.mark.asyncio

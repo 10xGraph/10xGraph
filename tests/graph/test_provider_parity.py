@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentflow.core.graph.agent_internal.google import AgentGoogleMixin
-from agentflow.core.llm import AnthropicBatch, BatchResult, OpenAIBatch
-from agentflow.core.llm.openai_batch import normalise_status
+from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
+from tenxgraph.core.llm import AnthropicBatch, BatchResult, OpenAIBatch
+from tenxgraph.core.llm.openai_batch import normalise_status
 
 
 class _GoogleStub(AgentGoogleMixin):

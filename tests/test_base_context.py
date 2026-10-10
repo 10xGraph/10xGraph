@@ -3,9 +3,9 @@
 import pytest
 from unittest.mock import AsyncMock, Mock
 
-from agentflow.core.state import AgentState
-from agentflow.core.state.base_context import BaseContextManager
-from agentflow.core.state import Message
+from tenxgraph.core.state import AgentState
+from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state import Message
 
 
 class TestBaseContextManager:

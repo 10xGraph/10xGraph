@@ -9,8 +9,8 @@ import asyncio
 
 import pytest
 
-from agentflow.core.exceptions import GraphStopRequested, NodeTimeoutError
-from agentflow.core.graph.utils.guards import execute_with_guards, resolve_timeout
+from tenxgraph.core.exceptions import GraphStopRequested, NodeTimeoutError
+from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 
 
 class TestResolveTimeout:

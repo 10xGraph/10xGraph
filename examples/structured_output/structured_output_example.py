@@ -15,8 +15,8 @@ import json
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from agentflow.prebuilt.agent import StructuredOutputAgent
-from agentflow.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.prebuilt.agent import StructuredOutputAgent
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
 
 load_dotenv()

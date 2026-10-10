@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentflow.qa.testing.mock_tools import MockToolRegistry
+from tenxgraph.qa.testing.mock_tools import MockToolRegistry
 
 
 class TestMockToolRegistryRegisterAsync:

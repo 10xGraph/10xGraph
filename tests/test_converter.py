@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import Mock, patch
 
-from agentflow.core.state import AgentState, Message, ToolResultBlock
-from agentflow.utils.converter import _convert_dict, convert_messages
+from tenxgraph.core.state import AgentState, Message, ToolResultBlock
+from tenxgraph.utils.converter import _convert_dict, convert_messages
 
 
 class TestConverterUtils:
@@ -351,7 +351,7 @@ class TestConverterUtils:
         
         assert result == system_prompts
 
-    @patch('agentflow.utils.converter.logger')
+    @patch('tenxgraph.utils.converter.logger')
     def test_convert_messages_logs_message_count(self, mock_logger):
         """Test that convert_messages logs the number of converted messages."""
         system_prompts = [{"role": "system", "content": "You are helpful"}]
@@ -361,7 +361,7 @@ class TestConverterUtils:
         mock_logger.debug.assert_called_once_with("Number of Converted messages: %s", 1)
         assert len(result) == 1
 
-    @patch('agentflow.utils.converter.logger')
+    @patch('tenxgraph.utils.converter.logger')
     def test_convert_messages_logs_error_on_none_system_prompts(self, mock_logger):
         """Test that convert_messages logs error when system_prompts is None."""
         with pytest.raises(ValueError):

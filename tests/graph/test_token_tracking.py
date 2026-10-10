@@ -8,11 +8,11 @@ This module tests:
 
 import pytest
 
-from agentflow.core.graph import StateGraph
-from agentflow.core.graph.utils.utils import calculate_token_usage
-from agentflow.core.state import AgentState, Message, TokenUsages
-from agentflow.core.state.message_block import TextBlock
-from agentflow.utils import END, ResponseGranularity
+from tenxgraph.core.graph import StateGraph
+from tenxgraph.core.graph.utils.utils import calculate_token_usage
+from tenxgraph.core.state import AgentState, Message, TokenUsages
+from tenxgraph.core.state.message_block import TextBlock
+from tenxgraph.utils import END, ResponseGranularity
 
 
 class TestCalculateTokenUsage:
@@ -171,7 +171,7 @@ class TestStreamHandlerTokenTracking:
 
     async def test_stream_handler_includes_token_usage_in_final_chunk(self):
         """Test that StreamHandler includes token usage in final stream chunk."""
-        from agentflow.core.state.stream_chunks import StreamEvent
+        from tenxgraph.core.state.stream_chunks import StreamEvent
 
         # Define a simple node that returns a message with token usage
         def agent_node(state: AgentState, config: dict) -> list[Message]:
