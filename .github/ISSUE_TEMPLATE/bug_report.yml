@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in 10xscale-agentflow
+description: Report a defect in 10xgraph
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -26,8 +26,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: agentflow version
-      description: Output of `pip show 10xscale-agentflow` (Version field).
+      label: 10xgraph version
+      description: Output of `pip show 10xgraph` (Version field).
       placeholder: 1.0.0
     validations:
       required: true

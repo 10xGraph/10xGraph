@@ -1,4 +1,4 @@
-# Makefile for 10xScale Agentflow packaging and publishing
+# Makefile for 10xGraph (PyPI: 10xgraph) packaging and publishing
 
 .PHONY: build publish testpublish clean test test-cov docs-serve docs-build docs-deploy
 

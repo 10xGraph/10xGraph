@@ -39,7 +39,7 @@ Include as much of the following as you can:
 ## Scope
 
 This policy covers the `10xgraph` core Python package in this
-repository. Issues in the API server (`10xscale-agentflow-cli`, to be renamed), the TypeScript
+repository. Issues in the API server (`10xgraph-api`, formerly `10xscale-agentflow-cli`), the TypeScript
 client, or third-party dependencies should be reported against their respective
 projects, though we are happy to help route a report.
 

@@ -24,6 +24,11 @@ Starting from this release:
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-10
+
+First release of `10xgraph`. Its version numbering starts fresh; the old
+`10xscale-agentflow` releases below keep their own numbers.
+
 ### Breaking
 
 - **The project is renamed from Agentflow to 10xGraph.** The PyPI distribution is now
@@ -49,9 +54,9 @@ Starting from this release:
   exists it is used instead. This affects the default `SqliteCheckpointer` path.
 - **Cloud media prefix** `agentflow-media` -> `10xgraph-media`. Old objects are still read.
 - The server config file is now `10xgraph.json`. The CLI falls back to `agentflow.json`.
-  The CLI package is not renamed yet: it is still `10xscale-agentflow-cli` with the
-  `agentflow` command, and gets its 10xGraph name in a later release, as does the
-  TypeScript client.
+  The CLI package is renamed alongside this release: `10xgraph-api` (was
+  `10xscale-agentflow-cli`) with the `10xgraph` command (`agentflow` stays as a
+  deprecated alias). The TypeScript client becomes `10xgraph-client` on npm.
 
 ### Migration
 
@@ -72,7 +77,7 @@ from tenxgraph import StateGraph
 
 ---
 
-## [0.10.0] - 2024-06-05
+## `10xscale-agentflow` [0.10.0] - 2024-06-05
 
 ### Added
 

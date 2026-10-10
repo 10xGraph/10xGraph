@@ -1,35 +1,35 @@
 [project]
 name = "10xgraph"
-version = "0.10.1"
-description = "Final release under this name: the project continues as 10xGraph (pip install 10xgraph). Production-grade Python framework for building, orchestrating, and deploying multi-agent LLM systems. A simpler, batteries-included alternative to LangGraph, CrewAI, and AutoGen with graph-based workflows, durable state, native MCP support, and provider-agnostic LLM integration (OpenAI, Google GenAI, Anthropic)."
+version = "0.10.0"
+description = "10xGraph (formerly Agentflow) is a Python framework for multi-agent AI systems that stay correct under failure: replay-safe tool calls that are not re-executed after a crash, versioned state writes, real node and tool timeouts, and two-tier Redis plus PostgreSQL checkpointing. MIT licensed, self-hosted, any model (OpenAI, Google Gemini, Anthropic). Pair it with 10xgraph-api to generate the production server around your graph."
 readme = "README.md"
 keywords = [
     "agent",
     "agents",
-    "ai-agent",
     "ai-agents",
     "multi-agent",
     "multi-agent-systems",
-    "agentic",
     "agentic-ai",
-    "agentic-workflow",
     "agent-framework",
     "agent-orchestration",
-    "orchestration",
-    "workflow",
     "workflow-engine",
     "state-machine",
     "stategraph",
     "graph",
     "llm",
-    "llm-agent",
     "llm-framework",
     "llm-orchestration",
-    "llmops",
     "genai",
     "generative-ai",
-    "ai",
-    "artificial-intelligence",
+    "production",
+    "self-hosted",
+    "fault-tolerance",
+    "idempotency",
+    "durable-state",
+    "checkpointing",
+    "human-in-the-loop",
+    "redis",
+    "postgresql",
     "openai",
     "anthropic",
     "claude",
@@ -39,22 +39,18 @@ keywords = [
     "model-context-protocol",
     "tool-use",
     "function-calling",
+    "react-agent",
     "rag",
     "memory",
     "vector-store",
     "qdrant",
     "mem0",
-    "langgraph",
-    "langchain",
-    "crewai",
-    "autogen",
-    "pydantic-ai",
-    "fastapi",
-    "react-agent",
-    "reasoning",
-    "chatbot",
-    "assistant",
     "a2a",
+    "realtime-audio",
+    "opentelemetry",
+    "kafka",
+    "10xgraph",
+    "agentflow",
 ]
 license = {file = "LICENSE"}
 requires-python = ">=3.12"
@@ -98,8 +94,7 @@ Homepage = "https://10xgraph.com"
 Repository = "https://github.com/10xGraph/10xGraph"
 Issues = "https://github.com/10xGraph/10xGraph/issues"
 Documentation = "https://10xgraph.com"
-"10xGraph (successor)" = "https://10xgraph.com"
-"10xGraph on GitHub" = "https://github.com/10xGraph"
+Changelog = "https://github.com/10xGraph/10xGraph/blob/main/CHANGELOG.md"
 
 
 [build-system]

@@ -6,7 +6,7 @@ their respective folders and the workspace-root `CLAUDE.md` for the monorepo ove
 
 - Package name (PyPI): `10xgraph` (old name `10xscale-agentflow`, last release 0.10.1)
 - Repo: https://github.com/10xGraph/10xGraph (this folder is the repo root)
-- Version: see `pyproject.toml` (0.10.1 at the time of the rename) (single source of truth: `pyproject.toml`; `tenxgraph.__version__`
+- Version: see `pyproject.toml` (0.10.0 is the first `10xgraph` release) (single source of truth: `pyproject.toml`; `tenxgraph.__version__`
   resolves from installed distribution metadata, so it cannot drift from this file)
 - Requires: Python >= 3.12
 - Importable top-level package is `tenxgraph/` at the repo root. `agentflow/` is a deprecated
@@ -170,7 +170,7 @@ discovers `<dir>/<name>/SKILL.md` skills. Two modes: `on-demand` (an `<available
 in the system prompt; the LLM calls `activate_skill()` and `read_skill_resource()` for bundled
 files) and `session` (preload a fixed skill from a state field via `preload_from`). Activations
 are recorded in `execution_meta.internal_data["active_skills"]` and re-injected after trimming.
-`validate_skill()` / `agentflow skills --validate` check skills against the spec.
+`validate_skill()` / `10xgraph skills --validate` check skills against the spec.
 
 **Publishers.** Emit execution events to Console, Redis Pub/Sub, Kafka, RabbitMQ, or OTEL.
 `CompositePublisher` fans out to several. OTEL publisher provides tracing (`setup_tracing`).
@@ -220,7 +220,8 @@ pip install -e ".[google-genai,openai,anthropic,mcp,pg_checkpoint]"
 - Cloud media prefix `10xgraph-media` (old `agentflow-media` objects still read).
 - Prebuilt tools user-agent `10xgraph-prebuilt-tools/1.0`.
 - Server config file is `10xgraph.json` (the CLI package falls back to `agentflow.json`). The CLI
-  (`10xscale-agentflow-cli`, command `agentflow`) and TS client are not renamed yet.
+  is `10xgraph-api` (command `10xgraph`, `agentflow` deprecated alias) and the TS client is
+  `10xgraph-client`.
 
 When you touch any of the above, prefer fixing the doc/example to match the code rather than the
 reverse, unless the export path itself is the bug.

@@ -1,8 +1,8 @@
-# 10xGraph (rename release, unreleased)
+# 10xgraph 0.10.0
 
 Agentflow is now 10xGraph. Install with `pip install 10xgraph` and import `tenxgraph`.
 `import agentflow` keeps working as a deprecated alias until 2.0. Uninstall
-`10xscale-agentflow` before installing `10xgraph`. See `CHANGELOG.md` (`[Unreleased]`)
+`10xscale-agentflow` before installing `10xgraph`. See `CHANGELOG.md` (`[0.10.0]`)
 for the renamed identifiers (telemetry names, media scheme, home directory, cloud media
 prefix, config file) and their fallbacks.
 

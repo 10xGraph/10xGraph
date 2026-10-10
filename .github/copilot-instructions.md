@@ -1,13 +1,13 @@
-# Copilot instructions for 10xScale Agentflow
+# Copilot instructions for 10xGraph
 
 Use these repo-specific notes to be productive quickly when generating code, docs, or tests.
 
 ## Big picture
-- 10xScale Agentflow is a lightweight Python framework for building multi-agent workflows with LLM-agnostic orchestration.
-- Core primitives live in `agentflow/graph/`: `StateGraph`, `Node`, `Edge`, `ToolNode`, `CompiledGraph`.
-- State is a Pydantic model (`state/agent_state.py`); messages are `state/message.py::Message` with multimodal content blocks (`state/message_block.py`).
+- 10xGraph (PyPI `10xgraph`, import `tenxgraph`, formerly Agentflow) is a Python framework for building multi-agent workflows with LLM-agnostic orchestration.
+- Core primitives live in `tenxgraph/core/graph/`: `StateGraph`, `Node`, `Edge`, `ToolNode`, `CompiledGraph`.
+- State is a Pydantic model (`tenxgraph/core/state/agent_state.py`); messages are `tenxgraph/core/state/message.py::Message` with multimodal content blocks (`tenxgraph/core/state/message_block.py`).
 - Flow: build a `StateGraph` → add nodes/edges (incl. conditional) → `set_entry_point` → `compile()` → use `CompiledGraph.invoke()` or `CompiledGraph.stream()`.
-- START/END constants come from `utils/constants.py` (`START="__start__"`, `END="__end__"`). Always reference these.
+- START/END constants come from `tenxgraph/utils/constants.py` (`START="__start__"`, `END="__end__"`). Always reference these.
 
 ## Architecture essentials
 - **Graph API** (see `graph/state_graph.py`, `graph/compiled_graph.py`, `graph/node.py`):
@@ -22,7 +22,7 @@ Use these repo-specific notes to be productive quickly when generating code, doc
   - Supports parallel tool execution.
 - **Persistence & events**:
   - Checkpointers: `InMemoryCheckpointer` (default) and `PgCheckpointer` (Postgres+Redis, extras required).
-  - Publishers emit execution events (`ConsolePublisher` for dev). Events are `publisher/events.py::EventModel`.
+  - Publishers emit execution events (`ConsolePublisher` for dev). Events are `tenxgraph/runtime/publisher/events.py::EventModel`.
 - **State management**:
   - `AgentState` has `context` (list of messages with `add_messages` reducer), `context_summary`, and `execution_meta` (internal execution state).
   - Subclass `AgentState` to add custom fields while maintaining framework compatibility.
@@ -36,12 +36,13 @@ Use these repo-specific notes to be productive quickly when generating code, doc
 - Memory integration: `examples/memory/`.
 - Callbacks & validation: `examples/callback-validation/`, `examples/input-validation/`.
 - Multiagent patterns: `examples/multiagent/`, `examples/handoff/`.
-- Prebuilt agents: `agentflow/prebuilt/agent/` (React, RAG, Swarm, Router, MapReduce, SupervisorTeam, PlanActReflect, etc.).
+- Prebuilt agents: `tenxgraph/prebuilt/agent/` (React, RAG, Swarm, Router, MapReduce, SupervisorTeam, PlanActReflect, etc.).
 
 ## Conventions
+- Import from `tenxgraph.*`. `agentflow.*` is a deprecated alias kept until 2.0; never add code under `agentflow/`.
 - **Messages**: Create via `Message.text_message(...)` or `Message.tool_message(...)`. Use `ModelResponseConverter` to wrap LLM responses.
-- **Content blocks** (`state/message_block.py`): TextBlock, ImageBlock, AudioBlock, VideoBlock, DocumentBlock, DataBlock, ToolCallBlock, ToolResultBlock, ReasoningBlock, AnnotationBlock, ErrorBlock, RemoteToolCallBlock, MediaRef.
-- **LLM adapters** (`adapters/llm/`): `ModelResponseConverter` supports the built-in OpenAI, OpenAI Responses, and Google GenAI converters. Use `convert_messages()` from `utils/converter.py` to prepare messages for LLM APIs.
+- **Content blocks** (`tenxgraph/core/state/message_block.py`): TextBlock, ImageBlock, AudioBlock, VideoBlock, DocumentBlock, DataBlock, ToolCallBlock, ToolResultBlock, ReasoningBlock, AnnotationBlock, ErrorBlock, RemoteToolCallBlock, MediaRef.
+- **LLM adapters** (`tenxgraph/runtime/adapters/llm/`): `ModelResponseConverter` supports the built-in OpenAI, OpenAI Responses, and Google GenAI converters. Use `convert_messages()` from `utils/converter.py` to prepare messages for LLM APIs.
 - **ID generation**: DI-driven via InjectQ keys: `generated_id_type` ("string"|"int"|"bigint") and optional `generated_id` (value/awaitable). See `utils/id_generator.py`.
 - **Reducers** (`state/reducers.py`): Use `add_messages`, `replace_messages`, `append_items` for state merging.
 - **Conditional routing**: Returns labels that must match `path_map` keys; include `END` to terminate.
@@ -61,7 +62,7 @@ Use these repo-specific notes to be productive quickly when generating code, doc
 - `pg_checkpoint`: Postgres (`asyncpg`) + Redis cache (`redis`); use `checkpointer.PgCheckpointer`.
 - `mcp`: Model Context Protocol (FastMCP + mcp); pass an MCP client to `ToolNode`.
 - `composio`, `langchain`: adapters for external tool registries via `ToolNode`.
-- `redis`, `kafka`, `rabbitmq`: Event publisher backends in `agentflow/publisher/`.
+- `redis`, `kafka`, `rabbitmq`: Event publisher backends in `tenxgraph/runtime/publisher/`.
 - `qdrant`: Qdrant vector store for RAG patterns.
 - `mem0`: Mem0 long-term memory integration.
 

@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/10xgraph)](https://pypi.org/project/10xgraph/)
 [![License](https://img.shields.io/github/license/10xGraph/10xGraph)](https://github.com/10xGraph/10xGraph/blob/main/LICENSE)
 
-10xGraph is an open-source Python framework for building multi-agent AI systems and running them in production. You write the agent as a graph of nodes and tools. 10xGraph keeps tool calls from running twice after a crash, guards state writes, enforces timeouts, and, with the CLI package, generates the API server around the graph.
+10xGraph is an open-source Python framework for building multi-agent AI systems and running them in production. You write the agent as a graph of nodes and tools. 10xGraph keeps tool calls from running twice after a crash, guards state writes, enforces timeouts, and, with the `10xgraph-api` package, generates the API server around the graph.
 
 This repository is the core engine (PyPI `10xgraph`, import `tenxgraph`). The docs live at [10xgraph.com](https://10xgraph.com).
 
@@ -23,11 +23,41 @@ This repository is the core engine (PyPI `10xgraph`, import `tenxgraph`). The do
 - **Real node and tool timeouts.** Set `node_timeout` and `tool_timeout` in the run config (defaults 900 s and 300 s), so a hung tool cannot hold a worker forever.
 - **Human approval inside a tool.** `interrupt()` pauses the run and saves the thread; resume with the decision.
 
-**2. The production server ships in the box (CLI package, MIT)**
+**2. The production server ships in the box (`10xgraph-api`, MIT)**
 
-The `agentflow` CLI turns a compiled graph into a service: REST, SSE streaming, WebSocket and realtime-audio endpoints; JWT or custom auth; scoped authorization on every endpoint; thread ownership isolation; rate limiting; and Docker Compose and Kubernetes files. See [the ecosystem table](#ecosystem).
+`10xgraph-api` generates the production server around your compiled graph: REST, SSE streaming, WebSocket and realtime-audio endpoints; JWT or custom auth; scoped authorization on every endpoint; thread ownership isolation; rate limiting; and Docker Compose and Kubernetes files. You drive it with the `10xgraph` command (`10xgraph init`, `10xgraph api`, `10xgraph build`). See [the ecosystem table](#ecosystem).
 
-**Also included** (these are standard for agent frameworks, listed as facts): graph orchestration and the ReAct tool-calling loop, OpenAI, Google Gemini and Anthropic support, MCP tools, streaming, and checkpointing to a database.
+**3. Built to scale**
+
+- **Two-tier persistence.** `PgCheckpointer` caches active thread state in Redis and reads it first (default TTL 24 hours); PostgreSQL holds the durable history with versioned writes. Threads survive restarts and cache expiry. `SqliteCheckpointer` covers local work.
+- **Event publishing** to Kafka, Redis Pub/Sub, RabbitMQ and OpenTelemetry.
+- **Long-term memory** in Qdrant or Mem0.
+
+**4. One stack, backend to frontend**
+
+- **Remote tools.** The model can call tools that run in the user's browser or client. Declare them on the graph or pass them per run in `config["remote_tools"]`; the run pauses until the client returns the result.
+- **Typed TypeScript client** (`10xgraph-client`) for invoke, stream, threads, memory and files, plus a React playground (`10xgraph play`).
+
+**5. You own it**
+
+- MIT licensed and self-hosted. The server layer is part of the same open-source project, not a paid platform.
+- No LangChain dependency. Core requires InjectQ, Pydantic, Pillow, PyYAML and python-dotenv; everything else is an optional extra.
+- Any model: OpenAI and OpenAI-compatible endpoints, Google Gemini (including Vertex AI), Anthropic (direct, Vertex AI or Bedrock). Changing the model string does not change the graph or the tools.
+- Built and run in production by 10xScale for its own AI products.
+
+**Also included** (standard for agent frameworks, listed as facts): graph orchestration and the ReAct tool-calling loop, parallel tool execution, OpenAI, Google Gemini and Anthropic support, MCP tools, streaming, and checkpointing to a database.
+
+---
+
+## When it fits
+
+| You are | The problem | What 10xGraph does |
+|---|---|---|
+| A Python team taking an agent to production | Server, auth, persistence and deployment all have to be built around the agent | `10xgraph-api` generates them from the graph |
+| Running agents with side effects (payments, email, tickets) | A retry or crash repeats an action | Tool ledger: a completed tool call is replayed from the checkpointer, not re-run |
+| Building a multi-user product | Users must not see each other's threads | Thread ownership isolation and scoped authorization on every endpoint |
+| Required to self-host | Paid platforms, data residency, lock-in | MIT, self-hosted, any model |
+| A Python backend with a TypeScript frontend | Hand-written SSE and client glue | Typed client and remote tools |
 
 ---
 
@@ -50,10 +80,6 @@ Provider SDKs and infrastructure integrations are optional extras. Install only 
 | `redis`, `kafka`, `rabbitmq`, `otel` | Event publishers and tracing |
 | `images`, `cloud-storage` | Multimodal media handling and offload |
 | `all` | Every extra above at once, for development and CI |
-
-```bash
-pip install "10xgraph[google-genai,openai,anthropic,mcp,pg_checkpoint]"
-```
 
 ```bash
 pip install "10xgraph[google-genai,openai,anthropic,mcp,pg_checkpoint]"
@@ -108,7 +134,7 @@ result = app.invoke(
 )
 
 # The run pauses inside refund_order. After a reviewer approves:
-result = await app.ainvoke({"resume": {"approved": True}}, config)
+result = app.invoke({"resume": {"approved": True}}, config)
 ```
 
 Swap `ReactAgent` for `RAGAgent`, `SwarmAgent`, `SupervisorTeamAgent` or `PlanActReflectAgent` and the shape stays the same. Use `PgCheckpointer` (Postgres plus Redis) in production, or `SqliteCheckpointer` for local work.
@@ -190,7 +216,7 @@ from tenxgraph.core.realtime import LiveInputQueue, RealtimeConfig
 app = AudioAgent(
     "gemini-live-2.5-flash-preview",
     realtime_config=RealtimeConfig(model="gemini-live-2.5-flash-preview", voice="Puck"),
-    tools=[get_weather],
+    tools=[lookup_order],
 ).compile()
 
 queue = LiveInputQueue()
@@ -205,14 +231,6 @@ queue.close()
 Barge-in, persisted transcripts (raw audio is never stored), automatic reconnect with session
 resumption, and image/video frame input are handled for you. `system_prompt`, `skills`, and `memory`
 work as they do on any other agent. Needs ``pip install "10xgraph[realtime]"``.
-
----
-
----
-
-## Parallel tool execution
-
-When an LLM requests several tools at once, 10xGraph runs them concurrently. No configuration is needed; it applies to every agent and graph.
 
 ---
 
@@ -255,35 +273,34 @@ Other renamed identifiers (old values still work where noted):
 | Cloud media prefix | `agentflow-media` | `10xgraph-media` (old objects still read) |
 | Prebuilt tools user-agent | `agentflow-prebuilt-tools` | `10xgraph-prebuilt-tools/1.0` |
 | Server config file | `agentflow.json` | `10xgraph.json` (the CLI falls back to `agentflow.json`) |
+| CLI command | `agentflow` | `10xgraph` (`agentflow` stays as a deprecated alias until 2.0) |
 
 ---
 
 ## Ecosystem
 
-The CLI and TypeScript client get their 10xGraph names in a later release. Until then they keep their current names.
-
 | Package | What it does | Install | Source |
 |---|---|---|---|
 | Core framework, `10xgraph` | Graph engine, state and checkpointing, memory, tools, MCP, publishers, evaluation | `pip install 10xgraph` | this repository |
-| API server and CLI, `10xscale-agentflow-cli` | Generates a FastAPI service from your graph: REST, SSE, WebSocket, JWT auth, scoped authorization, rate limiting, Docker and Kubernetes files | `pip install 10xscale-agentflow-cli` | [10xHub/agentflow-cli](https://github.com/10xHub/agentflow-cli) |
-| TypeScript client, `@10xscale/agentflow-client` | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install @10xscale/agentflow-client` | [10xHub/agentflow-client](https://github.com/10xHub/agentflow-client) |
-| Playground | React UI to chat with agents and inspect graphs, threads and state | `agentflow play` | [10xHub/agentflow-playground](https://github.com/10xHub/agentflow-playground) |
+| API server, `10xgraph-api` (formerly `10xscale-agentflow-cli`) | Generates the production server around your graph: REST, SSE, WebSocket, JWT auth, scoped authorization, rate limiting, Docker and Kubernetes files | `pip install 10xgraph-api` | [10xGraph/10xgraph-api](https://github.com/10xGraph/10xgraph-api) |
+| TypeScript client, `10xgraph-client` (formerly `@10xscale/agentflow-client`) | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install 10xgraph-client` | [10xGraph/10xgraph-client](https://github.com/10xGraph/10xgraph-client) |
+| Playground | React UI to chat with agents and inspect graphs, threads and state | `10xgraph play` | [10xHub/agentflow-playground](https://github.com/10xHub/agentflow-playground) |
 | Documentation | Tutorials, guides, concepts, reference | [10xgraph.com](https://10xgraph.com) | [10xGraph/10xgraph-docs](https://github.com/10xGraph/10xgraph-docs) |
 
 From install to a running service:
 
 ```bash
-pip install 10xgraph 10xscale-agentflow-cli
-agentflow init --path my-agent && cd my-agent
-agentflow api                    # REST and WebSocket API on :8000
-agentflow play                   # server plus playground
-agentflow build --docker-compose --k8s
+pip install 10xgraph-api         # pulls in 10xgraph
+10xgraph init --path my-agent && cd my-agent
+10xgraph api                     # REST and WebSocket API on :8000
+10xgraph play                    # server plus playground
+10xgraph build --docker-compose --k8s
 ```
 
 A production scaffold with JWT auth and Redis rate limiting:
 
 ```bash
-agentflow init --path my-agent --yes --template production --auth jwt --rate-limit redis
+10xgraph init --path my-agent --yes --template production --auth jwt --rate-limit redis
 ```
 
 ---
@@ -332,7 +349,6 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 - Done: Core graph engine with nodes and edges
 - Done: State management and checkpointing
 - Done: Tool integration (MCP, custom tools, parallel execution)
-- Done: Parallel tool execution
 - Done: Streaming and event publishing
 - Done: Human-in-the-loop support
 - Done: Prebuilt agent patterns
@@ -343,8 +359,6 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 - Planned: More persistence backends (Redis, DynamoDB)
 - Planned: Parallel/branching strategies
 - Planned: Visual graph editor
-
----
 
 ---
 

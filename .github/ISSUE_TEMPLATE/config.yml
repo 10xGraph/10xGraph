@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question / discussion
-    url: https://github.com/10xHub/agentflow/discussions
+    url: https://github.com/10xGraph/10xGraph/discussions
     about: Ask usage questions and share ideas here rather than opening an issue.
   - name: Security vulnerability
-    url: https://github.com/10xHub/agentflow/blob/main/SECURITY.md
+    url: https://github.com/10xGraph/10xGraph/blob/main/SECURITY.md
     about: Please report security issues privately per our security policy.
