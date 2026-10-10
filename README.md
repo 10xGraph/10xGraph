@@ -3,7 +3,7 @@
 *Formerly Agentflow.* 10xGraph by 10xScale: graph engineering for production AI agents.
 
 [![CI](https://github.com/10xGraph/10xGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/10xGraph/10xGraph/actions/workflows/ci.yml)
-[![Release](https://github.com/10xGraph/10xGraph/actions/workflows/release.yml/badge.svg)](https://github.com/10xGraph/10xGraph/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/10xGraph/10xGraph)](https://github.com/10xGraph/10xGraph/releases/latest)
 [![PyPI](https://img.shields.io/pypi/v/10xgraph?color=blue)](https://pypi.org/project/10xgraph/)
 [![Python](https://img.shields.io/pypi/pyversions/10xgraph)](https://pypi.org/project/10xgraph/)
 [![License](https://img.shields.io/github/license/10xGraph/10xGraph)](https://github.com/10xGraph/10xGraph/blob/main/LICENSE)
