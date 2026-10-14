@@ -1226,7 +1226,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         ``config['_checkpoint_version']`` is present (set by a prior read within
         the same run), the write performs a compare-and-swap and raises
         :class:`StaleStateError` if another execution advanced the thread first.
-        On success the config's version marker is advanced to the new version.
+        On success the config's version marker is advanced to the new version and
+        the Redis cache is refreshed with the stored state at that version, so the
+        next run on the thread starts from it.
 
         Args:
             config (dict): Configuration dictionary.
@@ -1258,6 +1260,13 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 config[STATE_VERSION_CONFIG_KEY] = new_version
                 logger.debug("State stored for thread_id=%s at version=%s", thread_id, new_version)
                 metrics.counter("pg_checkpointer.save_state.success").inc()
+                # Write-through. A run loads its state from the cache first, with the
+                # durable version embedded for its compare-and-swap. Without this, a
+                # state written here (outside a run) left the cache on the previous
+                # state AND version: the next run started from stale state, and its
+                # first write raised StaleStateError, so that run and this update were
+                # both lost. Best-effort and version-guarded, like every cache write.
+                await self.aput_state_cache(config, state)
                 return state
 
             except StaleStateError:

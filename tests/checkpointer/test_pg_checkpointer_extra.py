@@ -425,6 +425,53 @@ async def test_aput_state_conflict_raises_stale(cp):
 
 
 @pytest.mark.asyncio
+async def test_aput_state_refreshes_the_cache_at_the_new_version(cp):
+    """A run reads its state from the cache first. A state written outside a run that left
+    the cache behind made the next run start from the old state and fail its CAS."""
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(side_effect=[{"user_id": "u1"}, {"v": 4}])
+    _bind_conn(cp, conn)
+
+    config = {"thread_id": "t1", "user_id": "u1"}
+    await cp.aput_state(config, AgentState())
+
+    cp.redis.eval.assert_awaited_once()
+    cas_args = cp.redis.eval.await_args.args
+    assert cas_args[2] == cp._get_thread_key("t1", "u1")
+    assert cas_args[4] == "5"  # the cache now carries the version just written
+
+
+@pytest.mark.asyncio
+async def test_a_conflicting_aput_state_never_writes_the_cache(cp):
+    from tenxgraph.core.exceptions.storage_exceptions import StaleStateError
+
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(side_effect=[{"user_id": "u1"}, {"v": 7}])
+    _bind_conn(cp, conn)
+
+    config = {"thread_id": "t1", "user_id": "u1", "_checkpoint_version": 5}
+    with pytest.raises(StaleStateError):
+        await cp.aput_state(config, AgentState())
+
+    cp.redis.eval.assert_not_awaited()  # nothing built on a lost write reaches the cache
+    cp.redis.delete.assert_awaited_once()  # and the stale entry is dropped, as before
+
+
+@pytest.mark.asyncio
+async def test_aput_state_survives_a_cache_outage(cp):
+    """The durable write is the source of truth; the cache stays best-effort."""
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(side_effect=[{"user_id": "u1"}, {"v": 1}])
+    _bind_conn(cp, conn)
+    cp.redis.eval.side_effect = ConnectionError("redis down")
+
+    config = {"thread_id": "t1", "user_id": "u1"}
+    state = AgentState()
+    assert await cp.aput_state(config, state) is state
+    assert config["_checkpoint_version"] == 2
+
+
+@pytest.mark.asyncio
 async def test_aput_state_rejects_cross_user_thread(cp):
     conn = _mock_conn()
     conn.fetchrow = AsyncMock(side_effect=[{"user_id": "someone_else"}])

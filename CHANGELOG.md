@@ -24,6 +24,18 @@ Starting from this release:
 
 ## [Unreleased]
 
+### Fixed
+
+- **`aput_state` now refreshes the state cache (write-through) on every checkpointer.** A run
+  loads its state from the cache first (`aget_state_cache`), but `aput_state` wrote only the
+  durable store, so a state written between runs was not what the next run started from.
+  `InMemoryCheckpointer` and `SqliteCheckpointer` silently lost the update (the next run wrote
+  the old state back over it). `PgCheckpointer` also left the old checkpoint version in Redis,
+  so the next run's first write raised `StaleStateError` (`STORAGE_CONFLICT_001`) and the run
+  failed. `PgCheckpointer` refreshes Redis after the durable write succeeds, at the new
+  version, version-guarded and best-effort like every cache write (a Redis outage never fails
+  the write); `SqliteCheckpointer` updates its cache row in the same transaction.
+
 ## [0.10.0] - 2026-10-10
 
 First release of `10xgraph`. Its version numbering starts fresh; the old

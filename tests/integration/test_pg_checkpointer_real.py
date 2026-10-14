@@ -212,6 +212,48 @@ class TestCacheConsistency:
         await cp.aget_state_cache(reader)
         assert reader["_checkpoint_version"] == 2
 
+    async def test_a_direct_state_write_refreshes_the_cache(self, cp, cfg):
+        """`aput_state` is write-through: the cache holds what was just stored, at its version."""
+        await cp.aput_state(cfg, AgentState())  # v1
+        await cp.aput_state_cache(cfg, AgentState())  # a run cached v1
+
+        await cp.aput_state({**cfg, "_checkpoint_version": 1}, AgentState(context_summary="v2"))
+
+        reader = {"thread_id": cfg["thread_id"], "user_id": cfg["user_id"]}
+        cached = await cp.aget_state_cache(reader)
+        assert cached.context_summary == "v2"
+        assert reader["_checkpoint_version"] == 2
+
+    async def test_a_run_after_direct_state_writes_starts_from_them(self, cp, cfg):
+        """The failure this guards: a run, then out-of-band writes (an app applying an
+        operator's decision between turns), then the next run. With the cache left behind,
+        that run loaded the old state and version and its first write raised
+        StaleStateError; it must run, and see the writes."""
+        from tenxgraph.core.graph import StateGraph
+        from tenxgraph.utils import END
+
+        seen: list[str] = []
+
+        def node(state: AgentState) -> Message:
+            seen.append(state.context_summary or "")
+            return Message.text_message("ok", "assistant")
+
+        graph = StateGraph(AgentState())
+        graph.add_node("main", node)
+        graph.set_entry_point("main")
+        graph.add_edge("main", END)
+        app = graph.compile(checkpointer=cp)
+        turn = {"messages": [Message.text_message("turn", "user")]}
+
+        await app.ainvoke(turn, config=dict(cfg))
+        for summary in ("first", "second", "third"):
+            reader = dict(cfg)
+            state = await cp.aget_state_cache(reader) or await cp.aget_state(reader)
+            await cp.aput_state(reader, state.model_copy(update={"context_summary": summary}))
+        await app.ainvoke(turn, config=dict(cfg))
+
+        assert seen == ["", "third"]
+
     async def test_cache_miss_falls_back_to_postgres(self, cp, cfg):
         await cp.aput_state(cfg, AgentState())
         await cp.redis.delete(cp._get_thread_key(cfg["thread_id"], cfg["user_id"]))
