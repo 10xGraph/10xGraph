@@ -35,6 +35,12 @@ Starting from this release:
   failed. `PgCheckpointer` refreshes Redis after the durable write succeeds, at the new
   version, version-guarded and best-effort like every cache write (a Redis outage never fails
   the write); `SqliteCheckpointer` updates its cache row in the same transaction.
+- **Clearing a thread's state now also drops its cached state.** `aclear_state` on
+  `InMemoryCheckpointer` and `SqliteCheckpointer` deleted only the durable state, so the next
+  run read the cleared state back from the cache and resumed from it. Both now delete the
+  cache entry too (SQLite in the same transaction), as `PgCheckpointer` already did.
+  `InMemoryCheckpointer.aclean_thread` deleted only the thread record; it now also deletes
+  the thread's state, cached state and messages, like the SQLite and Postgres checkpointers.
 
 ## [0.10.0] - 2026-10-10
 
