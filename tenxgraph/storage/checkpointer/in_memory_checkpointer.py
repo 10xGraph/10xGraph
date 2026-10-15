@@ -178,6 +178,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             if key in self._states:
                 del self._states[key]
                 logger.debug(f"Cleared state for key: {key}")
+            # A run reads the cache first, so a cached copy would bring the state back.
+            self._state_cache.pop(key, None)
             return True
 
     async def aput_state_cache(self, config: dict[str, Any], state: StateT) -> StateT:
@@ -578,12 +580,20 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             return False  # not the owner -> no-op
         key = self._get_config_key(config)
         async with self._threads_lock:
-            if key in self._threads:
-                del self._threads[key]
-                self._thread_owner.pop(key, None)
-                logger.debug(f"Cleaned thread for key: {key}")
-                return True
-        return False
+            if key not in self._threads:
+                return False
+            del self._threads[key]
+            self._thread_owner.pop(key, None)
+        # The thread's data goes with it, as on the SQLite and Postgres checkpointers;
+        # a cached state left behind would also be the next run's starting point.
+        async with self._state_lock:
+            self._states.pop(key, None)
+            self._state_cache.pop(key, None)
+        async with self._messages_lock:
+            self._messages.pop(key, None)
+            self._message_metadata.pop(key, None)
+        logger.debug(f"Cleaned thread for key: {key}")
+        return True
 
     # -------------------------
     # Thread methods sync

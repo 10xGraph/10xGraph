@@ -305,6 +305,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._write() as conn:
             await conn.execute("DELETE FROM af_states WHERE thread_id = ?", (key,))
+            # A run reads the cache first, so a cached copy would bring the state back.
+            await conn.execute("DELETE FROM af_state_cache WHERE thread_id = ?", (key,))
         return True
 
     # ------------------------------------------------------------------
