@@ -137,6 +137,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             self._record_owner(config)
             self._states[key] = state
+            # Write-through: a run reads the cache first, so leaving it behind would
+            # start the next run from the state this write replaced.
+            self._state_cache[key] = state
             logger.debug(f"Stored state for key: {key}")
             return state
 

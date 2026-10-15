@@ -278,6 +278,9 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
                 """,
                 (key, data, time.time()),
             )
+            # Write-through, in the same transaction: a run reads the cache first, so
+            # leaving it behind would start the next run from the replaced state.
+            await self._upsert_state_cache(conn, key, data)
         logger.debug("Stored state for thread: %s", key)
         return state
 
@@ -313,17 +316,22 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         data = self._serialize_state(state)
         async with self._write() as conn:
-            await conn.execute(
-                """
-                INSERT INTO af_state_cache (thread_id, state_data, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(thread_id) DO UPDATE SET
-                    state_data = excluded.state_data,
-                    updated_at = excluded.updated_at
-                """,
-                (key, data, time.time()),
-            )
+            await self._upsert_state_cache(conn, key, data)
         return state
+
+    @staticmethod
+    async def _upsert_state_cache(conn: Any, key: str, data: str) -> None:
+        """Write one thread's cached state on an open connection."""
+        await conn.execute(
+            """
+            INSERT INTO af_state_cache (thread_id, state_data, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET
+                state_data = excluded.state_data,
+                updated_at = excluded.updated_at
+            """,
+            (key, data, time.time()),
+        )
 
     async def aget_state_cache(self, config: dict[str, Any]) -> StateT | None:
         await self._ensure_setup()
