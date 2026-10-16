@@ -24,6 +24,10 @@ Starting from this release:
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-16
+
+Bug fixes for the checkpointers' state cache. No API changes.
+
 ### Fixed
 
 - **`aput_state` now refreshes the state cache (write-through) on every checkpointer.** A run
