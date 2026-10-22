@@ -41,7 +41,7 @@ This repository is the core engine (PyPI `10xgraph`, import `tenxgraph`). The do
 **5. You own it**
 
 - MIT licensed and self-hosted. The server layer is part of the same open-source project, not a paid platform.
-- No LangChain dependency. Core requires InjectQ, Pydantic, Pillow, PyYAML and python-dotenv; everything else is an optional extra.
+- No LangChain dependency. Core requires InjectQ, Pydantic, PyYAML and python-dotenv; everything else (including Pillow, via `images`) is an optional extra.
 - Any model: OpenAI and OpenAI-compatible endpoints, Google Gemini (including Vertex AI), Anthropic (direct, Vertex AI or Bedrock). Changing the model string does not change the graph or the tools.
 - Built and run in production by 10xScale for its own AI products.
 

@@ -1,6 +1,6 @@
 [project]
 name = "10xgraph"
-version = "0.10.1"
+version = "0.10.2"
 description = "10xGraph (formerly Agentflow) is a Python framework for multi-agent AI systems that stay correct under failure: replay-safe tool calls that are not re-executed after a crash, versioned state writes, real node and tool timeouts, and two-tier Redis plus PostgreSQL checkpointing. MIT licensed, self-hosted, any model (OpenAI, Google Gemini, Anthropic). Pair it with 10xgraph-api to generate the production server around your graph."
 readme = "README.md"
 keywords = [
@@ -60,7 +60,6 @@ dependencies = [
     # future 0.5 release would be picked up automatically and break every fresh
     # install of this package. Cap at the next minor until each release is verified.
     "injectq>=0.4.0,<0.5",
-    "pillow>=12.2.0",
     "pydantic>=2.0,<3",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
@@ -113,7 +112,7 @@ anthropic-bedrock = ["anthropic[bedrock]>=1.0.0,<2"]
 pg_checkpoint = ["asyncpg>=0.29.0","redis>=4.2"]
 sqlite_checkpoint = ["aiosqlite>=0.19.0"]
 mcp = ["fastmcp>=2.11.3","mcp>=1.13.0"]
-images = ["Pillow>=10.0.0"]
+images = ["Pillow>=12.2.0"]
 cloud-storage = ["cloud-storage-manager>=0.1.2"]
 redis = ["redis>=4.2"]
 kafka = ["aiokafka>=0.8.0"]
@@ -419,6 +418,7 @@ dev = [
     "pre-commit>=3.8.0",
     "mypy>=1.11.0",
     "types-PyYAML",
+    "Pillow>=12.2.0",
     "asyncpg>=0.30.0",
     "redis>=6.4.0",
     "fastmcp>=2.12.3",

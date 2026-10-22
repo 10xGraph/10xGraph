@@ -24,6 +24,18 @@ Starting from this release:
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-22
+
+Smaller installs: Pillow is now optional. No API changes.
+
+### Changed
+
+- **Pillow is no longer a required dependency.** It moved to the `images` extra, which cuts
+  about 20 MB from every install and Docker image. Image resizing, EXIF orientation and format
+  conversion in the media processor still work when Pillow is present; without it, images pass
+  through unchanged. To keep the old behaviour, install `10xgraph[images]` (also included in
+  `10xgraph[all]`).
+
 ## [0.10.1] - 2026-10-16
 
 Bug fixes for the checkpointers' state cache. No API changes.
