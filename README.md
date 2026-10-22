@@ -93,7 +93,7 @@ export OPENAI_API_KEY=sk-...     # OpenAI, or any OpenAI-compatible endpoint
 export ANTHROPIC_API_KEY=sk-...  # Anthropic Claude
 ```
 
-Requires Python 3.12 or newer.
+Requires Python 3.12 or newer. Tested on 3.12, 3.13, 3.14 and 3.15.
 
 ---
 
@@ -339,7 +339,7 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 - Pre-1.0 (current release line 0.10.x): pin versions and read the changelog.
 - The rename from Agentflow resets brand recognition; "10xGraph" has no search history yet.
 - LangGraph has stronger visual tooling (Studio, LangSmith observability).
-- Requires Python 3.12 or newer. Code-first, not a no-code builder.
+- Requires Python 3.12 or newer (tested on 3.12 to 3.15). Code-first, not a no-code builder.
 - Automatic per-tool permissions (user A may call `refund`, user B may not) are not built in. Tools can check the caller's verified scopes with `tenxgraph.core.authz.has_scope`.
 
 ---

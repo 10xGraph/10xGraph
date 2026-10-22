@@ -1,6 +1,6 @@
 [project]
 name = "10xgraph"
-version = "0.10.2"
+version = "0.10.3"
 description = "10xGraph (formerly Agentflow) is a Python framework for multi-agent AI systems that stay correct under failure: replay-safe tool calls that are not re-executed after a crash, versioned state writes, real node and tool timeouts, and two-tier Redis plus PostgreSQL checkpointing. MIT licensed, self-hosted, any model (OpenAI, Google Gemini, Anthropic). Pair it with 10xgraph-api to generate the production server around your graph."
 readme = "README.md"
 keywords = [
@@ -57,9 +57,10 @@ requires-python = ">=3.12"
 dependencies = [
     # injectq is the DI backbone and is pre-1.0, so it makes no stability promise:
     # under SemVer a 0.x minor bump may break the API. Without an upper bound, a
-    # future 0.5 release would be picked up automatically and break every fresh
+    # future minor release would be picked up automatically and break every fresh
     # install of this package. Cap at the next minor until each release is verified.
-    "injectq>=0.4.0,<0.5",
+    # 0.5.0 verified on 3.12-3.15; it also fixes PYTHON_LAZY_IMPORTS=all on 3.15.
+    "injectq>=0.4.0,<0.6",
     "pydantic>=2.0,<3",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
@@ -75,6 +76,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Intended Audience :: Developers",

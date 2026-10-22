@@ -448,12 +448,6 @@ class CompiledGraph[StateT: AgentState]:
         # Convert async generator to sync iteration with a dedicated event loop
         gen = _async_stream()
         loop = asyncio.new_event_loop()
-        policy = asyncio.get_event_loop_policy()
-        try:
-            previous_loop = policy.get_event_loop()
-        except Exception:
-            previous_loop = None
-        asyncio.set_event_loop(loop)
         logger.info("Synchronous streaming started")
 
         try:
@@ -467,12 +461,7 @@ class CompiledGraph[StateT: AgentState]:
             # Attempt to close the async generator cleanly
             with contextlib.suppress(Exception):
                 loop.run_until_complete(gen.aclose())  # type: ignore[attr-defined]
-            # Restore previous loop if any, then close created loop
-            try:
-                if previous_loop is not None:
-                    asyncio.set_event_loop(previous_loop)
-            finally:
-                loop.close()
+            loop.close()
         logger.info("Synchronous streaming completed")
 
     async def astream(

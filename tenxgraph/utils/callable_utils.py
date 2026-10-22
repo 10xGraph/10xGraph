@@ -22,7 +22,7 @@ def _is_async_callable(func: Callable[..., Any]) -> bool:
     Returns:
         bool: True if the function is async, False otherwise.
     """
-    return asyncio.iscoroutinefunction(func)
+    return inspect.iscoroutinefunction(func)
 
 
 async def call_sync_or_async(func: Callable[..., Any], *args, **kwargs) -> Any:
