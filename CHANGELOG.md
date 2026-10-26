@@ -34,9 +34,51 @@ Starting from this release:
   scan input of any length, now scans only the first `max_length` characters.
 - The `<think>`, `<reasoning>` and `<thought>` tag parsers used on model output now run in
   linear time instead of quadratic time on unclosed tags.
+- **`fetch_url` no longer follows redirects to internal addresses.** It checked only the first
+  host, then let urllib follow redirects anywhere, so a public page that redirected to
+  `127.0.0.1` or `169.254.169.254` was fetched and returned to the model. It also resolved the
+  name twice, which DNS rebinding could exploit. Every redirect hop is now checked (5 at most),
+  the connection goes to the exact address that was checked, and an address must be globally
+  routable, which also rejects 100.64.0.0/10 (shared address space, including Alibaba Cloud
+  metadata) and the NAT64 and IPv4-compatible forms of internal addresses. `fetch_url` no
+  longer uses `HTTP_PROXY` / `HTTPS_PROXY`.
+- **New `create_file_tools(root)`** returns `file_read`, `file_write` and `file_search` locked to
+  a directory set in code. The module-level file tools read their root from the run config
+  (`file_tool_root` / `workspace_root`), so anyone who can set the run config could point them
+  at any directory on the server.
+
+- **Handoffs only go where a registered handoff tool says.** Any tool call named
+  `transfer_to_<X>` used to jump the run to node `<X>`, so a model steered by prompt injection
+  could skip edges and approval steps. A handoff now needs a tool made with
+  `create_handoff_tool` registered on that ToolNode; other `transfer_to_*` calls are normal tool
+  calls. A `Command.goto` to a name that is not a node or END raises `GraphError`
+  (`GRAPH_007`) instead of a raw `KeyError`.
+- **Tools hidden by `tools_tags` can no longer be called.** The Agent advertised only the tagged
+  tools, but the ToolNode ran any registered name the model guessed. The Agent now records the
+  advertised names on its message (`metadata["allowed_tools"]`) and other calls get the usual
+  "Tool not found" error.
+- **An MCP tool with the same name as a local or remote tool raises `ValueError`.** The MCP tool
+  used to win silently, so calls meant for a local tool went to the MCP server.
+- **Parallel tool calls are capped.** One model turn with hundreds of tool calls started them
+  all at once, each with its own copy of the state (300 calls took 2.4 GB). At most
+  `max_parallel_tool_calls` run at once: set it in the run config, or with the
+  `TENXGRAPH_MAX_PARALLEL_TOOL_CALLS` env var; the default is 10.
+- **`file_search` no longer follows symlinks out of the workspace root.** A symlink inside the
+  root that pointed outside it was searched, and matching lines from the outside file were
+  returned as previews. Each file is now resolved and must stay under the root, the same rule
+  `file_read` applies.
+
+### Deprecated
+
+- Setting the file tool root through the run config (`file_tool_root` / `workspace_root`)
+  now emits a `DeprecationWarning` and will be removed in 0.11. Use `create_file_tools(root=...)`.
 
 ### Fixed
 
+- `ainvoke` now follows a `Command` returned by a ToolNode (update and goto), as `astream`
+  already did. It used to drop it, so handoffs worked in stream but not in invoke.
+- `ToolNode.mcp_tools` no longer grows on every tool listing; it is rebuilt from the server's
+  list each time.
 - The validator's base64 check never raised: the `ValidationError` was swallowed by the
   `suppress(Exception)` around the decode. It now raises in strict mode, matches the `DAN`
   keyword case-insensitively, and decodes URL-safe and unpadded base64.

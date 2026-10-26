@@ -12,6 +12,8 @@ class _Node(MCPMixin):
     def __init__(self, client=None, pass_user=False):
         self._client = client
         self.mcp_tools = []
+        self._funcs = {}
+        self.remote_tool_names = []
         self._pass_user_info_to_mcp = pass_user
 
 
@@ -100,7 +102,39 @@ async def test_get_mcp_tool_filters_by_tags_and_tracks_names():
 
     assert len(tools) == 1
     assert tools[0]["function"]["name"] == "a"
-    assert node.mcp_tools == ["a"]
+    assert node.mcp_tools == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_get_mcp_tool_raises_on_local_name_collision():
+    node = _Node(client=_Client(tools=[_MCPTool("calc")]))
+    node._funcs = {"calc": object()}
+
+    with pytest.raises(ValueError, match="calc"):
+        await node._get_mcp_tool()
+
+
+@pytest.mark.asyncio
+async def test_get_mcp_tool_raises_on_remote_name_collision():
+    node = _Node(client=_Client(tools=[_MCPTool("geo", tags=["x"])]))
+    node.remote_tool_names = ["geo"]
+
+    with pytest.raises(ValueError, match="geo"):
+        await node._get_mcp_tool(tags={"other"})
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_stays_bounded_and_covers_filtered_tools():
+    client = _Client(
+        tools=[_MCPTool("a", tags=["core"]), _MCPTool("b", tags=["extra"]), _MCPTool("a")]
+    )
+    node = _Node(client=client)
+
+    for _ in range(50):
+        tools = await node._get_mcp_tool(tags={"core"})
+
+    assert [x["function"]["name"] for x in tools] == ["a"]
+    assert node.mcp_tools == ["a", "b"]
 
 
 @pytest.mark.asyncio

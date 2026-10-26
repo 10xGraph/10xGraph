@@ -83,36 +83,64 @@ class MCPMixin:
         ]
 
     async def _get_mcp_tool(self, tags: set[str] | None = None) -> list[dict]:
-        """Fetch tools from the MCP client, optionally filtering by tags."""
+        """Fetch tools from the MCP client, optionally filtering by tags.
+
+        ``mcp_tools`` is rebuilt from the server's full tool list on every call, so it stays
+        bounded and dispatch works for tools hidden by the ``tags`` filter.
+
+        Raises:
+            ValueError: If an MCP tool has the same name as a local or remote tool.
+        """
         tools: list[dict] = []
         if not self._client:
             return tools
 
+        server_tools: list[t.Any] = []
         try:
             async with self._client:
                 res = await self._client.ping()
                 if not res:
                     return tools
-                mcp_tools: list[t.Any] = await self._client.list_tools()
-                for i in mcp_tools:
-                    if tags:
-                        meta = i.meta or {}
-                        tool_tags = set(meta.get("_fastmcp", {}).get("tags", []))
-                        if not tool_tags.intersection(tags):
-                            continue
-                    self.mcp_tools.append(i.name)  # type: ignore[attr-defined]
-                    tools.append(
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": i.name,
-                                "description": i.description,
-                                "parameters": i.inputSchema,
-                            },
-                        }
-                    )
+                server_tools = await self._client.list_tools()
         except Exception as e:
             logger.exception("Failed to fetch MCP tools: %s", e)
+            return tools
+
+        # Raised outside the try above so a collision is never swallowed.
+        local_names = set(getattr(self, "_funcs", {}))
+        local_names |= set(getattr(self, "remote_tool_names", []))
+        names: list[str] = []
+        for i in server_tools:
+            if i.name in local_names:
+                raise ValueError(
+                    f"MCP tool '{i.name}' has the same name as a local or remote tool on "
+                    "this ToolNode. Rename one of them."
+                )
+            if i.name not in names:
+                names.append(i.name)
+
+        self.mcp_tools = names
+
+        advertised: set[str] = set()
+        for i in server_tools:
+            if i.name in advertised:
+                continue
+            if tags:
+                meta = i.meta or {}
+                tool_tags = set(meta.get("_fastmcp", {}).get("tags", []))
+                if not tool_tags.intersection(tags):
+                    continue
+            advertised.add(i.name)
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": i.name,
+                        "description": i.description,
+                        "parameters": i.inputSchema,
+                    },
+                }
+            )
 
         return tools
 

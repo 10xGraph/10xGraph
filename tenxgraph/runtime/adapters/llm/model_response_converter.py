@@ -40,6 +40,9 @@ class ModelResponseConverter:
             ValueError: If the converter is not supported.
         """
         self.response = response
+        # Extra metadata merged into every Message this converter produces, e.g.
+        # {"allowed_tools": [...]} so dispatch can tell which tools the model was shown.
+        self.message_metadata: dict[str, Any] = {}
 
         if isinstance(converter, str):
             if converter == "openai":
@@ -108,7 +111,16 @@ class ModelResponseConverter:
 
         self._warn_if_empty_response(response, context="converting a model response")
         logger.debug("Converting response to Message")
-        return await self.converter.convert_response(response)  # type: ignore
+        message = await self.converter.convert_response(response)  # type: ignore
+        self._apply_metadata(message)
+        return message
+
+    def _apply_metadata(self, message: Any) -> None:
+        """Merge ``message_metadata`` into a produced Message (stream events are left alone)."""
+        from tenxgraph.core.state.message import Message
+
+        if self.message_metadata and isinstance(message, Message):
+            message.metadata = {**(message.metadata or {}), **self.message_metadata}
 
     async def stream(
         self,
@@ -151,6 +163,7 @@ class ModelResponseConverter:
             response=response,
             meta=meta,
         ):
+            self._apply_metadata(item)
             yield item
 
         logger.debug("Completed streaming conversion")

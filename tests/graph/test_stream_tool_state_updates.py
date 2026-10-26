@@ -15,6 +15,7 @@ from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
 from tenxgraph.core.state import AgentState, Message, ToolResult
 from tenxgraph.core.state.message_block import ToolCallBlock, ToolResultBlock
 from tenxgraph.core.state.stream_chunks import StreamChunk
+from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.command import Command
 
@@ -320,10 +321,7 @@ class TestCommandHandoffStream:
     async def test_handoff_yields_command_in_stream(self):
         """Handoff tool should yield Command with goto in stream mode."""
 
-        def transfer_to_specialist(tool_call_id: str | None = None) -> str:
-            return "Transferring to specialist"
-
-        tool_node = ToolNode([transfer_to_specialist])
+        tool_node = ToolNode([create_handoff_tool("specialist_agent")])
         handler = StreamNodeHandler("tools", tool_node)
 
         message = Message.text_message(role="assistant", content="call tools")
@@ -332,46 +330,36 @@ class TestCommandHandoffStream:
                 "id": "call_1",
                 "type": "function",
                 "function": {
-                    "name": "transfer_to_specialist",
+                    "name": "transfer_to_specialist_agent",
                     "arguments": "{}",
                 },
             }
         ]
 
-        # Patch is_handoff_tool to detect our tool as a handoff
-        from unittest.mock import patch
+        state = CustomState(context=[message])
+        config = {"thread_id": "t1", "run_id": "r1"}
 
-        with patch(
-            "tenxgraph.prebuilt.tools.handoff.is_handoff_tool",
-            return_value=(True, "specialist_agent"),
-        ):
-            state = CustomState(context=[message])
-            config = {"thread_id": "t1", "run_id": "r1"}
+        commands = []
+        state_dicts = []
 
-            commands = []
-            state_dicts = []
+        async for item in handler.stream(config, state):
+            if isinstance(item, Command):
+                commands.append(item)
+            elif isinstance(item, dict) and "is_non_streaming" in item:
+                state_dicts.append(item)
 
-            async for item in handler.stream(config, state):
-                if isinstance(item, Command):
-                    commands.append(item)
-                elif isinstance(item, dict) and "is_non_streaming" in item:
-                    state_dicts.append(item)
-
-            # Should get a Command with goto
-            assert len(commands) == 1
-            assert commands[0].goto == "specialist_agent"
-            # Should also get a state dict with next_node
-            assert len(state_dicts) == 1
-            assert state_dicts[0]["next_node"] == "specialist_agent"
+        # Should get a Command with goto
+        assert len(commands) == 1
+        assert commands[0].goto == "specialist_agent"
+        # Should also get a state dict with next_node
+        assert len(state_dicts) == 1
+        assert state_dicts[0]["next_node"] == "specialist_agent"
 
     @pytest.mark.asyncio
     async def test_handoff_in_invoke_returns_command(self):
         """Handoff tool should return Command in invoke mode."""
 
-        def transfer_to_specialist(tool_call_id: str | None = None) -> str:
-            return "Transferring to specialist"
-
-        tool_node = ToolNode([transfer_to_specialist])
+        tool_node = ToolNode([create_handoff_tool("specialist_agent")])
         handler = InvokeNodeHandler("tools", tool_node)
 
         message = Message.text_message(role="assistant", content="call tools")
@@ -380,25 +368,19 @@ class TestCommandHandoffStream:
                 "id": "call_1",
                 "type": "function",
                 "function": {
-                    "name": "transfer_to_specialist",
+                    "name": "transfer_to_specialist_agent",
                     "arguments": "{}",
                 },
             }
         ]
 
-        from unittest.mock import patch
+        state = CustomState(context=[message])
+        config = {"thread_id": "t1", "run_id": "r1"}
 
-        with patch(
-            "tenxgraph.prebuilt.tools.handoff.is_handoff_tool",
-            return_value=(True, "specialist_agent"),
-        ):
-            state = CustomState(context=[message])
-            config = {"thread_id": "t1", "run_id": "r1"}
+        result = await handler.invoke(config, state)
 
-            result = await handler.invoke(config, state)
-
-            assert isinstance(result, Command)
-            assert result.goto == "specialist_agent"
+        assert isinstance(result, Command)
+        assert result.goto == "specialist_agent"
 
 
 class TestToolNodeStreamDictHandling:

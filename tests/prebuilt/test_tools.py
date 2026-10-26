@@ -11,6 +11,7 @@ import pytest
 
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.prebuilt.tools import (
+    create_file_tools,
     fetch_url,
     file_read,
     file_search,
@@ -19,7 +20,6 @@ from tenxgraph.prebuilt.tools import (
     safe_calculator,
     vertex_ai_search,
 )
-from tenxgraph.prebuilt.tools import fetch as fetch_module
 
 
 def test_safe_calculator_evaluates_basic_math() -> None:
@@ -34,6 +34,7 @@ def test_safe_calculator_rejects_unsupported_expressions() -> None:
     assert "error" in result
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_file_read_write_and_search_are_workspace_scoped(tmp_path) -> None:
     config = {"file_tool_root": str(tmp_path)}
 
@@ -56,40 +57,6 @@ def test_file_read_write_and_search_are_workspace_scoped(tmp_path) -> None:
 
     blocked = json.loads(file_read("../outside.txt", config=config))
     assert "configured root" in blocked["error"]
-
-
-@pytest.mark.asyncio
-async def test_fetch_url_returns_normalized_html(monkeypatch) -> None:
-    class FakeResponse:
-        headers = {"content-type": "text/html; charset=utf-8"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self, size: int) -> bytes:
-            return (
-                b"<html><body><h1>Hello</h1><script>skip()</script>"
-                b"<p>AgentFlow</p></body></html>"
-            )
-
-        def getcode(self) -> int:
-            return 200
-
-        def geturl(self) -> str:
-            return "https://example.com/"
-
-    monkeypatch.setattr(fetch_module, "_is_public_hostname", lambda hostname: True)
-    monkeypatch.setattr(fetch_module.request, "urlopen", lambda req, timeout: FakeResponse())
-
-    result = json.loads(await fetch_url("https://example.com"))
-
-    assert result["status_code"] == 200
-    assert "Hello" in result["content"]
-    assert "AgentFlow" in result["content"]
-    assert "skip" not in result["content"]
 
 
 def _install_fake_google_genai(monkeypatch) -> None:
@@ -183,3 +150,114 @@ async def test_tool_node_hides_injected_file_config_from_schema() -> None:
     assert "config" not in params_by_name["file_read"]
     assert "config" not in params_by_name["file_write"]
     assert "config" not in params_by_name["file_search"]
+
+
+# --- Security review 01-F1: the file tool root must not come from the run config ---
+
+
+def _scoped_tools(root, **kwargs):
+    return {fn.__name__: fn for fn in create_file_tools(root, **kwargs)}
+
+
+def test_create_file_tools_are_scoped_to_their_root(tmp_path) -> None:
+    tools = _scoped_tools(tmp_path)
+
+    written = json.loads(tools["scoped_file_write"]("notes/info.txt", "hello", create_dirs=True))
+    assert written["status"] == "written"
+    assert (tmp_path / "notes" / "info.txt").read_text() == "hello"
+
+    read = json.loads(tools["scoped_file_read"]("notes/info.txt"))
+    assert read["content"] == "hello"
+
+    found = json.loads(tools["scoped_file_search"]("hello"))
+    assert found["results"][0]["path"] == "notes/info.txt"
+
+    blocked = json.loads(tools["scoped_file_read"]("../outside.txt"))
+    assert "configured root" in blocked["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_file_tools_ignore_root_in_run_config(tmp_path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("SECRET")
+
+    node = ToolNode(create_file_tools(root))
+    schemas = await node.all_tools()
+    for item in schemas:
+        assert "config" not in item["function"]["parameters"]["properties"]
+
+    tools = _scoped_tools(root)
+    # The factory tools take no config, so a client value has nowhere to go
+    with pytest.raises(TypeError):
+        tools["scoped_file_read"]("secret.txt", config={"file_tool_root": str(outside)})
+    result = json.loads(tools["scoped_file_read"]("secret.txt"))
+    assert result["error"] == "file does not exist"
+
+
+def test_create_file_tools_selects_tools(tmp_path) -> None:
+    tools = create_file_tools(tmp_path, write=False)
+    names = [fn._py_tool_name for fn in tools]
+
+    # Same names the model sees for the module-level tools
+    assert names == ["file_read", "file_search"]
+
+
+def test_create_file_tools_rejects_missing_root(tmp_path) -> None:
+    with pytest.raises(ValueError, match="not a directory"):
+        create_file_tools(tmp_path / "missing")
+
+
+def test_run_config_file_root_is_deprecated(tmp_path) -> None:
+    (tmp_path / "a.txt").write_text("hi")
+
+    with pytest.warns(DeprecationWarning, match="create_file_tools"):
+        result = json.loads(file_read("a.txt", config={"file_tool_root": str(tmp_path)}))
+    assert result["content"] == "hi"
+
+    with pytest.warns(DeprecationWarning):
+        file_read("a.txt", config={"workspace_root": str(tmp_path)})
+
+
+# --- Security review 01-F8: file_search must not follow symlinks out of the root ---
+
+
+def _workspace_with_escaping_links(tmp_path):
+    root = tmp_path / "ws"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("SECRET-VALUE")
+    (root / "inside.txt").write_text("SECRET-VALUE is not here, this is fine")
+    (root / "link.txt").symlink_to(outside / "secret.txt")
+    (root / "linkdir").symlink_to(outside, target_is_directory=True)
+    return root
+
+
+def test_file_search_skips_symlinks_that_leave_the_root(tmp_path) -> None:
+    root = _workspace_with_escaping_links(tmp_path)
+    tools = _scoped_tools(root)
+
+    found = json.loads(tools["scoped_file_search"]("SECRET-VALUE"))
+    paths = {item["path"] for item in found["results"]}
+
+    assert paths == {"inside.txt"}
+    assert all("is not here" in item["preview"] for item in found["results"])
+
+    by_name = json.loads(tools["scoped_file_search"]("link"))
+    assert by_name["results"] == []
+
+
+def test_file_search_follows_symlinks_that_stay_inside_the_root(tmp_path) -> None:
+    root = tmp_path / "ws"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "real.txt").write_text("needle")
+    (root / "alias.txt").symlink_to(root / "docs" / "real.txt")
+    tools = _scoped_tools(root)
+
+    found = json.loads(tools["scoped_file_search"]("needle"))
+    paths = sorted(item["path"] for item in found["results"])
+
+    assert paths == ["alias.txt", "docs/real.txt"]

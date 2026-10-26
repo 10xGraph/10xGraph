@@ -11,6 +11,7 @@ from injectq import Inject, InjectQ
 from injectq.utils.exceptions import DependencyNotFoundError
 
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node.run_tools import tool_name
 from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
@@ -712,7 +713,12 @@ class AgentExecutionMixin:
             publish_event(llm_event)
 
         converter_key = self._get_converter_key()
-        return ModelResponseConverter(response, converter=converter_key)
+        converter = ModelResponseConverter(response, converter=converter_key)
+        if self.tools_tags:
+            # Record which tools the model was shown, so dispatch can refuse a call to
+            # a tool the tags hid from it.
+            converter.message_metadata["allowed_tools"] = [tool_name(t) for t in tools or []]
+        return converter
 
     async def _resolve_media_in_messages(  # noqa: PLR0915, PLR0912
         self,

@@ -27,6 +27,12 @@ from injectq import Inject
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
+from tenxgraph.core.graph.utils.tool_dispatch import (
+    allowed_tool_names,
+    handoff_target,
+    hidden_tool_message,
+    resolve_max_parallel_tool_calls,
+)
 from tenxgraph.core.graph.utils.utils import process_node_result
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
@@ -314,7 +320,7 @@ class InvokeNodeHandler(BaseLoggingMixin):
                 e,
             )
 
-    async def _call_tools(  # noqa: PLR0912
+    async def _call_tools(  # noqa: PLR0912, PLR0915
         self,
         last_message: Message,
         state: "AgentState",
@@ -341,15 +347,18 @@ class InvokeNodeHandler(BaseLoggingMixin):
             and last_message.tools_calls
             and len(last_message.tools_calls) > 0
         ):
-            # Lazy import to avoid circular dependency
-            from tenxgraph.prebuilt.tools.handoff import is_handoff_tool
+            # Only tools the model was actually offered may run (Agent.tools_tags).
+            allowed = allowed_tool_names(last_message)
 
-            # NEW: Check for handoff BEFORE executing any tools
+            # A handoff is honoured only for a registered handoff tool. A name that
+            # merely starts with "transfer_to_" is an ordinary (unknown) tool call.
             for tool_call in last_message.tools_calls:
                 tool_name = tool_call.get("function", {}).get("name", "")
-                is_handoff, target_agent = is_handoff_tool(tool_name)
+                if allowed is not None and tool_name not in allowed:
+                    continue
+                target_agent = handoff_target(self.func, tool_name)
 
-                if is_handoff:
+                if target_agent:
                     logger.info(
                         "Handoff detected in node '%s': tool '%s' -> agent '%s'",
                         self.name,
@@ -386,20 +395,42 @@ class InvokeNodeHandler(BaseLoggingMixin):
             # directly on the shared state -- no copying cost in the common case.
             is_parallel = len(last_message.tools_calls) > 1
             baseline = copy.deepcopy(state) if is_parallel else None
-            branch_states = [
-                copy.deepcopy(state) if is_parallel else state for _ in last_message.tools_calls
-            ]
+            branch_states: list[AgentState | None] = [None] * len(last_message.tools_calls)
 
-            tasks = [
-                asyncio.ensure_future(
-                    self._handle_single_tool(
+            # At most this many tools run at once. The branch copy is taken only once
+            # a tool holds a slot, so peak copies are bounded by the limit rather than
+            # by however many calls the model emitted.
+            semaphore = asyncio.Semaphore(resolve_max_parallel_tool_calls(config))
+
+            async def _run_branch(index: int, tool_call: dict[str, Any]) -> Any:
+                name = tool_call.get("function", {}).get("name", "")
+                if allowed is not None and name not in allowed:
+                    logger.warning(
+                        "Node '%s': tool '%s' was not offered to the model; not executing",
+                        self.name,
+                        name,
+                    )
+                    branch_states[index] = None
+                    return hidden_tool_message(tool_call)
+
+                async with semaphore:
+                    branch = copy.deepcopy(state) if is_parallel else state
+                    branch_states[index] = branch
+                    outcome = await self._handle_single_tool(
                         tool_call,
                         branch,
                         config,
                         origin_message_id=origin_message_id,
                     )
-                )
-                for tool_call, branch in zip(last_message.tools_calls, branch_states, strict=True)
+                    if is_parallel and self._branch_untouched(branch, baseline, outcome):
+                        # Merging it would be a no-op, so free the copy now instead of
+                        # holding it until the merge.
+                        branch_states[index] = None
+                    return outcome
+
+            tasks = [
+                asyncio.ensure_future(_run_branch(index, tool_call))
+                for index, tool_call in enumerate(last_message.tools_calls)
             ]
 
             # gather(...) without return_exceptions let one failing tool propagate
@@ -450,6 +481,8 @@ class InvokeNodeHandler(BaseLoggingMixin):
                     effective = branch
                     if isinstance(outcome, dict) and isinstance(outcome.get("state"), AgentState):
                         effective = outcome["state"]
+                    if effective is None:
+                        continue
                     self._merge_tool_state(state, effective, baseline=baseline)
 
                 # The state is now merged. Drop it from the result payloads so the
@@ -468,6 +501,18 @@ class InvokeNodeHandler(BaseLoggingMixin):
             )
 
         return result
+
+    @staticmethod
+    def _branch_untouched(branch: AgentState, baseline: AgentState | None, outcome: Any) -> bool:
+        """True when a parallel branch has nothing to merge back."""
+        if baseline is None:
+            return False
+        if isinstance(outcome, dict) and isinstance(outcome.get("state"), AgentState):
+            return False
+        try:
+            return bool(branch == baseline)
+        except Exception:
+            return False
 
     def _get_cached_signature(self, func: Callable) -> inspect.Signature:
         """Get cached signature for a function, computing it if not cached."""

@@ -15,12 +15,14 @@ from tenxgraph.core.exceptions import (
 from tenxgraph.core.graph.edge import Edge
 from tenxgraph.core.graph.node import Node
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
+from tenxgraph.core.graph.utils.tool_dispatch import validate_goto
 from tenxgraph.core.graph.utils.utils import (
     calculate_token_usage,
     call_realtime_sync,
     get_next_node,
     load_or_create_state,
     parse_response,
+    process_node_result,
     sync_data,
 )
 from tenxgraph.storage.checkpointer import BaseCheckpointer
@@ -29,6 +31,7 @@ from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, E
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import END, ResponseGranularity, metrics
+from tenxgraph.utils.command import Command
 from tenxgraph.utils.logging import bind_log_context_from_config, set_log_context
 from tenxgraph.core.state.reducers import add_messages
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
@@ -330,6 +333,18 @@ class InvokeHandler[StateT: AgentState](
                             len(new_messages),
                             len(messages),
                         )
+
+                # A Command (for example a handoff from a ToolNode) carries both a state
+                # update and the next node. Follow it the same way the stream path does.
+                if isinstance(result, Command):
+                    command_messages: list[Message] = []
+                    state, command_messages, next_node = await process_node_result(
+                        result, state, command_messages
+                    )
+                    messages.extend(command_messages)
+
+                # Fail with a clear error instead of a KeyError on an unknown target.
+                validate_goto(next_node, self.nodes, current_node)
 
                 logger.debug(
                     "Node result processed, next_node=%s, total_messages=%d",
