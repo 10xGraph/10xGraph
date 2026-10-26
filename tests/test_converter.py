@@ -384,3 +384,48 @@ class TestConverterUtils:
         result = convert_messages(system_prompts, extra_messages=None)
         
         assert result == system_prompts
+
+class TestSystemPromptInterpolationSafety:
+    """Retrieved/loaded text must never go through str.format."""
+
+    HOSTILE = [
+        "{context.x}",
+        "{context[x]}",
+        "{execution_meta}",
+        "{execution_meta[current_node]:>200000000}",
+    ]
+
+    def test_extra_system_prompts_pass_through_verbatim(self):
+        state = AgentState()
+        extra = [{"role": "system", "content": text} for text in self.HOSTILE]
+
+        messages = convert_messages(
+            system_prompts=[{"role": "system", "content": "Base"}],
+            state=state,
+            extra_system_prompts=extra,
+        )
+
+        assert [m["content"] for m in messages] == ["Base", *self.HOSTILE]
+        assert sum(len(m["content"]) for m in messages) < 200
+
+    def test_developer_prompt_still_interpolated(self):
+        class MyState(AgentState):
+            user_name: str = "Ada"
+
+        messages = convert_messages(
+            system_prompts=[{"role": "system", "content": "Hello {user_name}"}],
+            state=MyState(),
+            extra_system_prompts=[{"role": "system", "content": "{user_name}"}],
+        )
+
+        assert messages[0]["content"] == "Hello Ada"
+        assert messages[1]["content"] == "{user_name}"
+
+    @pytest.mark.parametrize("bad", ["{context.x}", "{context[x]}", "{execution_meta[a][b]}", "{0.x}"])
+    def test_bad_developer_placeholder_does_not_raise(self, bad):
+        messages = convert_messages(
+            system_prompts=[{"role": "system", "content": bad}],
+            state=AgentState(),
+        )
+
+        assert messages[0]["content"] == bad

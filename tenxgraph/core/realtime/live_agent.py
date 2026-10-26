@@ -360,9 +360,10 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         if not base and rt.system_instruction:
             base = [{"role": "system", "content": rt.system_instruction}]
 
-        prompts = self._build_skill_prompts(state, base)
+        # Only the developer's prompt is interpolated; skill and memory text is appended after.
+        prompts = _interpolate_system_prompts(base, state)
+        prompts = prompts + self._build_skill_prompts(state, [])
         prompts = prompts + await self._build_memory_prompts(state, config)
-        prompts = _interpolate_system_prompts(prompts, state)
 
         instruction = "\n\n".join(str(p["content"]) for p in prompts if p.get("content")).strip()
         if not instruction:

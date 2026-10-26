@@ -437,8 +437,9 @@ def _interpolate_system_prompts(
                 e,
             )
             interpolated.append(prompt)
-        except (ValueError, IndexError) as e:
-            # Invalid format string or other formatting issues
+        except Exception as e:
+            # Bad format spec, attribute/index access on a field, etc. A bad
+            # placeholder must never fail the run.
             logger.warning(
                 "Failed to interpolate system prompt due to formatting error: %s. "
                 "Using original prompt without interpolation.",
@@ -453,6 +454,7 @@ def convert_messages(
     system_prompts: list[dict[str, Any]],
     state: Union["AgentState", None] = None,
     extra_messages: list[Message] | None = None,
+    extra_system_prompts: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Convert system prompts, agent state, and extra messages to a list of dicts for
@@ -462,6 +464,9 @@ def convert_messages(
         system_prompts (list[dict[str, Any]]): List of system prompt dicts.
         state (AgentState | None): Optional agent state containing context and summary.
         extra_messages (list[Message] | None): Optional extra messages to include.
+        extra_system_prompts (list[dict[str, Any]] | None): Retrieved or loaded system
+            text (skills, memories). Added after ``system_prompts`` are interpolated and
+            never passed to ``str.format``.
 
     Returns:
         list[dict[str, Any]]: List of message dicts for payloads.
@@ -478,6 +483,8 @@ def convert_messages(
 
     res = []
     res += interpolated_prompts
+    if extra_system_prompts:
+        res += extra_system_prompts
 
     if state and state.context_summary:
         summary = {

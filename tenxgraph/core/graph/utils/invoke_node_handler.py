@@ -26,6 +26,7 @@ from injectq import Inject
 
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node._helpers import generic_tool_failure
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
@@ -452,18 +453,19 @@ class InvokeNodeHandler(BaseLoggingMixin):
             for tool_call, outcome in zip(last_message.tools_calls, settled, strict=True):
                 if isinstance(outcome, BaseException):
                     fn_name = tool_call.get("function", {}).get("name", "")
-                    logger.error(
-                        "Node '%s': tool '%s' failed: %s",
-                        self.name,
-                        fn_name,
-                        outcome,
-                    )
+                    call_id = tool_call.get("id", "")
+                    if isinstance(outcome, NodeTimeoutError):
+                        # Names only the tool and its deadline, so the model may see it.
+                        logger.error("Node '%s': tool '%s' failed: %s", self.name, fn_name, outcome)
+                        failure = f"Tool '{fn_name}' failed: {outcome}"
+                    else:
+                        failure = generic_tool_failure(fn_name, call_id, outcome, log=logger)
                     result.append(
                         Message.tool_message(
                             content=[
                                 ToolResultBlock(
-                                    call_id=tool_call.get("id", ""),
-                                    output=f"Tool '{fn_name}' failed: {outcome}",
+                                    call_id=call_id,
+                                    output=failure,
                                     is_error=True,
                                     status="failed",
                                 )

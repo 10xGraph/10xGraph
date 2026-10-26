@@ -1892,6 +1892,34 @@ class TestExecute:
         # START + END events published
         assert mock_publish.call_count >= 2
 
+    async def test_execute_keeps_memory_and_skill_text_out_of_format(self):
+        agent = _make_openai_agent()
+        agent.system_prompt = [{"role": "system", "content": "Base {topic}"}]
+        state = AgentState()
+        hostile = "{context.x} {execution_meta[current_node]:>200000000}"
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=MagicMock())
+        agent._build_skill_prompts = MagicMock(
+            return_value=[{"role": "system", "content": "skill " + hostile}]
+        )
+        agent._build_memory_prompts = AsyncMock(
+            return_value=[{"role": "system", "content": "memory " + hostile}]
+        )
+
+        with patch("tenxgraph.core.graph.agent_internal.execution.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
+            await agent.execute(state, {"_node_name": "AGENT"})
+
+        sent = agent._call_llm_with_retry.call_args.kwargs["messages"]
+        assert [m["content"] for m in sent] == [
+            "Base {topic}",
+            "skill " + hostile,
+            "memory " + hostile,
+        ]
+
     async def test_execute_stream_no_end_event(self):
         agent = _make_openai_agent()
         state = AgentState()

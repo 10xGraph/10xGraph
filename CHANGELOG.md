@@ -67,6 +67,20 @@ Starting from this release:
   root that pointed outside it was searched, and matching lines from the outside file were
   returned as previews. Each file is now resolved and must stay under the root, the same rule
   `file_read` applies.
+- **Tool failures no longer send the raw exception text to the model.** An unexpected error in
+  a local or MCP tool put its message (database URLs, file paths, SQL errors) into the tool
+  result and events. The model now gets `Tool '<name>' failed with an internal error
+  (reference <ref>)`, and the full error with the same reference is logged server-side.
+  Argument errors, "Tool not found" and timeouts still reach the model as before. A tool that
+  wants the model to see a message should return it as a string; a raised `ValueError` is no
+  longer shown verbatim.
+- **Memory and skill text is no longer run through `str.format`.** Skill prompts and long-term
+  memory were appended to the system prompts before `{placeholder}` interpolation, so a stored
+  memory such as `{execution_meta[current_node]:>200000000}` built a 200 MB prompt, `{context.x}`
+  failed every turn, and `{execution_meta}` pasted internal state into the prompt. Only your own
+  `system_prompt` is interpolated now; skill and memory text is added after, unchanged (new
+  `convert_messages(extra_system_prompts=...)`). A bad placeholder in your own prompt is logged
+  and left as is instead of failing the run.
 
 ### Deprecated
 

@@ -616,19 +616,24 @@ class AgentExecutionMixin:
 
         state = await self._trim_context(state)
 
-        # Build effective system prompts (with the skill catalog if skills configured)
-        effective_system_prompt = list(self.system_prompt)
+        # Skill and memory text is loaded or retrieved, so it is added after the
+        # developer's system prompt is interpolated and never goes through str.format.
+        extra_system_prompts: list[dict[str, Any]] = []
 
         if hasattr(self, "_build_skill_prompts") and callable(self._build_skill_prompts):
-            effective_system_prompt = self._build_skill_prompts(state, self.system_prompt)
+            extra_system_prompts = self._build_skill_prompts(state, [])
 
         if hasattr(self, "_build_memory_prompts") and callable(self._build_memory_prompts):
-            effective_system_prompt.extend(await self._build_memory_prompts(state, config))
+            extra_system_prompts.extend(await self._build_memory_prompts(state, config))
+
+        # Raw (uninterpolated) prompts, used for the LLM-call event below.
+        effective_system_prompt = [*self.system_prompt, *extra_system_prompts]
 
         messages = convert_messages(
-            system_prompts=effective_system_prompt,
+            system_prompts=list(self.system_prompt),
             state=state,
             extra_messages=self.extra_messages or [],
+            extra_system_prompts=extra_system_prompts,
         )
 
         # Resolve internal media refs (graph://media/...) before provider call.

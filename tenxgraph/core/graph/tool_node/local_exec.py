@@ -19,8 +19,8 @@ from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
 from tenxgraph.utils.interrupt import activate as activate_interrupts
 
-from ._helpers import _extract_block_meta, _safe_serialize
-from .coercion import coerce_tool_argument
+from ._helpers import _extract_block_meta, _safe_serialize, generic_tool_failure
+from .coercion import ToolArgumentError, coerce_tool_argument
 from .constants import INJECTABLE_PARAMS, SKILL_TOOL_ATTR, has_injected_default
 from .schema import _safe_type_hints
 
@@ -75,7 +75,9 @@ class LocalExecMixin:
                     param_name=param_name,
                 )
             elif param.default is inspect.Parameter.empty:
-                raise TypeError(f"Missing required parameter '{param_name}' for function '{name}'")
+                raise ToolArgumentError(
+                    f"Missing required parameter '{param_name}' for function '{name}'"
+                )
 
         return input_data
 
@@ -273,8 +275,15 @@ class LocalExecMixin:
                 publish_event(event)
                 return recovery_result
 
+            # Argument errors are the model's to correct and carry no server detail. Anything
+            # else may hold paths, DSNs or SQL, so the model and the event get a reference.
+            if isinstance(e, ToolArgumentError):
+                error_text = f"Internal execution error: {e}"
+            else:
+                error_text = generic_tool_failure(name, tool_call_id, e, log=logger)
+
             event.event_type = EventType.END
-            event.data["error"] = str(e)
+            event.data["error"] = error_text
             event.metadata["status"] = "Internal tool execution complete, with error"
             event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
             publish_event(event)
@@ -283,11 +292,11 @@ class LocalExecMixin:
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
-                        output=f"Internal execution error: {e}",
+                        output=error_text,
                         status="failed",
                         is_error=True,
                     ),
-                    ErrorBlock(message=f"Internal execution error: {e}"),
+                    ErrorBlock(message=error_text),
                 ],
                 meta=meta,
             )

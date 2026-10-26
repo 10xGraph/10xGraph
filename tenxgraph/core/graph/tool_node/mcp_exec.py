@@ -16,7 +16,7 @@ from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, E
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
 
-from ._helpers import _normalize_resource_uri
+from ._helpers import _normalize_resource_uri, generic_tool_failure
 
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
@@ -272,8 +272,11 @@ class MCPMixin:
                 publish_event(event)
                 return recovery_result
 
+            # The raw text can hold server internals; the model and the event get a reference.
+            error_text = generic_tool_failure(name, tool_call_id, e, log=logger)
+
             event.event_type = EventType.END
-            event.data["error"] = str(e)
+            event.data["error"] = error_text
             event.metadata["status"] = "MCP tool execution complete, with recovery"
             event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
             publish_event(event)
@@ -282,11 +285,11 @@ class MCPMixin:
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
-                        output=f"MCP execution error: {e}",
+                        output=error_text,
                         is_error=True,
                         status="failed",
                     ),
-                    ErrorBlock(message=f"MCP execution error: {e}"),
+                    ErrorBlock(message=error_text),
                 ],
                 meta=meta,
             )
