@@ -24,6 +24,37 @@ Starting from this release:
 
 ## [Unreleased]
 
+### Security
+
+- **`PromptInjectionValidator` no longer backtracks for minutes or hours on crafted input.**
+  The `ignore` / `disregard` / `forget` / `override` patterns took polynomial time on long
+  whitespace runs (CWE-1333), and `validate()` runs them on the event loop, so one message
+  could block a server. They and the delimiter, `<system>` and template patterns now match in
+  linear time. `max_length` is enforced before any pattern runs: non-strict mode, which used to
+  scan input of any length, now scans only the first `max_length` characters.
+- The `<think>`, `<reasoning>` and `<thought>` tag parsers used on model output now run in
+  linear time instead of quadratic time on unclosed tags.
+
+### Fixed
+
+- The validator's base64 check never raised: the `ValidationError` was swallowed by the
+  `suppress(Exception)` around the decode. It now raises in strict mode, matches the `DAN`
+  keyword case-insensitively, and decodes URL-safe and unpadded base64.
+- The validator also scans `DocumentBlock.excerpt` and the arguments of assistant
+  `tools_calls`, which are sent to the model but were not checked.
+- Input is NFKC-normalized and stripped of zero-width characters before matching, so
+  fullwidth letters and zero-width spaces no longer bypass the patterns.
+- The injection patterns require their keywords to start a word, so "ignore the overall
+  instructions" no longer matches through "over*all*".
+- **The validator no longer rejects text in other languages.** It blocked any message that
+  was 30% or more non-ASCII, which covered almost any message in Bengali, Hindi, Arabic,
+  Chinese, Japanese, Russian and others, and any Chinese, Japanese or Korean clause of 30 or
+  more characters. It now flags only characters used to hide or disguise text (Unicode tag
+  characters, emoji variation-selector smuggling, bidi overrides, and Latin and Cyrillic
+  letters mixed inside one word), and the long-word check applies to ASCII words only.
+- Docstrings no longer claim that `strict_mode=False` sanitizes input. It logs a warning and
+  passes the input through unchanged.
+
 ## [0.10.3] - 2026-10-22
 
 Python 3.14 and 3.15 support. No API changes.

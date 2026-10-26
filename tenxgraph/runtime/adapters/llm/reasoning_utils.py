@@ -7,27 +7,34 @@ used by DeepSeek-R1, Qwen-thinking, and similar models.
 
 from __future__ import annotations
 
-import re
-
 
 # ---------------------------------------------------------------------------
-# Regex patterns for reasoning tags
+# Tag extraction
 # ---------------------------------------------------------------------------
 
-_REASONING_TAG_RE = re.compile(
-    r"<reasoning>(.*?)</reasoning>",
-    re.DOTALL,
-)
 
-_THINK_TAG_RE = re.compile(
-    r"<think>(.*?)</think>",
-    re.DOTALL,
-)
+def _extract_tag(text: str, open_tag: str, close_tag: str) -> tuple[str, str]:
+    """Strip every ``open_tag ... close_tag`` pair from *text* and collect the contents.
 
-_THOUGHT_TAG_RE = re.compile(
-    r"<thought>(.*?)</thought>",
-    re.DOTALL,
-)
+    Each opening tag pairs with the nearest closing tag after it, like a lazy
+    ``open(.*?)close`` regex with DOTALL. A ``str.find`` scan runs in linear time, where
+    that regex is quadratic on model output full of unclosed tags.
+    """
+    contents: list[str] = []
+    kept: list[str] = []
+    pos = 0
+    while (start := text.find(open_tag, pos)) != -1:
+        end = text.find(close_tag, start + len(open_tag))
+        if end == -1:
+            break
+        kept.append(text[pos:start])
+        contents.append(text[start + len(open_tag) : end])
+        pos = end + len(close_tag)
+    if not contents:
+        return text, ""
+    kept.append(text[pos:])
+    reasoning = "\n".join(m.strip() for m in contents)
+    return "".join(kept).strip(), reasoning
 
 
 # ---------------------------------------------------------------------------
@@ -41,12 +48,7 @@ def parse_reasoning_tags(text: str) -> tuple[str, str]:
     Returns ``(clean_text, reasoning)`` where *clean_text* has the tags
     stripped out and *reasoning* is the concatenation of all tag contents.
     """
-    matches = _REASONING_TAG_RE.findall(text)
-    if not matches:
-        return text, ""
-    reasoning = "\n".join(m.strip() for m in matches)
-    clean = _REASONING_TAG_RE.sub("", text).strip()
-    return clean, reasoning
+    return _extract_tag(text, "<reasoning>", "</reasoning>")
 
 
 def parse_think_tags(text: str) -> tuple[str, str]:
@@ -59,12 +61,7 @@ def parse_think_tags(text: str) -> tuple[str, str]:
     Returns ``(clean_text, reasoning)`` where *clean_text* has the tags
     stripped out and *reasoning* is the concatenation of all tag contents.
     """
-    matches = _THINK_TAG_RE.findall(text)
-    if not matches:
-        return text, ""
-    reasoning = "\n".join(m.strip() for m in matches)
-    clean = _THINK_TAG_RE.sub("", text).strip()
-    return clean, reasoning
+    return _extract_tag(text, "<think>", "</think>")
 
 
 def parse_thought_tags(text: str) -> tuple[str, str]:
@@ -77,9 +74,4 @@ def parse_thought_tags(text: str) -> tuple[str, str]:
     Returns ``(clean_text, reasoning)`` where *clean_text* has the tags
     stripped out and *reasoning* is the concatenation of all tag contents.
     """
-    matches = _THOUGHT_TAG_RE.findall(text)
-    if not matches:
-        return text, ""
-    reasoning = "\n".join(m.strip() for m in matches)
-    clean = _THOUGHT_TAG_RE.sub("", text).strip()
-    return clean, reasoning
+    return _extract_tag(text, "<thought>", "</thought>")
