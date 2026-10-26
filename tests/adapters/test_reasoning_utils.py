@@ -1,5 +1,7 @@
 """Tests for shared reasoning tag extraction utilities."""
 
+import time
+
 from tenxgraph.runtime.adapters.llm.reasoning_utils import (
     parse_reasoning_tags,
     parse_think_tags,
@@ -70,3 +72,17 @@ class TestReasoningTagParsers:
         clean, reasoning = parse_thought_tags("Plain text")
         assert clean == "Plain text"
         assert reasoning == ""
+
+    # -- linear time on unclosed tags (security-review F5) --
+
+    def test_parse_tags_unclosed_is_linear(self):
+        text = "<think>" * 100_000 + "<reasoning>" * 100_000
+        start = time.perf_counter()
+        assert parse_think_tags(text) == (text, "")
+        assert parse_reasoning_tags(text) == (text, "")
+        assert time.perf_counter() - start < 1.0
+
+    def test_parse_tags_pairs_nearest_close(self):
+        clean, reasoning = parse_think_tags("a<think>x<think>y</think>b</think>c")
+        assert reasoning == "x<think>y"
+        assert clean == "ab</think>c"
