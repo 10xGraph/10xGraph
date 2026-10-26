@@ -133,6 +133,18 @@ Starting from this release:
   not allowed" error whether or not the file exists, and search never shows hidden names or
   contents. `create_file_tools` gains `deny=` to add glob patterns and `use_default_deny=False`
   to opt out of the defaults.
+- **A resume is now tied to the interrupt it answers and checked against its schema.** A
+  retried or stale `{"resume": value}` used to answer whatever prompt was pending, so a double
+  click could approve the second prompt of a node that calls `interrupt()` twice, and `{"x":
+  "no"}` passed for a boolean schema. Resume input can now carry `resume_interrupt_id`; an id
+  that is not the pending interrupt's raises `InterruptMismatchError` and records nothing. The
+  value is validated against the interrupt's `response_schema` before it is recorded, and a
+  failure raises `ResumeValidationError`. A `None` resume (cancel) is never validated. Both
+  errors are also `ValueError`s.
+- **A new run no longer erases a stop request meant for a run that is still going.** Starting a
+  run cleared the thread's stop flag, so stopping run 1 and starting run 2 before run 1 noticed
+  left run 1 running (a runaway tool loop could not be stopped). A stop request now records the
+  run it targets, and a new run clears only a stale request.
 
 ### Added
 
@@ -163,6 +175,17 @@ Starting from this release:
   (public-address check including NAT64 and IPv4-compatible forms, address pinning, manual
   redirect loop with a check on every hop, body cap, optional deadline, no proxy variables).
 - New scope constant `CHECKPOINT_IMPORT` (`"checkpointer:import"`), included in `ALL_SCOPES`.
+- `InterruptMismatchError` (`INTERRUPT_001`) and `ResumeValidationError` (`INTERRUPT_002`) in
+  `tenxgraph.core.exceptions`, and the optional `resume_interrupt_id` resume input key
+  (`RESUME_INTERRUPT_ID_KEY` in `tenxgraph.utils.interrupt`). `response_schema` is a JSON Schema
+  dict; the resume check supports `type`, `enum`, `properties`, `required` and `items` and
+  ignores other keywords (`validate_against_schema`).
+- `BaseCheckpointer.abegin_run`, `aend_run` and `aget_active_run`: the checkpointer tracks the
+  active run id per thread (generic cache namespace `active_run`, same TTL as the stop flag), so
+  it works on every backend with no schema change. `arequest_stop` stores the targeted run id and
+  `ais_stop_requested` only reports a request that targets the config's `run_id` (a config with
+  no `run_id`, or an old untargeted flag, still matches). Existing method signatures are
+  unchanged.
 
 ### Changed
 
@@ -188,6 +211,8 @@ Starting from this release:
 
 ### Fixed
 
+- `ainvoke` and `astream` release the run's stop scope when the run ends (`aend_run`), so a stop
+  request that targeted a finished run is dropped instead of lingering until its TTL.
 - `ainvoke` now follows a `Command` returned by a ToolNode (update and goto), as `astream`
   already did. It used to drop it, so handoffs worked in stream but not in invoke.
 - `ToolNode.mcp_tools` no longer grows on every tool listing; it is rebuilt from the server's

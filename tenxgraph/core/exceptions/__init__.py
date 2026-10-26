@@ -5,6 +5,8 @@ This package provides:
         - GraphError: Base exception for graph-related errors.
         - NodeError: Exception for node-specific errors.
         - GraphRecursionError: Exception for recursion limit errors in graphs.
+        - InterruptMismatchError: A resume names an interrupt the thread is not paused at.
+        - ResumeValidationError: A resume value does not match the interrupt's response schema.
         - StorageError: Base exception for storage-related errors.
         - TransientStorageError: Exception for retryable storage errors.
         - SerializationError: Exception for serialization/deserialization errors.
@@ -13,6 +15,7 @@ This package provides:
 """
 
 from .graph_error import GraphError
+from .interrupt_error import InterruptMismatchError, ResumeValidationError
 from .node_error import NodeError
 from .recursion_error import GraphRecursionError
 from .storage_exceptions import (
@@ -31,10 +34,12 @@ __all__ = [
     "GraphError",
     "GraphRecursionError",
     "GraphStopRequested",
+    "InterruptMismatchError",
     "MetricsError",
     "NodeError",
     "NodeTimeoutError",
     "ResourceNotFoundError",
+    "ResumeValidationError",
     "SchemaVersionError",
     "SerializationError",
     "StaleStateError",

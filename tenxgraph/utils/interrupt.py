@@ -30,7 +30,15 @@ effects after it. Several calls in one node or tool are answered in order, one r
 In a ``ToolNode`` running parallel tool calls under ``invoke``, calls that already finished are
 not run again (they come from the tool-result ledger).
 
-A client that cancels instead of answering resumes with ``None``.
+A client that cancels instead of answering resumes with ``None``. A cancel is never checked
+against ``response_schema``.
+
+A resume can name the interrupt it answers with ``resume_interrupt_id`` (the ``id`` of the
+pending :class:`Interrupt`). A different id raises ``InterruptMismatchError`` and records
+nothing, so a retried or stale request cannot answer the next prompt. When the interrupt set a
+``response_schema``, the value is validated against it first and a failure raises
+``ResumeValidationError``. ``response_schema`` is a JSON Schema dict; see
+:func:`validate_against_schema` for the supported subset.
 """
 
 from __future__ import annotations
@@ -50,6 +58,9 @@ if TYPE_CHECKING:
 
 # Input key that resumes a paused thread: ``app.invoke({"resume": value}, config)``.
 RESUME_KEY = "resume"
+
+# Optional input key naming the interrupt a resume answers (the pending ``Interrupt.id``).
+RESUME_INTERRUPT_ID_KEY = "resume_interrupt_id"
 
 # ``execution_meta.interrupt_reason`` for a pause raised by :func:`interrupt`.
 INTERRUPT_REASON = "interrupt"
@@ -71,7 +82,8 @@ class Interrupt(BaseModel):
     message: str | None = Field(default=None, description="Human-readable prompt.")
     reason: str = Field(default="input_required", description="Why the graph paused.")
     response_schema: dict[str, Any] | None = Field(
-        default=None, description="JSON Schema the resume value should follow."
+        default=None,
+        description="JSON Schema the resume value must follow (validated on resume).",
     )
     tool_call_id: str | None = Field(
         default=None, description="Tool call that paused, when interrupt() ran inside a tool."
@@ -210,15 +222,83 @@ def resume_values(state: AgentState) -> dict[str, Any]:
     return dict(state.execution_meta.internal_data.get(RESUME_VALUES_KEY) or {})
 
 
-def record_resume(state: AgentState, value: Any) -> Interrupt:
+_JSON_TYPES: dict[str, Any] = {
+    "string": lambda v: isinstance(v, str),
+    "boolean": lambda v: isinstance(v, bool),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, int | float) and not isinstance(v, bool),
+    "null": lambda v: v is None,
+    "array": lambda v: isinstance(v, list),
+    "object": lambda v: isinstance(v, dict),
+}
+
+
+def validate_against_schema(value: Any, schema: dict[str, Any], path: str = "$") -> list[str]:
+    """Check ``value`` against a JSON Schema and return the problems found (empty if valid).
+
+    A small validator for the common subset, so no JSON Schema library is needed. Supported
+    keywords: ``type`` (a name or a list of names), ``enum``, ``properties``, ``required`` and
+    ``items`` (a single schema). Any other keyword is ignored, so a schema using ``oneOf``,
+    ``pattern``, ``minimum`` and the like is only checked for the keywords above.
+    """
+    errors: list[str] = []
+    expected = schema.get("type")
+    if expected is not None:
+        names = [expected] if isinstance(expected, str) else list(expected)
+        known = [n for n in names if n in _JSON_TYPES]
+        if known and not any(_JSON_TYPES[n](value) for n in known):
+            return [f"{path}: expected {' or '.join(names)}, got {type(value).__name__}"]
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path}: must be one of {schema['enum']!r}")
+    if isinstance(value, dict):
+        errors.extend(
+            f"{path}.{name}: required" for name in schema.get("required", []) if name not in value
+        )
+        for name, sub in (schema.get("properties") or {}).items():
+            if name in value and isinstance(sub, dict):
+                errors.extend(validate_against_schema(value[name], sub, f"{path}.{name}"))
+    items = schema.get("items")
+    if isinstance(value, list) and isinstance(items, dict):
+        for index, item in enumerate(value):
+            errors.extend(validate_against_schema(item, items, f"{path}[{index}]"))
+    return errors
+
+
+def record_resume(state: AgentState, value: Any, interrupt_id: str | None = None) -> Interrupt:
     """Store ``value`` as the answer to the pending interrupt (internal).
+
+    Args:
+        state: The paused state.
+        value: The resume value. ``None`` means the client cancelled and skips validation.
+        interrupt_id: The interrupt the client says it is answering. Optional; when given it
+            must equal the pending interrupt's id.
 
     Raises:
         ValueError: The thread is not paused at an :func:`interrupt`.
+        InterruptMismatchError: ``interrupt_id`` is not the pending interrupt's id.
+        ResumeValidationError: ``value`` does not satisfy the interrupt's ``response_schema``.
+
+    Nothing is recorded when an error is raised.
     """
+    from tenxgraph.core.exceptions import InterruptMismatchError, ResumeValidationError
+
     pending = pending_interrupt(state)
     if pending is None:
         raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
+    if interrupt_id is not None and interrupt_id != pending.id:
+        raise InterruptMismatchError(
+            f"Resume answers interrupt '{interrupt_id}' but the thread is paused at "
+            f"interrupt '{pending.id}'",
+            context={"expected": pending.id, "received": interrupt_id},
+        )
+    if value is not None and pending.response_schema:
+        errors = validate_against_schema(value, pending.response_schema)
+        if errors:
+            raise ResumeValidationError(
+                "Resume value does not match the response schema of interrupt "
+                f"'{pending.id}': {'; '.join(errors)}",
+                context={"interrupt_id": pending.id, "errors": errors},
+            )
     answers = state.execution_meta.internal_data.setdefault(RESUME_VALUES_KEY, {})
     answers[pending.key] = value
     return pending

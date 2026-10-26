@@ -36,6 +36,7 @@ from tenxgraph.utils import (
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import (
+    RESUME_INTERRUPT_ID_KEY,
     RESUME_KEY,
     Interrupt,
     pause_at,
@@ -67,7 +68,7 @@ async def check_interrupted[StateT: AgentState](
                 f"Thread is paused at interrupt '{request.id}' in node '{request.node}'. "
                 f"Resume it with {{'{RESUME_KEY}': value}}."
             )
-        record_resume(state, input_data[RESUME_KEY])
+        record_resume(state, input_data[RESUME_KEY], input_data.get(RESUME_INTERRUPT_ID_KEY))
     elif RESUME_KEY in input_data:
         raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
 

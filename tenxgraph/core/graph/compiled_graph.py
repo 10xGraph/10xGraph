@@ -312,12 +312,24 @@ class CompiledGraph[StateT: AgentState]:
         self._guard_not_realtime()
         cfg = self._prepare_config(config, is_stream=False)
 
-        return await self._invoke_handler.invoke(
-            input_data,
-            cfg,
-            self._state,
-            response_granularity,
-        )
+        try:
+            return await self._invoke_handler.invoke(
+                input_data,
+                cfg,
+                self._state,
+                response_granularity,
+            )
+        finally:
+            await self._end_run(cfg)
+
+    async def _end_run(self, cfg: dict[str, Any]) -> None:
+        """Tell the checkpointer this run is over so its stop scope is released."""
+        if not self._checkpointer:
+            return
+        try:
+            await self._checkpointer.aend_run(cfg)
+        except Exception:
+            logger.warning("Failed to release run scope for thread_id: %s", cfg.get("thread_id"))
 
     def stop(self, config: dict[str, Any]) -> dict[str, Any]:
         """Request the current graph execution to stop (sync helper).
@@ -499,13 +511,16 @@ class CompiledGraph[StateT: AgentState]:
         self._guard_not_realtime()
         cfg = self._prepare_config(config, is_stream=True)
 
-        async for chunk in self._stream_handler.stream(
-            input_data,
-            cfg,
-            self._state,
-            response_granularity,
-        ):
-            yield chunk
+        try:
+            async for chunk in self._stream_handler.stream(
+                input_data,
+                cfg,
+                self._state,
+                response_granularity,
+            ):
+                yield chunk
+        finally:
+            await self._end_run(cfg)
 
     def attach_remote_tools(
         self,
