@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import time
 from collections import defaultdict
@@ -136,10 +137,13 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._state_lock:
             self._record_owner(config)
-            self._states[key] = state
+            # Store copies: loaders merge new input into the state they get back, so
+            # sharing one object would let a request that is later rejected (a paused
+            # thread) change what is stored.
+            self._states[key] = copy.deepcopy(state)
             # Write-through: a run reads the cache first, so leaving it behind would
             # start the next run from the state this write replaced.
-            self._state_cache[key] = state
+            self._state_cache[key] = copy.deepcopy(state)
             logger.debug(f"Stored state for key: {key}")
             return state
 
@@ -159,7 +163,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             state = self._states.get(key)
             logger.debug(f"Retrieved state for key: {key}, found: {state is not None}")
-            return state
+            return copy.deepcopy(state)
 
     async def aclear_state(self, config: dict[str, Any]) -> bool:
         """
@@ -195,7 +199,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """
         key = self._get_config_key(config)
         async with self._state_lock:
-            self._state_cache[key] = state
+            self._state_cache[key] = copy.deepcopy(state)
             logger.debug(f"Stored state cache for key: {key}")
             return state
 
@@ -215,7 +219,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             cache = self._state_cache.get(key)
             logger.debug(f"Retrieved state cache for key: {key}, found: {cache is not None}")
-            return cache
+            return copy.deepcopy(cache)
 
     async def aput_cache_value(
         self,
@@ -367,6 +371,33 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                 if msg.message_id == message_id:
                     return msg
             raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set; a key replaces the same stored key.
+
+        Returns:
+            Message | None: The updated message, or None if not found or not accessible.
+        """
+        if self._owner_denied(config):
+            return None
+        key = self._get_config_key(config)
+        async with self._messages_lock:
+            for msg in self._messages.get(key, []):
+                if msg.message_id == message_id:
+                    msg.metadata = {**(msg.metadata or {}), **metadata}
+                    return msg
+            return None
 
     async def alist_messages(
         self,

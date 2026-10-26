@@ -82,6 +82,32 @@ Starting from this release:
   `convert_messages(extra_system_prompts=...)`). A bad placeholder in your own prompt is logged
   and left as is instead of failing the run.
 
+- **The in-memory checkpointer now stores and returns copies of the state.** `aget_state` handed
+  out the stored object itself, so a request that was rejected afterwards (for example a new
+  message sent to a paused thread) had already merged its input into the stored state. Mutating
+  a loaded state no longer changes the store until you save it. This costs one extra copy per
+  state read and write.
+- **Message ids are unique per thread in Postgres.** `messages.message_id` was the primary key on
+  its own, so a user could claim an id that another thread needed later and make that thread's
+  checkpoint fail. The key is now `(thread_id, message_id)`. The same id in two threads is
+  allowed, and a re-save inside one thread still updates the message.
+
+### Added
+
+- `BaseCheckpointer.aupdate_message_metadata(config, message_id, metadata)` (and the sync
+  `update_message_metadata`) merges keys into a stored message's metadata, replacing keys that
+  already exist, and returns the updated message or `None` if the message is not in that thread.
+  It applies the same owner isolation as `aget_message`. Implemented for Postgres, SQLite and
+  in-memory; a custom checkpointer that does not override it raises `NotImplementedError`.
+- New scope constant `CHECKPOINT_IMPORT` (`"checkpointer:import"`), included in `ALL_SCOPES`.
+
+### Changed
+
+- Postgres schema version 4 changes the messages primary key. The migration runs automatically
+  the first time the checkpointer sets up its schema, under the existing advisory lock.
+  `aget_message` and `adelete_message` on `PgCheckpointer` now require `thread_id` in the config
+  (they used to match on `message_id` alone when it was missing).
+
 ### Deprecated
 
 - Setting the file tool root through the run config (`file_tool_root` / `workspace_root`)

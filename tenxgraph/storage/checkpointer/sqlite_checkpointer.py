@@ -477,6 +477,33 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             raise IndexError(f"Message with ID {message_id} not found for thread: {key}")
         return Message.model_validate(json.loads(row["message_data"]))
 
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        await self._ensure_setup()
+        if await self._owner_denied(config):
+            return None
+        key = self._get_config_key(config)
+        # Read and write under the write lock so two updates cannot lose each other's keys.
+        async with self._write() as conn:
+            async with conn.execute(
+                "SELECT message_data FROM af_messages WHERE thread_id = ? AND message_id = ?",
+                (key, str(message_id)),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            message = Message.model_validate(json.loads(row["message_data"]))
+            message.metadata = {**(message.metadata or {}), **metadata}
+            await conn.execute(
+                "UPDATE af_messages SET message_data = ? WHERE thread_id = ? AND message_id = ?",
+                (_dumps(message.model_dump(mode="json")), key, str(message_id)),
+            )
+        return message
+
     async def alist_messages(
         self,
         config: dict[str, Any],

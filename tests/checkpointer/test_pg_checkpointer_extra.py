@@ -163,8 +163,10 @@ async def test_message_methods_cover_query_paths(cp):
     assert rows == []
 
     await cp.adelete_message({"thread_id": "t1"}, "m1")
-    await cp.adelete_message({}, "m1")
-    assert conn.execute.await_count >= 2
+    # Message ids are per thread, so a thread_id is required.
+    with pytest.raises(ValueError):
+        await cp.adelete_message({}, "m1")
+    assert conn.execute.await_count >= 1
 
 
 @pytest.mark.asyncio

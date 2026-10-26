@@ -554,6 +554,31 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         raise NotImplementedError
 
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata.
+
+        A key in ``metadata`` replaces the same key already stored. Applies the same
+        owner isolation as :meth:`aget_message`.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set on the message metadata.
+
+        Returns:
+            Message | None: The updated message, or None if it does not exist in the
+            thread (or the caller may not access it).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support updating message metadata"
+        )
+
     # -------------------------
     # Message methods sync
     # -------------------------
@@ -587,6 +612,25 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             Message: Retrieved message object.
         """
         return run_coroutine(self.aget_message(config, message_id))
+
+    def update_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata synchronously.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set on the message metadata.
+
+        Returns:
+            Message | None: The updated message, or None if it does not exist.
+        """
+        return run_coroutine(self.aupdate_message_metadata(config, message_id, metadata))
 
     def list_messages(
         self,
