@@ -10,9 +10,6 @@ from tenxgraph.storage.media.temp_cache import (
     TEMP_CACHE_NAMESPACE,
     TempCacheEntry,
     TemporaryMediaCache,
-    _content_hash,
-    _storage_key,
-    fetch_and_cache,
 )
 
 
@@ -58,31 +55,6 @@ class FakeCheckpointer:
                 if prefix is None or key_part.startswith(prefix):
                     keys.append(key_part)
         return keys
-
-
-class TestContentHash:
-    """Test content hashing."""
-
-    def test_same_data_same_hash(self):
-        data = b"hello world"
-        assert _content_hash(data) == _content_hash(data)  # noqa: S101
-
-    def test_different_data_different_hash(self):
-        assert _content_hash(b"hello") != _content_hash(b"world")  # noqa: S101
-
-
-class TestStorageKey:
-    """Test storage key generation."""
-
-    def test_image_png_key(self):
-        key = _storage_key("abc123def456", "image/png")
-        assert key.startswith("temp/abc123def45")  # noqa: S101
-        assert key.endswith(".png")  # noqa: S101
-
-    def test_unknown_mime_key(self):
-        key = _storage_key("abc123", "application/octet-stream")
-        assert key.startswith("temp/abc123")  # noqa: S101
-        assert key.endswith(".octet-stream")  # noqa: S101
 
 
 class TestTempCacheEntry:
@@ -260,54 +232,6 @@ class TestTemporaryMediaCache:
         cache = TemporaryMediaCache()
         assert cache.ttl_seconds == DEFAULT_TTL_SECONDS  # noqa: S101
         assert cache.ttl_seconds == 24 * 60 * 60  # noqa: S101
-
-
-class TestFetchAndCache:
-    """Test the fetch_and_cache function."""
-
-    @pytest.mark.asyncio
-    async def test_fetches_and_stores(self):
-        media_store = FakeMediaStore()
-        checkpointer = FakeCheckpointer()
-        cache = TemporaryMediaCache()
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.read = AsyncMock(return_value=b"fake-image-bytes")
-        mock_response.headers = {"Content-Type": "image/png"}
-
-        mock_cm = MagicMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_cm.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_cm)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            data, mime, key = await fetch_and_cache(
-                url="https://example.com/test.png",
-                media_store=media_store,
-                temp_cache=cache,
-                checkpointer=checkpointer,
-            )
-
-        assert data == b"fake-image-bytes"  # noqa: S101
-        assert mime == "image/png"  # noqa: S101
-        assert key.startswith("temp/")  # noqa: S101
-        assert key.endswith(".png")  # noqa: S101
-
-        # Verify stored in media store
-        stored_data, stored_mime = await media_store.retrieve(key)
-        assert stored_data == b"fake-image-bytes"  # noqa: S101
-
-        # Verify registered in temp cache (keyed by content hash, not storage_key)
-        keys = await checkpointer.alist_cache_keys("media:temp")
-        assert len(keys) == 1  # noqa: S101
-        entry = await cache.get(checkpointer, keys[0])
-        assert entry is not None  # noqa: S101
-        assert entry.source_url == "https://example.com/test.png"  # noqa: S101
 
 
 class TestInMemoryCheckpointerListCacheKeys:

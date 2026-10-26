@@ -81,6 +81,7 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
 from tenxgraph.utils.callbacks import CallbackManager
@@ -449,6 +450,7 @@ class RAGAgent[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
         """Compile the RAG graph.
 
@@ -474,6 +476,7 @@ class RAGAgent[StateT: AgentState]:
             callback_manager=callback_manager,
             media_store=media_store,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )
 
 

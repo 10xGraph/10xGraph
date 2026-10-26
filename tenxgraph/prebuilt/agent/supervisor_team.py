@@ -71,6 +71,7 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.command import Command
@@ -456,6 +457,7 @@ class SupervisorTeamAgent[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
         """Wire the graph and return a compiled, ready-to-invoke graph.
 
@@ -467,6 +469,7 @@ class SupervisorTeamAgent[StateT: AgentState]:
             callback_manager: Observability hooks.
             media_store: Media/file storage backend.
             shutdown_timeout: Graceful-shutdown timeout in seconds.
+            media_policy: Which external media URLs the server may download.
         """
         self._configure_graph()
         return self._graph.compile(
@@ -477,4 +480,5 @@ class SupervisorTeamAgent[StateT: AgentState]:
             callback_manager=callback_manager,
             media_store=media_store,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

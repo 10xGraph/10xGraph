@@ -13,7 +13,6 @@ import base64
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -515,20 +514,13 @@ class TestGoogleMultimodalConversion:
                 "image_url": {"url": "https://example.com/image.jpg"},
             },
         ]
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"fake-image-data"
-            mock_response.headers.get.return_value = "image/jpeg"
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            result = mixin._handle_regular_message(content, "user")
-            assert result.role == "user"
-            assert len(result.parts) == 1
-            # External URLs are now fetched and converted to inline bytes
-            assert result.parts[0].inline_data is not None
-            assert result.parts[0].inline_data.mime_type == "image/jpeg"
+        fetched = {"https://example.com/image.jpg": (b"fake-image-data", "image/jpeg")}
+        result = mixin._handle_regular_message(content, "user", fetched)
+        assert result.role == "user"
+        assert len(result.parts) == 1
+        # External URLs are downloaded by the prefetch step and converted to inline bytes
+        assert result.parts[0].inline_data is not None
+        assert result.parts[0].inline_data.mime_type == "image/jpeg"
 
     def test_list_content_with_audio(self):
         raw_bytes = b"\x00\x01\x02\x03"

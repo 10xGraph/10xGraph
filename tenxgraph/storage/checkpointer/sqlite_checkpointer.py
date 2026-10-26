@@ -34,6 +34,7 @@ from typing import Any, TypeVar
 from tenxgraph.core.exceptions import StorageError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
+from tenxgraph.utils.private_fs import mkdir_private, touch_private
 from tenxgraph.utils.thread_info import ThreadInfo
 
 from .base_checkpointer import BaseCheckpointer
@@ -222,12 +223,23 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     async def _get_conn(self) -> "aiosqlite.Connection":
         """Return the shared connection, opening and configuring it if needed."""
         if self._conn is None:
+            self._prepare_db_file()
             conn = await aiosqlite.connect(self.db_path)
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA synchronous=NORMAL")
             self._conn = conn
         return self._conn
+
+    def _prepare_db_file(self) -> None:
+        """Create the db directory (0o700) and an empty db file (0o600) before SQLite does.
+
+        SQLite gives the ``-wal`` and ``-shm`` files the mode of the database file, so they
+        are owner-only too. An existing directory or file keeps its mode.
+        """
+        if isinstance(self.db_path, Path):
+            mkdir_private(self.db_path.parent)
+            touch_private(self.db_path)
 
     @asynccontextmanager
     async def _write(self) -> AsyncIterator["aiosqlite.Connection"]:
@@ -246,8 +258,6 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     async def asetup(self) -> None:
         """Create the database directory (if any) and all required tables."""
-        if isinstance(self.db_path, Path):
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = await self._get_conn()
         async with self._write_lock:
             for stmt in DDL_STATEMENTS:

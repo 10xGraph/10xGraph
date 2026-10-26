@@ -18,6 +18,7 @@ from .provider_media import (
 from .resolver import MediaRefResolver
 from .security import enforce_file_size, sanitize_filename, validate_magic_bytes
 from .storage import BaseMediaStore, CloudMediaStore, InMemoryMediaStore, LocalFileMediaStore
+from .url_policy import MediaFetchPolicy, MediaURLError, fetch_media_url
 
 
 __all__ = [
@@ -28,15 +29,18 @@ __all__ = [
     "ImageHandling",
     "InMemoryMediaStore",
     "LocalFileMediaStore",
+    "MediaFetchPolicy",
     "MediaOffloadPolicy",
     "MediaProcessor",
     "MediaRefResolver",
+    "MediaURLError",
     "MultimodalConfig",
     "ProviderMediaCache",
     "create_openai_file_attachment",
     "create_openai_file_search_tool",
     "enforce_file_size",
     "ensure_media_offloaded",
+    "fetch_media_url",
     "sanitize_filename",
     "should_use_google_file_api",
     "validate_magic_bytes",

@@ -92,6 +92,48 @@ Starting from this release:
   checkpoint fail. The key is now `(thread_id, message_id)`. The same id in two threads is
   allowed, and a re-save inside one thread still updates the message.
 
+- **Client-supplied media URLs are no longer downloaded blindly.** On Google graphs and the
+  Google File API / inline-bytes paths the server downloaded the URL a client sent, with
+  `urllib` or aiohttp: `file:///app/.env`, `http://169.254.169.254/` and `http://localhost:6379`
+  all worked, there was no size cap, and the Google conversion blocked the event loop. All four
+  download points (`agent_internal/google.py` for images and for documents and video,
+  `MediaRefResolver._fetch_external_url` and `MediaResolver._fetch_external_url`) now go through
+  `fetch_media_url` and a `MediaFetchPolicy`. Only `http` and `https` are downloaded, the host
+  must resolve to public addresses only (cloud metadata addresses are never reachable, not even
+  with the private-host opt-in), the connection is pinned to the checked address, every
+  redirect is checked again (5 at most), and a size cap (20 MB) and a timeout (10 s) always
+  apply. The response Content-Type must match the policy (`image/*` and `application/pdf` by
+  default). The download runs off the event loop. A refused or failed URL still becomes a
+  `[Failed to load image]` / `[Failed to load media]` text part, and the warning logs the URL
+  without its query string. `gs://` URLs are still passed through to Vertex AI unchanged by
+  the converters; `MediaFetchPolicy.check_url` lets an API reject them unless the bucket is in
+  `allowed_gcs_buckets`, because Vertex AI reads `gs://` with the server's own credentials.
+  Behaviour change: audio and video links on Google graphs stop downloading until you allow
+  those content types in the policy.
+- **`CloudMediaStore` validates storage keys.** It now applies the rule `LocalFileMediaStore`
+  already used (32 lowercase hex characters) before building any object path, including in
+  `get_direct_url`, which signed whatever path a key gave it when `mime_type` was passed. A
+  non-hex key raises `ValueError`. The legacy `agentflow-media` prefix keeps working for valid
+  keys. An object that was stored under a non-hex key by custom code would no longer be
+  reachable through the store.
+- **Local media and the SQLite checkpointer create owner-only files.** `LocalFileMediaStore`
+  creates directories with mode `0o700` and data and sidecar files with `0o600`. The sidecar
+  holds the owner id and the original filename. `SqliteCheckpointer` creates the database
+  folder with `0o700` and the database file with `0o600` before connecting; SQLite gives the
+  `-wal` and `-shm` files the mode of the database file. Existing files and folders keep their
+  mode. The process umask can only make the modes stricter. Other OS users or services that
+  read these files (for example a web server user serving uploads) lose access. No effect on
+  Windows.
+- **File tools hide secret files.** `file_read`, `file_write` and `file_search`, and the tools
+  from `create_file_tools(...)`, now refuse or skip `.env`, `.env.*`, `*.pem`, `*.key`,
+  `*.p12`, `*.pfx`, `*key*.json`, `service_account*.json`, `id_rsa*`, `id_ed25519*`, `.netrc`,
+  `.npmrc`, `.pypirc` and anything under `.ssh`, `.aws`, `.gnupg` or `.git`, for any root
+  including the working-directory default. Matching uses the resolved path and ignores case,
+  so symlinks, `..` and case tricks cannot reach them. Read and write return the same "path is
+  not allowed" error whether or not the file exists, and search never shows hidden names or
+  contents. `create_file_tools` gains `deny=` to add glob patterns and `use_default_deny=False`
+  to opt out of the defaults.
+
 ### Added
 
 - `BaseCheckpointer.aupdate_message_metadata(config, message_id, metadata)` (and the sync
@@ -99,6 +141,27 @@ Starting from this release:
   already exist, and returns the updated message or `None` if the message is not in that thread.
   It applies the same owner isolation as `aget_message`. Implemented for Postgres, SQLite and
   in-memory; a custom checkpointer that does not override it raises `NotImplementedError`.
+- **`MediaFetchPolicy`, `MediaURLError` and `fetch_media_url`**, exported from
+  `tenxgraph.storage.media`. `MediaFetchPolicy` (frozen dataclass: `enabled`, `allowed_schemes`,
+  `allowed_hosts` with `*.example.com` wildcards, `allow_private_for_allowed_hosts`,
+  `allowed_content_types`, `max_bytes`, `timeout`, `allowed_gcs_buckets`) has `check_url(url)`,
+  which needs no network and raises `MediaURLError` for a disabled policy, a scheme or host that
+  is not allowed, an IP literal that is not public, or a `gs://` bucket that is not listed.
+  `await fetch_media_url(url, policy=None)` runs that check, downloads safely and returns
+  `(bytes, mime)`.
+- `StateGraph.compile(media_policy=...)` (and the same argument on the `compile()` of the
+  prebuilt agents) sets the policy; it is bound in the dependency container next to the media
+  store. `CompiledGraph.media_policy` is a read-only property that returns it, or the default
+  `MediaFetchPolicy()` when none was set, so an API can call `compiled.media_policy.check_url(url)`
+  on client input.
+- `BaseMediaStore.update_metadata(storage_key, updates)` shallow-merges `updates` into the
+  stored metadata (a value of `None` removes the key) and returns `False` when the object does
+  not exist. Implemented for `LocalFileMediaStore` (atomic sidecar rewrite, mode `0o600`),
+  `InMemoryMediaStore` and `CloudMediaStore`; a custom store that does not override it raises
+  `NotImplementedError`.
+- `tenxgraph.utils.safe_http`: the checked HTTP client behind `fetch_url` and `fetch_media_url`
+  (public-address check including NAT64 and IPv4-compatible forms, address pinning, manual
+  redirect loop with a check on every hop, body cap, optional deadline, no proxy variables).
 - New scope constant `CHECKPOINT_IMPORT` (`"checkpointer:import"`), included in `ALL_SCOPES`.
 
 ### Changed
@@ -107,11 +170,21 @@ Starting from this release:
   the first time the checkpointer sets up its schema, under the existing advisory lock.
   `aget_message` and `adelete_message` on `PgCheckpointer` now require `thread_id` in the config
   (they used to match on `message_id` alone when it was missing).
+- The Google message conversion (`_convert_to_google_format`) no longer downloads anything
+  itself. The async callers fetch external media first (`_prefetch_google_media`) and pass it
+  in; an external URL that was not fetched becomes a `[Failed to load ...]` text part.
+- `fetch_url` now runs on `tenxgraph.utils.safe_http`; its behaviour and messages are unchanged.
 
 ### Deprecated
 
 - Setting the file tool root through the run config (`file_tool_root` / `workspace_root`)
   now emits a `DeprecationWarning` and will be removed in 0.11. Use `create_file_tools(root=...)`.
+
+### Removed
+
+- `tenxgraph.storage.media.temp_cache.fetch_and_cache` and its private helpers. Nothing called
+  it, and it downloaded any URL with aiohttp and no checks. `TemporaryMediaCache` and
+  `TempCacheEntry` stay.
 
 ### Fixed
 

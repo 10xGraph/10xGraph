@@ -49,6 +49,19 @@ class InMemoryMediaStore(BaseMediaStore):
             **metadata,
         }
 
+    async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
+        entry = self._data.get(storage_key)
+        if entry is None:
+            return False
+        data, mime_type, metadata = entry
+        merged = {**metadata, **updates}
+        self._data[storage_key] = (
+            data,
+            mime_type,
+            {k: v for k, v in merged.items() if v is not None},
+        )
+        return True
+
     # -- Helpers for testing --------------------------------------------------
 
     def __len__(self) -> int:

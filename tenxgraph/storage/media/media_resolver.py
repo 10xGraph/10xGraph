@@ -24,6 +24,7 @@ from tenxgraph.storage.media.capabilities import (
 from tenxgraph.utils.media_scheme import MEDIA_SCHEMES, strip_media_scheme
 
 from .storage.base import BaseMediaStore
+from .url_policy import MediaFetchPolicy, fetch_media_url, resolve_media_policy
 
 
 logger = logging.getLogger("tenxgraph.media.media_resolver")
@@ -39,15 +40,19 @@ class MediaResolver:
     Args:
         media_store: Optional media store for internal ``graph://media/`` refs.
         cache_backend: Optional cache backend for signed URL caching.
+        media_policy: Policy for downloading external URLs. Defaults to the policy bound by
+            ``compile(media_policy=...)``, or ``MediaFetchPolicy()``.
     """
 
     def __init__(
         self,
         media_store: BaseMediaStore | None = None,
         cache_backend: Any | None = None,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> None:
         self.media_store = media_store
         self.cache_backend = cache_backend
+        self.media_policy = media_policy
 
     async def resolve(
         self,
@@ -269,14 +274,11 @@ class MediaResolver:
         raise ValueError(f"Cannot retrieve bytes for ref kind: {ref.kind}")
 
     async def _fetch_external_url(self, url: str) -> tuple[bytes, str]:
-        """Fetch an external URL and return (bytes, mime_type)."""
-        import aiohttp
+        """Download an external URL under the media policy; return (bytes, mime_type).
 
-        async with aiohttp.ClientSession() as session, session.get(url) as resp:
-            resp.raise_for_status()
-            data = await resp.read()
-            mime = resp.headers.get("Content-Type", "application/octet-stream")
-            return data, mime
+        Raises ``MediaURLError`` when the policy refuses the URL or the download fails.
+        """
+        return await fetch_media_url(url, self.media_policy or resolve_media_policy())
 
     async def _retrieve(self, agentflow_url: str) -> tuple[bytes, str]:
         """Retrieve bytes from the media store for an internal URL."""

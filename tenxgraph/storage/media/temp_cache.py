@@ -10,7 +10,6 @@ Default retention: 24 hours (hardcoded for v1).
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -67,17 +66,6 @@ class TempCacheEntry:
             expires_at=data["expires_at"],
             is_temporary=data.get("is_temporary", True),
         )
-
-
-def _content_hash(data: bytes) -> str:
-    """Compute a SHA-256 hex digest for content-addressed caching."""
-    return hashlib.sha256(data).hexdigest()
-
-
-def _storage_key(content_hash: str, mime_type: str) -> str:
-    """Build a storage key for a temporary media entry."""
-    ext = mime_type.split("/")[-1] if "/" in mime_type else "bin"
-    return f"temp/{content_hash[:12]}.{ext}"
 
 
 class TemporaryMediaCache:
@@ -254,59 +242,3 @@ class TemporaryMediaCache:
             await checkpointer.aclear_cache_value(TEMP_CACHE_NAMESPACE, storage_key)
         except Exception:
             logger.debug("Failed to remove temp cache entry key=%s", storage_key)
-
-
-async def fetch_and_cache(
-    url: str,
-    media_store: Any,
-    temp_cache: TemporaryMediaCache,
-    checkpointer: Any,
-) -> tuple[bytes, str, str]:
-    """Fetch an external URL and store it as temporary cached media.
-
-    Args:
-        url: The external URL to fetch.
-        media_store: The media store to save bytes to.
-        temp_cache: The temporary cache manager.
-        checkpointer: The checkpointer for cache metadata persistence.
-
-    Returns:
-        Tuple of (bytes, mime_type, storage_key).
-    """
-    import aiohttp
-
-    async with aiohttp.ClientSession() as session, session.get(url) as resp:
-        resp.raise_for_status()
-        data = await resp.read()
-        mime_type = resp.headers.get("Content-Type", "application/octet-stream")
-
-    # Compute content hash
-    content_hash = _content_hash(data)
-
-    # Check if already cached (keyed by content hash)
-    cache_key = f"hash:{content_hash}"
-    existing = await temp_cache.get(checkpointer, cache_key)
-    if existing is not None:
-        # Re-fetch bytes from store
-        try:
-            stored_data, stored_mime = await media_store.retrieve(existing.storage_key)
-            return stored_data, stored_mime, existing.storage_key
-        except Exception:
-            logger.debug("Failed to retrieve existing cached media, will re-store")
-
-    # Store in media store
-    storage_key = _storage_key(content_hash, mime_type)
-    await media_store.store(data, mime_type, key=storage_key)
-
-    # Register in temp cache (keyed by content hash for dedup)
-    await temp_cache.store(
-        checkpointer=checkpointer,
-        source_url=url,
-        mime_type=mime_type,
-        storage_key=storage_key,
-        content_hash=content_hash,
-        cache_key=cache_key,
-    )
-
-    logger.debug("Fetched and cached external URL: %s -> %s", url, storage_key)
-    return data, mime_type, storage_key

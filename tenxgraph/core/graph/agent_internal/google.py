@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 from typing import Any
+
+from tenxgraph.storage.media.url_policy import (
+    MediaURLError,
+    redact_url,
+    resolve_media_policy,
+)
 
 from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT
 
@@ -13,14 +20,79 @@ from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT
 logger = logging.getLogger("tenxgraph.agent")
 
 
+# Media URLs that are downloaded by us: ``url -> (bytes, mime)``, or ``None`` when refused
+FetchedMedia = dict[str, tuple[bytes, str] | None]
+
+
+def _external_media_urls(messages: list[dict[str, Any]]) -> list[str]:
+    """URLs in content parts that the server would have to download for Google."""
+    urls: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type", "")
+            if kind not in ("image_url", "document", "video"):
+                continue
+            info = part.get(kind)
+            if not isinstance(info, dict):
+                continue
+            if kind != "image_url" and (info.get("text") or info.get("data")):
+                continue
+            url = info.get("url")
+            if isinstance(url, str) and url and not url.startswith(("data:", "gs://")):
+                urls.append(url)
+    return urls
+
+
 class AgentGoogleMixin:
     """Google GenAI message conversion and request helpers."""
+
+    async def _prefetch_google_media(self, messages: list[dict[str, Any]]) -> FetchedMedia:
+        """Download external media URLs under the media policy, off the event loop.
+
+        The conversion to Google parts is synchronous, so the bytes are fetched here first
+        and handed to it. A URL the policy refuses, or that fails to download, maps to
+        ``None`` and becomes a "[Failed to load ...]" text part.
+        """
+        urls = list(dict.fromkeys(_external_media_urls(messages)))
+        if not urls:
+            return {}
+
+        from tenxgraph.storage.media.url_policy import fetch_media_url
+
+        policy = getattr(self, "media_policy", None) or resolve_media_policy()
+
+        async def fetch(url: str) -> tuple[bytes, str] | None:
+            try:
+                return await fetch_media_url(url, policy)
+            except MediaURLError as exc:
+                logger.warning("Media URL refused for Google: %s (%s)", redact_url(url), exc)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to fetch external media URL for Google: %s (%s)",
+                    redact_url(url),
+                    type(exc).__name__,
+                )
+            return None
+
+        results = await asyncio.gather(*(fetch(url) for url in urls))
+        return dict(zip(urls, results, strict=True))
 
     def _convert_to_google_format(
         self,
         messages: list[dict[str, Any]],
+        fetched: FetchedMedia | None = None,
     ) -> tuple[str | None, list]:
-        """Convert chat-completion style messages into Google GenAI content objects."""
+        """Convert chat-completion style messages into Google GenAI content objects.
+
+        ``fetched`` holds the external media already downloaded by
+        :meth:`_prefetch_google_media`. This method never touches the network: an external
+        URL that is not in ``fetched`` becomes a "[Failed to load ...]" text part.
+        """
         from google.genai import types
 
         system_instruction = None
@@ -66,7 +138,7 @@ class AgentGoogleMixin:
                 google_contents.append(self._handle_assistant_with_tools(message))
             else:
                 google_role = "model" if role == "assistant" else "user"
-                google_contents.append(self._handle_regular_message(content, google_role))
+                google_contents.append(self._handle_regular_message(content, google_role, fetched))
 
         flush_tool_parts()
 
@@ -145,7 +217,9 @@ class AgentGoogleMixin:
             response={"result": str(content) if content else ""},
         )
 
-    def _handle_regular_message(self, content: Any, role: str) -> Any:
+    def _handle_regular_message(
+        self, content: Any, role: str, fetched: FetchedMedia | None = None
+    ) -> Any:
         """Handle regular text or multimodal messages (assistant or user).
 
         When *content* is a list of OpenAI-style content parts (produced by
@@ -155,7 +229,7 @@ class AgentGoogleMixin:
         from google.genai import types
 
         if isinstance(content, list):
-            parts = self._content_parts_to_google(content)
+            parts = self._content_parts_to_google(content, fetched)
             if not parts:
                 parts = [types.Part(text="")]
             return types.Content(role=role, parts=parts)
@@ -165,7 +239,9 @@ class AgentGoogleMixin:
             parts=[types.Part(text=str(content) if content else "")],
         )
 
-    def _content_parts_to_google(self, parts: list[dict[str, Any]]) -> list[Any]:
+    def _content_parts_to_google(
+        self, parts: list[dict[str, Any]], fetched: FetchedMedia | None = None
+    ) -> list[Any]:
         """Convert a list of OpenAI-style content parts to Google types.Part objects."""
         from google.genai import types
 
@@ -180,17 +256,21 @@ class AgentGoogleMixin:
         for part in parts:
             converter = converters.get(part.get("type", ""))
             if converter:
-                google_parts.extend(converter(part, types))
+                google_parts.extend(converter(part, types, fetched))
 
         return google_parts
 
-    def _text_part_to_google(self, part: dict[str, Any], types: Any) -> list[Any]:
+    def _text_part_to_google(
+        self, part: dict[str, Any], types: Any, fetched: FetchedMedia | None = None
+    ) -> list[Any]:
         text = part.get("text", "")
         if not text:
             return []
         return [types.Part(text=text)]
 
-    def _image_part_to_google(self, part: dict[str, Any], types: Any) -> list[Any]:
+    def _image_part_to_google(
+        self, part: dict[str, Any], types: Any, fetched: FetchedMedia | None = None
+    ) -> list[Any]:
         image_info = part.get("image_url", {})
         if not isinstance(image_info, dict):
             return []
@@ -208,20 +288,18 @@ class AgentGoogleMixin:
         if url.startswith("gs://"):
             return [types.Part.from_uri(file_uri=url, mime_type="image/jpeg")]
 
-        # Google does not accept arbitrary external https:// URLs via Part.from_uri.
-        # Fetch the image bytes and use Part.from_bytes instead.
-        try:
-            import urllib.request
-
-            with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310  # nosec B310
-                raw = resp.read()
-                mime = resp.headers.get("Content-Type", "image/jpeg")
-                return [types.Part.from_bytes(data=raw, mime_type=mime)]
-        except Exception:
-            logger.warning("Failed to fetch external image URL for Google: %s", url)
+        # Google does not accept arbitrary external https:// URLs via Part.from_uri, so the
+        # bytes were downloaded under the media policy by _prefetch_google_media.
+        result = (fetched or {}).get(url)
+        if result is None:
+            logger.warning("Failed to load external image URL for Google: %s", redact_url(url))
             return [types.Part(text="[Failed to load image]")]
+        raw, mime = result
+        return [types.Part.from_bytes(data=raw, mime_type=mime or "image/jpeg")]
 
-    def _audio_part_to_google(self, part: dict[str, Any], types: Any) -> list[Any]:
+    def _audio_part_to_google(
+        self, part: dict[str, Any], types: Any, fetched: FetchedMedia | None = None
+    ) -> list[Any]:
         audio_info = part.get("input_audio", {})
         if not isinstance(audio_info, dict):
             return []
@@ -234,7 +312,9 @@ class AgentGoogleMixin:
         raw = base64.b64decode(b64_data)
         return [types.Part.from_bytes(data=raw, mime_type=f"audio/{fmt}")]
 
-    def _document_part_to_google(self, part: dict[str, Any], types: Any) -> list[Any]:
+    def _document_part_to_google(
+        self, part: dict[str, Any], types: Any, fetched: FetchedMedia | None = None
+    ) -> list[Any]:
         doc_info = part.get("document", {})
         if not isinstance(doc_info, dict):
             return []
@@ -246,9 +326,12 @@ class AgentGoogleMixin:
             doc_info,
             types,
             default_mime="application/pdf",
+            fetched=fetched,
         )
 
-    def _video_part_to_google(self, part: dict[str, Any], types: Any) -> list[Any]:
+    def _video_part_to_google(
+        self, part: dict[str, Any], types: Any, fetched: FetchedMedia | None = None
+    ) -> list[Any]:
         video_info = part.get("video", {})
         if not isinstance(video_info, dict):
             return []
@@ -257,6 +340,7 @@ class AgentGoogleMixin:
             video_info,
             types,
             default_mime="video/mp4",
+            fetched=fetched,
         )
 
     def _binary_or_uri_parts_to_google(
@@ -265,6 +349,7 @@ class AgentGoogleMixin:
         types: Any,
         *,
         default_mime: str,
+        fetched: FetchedMedia | None = None,
     ) -> list[Any]:
         mime = media_info.get("mime_type", default_mime)
         data = media_info.get("data")
@@ -279,15 +364,11 @@ class AgentGoogleMixin:
             if url.startswith("gs://"):
                 return [types.Part.from_uri(file_uri=url, mime_type=mime)]
 
-            try:
-                import urllib.request
-
-                with urllib.request.urlopen(url, timeout=10) as resp:  # noqa: S310  # nosec B310
-                    raw = resp.read()
-                    return [types.Part.from_bytes(data=raw, mime_type=mime)]
-            except Exception:
-                logger.warning("Failed to fetch external media URL for Google: %s", url)
+            result = (fetched or {}).get(url)
+            if result is None:
+                logger.warning("Failed to load external media URL for Google: %s", redact_url(url))
                 return [types.Part(text="[Failed to load media]")]
+            return [types.Part.from_bytes(data=result[0], mime_type=mime)]
 
         return []
 
@@ -420,7 +501,8 @@ class AgentGoogleMixin:
             are not part of this endpoint's request shape, so they are excluded
             from the total. Anthropic's equivalent does include them.
         """
-        _system_instruction, google_contents = self._convert_to_google_format(messages)
+        fetched = await self._prefetch_google_media(messages)
+        _system_instruction, google_contents = self._convert_to_google_format(messages, fetched)
 
         response = await self.client.aio.models.count_tokens(
             model=self.model,
@@ -452,7 +534,8 @@ class AgentGoogleMixin:
         # Peek before _build_google_config pops it, so we know whether a cache is active.
         has_explicit_cache = bool(call_kwargs.get("cached_content"))
 
-        system_instruction, google_contents = self._convert_to_google_format(messages)
+        fetched = await self._prefetch_google_media(messages)
+        system_instruction, google_contents = self._convert_to_google_format(messages, fetched)
         config = self._build_google_config(system_instruction, tools, call_kwargs)
 
         # When an explicit cache is active, system_instruction is excluded from the

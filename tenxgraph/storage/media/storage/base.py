@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
 from tenxgraph.core.state.message_block import MediaRef
+
+
+_VALID_KEY_RE = re.compile(r"[a-f0-9]{32}")
+
+
+def validate_storage_key(key: str) -> None:
+    """Accept only keys made by ``store()`` (32 lowercase hex characters).
+
+    Raises:
+        ValueError: The key has any other shape, so it can never become part of a path.
+    """
+    if not isinstance(key, str) or not _VALID_KEY_RE.fullmatch(key):
+        raise ValueError(f"Invalid storage key format: {key!r}")
 
 
 class BaseMediaStore(ABC):
@@ -57,6 +71,17 @@ class BaseMediaStore(ABC):
             "mime_type": mime_type,
             "size_bytes": len(data),
         }
+
+    async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
+        """Shallow-merge ``updates`` into the stored metadata.
+
+        A key whose value is ``None`` is removed. Returns ``False`` when the object does
+        not exist. The blob itself is not touched.
+
+        Raises:
+            NotImplementedError: The backend does not support it.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support update_metadata()")
 
     async def get_direct_url(
         self,

@@ -30,6 +30,7 @@ from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.config import MultimodalConfig
 from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import MemoryConfig
 from tenxgraph.utils.callbacks import CallbackManager
@@ -439,6 +440,7 @@ class StructuredOutputAgent[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
         """Wire the graph and return a :class:`~tenxgraph.core.graph.CompiledGraph`.
 
@@ -450,6 +452,7 @@ class StructuredOutputAgent[StateT: AgentState]:
             callback_manager: Callback hooks for observability.
             media_store: Media/file storage backend.
             shutdown_timeout: Graceful-shutdown timeout in seconds.
+            media_policy: Which external media URLs the server may download.
 
         Returns:
             A compiled, ready-to-invoke graph.
@@ -463,4 +466,5 @@ class StructuredOutputAgent[StateT: AgentState]:
             callback_manager=callback_manager,
             media_store=media_store,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

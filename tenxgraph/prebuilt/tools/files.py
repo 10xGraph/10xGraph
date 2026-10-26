@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from tenxgraph.utils.decorators import tool
 
@@ -33,6 +34,76 @@ _SKIP_DIRS = {
     "node_modules",
     "venv",
 }
+_DEFAULT_DENY_FILES = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*key*.json",
+    "service_account*.json",
+    "id_rsa*",
+    "id_ed25519*",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+)
+_DEFAULT_DENY_DIRS = (".ssh", ".aws", ".gnupg", ".git")
+_NOT_ALLOWED = "path is not allowed"
+
+
+class _DenyRules(NamedTuple):
+    """Casefolded rules for paths the file tools must hide.
+
+    ``files`` match the final path component, ``dirs`` are names that hide everything under a
+    directory (or file) with that name, and ``any_part`` patterns match every component and the
+    whole relative path.
+    """
+
+    files: tuple[str, ...]
+    dirs: tuple[str, ...]
+    any_part: tuple[str, ...]
+
+
+_DEFAULT_RULES = _DenyRules(
+    tuple(p.casefold() for p in _DEFAULT_DENY_FILES),
+    tuple(d.casefold() for d in _DEFAULT_DENY_DIRS),
+    (),
+)
+
+
+class _HiddenPathError(ValueError):
+    """Raised for a hidden path. The text is the same whether or not the path exists."""
+
+    def __init__(self) -> None:
+        super().__init__(_NOT_ALLOWED)
+
+
+def _build_rules(deny: Iterable[str], use_default_deny: bool) -> _DenyRules:
+    extra = tuple(str(p).casefold() for p in deny)
+    base = _DEFAULT_RULES if use_default_deny else _DenyRules((), (), ())
+    return _DenyRules(base.files, base.dirs, base.any_part + extra)
+
+
+def _is_hidden(path: Path, root: Path, rules: _DenyRules) -> bool:
+    """Return True if ``path`` (under ``root``) matches a deny rule, ignoring case."""
+    try:
+        parts = [part.casefold() for part in path.relative_to(root).parts]
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    relative = "/".join(parts)
+    if any(part in rules.dirs for part in parts):
+        return True
+    if any(fnmatch.fnmatchcase(parts[-1], pattern) for pattern in rules.files):
+        return True
+    return any(
+        fnmatch.fnmatchcase(part, pattern) or fnmatch.fnmatchcase(relative, pattern)
+        for pattern in rules.any_part
+        for part in parts
+    )
 
 
 def _configured_root(config: dict[str, Any] | None) -> Path:
@@ -50,7 +121,7 @@ def _configured_root(config: dict[str, Any] | None) -> Path:
     return Path(str(root or ".")).expanduser().resolve()
 
 
-def _resolve_under_root(path: str, root: Path) -> Path:
+def _resolve_under_root(path: str, root: Path, rules: _DenyRules = _DEFAULT_RULES) -> Path:
     if not path or not path.strip():
         raise ValueError("path is required")
 
@@ -63,6 +134,13 @@ def _resolve_under_root(path: str, root: Path) -> Path:
         resolved.relative_to(root)
     except ValueError:
         raise ValueError(f"path must stay within the configured root: {root}") from None
+
+    # Check the path as typed (``..`` collapsed, symlinks kept) and the resolved path, so a
+    # hidden name is caught whether it is the link or its target.
+    if _is_hidden(Path(os.path.normpath(candidate)), root, rules) or _is_hidden(
+        resolved, root, rules
+    ):
+        raise _HiddenPathError
 
     return resolved
 
@@ -96,20 +174,23 @@ def _write_file_content(
     raise ValueError(f"unsupported mode: {mode}")
 
 
-def _search_target(candidate: Path, glob: str, root: Path) -> Path | None:
+def _search_target(
+    candidate: Path, glob: str, root: Path, rules: _DenyRules = _DEFAULT_RULES
+) -> Path | None:
     """Return the file to search for ``candidate``, or None to skip it.
 
     A symlink inside the workspace can point outside it, so the candidate is resolved and
-    must still be under ``root``, the same rule ``file_read`` applies.
+    must still be under ``root``, the same rule ``file_read`` applies. Hidden files and
+    directories (see ``_DenyRules``) are skipped, by their own name and by their target.
     """
-    if any(part in _SKIP_DIRS for part in candidate.parts):
+    if any(part in _SKIP_DIRS for part in candidate.parts) or _is_hidden(candidate, root, rules):
         return None
     try:
         target = candidate.resolve()
         target.relative_to(root)
     except (OSError, ValueError):
         return None
-    if not target.is_file():
+    if _is_hidden(target, root, rules) or not target.is_file():
         return None
     if target.stat().st_size > _MAX_SEARCH_FILE_SIZE:
         return None
@@ -171,9 +252,16 @@ _WRITE_TAGS = ["file", "filesystem", "write"]
 _SEARCH_TAGS = ["file", "filesystem", "search"]
 
 
-def _read(path: str, start_line: int, end_line: int, max_chars: int, root: Path) -> str:
+def _read(
+    path: str,
+    start_line: int,
+    end_line: int,
+    max_chars: int,
+    root: Path,
+    rules: _DenyRules = _DEFAULT_RULES,
+) -> str:
     try:
-        target = _resolve_under_root(path, root)
+        target = _resolve_under_root(path, root, rules)
         if not target.exists():
             return json.dumps({"error": "file does not exist", "path": _relative(target, root)})
         if not target.is_file():
@@ -215,9 +303,10 @@ def _write(
     mode: Literal["create", "overwrite", "append"],
     create_dirs: bool,
     root: Path,
+    rules: _DenyRules = _DEFAULT_RULES,
 ) -> str:
     try:
-        target = _resolve_under_root(path, root)
+        target = _resolve_under_root(path, root, rules)
         if len(content) > _DEFAULT_MAX_WRITE_CHARS:
             result = {"error": "content is too large"}
         elif target.exists() and not target.is_file():
@@ -243,12 +332,19 @@ def _write(
         return json.dumps({"error": str(exc)})
 
 
-def _search(query: str, path: str, glob: str, max_results: int, root: Path) -> str:
+def _search(
+    query: str,
+    path: str,
+    glob: str,
+    max_results: int,
+    root: Path,
+    rules: _DenyRules = _DEFAULT_RULES,
+) -> str:
     if not query:
         return json.dumps({"error": "query is required"})
 
     try:
-        search_root = _resolve_under_root(path or ".", root)
+        search_root = _resolve_under_root(path or ".", root, rules)
         if not search_root.exists():
             return json.dumps({"error": "search path does not exist"})
 
@@ -260,7 +356,7 @@ def _search(query: str, path: str, glob: str, max_results: int, root: Path) -> s
         for candidate in candidates:
             if len(results) >= limit:
                 break
-            target = _search_target(candidate, glob, root)
+            target = _search_target(candidate, glob, root, rules)
             if target is None:
                 continue
 
@@ -346,17 +442,30 @@ def create_file_tools(
     read: bool = True,
     write: bool = True,
     search: bool = True,
+    deny: Iterable[str] = (),
+    use_default_deny: bool = True,
 ) -> list[Callable[..., str]]:
     """Create ``file_read``, ``file_write`` and ``file_search`` locked to ``root``.
 
     The root is fixed when the tools are created, so nothing in the run config can move it.
     Prefer these over the module-level tools in any graph that serves requests.
 
+    Secret files are hidden by default, whatever the root: ``.env``, ``.env.*``, ``*.pem``,
+    ``*.key``, ``*.p12``, ``*.pfx``, ``*key*.json``, ``service_account*.json``, ``id_rsa*``,
+    ``id_ed25519*``, ``.netrc``, ``.npmrc``, ``.pypirc`` and anything under a directory named
+    ``.ssh``, ``.aws``, ``.gnupg`` or ``.git``. Matching ignores case and uses the resolved
+    path, so symlinks and ``..`` cannot reach them. Reading or writing a hidden path returns
+    the same "not allowed" error whether or not it exists, and search skips it.
+
     Args:
         root: Directory the tools may read and write under. Must exist.
         read: Include ``file_read``.
         write: Include ``file_write``.
         search: Include ``file_search``.
+        deny: Extra glob patterns to hide. Each is matched, ignoring case, against every
+            component of the path relative to ``root`` and against the whole relative path.
+        use_default_deny: Set to False to drop the default patterns above. Only do this when
+            the root holds nothing sensitive.
 
     Returns:
         The selected tools, ready to pass to ``ToolNode``.
@@ -376,6 +485,7 @@ def create_file_tools(
     if not fixed_root.is_dir():
         raise ValueError(f"file tool root is not a directory: {fixed_root}")
 
+    rules = _build_rules(deny, use_default_deny)
     tools: list[Callable[..., str]] = []
 
     if read:
@@ -393,7 +503,7 @@ def create_file_tools(
             max_chars: int = _DEFAULT_MAX_READ_CHARS,
         ) -> str:
             """Read a workspace-scoped text file."""
-            return _read(path, start_line, end_line, max_chars, fixed_root)
+            return _read(path, start_line, end_line, max_chars, fixed_root, rules)
 
         tools.append(scoped_file_read)
 
@@ -412,7 +522,7 @@ def create_file_tools(
             create_dirs: bool = False,
         ) -> str:
             """Write UTF-8 text to a workspace-scoped file."""
-            return _write(path, content, mode, create_dirs, fixed_root)
+            return _write(path, content, mode, create_dirs, fixed_root, rules)
 
         tools.append(scoped_file_write)
 
@@ -431,7 +541,7 @@ def create_file_tools(
             max_results: int = _DEFAULT_MAX_SEARCH_RESULTS,
         ) -> str:
             """Search workspace-scoped text files by filename and content."""
-            return _search(query, path, glob, max_results, fixed_root)
+            return _search(query, path, glob, max_results, fixed_root, rules)
 
         tools.append(scoped_file_search)
 

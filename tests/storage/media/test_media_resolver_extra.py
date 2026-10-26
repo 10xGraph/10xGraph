@@ -71,36 +71,18 @@ async def test_retrieve_bytes_from_data_ref():
 
 
 @pytest.mark.asyncio
-async def test_fetch_external_url_reads_response_bytes_and_mime():
-    resolver = MediaResolver()
+async def test_fetch_external_url_uses_the_media_policy():
+    from tenxgraph.storage.media import MediaFetchPolicy
 
-    class _Resp:
-        headers = {"Content-Type": "image/jpeg"}
+    policy = MediaFetchPolicy(allowed_hosts=("images.example.com",))
+    resolver = MediaResolver(media_policy=policy)
 
-        async def __aenter__(self):
-            return self
+    async def fake_fetch(url, used_policy):
+        assert used_policy is policy
+        return b"jpg", "image/jpeg"
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def raise_for_status(self):
-            return None
-
-        async def read(self):
-            return b"jpg"
-
-    class _Session:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def get(self, url):
-            return _Resp()
-
-    with patch("aiohttp.ClientSession", return_value=_Session()):
-        data, mime = await resolver._fetch_external_url("https://x")
+    with patch("tenxgraph.storage.media.media_resolver.fetch_media_url", fake_fetch):
+        data, mime = await resolver._fetch_external_url("https://images.example.com/a.jpg")
 
     assert data == b"jpg"
     assert mime == "image/jpeg"
