@@ -218,6 +218,8 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
                 existing_state.execution_meta.status = ExecutionStatus.RUNNING
                 existing_state.execution_meta.clear_interrupt()
                 existing_state.execution_meta.stop_current_execution = StopRequestStatus.NONE
+                # Loop limits (max_rounds, max_iterations, max_attempts) are per turn.
+                existing_state.execution_meta.reset_turn_data()
             # Merge new messages with existing context
             new_messages = input_data.get("messages", [])
             if new_messages:

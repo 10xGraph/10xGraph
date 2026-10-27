@@ -25,6 +25,23 @@ class ExecutionStatus(StrEnum):
     ERROR = "error"
 
 
+# ``internal_data`` keys that hold per-turn loop counters (round, iteration and retry
+# budgets). They are cleared when a new turn starts on a finished thread, so a limit
+# such as ``max_rounds`` counts one turn, not the whole thread. Prebuilt agents add
+# their keys with ``register_per_turn_key`` at import time.
+_PER_TURN_KEYS: set[str] = set()
+
+
+def register_per_turn_key(key: str) -> str:
+    """Mark an ``internal_data`` key as a per-turn counter and return it.
+
+    The key is dropped by :meth:`ExecutionState.reset_turn_data` when a new turn
+    starts on a thread whose previous run finished. A resumed (paused) run keeps it.
+    """
+    _PER_TURN_KEYS.add(key)
+    return key
+
+
 class StopRequestStatus(StrEnum):
     """Status of graph execution."""
 
@@ -106,6 +123,11 @@ class ExecutionState(BaseModel):
         self.interrupt_reason = reason
         self.status = status
         self.interrupt_data = data
+
+    def reset_turn_data(self) -> None:
+        """Drop the per-turn counters registered with ``register_per_turn_key``."""
+        for key in _PER_TURN_KEYS:
+            self.internal_data.pop(key, None)
 
     def clear_interrupt(self) -> None:
         """

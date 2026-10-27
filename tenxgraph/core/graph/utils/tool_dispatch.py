@@ -13,6 +13,10 @@ from typing import Any
 from tenxgraph.core.exceptions import GraphError
 from tenxgraph.core.state import Message
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
+from tenxgraph.runtime.adapters.llm.tool_arguments import (
+    INVALID_TOOL_ARGUMENTS_MESSAGE,
+    parse_tool_arguments,
+)
 from tenxgraph.utils.constants import (
     DEFAULT_MAX_PARALLEL_TOOL_CALLS,
     END,
@@ -109,6 +113,33 @@ def hidden_tool_message(tool_call: dict[str, Any]) -> Message:
                 is_error=True,
                 status="failed",
             ),
+        ],
+    )
+
+
+def parse_call_arguments(tool_call: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Parse a provider-shaped tool call's arguments with the converters' parser.
+
+    Converters keep the raw argument string of an unusable call (cut off, not an
+    object) in ``tools_calls``; this is where it is caught before dispatch.
+    """
+    function = tool_call.get("function", {}) or {}
+    return parse_tool_arguments(function.get("arguments"), tool_name=function.get("name", ""))
+
+
+def invalid_arguments_message(tool_call: dict[str, Any]) -> Message:
+    """The error result for a call whose arguments are not a valid JSON object.
+
+    The tool is not run; the model sees this result and can call it again.
+    """
+    return Message.tool_message(
+        content=[
+            ToolResultBlock(
+                call_id=tool_call.get("id", ""),
+                output=INVALID_TOOL_ARGUMENTS_MESSAGE,
+                is_error=True,
+                status="failed",
+            )
         ],
     )
 

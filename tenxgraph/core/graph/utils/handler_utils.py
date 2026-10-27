@@ -123,6 +123,8 @@ async def check_interrupted[StateT: AgentState](
         state.execution_meta.interrupted_node = None
         state.execution_meta.interrupt_reason = None
         state.execution_meta.interrupt_data = None
+        # A new turn: loop limits (max_rounds, max_iterations, max_attempts) start over.
+        state.execution_meta.reset_turn_data()
     else:
         # Fresh execution, state is already at START
         logger.info(

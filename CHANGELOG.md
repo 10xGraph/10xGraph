@@ -312,6 +312,17 @@ Starting from this release:
 
 ### Fixed
 
+- **Multi-agent loop limits are per turn, not per thread.** `SupervisorTeamAgent(max_rounds=...)`,
+  `PlanActReflectAgent(max_iterations=...)` and `StructuredOutputAgent(max_attempts=...)` kept
+  their counters in the checkpointed `execution_meta.internal_data` and never reset them, so
+  with `max_rounds=2` turn 3 of a thread ended at once. The counters now clear when a new turn
+  starts on a finished thread; resuming a paused thread (interrupt, client tool, `resume`)
+  keeps them. Prebuilt agents register such keys with `register_per_turn_key`. Behaviour
+  change: an app that relied on a lifetime budget now gets the full limit on every turn.
+- **The `graceful_shutdown` example no longer runs `eval()` on model input.** Its `calculate`
+  tool passed the model's expression to `eval()` with empty builtins and called it safe; an
+  expression can climb from `().__class__` to interpreter internals, and `9**9**9` hangs the
+  process. It now uses the prebuilt `safe_calculator`, as do the docs pages that copied it.
 - **`SwarmAgent` handoffs now fire with real model output.** The route read the tool name from
   the top level of each tool call, but every provider stores it at `function.name`, so no
   handoff was ever seen. The name is now read from `function.name` (the flat `name` key is still

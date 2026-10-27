@@ -11,7 +11,6 @@ in agent workflows, supporting both synchronous and asynchronous execution patte
 
 import asyncio
 import inspect
-import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from typing import TYPE_CHECKING, Any, Union
@@ -25,6 +24,8 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     handoff_target,
     hidden_tool_message,
+    invalid_arguments_message,
+    parse_call_arguments,
     resolve_max_parallel_tool_calls,
 )
 from tenxgraph.core.graph.utils.utils import process_node_result
@@ -95,8 +96,32 @@ class StreamNodeHandler(BaseLoggingMixin):
         config: dict[str, Any],
     ) -> AsyncIterable[Message | dict[str, Any] | StreamChunk]:
         function_name = tool_call.get("function", {}).get("name", "")
-        function_args: dict = json.loads(tool_call.get("function", {}).get("arguments", "{}"))
         tool_call_id = tool_call.get("id", "")
+        function_args, args_error = parse_call_arguments(tool_call)
+        if args_error:
+            # The model's arguments were unusable: answer with a tool error it can
+            # retry from, and never run the tool with guessed arguments.
+            logger.warning(
+                "Node '%s': tool '%s' called with invalid arguments: %s",
+                self.name,
+                function_name,
+                args_error,
+            )
+            yield invalid_arguments_message(tool_call)
+            yield StreamChunk(
+                event=StreamEvent.ERROR,
+                data={
+                    "status": "tool_failed",
+                    "tool_name": function_name,
+                    "tool_call_id": tool_call_id,
+                    "node": self.name,
+                    "reason": "Tool call arguments were not a valid JSON object",
+                    "error": args_error,
+                },
+                thread_id=config.get("thread_id"),
+                run_id=config.get("run_id"),
+            )
+            return
 
         logger.info(
             "Node '%s' executing tool '%s' with %d arguments",

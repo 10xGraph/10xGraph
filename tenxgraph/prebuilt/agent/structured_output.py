@@ -25,6 +25,7 @@ from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.skills.models import SkillConfig
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.execution_state import register_per_turn_key
 from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
@@ -43,7 +44,7 @@ logger = logging.getLogger("tenxgraph.prebuilt.structured_output")
 StateT = TypeVar("StateT", bound=AgentState)
 
 # Keys used in execution_meta.internal_data
-_ATTEMPTS_KEY = "soa_attempts"
+_ATTEMPTS_KEY = register_per_turn_key("soa_attempts")
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +242,9 @@ class StructuredOutputAgent[StateT: AgentState]:
             that defines the expected output shape.
         tools: Optional callables to expose as tools during generation.
         system_prompt: System prompt for the generation agent.
-        max_attempts: Maximum number of repair+retry cycles before accepting
-            the best available response (default ``2``).
+        max_attempts: Maximum number of repair+retry cycles per turn before
+            accepting the best available response (default ``2``).  The count
+            resets on each new turn of a thread.
         repair_system_prompt: System prompt for the repair agent.  When
             ``None`` (default) the repair node is a lightweight context-
             injection function rather than a full LLM call, which keeps

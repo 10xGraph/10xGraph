@@ -20,9 +20,10 @@ one ``role: "tool"`` each    all ``tool_result`` blocks in ONE user turn
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
+
+from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
 
 
 logger = logging.getLogger("tenxgraph.agent.anthropic")
@@ -258,16 +259,7 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     wants a decoded object. Never string-match these: current Claude models vary
     their JSON escaping, so they must go through a real parser.
     """
-    if isinstance(raw, dict):
-        return raw
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("Could not parse tool call arguments as JSON: %r", raw)
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return parse_tool_arguments(raw)[0]
 
 
 def merge_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -17,7 +17,6 @@ Usage:
 import asyncio
 import copy
 import inspect
-import json
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Union
@@ -32,6 +31,8 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     handoff_target,
     hidden_tool_message,
+    invalid_arguments_message,
+    parse_call_arguments,
     resolve_max_parallel_tool_calls,
 )
 from tenxgraph.core.graph.utils.utils import process_node_result
@@ -138,7 +139,6 @@ class InvokeNodeHandler(BaseLoggingMixin):
         checkpointer = fresh(checkpointer)
         function_name = tool_call.get("function", {}).get("name", "")
         tool_call_id = tool_call.get("id", "")
-        raw_args = tool_call.get("function", {}).get("arguments", "{}")
 
         # Replay guard: if this exact tool call already completed, reuse its
         # recorded result instead of invoking the tool a second time.
@@ -155,30 +155,18 @@ class InvokeNodeHandler(BaseLoggingMixin):
                 )
                 return recorded
 
-        # An LLM can emit malformed JSON here. Parsing it outside a try meant a
-        # single bad tool call raised JSONDecodeError straight through gather,
-        # failing the whole node with a raw decode error and orphaning its
-        # sibling tool tasks. A bad call is the model's mistake, so report it back
-        # to the model as a tool error and let it correct itself.
-        try:
-            function_args: dict = json.loads(raw_args or "{}")
-        except (json.JSONDecodeError, TypeError) as e:
+        # An LLM can emit malformed arguments (cut off at the token limit, empty,
+        # not an object). That is the model's mistake: report it back as a tool
+        # error and let it retry. The tool must not run with guessed arguments.
+        function_args, args_error = parse_call_arguments(tool_call)
+        if args_error:
             logger.warning(
-                "Node '%s': tool '%s' called with malformed arguments: %s",
+                "Node '%s': tool '%s' called with invalid arguments: %s",
                 self.name,
                 function_name,
-                e,
+                args_error,
             )
-            return Message.tool_message(
-                content=[
-                    ToolResultBlock(
-                        call_id=tool_call_id,
-                        output=f"Invalid tool arguments (not valid JSON): {e}",
-                        is_error=True,
-                        status="failed",
-                    )
-                ],
-            )
+            return invalid_arguments_message(tool_call)
 
         logger.info(
             "Node '%s' executing tool '%s' with %d arguments",

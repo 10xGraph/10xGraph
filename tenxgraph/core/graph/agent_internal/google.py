@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 from typing import Any
 
+from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
 from tenxgraph.storage.media.url_policy import (
     MediaURLError,
     redact_url,
@@ -177,10 +177,11 @@ class AgentGoogleMixin:
 
         function = tool_call.get("function", {})
         function_name = function.get("name", "")
-        try:
-            function_args = json.loads(function.get("arguments", "{}"))
-        except (json.JSONDecodeError, TypeError):
-            function_args = {}
+        # Invalid or non-object arguments (the call is answered with a tool error)
+        # replay as an empty object; Gemini needs ``args`` to be a mapping.
+        function_args, _ = parse_tool_arguments(
+            function.get("arguments", "{}"), tool_name=function_name
+        )
 
         return types.Part(
             function_call=types.FunctionCall(

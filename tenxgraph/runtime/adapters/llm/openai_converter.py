@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -24,6 +23,7 @@ from tenxgraph.core.state.message_block import (
 from .base_converter import BaseConverter
 from .openai_responses_converter import OpenAIResponsesConverter, is_responses_api_response
 from .reasoning_utils import parse_think_tags, parse_thought_tags
+from .tool_arguments import parse_tool_arguments
 
 
 logger = logging.getLogger("tenxgraph.adapters.openai")
@@ -194,7 +194,9 @@ class OpenAIConverter(BaseConverter):
             blocks.append(
                 ToolCallBlock(
                     name=tool_call.function.name,
-                    args=json.loads(tool_call.function.arguments),
+                    args=parse_tool_arguments(
+                        tool_call.function.arguments, tool_name=tool_call.function.name
+                    )[0],
                     id=tool_call.id,
                 )
             )
@@ -372,32 +374,31 @@ class OpenAIConverter(BaseConverter):
             )
 
             if func_name and func_args:
-                try:
-                    args_dict = json.loads(func_args)
-                    content_blocks.append(
-                        ToolCallBlock(
-                            name=func_name,
-                            args=args_dict,
-                            id=tc.id,
-                        )
+                # Invalid arguments keep their raw string in ``tool_calls`` so the
+                # ToolNode answers with a tool error instead of running the tool.
+                args_dict, _ = parse_tool_arguments(func_args, tool_name=func_name)
+                content_blocks.append(
+                    ToolCallBlock(
+                        name=func_name,
+                        args=args_dict,
+                        id=tc.id,
                     )
+                )
 
-                    # Store raw tool call
-                    if hasattr(tc, "model_dump"):
-                        tool_calls.append(tc.model_dump())
-                    else:
-                        tool_calls.append(
-                            {
-                                "id": tc.id,
-                                "type": getattr(tc, "type", "function"),
-                                "function": {
-                                    "name": func_name,
-                                    "arguments": func_args,
-                                },
-                            }
-                        )
-                except json.JSONDecodeError:
-                    logger.warning("Failed to parse tool call arguments: %s", func_args)
+                # Store raw tool call
+                if hasattr(tc, "model_dump"):
+                    tool_calls.append(tc.model_dump())
+                else:
+                    tool_calls.append(
+                        {
+                            "id": tc.id,
+                            "type": getattr(tc, "type", "function"),
+                            "function": {
+                                "name": func_name,
+                                "arguments": func_args,
+                            },
+                        }
+                    )
 
     def _process_chunk(
         self,
@@ -495,7 +496,9 @@ class OpenAIConverter(BaseConverter):
             blocks.append(
                 ToolCallBlock(
                     name=func_data.get("name", ""),
-                    args=json.loads(func_data.get("arguments", "{}")),
+                    args=parse_tool_arguments(
+                        func_data.get("arguments", "{}"), tool_name=func_data.get("name", "")
+                    )[0],
                     id=tc.get("id", ""),
                 )
             )
