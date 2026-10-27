@@ -80,6 +80,7 @@ from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.utils.tool_dispatch import tool_call_name
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool, is_handoff_tool
@@ -161,7 +162,7 @@ def _make_member_route(
         # Handoff tool calls are intercepted here; they are never executed by
         # the ToolNode — the graph routing IS the handoff.
         for tc in last.tools_calls:
-            is_handoff, target = is_handoff_tool(tc.get("name", ""))
+            is_handoff, target = is_handoff_tool(tool_call_name(tc))
             if is_handoff and target and target.upper() in allowed_set:
                 logger.debug("Member %s handing off to %s.", name, target.upper())
                 return target.upper()

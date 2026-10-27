@@ -15,6 +15,7 @@ import sys
 
 from tenxgraph.core import Agent, StateGraph, ToolNode
 from tenxgraph.core.state import AgentState, Message
+from tenxgraph.prebuilt.tools import safe_calculator
 from tenxgraph.utils import END
 from tenxgraph.utils.shutdown import GracefulShutdownManager
 
@@ -37,20 +38,10 @@ def get_system_status(tool_call_id: str | None = None) -> str:
     return "System status: All services operational"
 
 
-def calculate(expression: str, tool_call_id: str | None = None) -> str:
-    """Safely evaluate a mathematical expression."""
-    try:
-        # Only allow basic math operations for safety
-        # Note: In production, use a proper math parser instead of eval
-        allowed_names = {"__builtins__": {}}
-        result = eval(expression, allowed_names, {})  # noqa: S307
-        return f"Result: {result}"
-    except Exception as e:
-        return f"Error calculating: {e}"
-
-
-# Create tool node with available tools
-tool_node = ToolNode([get_current_time, get_system_status, calculate])
+# Create tool node with available tools. Arithmetic uses the prebuilt safe_calculator:
+# never pass model output to eval(), even with empty builtins (it can be escaped and a
+# huge power like 9**9**9 hangs the process).
+tool_node = ToolNode([get_current_time, get_system_status, safe_calculator])
 
 
 # Create the main agent using Agent class

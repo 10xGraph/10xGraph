@@ -63,6 +63,19 @@ def allowed_tool_names(message: Message) -> set[str] | None:
     return {str(n) for n in allowed}
 
 
+def tool_call_name(tool_call: dict[str, Any]) -> str:
+    """Return the tool name of a stored tool call.
+
+    Provider converters store ``{"id", "type": "function", "function": {"name", ...}}``.
+    The flat ``{"name": ...}`` shape is read as a fallback for hand-built calls.
+    """
+    function = tool_call.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function["name"])
+    name = tool_call.get("name")
+    return str(name) if name else ""
+
+
 def handoff_target(tool_node: Any, tool_name: str) -> str | None:
     """Return the target node if ``tool_name`` is a registered handoff tool.
 
