@@ -310,6 +310,30 @@ Starting from this release:
   itself. The async callers fetch external media first (`_prefetch_google_media`) and pass it
   in; an external URL that was not fetched becomes a `[Failed to load ...]` text part.
 - `fetch_url` now runs on `tenxgraph.utils.safe_http`; its behaviour and messages are unchanged.
+- **Examples rewritten.** `examples/` is reorganised by feature, uses `tenxgraph` imports and
+  10xGraph naming throughout, and builds on the prebuilt agents instead of repeating the
+  hand-wired ReAct loop. Every folder has a README with docs-site frontmatter, and
+  `examples/README.md` is the index. Model strings are written in each file and rotate across
+  OpenAI, Google Gemini, Anthropic and DeepSeek (OpenAI-compatible `base_url`); multi-agent
+  examples use a different company per agent. Folders:
+  - Getting started: `quickstart`, `graph_basics`, `streaming`.
+  - Tools and integrations: `tools`, `mcp` (local server, GitHub, Xquik), `providers`,
+    `dependency_injection`.
+  - Production: `graceful_shutdown`, `resilience`, `human_in_the_loop`, `persistence`,
+    `context_management`, `callbacks`, `observability`.
+  - Memory and knowledge: `long_term_memory`, `rag`.
+  - Agent patterns: `structured_output`, `multi_agent`, `skills`.
+  - Multimodal and realtime: `multimodal`, `realtime_audio`.
+  - Quality: `testing`, `evaluation`.
+  - Deployment: `serving`.
+  - Use cases (SDK only): `use_cases/customer_support`, `use_cases/research_assistant`.
+  - Full-stack apps: `apps/rag_assistant` (ReAct + RAG, API server, web UI, Docker Compose) and
+    `apps/copilotkit_agui` (CopilotKit frontend over AG-UI).
+
+  The old `a2a_sdk` example is removed (A2A is disabled in this release), and the old per-topic
+  folders (`react`, `react_stream`, `react-mcp`, `github-mcp`, `xquik-mcp`, `swarm`,
+  `supervisor_team`, `handoff`, `plan_act_reflect`, `memory`, `checkpointer`, ...) are merged
+  into the folders above.
 
 ### Deprecated
 
