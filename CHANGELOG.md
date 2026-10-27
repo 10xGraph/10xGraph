@@ -26,6 +26,11 @@ Starting from this release:
 
 ### Security
 
+- **`PgCheckpointer` tool-ledger reads are scoped to the thread owner.** `aget_tool_result`
+  now applies the same owner filter as the message reads: with `enforce_user_isolation=True`
+  (the default) or an `authz` scope of `owner`, a caller naming another user's thread gets no
+  recorded result. With isolation off the query skips the ownership join. Writes were already
+  checked.
 - **`PromptInjectionValidator` no longer backtracks for minutes or hours on crafted input.**
   The `ignore` / `disregard` / `forget` / `override` patterns took polynomial time on long
   whitespace runs (CWE-1333), and `validate()` runs them on the event loop, so one message

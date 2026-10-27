@@ -798,3 +798,50 @@ async def test_schema_init_takes_advisory_lock(cp):
     executed = [c.args[0] for c in conn.execute.await_args_list]
     assert any("pg_advisory_xact_lock" in sql for sql in executed)
 
+
+
+# ---------------------------------------------------------------------------
+# Tool ledger owner scope (B11)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aget_tool_result_is_scoped_to_the_thread_owner(cp):
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(return_value=None)
+    _bind_conn(cp, conn)
+
+    await cp.aget_tool_result({"thread_id": "t1", "user_id": "u1"}, "msg_1:call_1")
+
+    query, *params = conn.fetchrow.await_args.args
+    assert "SELECT thread_id FROM" in query
+    assert "WHERE user_id = $3" in query
+    assert params == ["t1", "msg_1:call_1", "u1"]
+
+
+@pytest.mark.asyncio
+async def test_aget_tool_result_skips_the_owner_join_when_isolation_is_off(cp):
+    cp.enforce_user_isolation = False
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(return_value={"result": json.dumps({"value": "ok"})})
+    _bind_conn(cp, conn)
+
+    got = await cp.aget_tool_result({"thread_id": "t1", "user_id": "u1"}, "msg_1:call_1")
+
+    query, *params = conn.fetchrow.await_args.args
+    assert "SELECT thread_id FROM" not in query
+    assert params == ["t1", "msg_1:call_1"]
+    assert got == {"value": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_aget_tool_result_follows_the_authz_scope_over_the_setting(cp):
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(return_value=None)
+    _bind_conn(cp, conn)
+
+    config = {"thread_id": "t1", "user_id": "u1", "authz": {"scope": "none"}}
+    await cp.aget_tool_result(config, "msg_1:call_1")
+
+    query, *_ = conn.fetchrow.await_args.args
+    assert "SELECT thread_id FROM" not in query

@@ -192,6 +192,14 @@ class TestToolLedger:
         got = await cp.aget_tool_result(cfg, "msg1:call1")
         assert got["value"] == "first"
 
+    async def test_other_user_cannot_read_a_recorded_result(self, cp, cfg):
+        """B11: the ledger read is scoped to the thread owner, like message reads."""
+        await cp.aput_state(cfg, AgentState())
+        await cp.aput_tool_result(cfg, "msg1:call1", {"__kind__": "raw", "value": "secret"})
+
+        intruder = {"thread_id": cfg["thread_id"], "user_id": "someone-else"}
+        assert await cp.aget_tool_result(intruder, "msg1:call1") is None
+
 
 class TestCacheConsistency:
     async def test_cache_write_cannot_move_backwards(self, cp, cfg):

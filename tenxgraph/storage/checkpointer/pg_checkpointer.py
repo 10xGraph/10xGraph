@@ -1691,17 +1691,23 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         completed in an earlier attempt at this node (the process died before the
         node finished, and the node is now being replayed), so the tool must NOT
         be called again -- we return what it returned last time.
+
+        Scoped to the thread's owner when isolation is on (``config["authz"]`` scope
+        ``owner``, else ``enforce_user_isolation``), like the message reads, so a caller
+        naming another user's thread gets no record. With isolation off it skips the join.
         """
-        thread_id, _ = self._validate_config(config)
+        thread_id, user_id = self._validate_config(config)
 
         try:
-            query = (
+            params: list[Any] = [thread_id, str(tool_call_id)]
+            query = self._append_owner_scope(
                 f"SELECT result FROM {self._get_table_name('tool_executions')} "  # noqa: S608
-                f"WHERE thread_id = $1 AND tool_call_id = $2"
+                f"WHERE thread_id = $1 AND tool_call_id = $2",
+                params,
+                user_id,
+                config,
             )
-            row = await self._run_query(
-                lambda conn: conn.fetchrow(query, thread_id, str(tool_call_id))
-            )
+            row = await self._run_query(lambda conn: conn.fetchrow(query, *params))
             if not row:
                 return None
 
