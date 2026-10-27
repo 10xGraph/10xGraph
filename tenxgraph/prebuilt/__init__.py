@@ -37,7 +37,6 @@ from .tools import (
     is_handoff_tool,
     make_agent_memory_tool,
     make_user_memory_tool,
-    memory_tool,
     safe_calculator,
     vertex_ai_search,
 )
@@ -70,7 +69,6 @@ __all__ = [
     "is_handoff_tool",
     "make_agent_memory_tool",
     "make_user_memory_tool",
-    "memory_tool",
     "safe_calculator",
     "vertex_ai_search",
 ]

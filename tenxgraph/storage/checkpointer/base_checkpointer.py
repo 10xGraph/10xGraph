@@ -26,10 +26,32 @@ StateT = TypeVar("StateT", bound="AgentState")
 # recorded here cannot be clobbered by the run it is trying to stop.
 STOP_REQUEST_NAMESPACE = "stop_request"
 
+# Largest page the list methods (``alist_messages`` / ``alist_threads``) return. An explicit
+# ``limit`` above it is lowered to it, and a negative ``limit`` or ``offset`` raises
+# ``ValueError``. ``limit=None`` or ``0`` keeps meaning "no limit given" for in-process callers
+# that read a whole thread; the API always sends a bounded page.
+MAX_LIST_LIMIT = 1000
+
+
+def validate_page(offset: int | None, limit: int | None) -> tuple[int, int | None]:
+    """Check ``offset`` / ``limit`` and return ``(offset, limit)``; ``limit`` is None for "all"."""
+    if offset is not None and offset < 0:
+        raise ValueError(f"offset must be >= 0, got {offset}")
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be >= 0, got {limit}")
+    return offset or 0, (min(limit, MAX_LIST_LIMIT) if limit else None)
+
+
 # How long an unconsumed stop request stays live. A stop is meant to be observed
 # within a node or two; this bound only keeps an abandoned flag from lingering
 # forever if the run dies before consuming it.
 STOP_REQUEST_TTL_SECONDS = 3600
+
+# Per-thread marker holding the id of the run that is currently active. A stop request records
+# the run it targets so a new run on the same thread cannot erase a stop meant for a run that
+# is still going. Like the stop flag it lives in the generic cache, so it works on every
+# backend (memory, SQLite, Redis) without a schema change, and it expires with the same bound.
+ACTIVE_RUN_NAMESPACE = "active_run"
 
 # Key holding the storage header inside a persisted state row. ``format`` versions
 # the row layout itself; ``class`` is the state class name, kept only for
@@ -394,35 +416,93 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         return f"{config.get('thread_id')}:{config.get('user_id')}"
 
+    async def aget_active_run(self, config: dict[str, Any]) -> str | None:
+        """Return the id of the run currently marked active on this thread, if any."""
+        value = await self.aget_cache_value(ACTIVE_RUN_NAMESPACE, self._stop_request_key(config))
+        return value if isinstance(value, str) and value else None
+
+    async def abegin_run(self, config: dict[str, Any]) -> None:
+        """Register ``config["run_id"]`` as the active run and drop any stale stop request.
+
+        A stop request belongs to the run it was made for. At run start only a stale flag is
+        cleared: one that targeted no run, or a run that is no longer the active one. A flag
+        that targets a run still marked active is kept, so a second run on the same thread
+        cannot erase a stop meant for the first. Runs that finish call :meth:`aend_run`.
+        """
+        key = self._stop_request_key(config)
+        flag = await self.aget_cache_value(STOP_REQUEST_NAMESPACE, key)
+        if flag:
+            target = self._stop_target(flag)
+            if target is None or target != await self.aget_active_run(config):
+                await self.aclear_cache_value(STOP_REQUEST_NAMESPACE, key)
+        run_id = config.get("run_id")
+        if run_id:
+            await self.aput_cache_value(
+                ACTIVE_RUN_NAMESPACE, key, str(run_id), STOP_REQUEST_TTL_SECONDS
+            )
+
+    async def aend_run(self, config: dict[str, Any]) -> None:
+        """Mark ``config["run_id"]`` as finished.
+
+        Clears the active-run marker if it is still this run's (a newer run may have
+        replaced it) and drops a stop request that targeted this run.
+        """
+        run_id = config.get("run_id")
+        if not run_id:
+            return
+        key = self._stop_request_key(config)
+        if await self.aget_active_run(config) == str(run_id):
+            await self.aclear_cache_value(ACTIVE_RUN_NAMESPACE, key)
+        flag = await self.aget_cache_value(STOP_REQUEST_NAMESPACE, key)
+        if flag and self._stop_target(flag) == str(run_id):
+            await self.aclear_cache_value(STOP_REQUEST_NAMESPACE, key)
+
+    @staticmethod
+    def _stop_target(flag: Any) -> str | None:
+        """Run id a stored stop flag targets (``None`` for a legacy or untargeted flag)."""
+        if isinstance(flag, dict):
+            target = flag.get("run_id")
+            return str(target) if target else None
+        return None
+
     async def arequest_stop(self, config: dict[str, Any]) -> Any | None:
         """Record an out-of-band stop request for a thread.
 
         Stored under :data:`STOP_REQUEST_NAMESPACE` in the generic cache rather
         than in the state blob, so the running graph cannot overwrite it with its
-        own state writes. Backends without a shared cache inherit the no-op
-        generic-cache defaults, in which case this degrades to doing nothing
-        rather than misbehaving.
+        own state writes. The flag records the run that is active on the thread
+        (``None`` when none is known), so only that run honours it. Backends
+        without a shared cache inherit the no-op generic-cache defaults, in which
+        case this degrades to doing nothing rather than misbehaving.
         """
         return await self.aput_cache_value(
             STOP_REQUEST_NAMESPACE,
             self._stop_request_key(config),
-            True,
+            {"run_id": await self.aget_active_run(config)},
             STOP_REQUEST_TTL_SECONDS,
         )
 
     async def ais_stop_requested(self, config: dict[str, Any]) -> bool:
-        """Return True when an unconsumed stop request exists for this thread."""
+        """Return True when an unconsumed stop request exists for this run.
+
+        A request that targets a different run than ``config["run_id"]`` is not reported.
+        A config without a ``run_id``, or an untargeted request, matches any run.
+        """
         value = await self.aget_cache_value(
             STOP_REQUEST_NAMESPACE,
             self._stop_request_key(config),
         )
-        return bool(value)
+        if not value:
+            return False
+        target = self._stop_target(value)
+        run_id = config.get("run_id")
+        return target is None or not run_id or target == str(run_id)
 
     async def aclear_stop_request(self, config: dict[str, Any]) -> Any | None:
         """Drop any pending stop request for a thread.
 
-        Called once a stop has been acted on, and again when a new run starts, so
-        a flag left behind by an abandoned run cannot kill the next one.
+        Called once a stop has been acted on. A new run does not call this; it uses
+        :meth:`abegin_run`, which keeps a request aimed at a run that is still active.
         """
         return await self.aclear_cache_value(
             STOP_REQUEST_NAMESPACE,
@@ -554,6 +634,31 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         raise NotImplementedError
 
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata.
+
+        A key in ``metadata`` replaces the same key already stored. Applies the same
+        owner isolation as :meth:`aget_message`.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set on the message metadata.
+
+        Returns:
+            Message | None: The updated message, or None if it does not exist in the
+            thread (or the caller may not access it).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support updating message metadata"
+        )
+
     # -------------------------
     # Message methods sync
     # -------------------------
@@ -587,6 +692,25 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             Message: Retrieved message object.
         """
         return run_coroutine(self.aget_message(config, message_id))
+
+    def update_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata synchronously.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set on the message metadata.
+
+        Returns:
+            Message | None: The updated message, or None if it does not exist.
+        """
+        return run_coroutine(self.aupdate_message_metadata(config, message_id, metadata))
 
     def list_messages(
         self,

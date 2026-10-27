@@ -1,7 +1,9 @@
 import asyncio
+import copy
 import logging
 import time
 from collections import defaultdict
+from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from tenxgraph.core.exceptions import StorageError
@@ -9,7 +11,7 @@ from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.thread_info import ThreadInfo
 
-from .base_checkpointer import BaseCheckpointer
+from .base_checkpointer import BaseCheckpointer, validate_page
 
 
 if TYPE_CHECKING:
@@ -136,10 +138,13 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._state_lock:
             self._record_owner(config)
-            self._states[key] = state
+            # Store copies: loaders merge new input into the state they get back, so
+            # sharing one object would let a request that is later rejected (a paused
+            # thread) change what is stored.
+            self._states[key] = copy.deepcopy(state)
             # Write-through: a run reads the cache first, so leaving it behind would
             # start the next run from the state this write replaced.
-            self._state_cache[key] = state
+            self._state_cache[key] = copy.deepcopy(state)
             logger.debug(f"Stored state for key: {key}")
             return state
 
@@ -159,7 +164,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             state = self._states.get(key)
             logger.debug(f"Retrieved state for key: {key}, found: {state is not None}")
-            return state
+            return copy.deepcopy(state)
 
     async def aclear_state(self, config: dict[str, Any]) -> bool:
         """
@@ -193,9 +198,14 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             StateT: The cached state object.
         """
+        # Same rule as aput_state: a non-owner's write is dropped, and the first writer of a
+        # thread becomes its owner, so a cached state can only be read back by its writer.
+        if self._owner_denied(config):
+            return state
         key = self._get_config_key(config)
         async with self._state_lock:
-            self._state_cache[key] = state
+            self._record_owner(config)
+            self._state_cache[key] = copy.deepcopy(state)
             logger.debug(f"Stored state cache for key: {key}")
             return state
 
@@ -215,7 +225,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             cache = self._state_cache.get(key)
             logger.debug(f"Retrieved state cache for key: {key}, found: {cache is not None}")
-            return cache
+            return copy.deepcopy(cache)
 
     async def aput_cache_value(
         self,
@@ -368,6 +378,33 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                     return msg
             raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
 
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set; a key replaces the same stored key.
+
+        Returns:
+            Message | None: The updated message, or None if not found or not accessible.
+        """
+        if self._owner_denied(config):
+            return None
+        key = self._get_config_key(config)
+        async with self._messages_lock:
+            for msg in self._messages.get(key, []):
+                if msg.message_id == message_id:
+                    msg.metadata = {**(msg.metadata or {}), **metadata}
+                    return msg
+            return None
+
     async def alist_messages(
         self,
         config: dict[str, Any],
@@ -387,24 +424,25 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             list[Message]: List of message objects.
         """
+        start, limit = validate_page(offset, limit)
         if self._owner_denied(config):
             return []
         key = self._get_config_key(config)
+        end = (start + limit) if limit else None
         async with self._messages_lock:
             messages = self._messages.get(key, [])
 
             # Apply search filter if provided
             if search:
                 # Simple string search in message content
+                needle = search.lower()
                 messages = [
                     msg
                     for msg in messages
-                    if hasattr(msg, "content") and search.lower() in str(msg.content).lower()
+                    if hasattr(msg, "content") and needle in str(msg.content).lower()
                 ]
 
             # Apply offset and limit
-            start = offset or 0
-            end = (start + limit) if limit else None
             return messages[start:end]
 
     async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> bool:
@@ -544,10 +582,12 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             list[ThreadInfo]: List of thread information objects.
         """
+        start, limit = validate_page(offset, limit)
+        end = (start + limit) if limit else None
         user_id = config.get("user_id") if isinstance(config, dict) else None
         isolate = self._isolation_enabled(config, user_id)
         async with self._threads_lock:
-            threads = list(self._threads.values())
+            threads: list[dict[str, Any]] = list(self._threads.values())
 
             # Owner-scope the listing when the policy asks for it.
             if isolate:
@@ -555,16 +595,15 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
             # Apply search filter if provided
             if search:
+                needle = search.lower()
                 threads = [
                     thread
                     for thread in threads
-                    if any(search.lower() in str(value).lower() for value in thread.values())
+                    if any(needle in str(value).lower() for value in thread.values())
                 ]
 
             # Apply offset and limit
-            start = offset or 0
-            end = (start + limit) if limit else None
-            return [ThreadInfo.model_validate(thread) for thread in threads[start:end]]
+            return [ThreadInfo.model_validate(t) for t in islice(threads, start, end)]
 
     async def aclean_thread(self, config: dict[str, Any]) -> bool:
         """

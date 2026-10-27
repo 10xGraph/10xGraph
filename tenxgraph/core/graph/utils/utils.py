@@ -165,10 +165,10 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
 
     # Try to load existing state if checkpointer is available
     if checkpointer:
-        # A stop request that was never consumed (the previous run finished or
-        # died before reaching its next stop check) would otherwise be waiting to
-        # kill this run at its first node. A new run supersedes it.
-        await checkpointer.aclear_stop_request(config)
+        # Register this run as the active one on the thread. A stop request belongs to the
+        # run it targets: only a stale one (aimed at no run, or at a run that already ended)
+        # is dropped here, so a new run cannot erase a stop meant for a run still going.
+        await checkpointer.abegin_run(config)
 
         logger.debug("Attempting to load existing state from checkpointer")
         # first check realtime-synced state
@@ -218,6 +218,8 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
                 existing_state.execution_meta.status = ExecutionStatus.RUNNING
                 existing_state.execution_meta.clear_interrupt()
                 existing_state.execution_meta.stop_current_execution = StopRequestStatus.NONE
+                # Loop limits (max_rounds, max_iterations, max_attempts) are per turn.
+                existing_state.execution_meta.reset_turn_data()
             # Merge new messages with existing context
             new_messages = input_data.get("messages", [])
             if new_messages:

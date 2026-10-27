@@ -27,6 +27,13 @@ END: Literal["__end__"] = "__end__"
 DEFAULT_NODE_TIMEOUT_SECONDS: float = 900.0
 DEFAULT_TOOL_TIMEOUT_SECONDS: float = 300.0
 
+# How many tool calls from one assistant message may run at the same time. Each
+# parallel branch holds a deep copy of the state, so an unbounded fan-out
+# multiplies memory and CPU by the call count. Override per run with the
+# `max_parallel_tool_calls` config key, or process-wide with the env var below.
+DEFAULT_MAX_PARALLEL_TOOL_CALLS: int = 10
+MAX_PARALLEL_TOOL_CALLS_ENV: str = "TENXGRAPH_MAX_PARALLEL_TOOL_CALLS"
+
 # Identity used when a run carries no user_id.
 #
 # This used to be "test-user-id", a placeholder that reads like a real account:

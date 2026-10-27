@@ -52,8 +52,13 @@ def _msg(text: str, role: str = "assistant", tool_calls: list | None = None) -> 
     return m
 
 
-def _tc(name: str) -> dict:
-    """Minimal tool-call dict matching the Message.tools_calls schema."""
+def _tc(name: str, call_id: str = "call_1") -> dict:
+    """Tool call in the shape every provider converter stores."""
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+
+def _flat_tc(name: str) -> dict:
+    """Legacy flat shape, still read as a fallback."""
     return {"name": name}
 
 
@@ -152,6 +157,132 @@ class TestMakeMemberRoute:
         fn = _make_member_route("TRIAGE", ["WRITER"], None)
         state = _state_with(_msg("", tool_calls=[_tc("transfer_to_writer")]))
         assert fn(state) == "WRITER"
+
+
+class TestRouteToolCallShapes:
+    def test_flat_shape_fallback(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], None)
+        state = _state_with(_msg("", tool_calls=[_flat_tc("transfer_to_writer")]))
+        assert fn(state) == "WRITER"
+
+    def test_disallowed_target_does_not_route_there(self):
+        fn = _make_member_route("WRITER", ["TRIAGE"], None)
+        state = _state_with(_msg("", tool_calls=[_tc("transfer_to_researcher")]))
+        assert fn(state) == END
+
+    def test_disallowed_target_with_tools_goes_to_tool_node(self):
+        fn = _make_member_route("WRITER", ["TRIAGE"], "WRITER_TOOL")
+        state = _state_with(_msg("", tool_calls=[_tc("transfer_to_researcher")]))
+        assert fn(state) == "WRITER_TOOL"
+
+    def test_handoff_plus_regular_tool_prefers_handoff(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL")
+        state = _state_with(
+            _msg("", tool_calls=[_tc("web_search", "c1"), _tc("transfer_to_writer", "c2")])
+        )
+        assert fn(state) == "WRITER"
+
+    def test_regular_tool_only_goes_to_tool_node(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL")
+        state = _state_with(_msg("", tool_calls=[_tc("web_search")]))
+        assert fn(state) == "TRIAGE_TOOL"
+
+    def test_mixed_case_target_names(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], None)
+        state = _state_with(_msg("", tool_calls=[_tc("transfer_to_Writer")]))
+        assert fn(state) == "WRITER"
+
+
+class _Conv:
+    """Stands in for ModelResponseConverter: the agent node awaits ``invoke()``."""
+
+    def __init__(self, message: Message):
+        self._message = message
+
+    async def invoke(self) -> Message:
+        return self._message
+
+
+class _ScriptedAgent(BaseAgent):
+    """Emits a scripted assistant message (provider-shaped tool calls), once per visit."""
+
+    def __init__(self, name: str, calls: list[list[dict]], tool_node=None):
+        super().__init__(model="fake", tool_node=tool_node)
+        self.name = name
+        self.calls = list(calls)
+        self.visits = 0
+
+    async def execute(self, state, config, *, request_blocks=None):
+        self.visits += 1
+        tcs = self.calls.pop(0) if self.calls else None
+        msg = Message.text_message(f"{self.name} says hi", role="assistant")
+        if tcs:
+            msg.tools_calls = tcs
+        return _Conv(msg)
+
+    async def _call_llm(self, messages, tools=None, **kwargs):
+        raise NotImplementedError
+
+
+class TestSwarmEndToEnd:
+    @pytest.mark.asyncio
+    async def test_real_shape_handoff_runs_target(self):
+        a = _ScriptedAgent("A", [[_tc("transfer_to_b")]])
+        b = _ScriptedAgent("B", [])
+        swarm = SwarmAgent(
+            members={
+                "A": SwarmMemberConfig(agent=a, can_handoff_to=["B"]),
+                "B": SwarmMemberConfig(agent=b),
+            },
+            entry="A",
+        )
+        app = swarm.compile()
+        await app.ainvoke({"messages": [Message.text_message("hi")]}, config={"thread_id": "t1"})
+        assert a.visits == 1
+        assert b.visits == 1
+
+    @pytest.mark.asyncio
+    async def test_disallowed_target_does_not_run(self):
+        def search(q: str) -> str:
+            return q
+
+        a = _ScriptedAgent("A", [[_tc("transfer_to_c")]], tool_node=ToolNode([search]))
+        b = _ScriptedAgent("B", [])
+        c = _ScriptedAgent("C", [])
+        swarm = SwarmAgent(
+            members={
+                "A": SwarmMemberConfig(agent=a, can_handoff_to=["B"]),
+                "B": SwarmMemberConfig(agent=b),
+                "C": SwarmMemberConfig(agent=c),
+            },
+            entry="A",
+        )
+        app = swarm.compile()
+        await app.ainvoke({"messages": [Message.text_message("hi")]}, config={"thread_id": "t2"})
+        assert c.visits == 0
+        assert b.visits == 0
+
+    @pytest.mark.asyncio
+    async def test_handoff_plus_regular_tool_in_one_turn(self):
+        def search(q: str) -> str:
+            return q
+
+        a = _ScriptedAgent(
+            "A",
+            [[_tc("search", "c1"), _tc("transfer_to_b", "c2")]],
+            tool_node=ToolNode([search]),
+        )
+        b = _ScriptedAgent("B", [])
+        swarm = SwarmAgent(
+            members={
+                "A": SwarmMemberConfig(agent=a, can_handoff_to=["B"]),
+                "B": SwarmMemberConfig(agent=b),
+            },
+            entry="A",
+        )
+        app = swarm.compile()
+        await app.ainvoke({"messages": [Message.text_message("hi")]}, config={"thread_id": "t3"})
+        assert b.visits == 1
 
 
 # ===========================================================================

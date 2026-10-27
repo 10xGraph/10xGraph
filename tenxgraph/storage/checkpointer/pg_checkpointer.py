@@ -38,20 +38,10 @@ except ImportError:
 
 from tenxgraph.core.state import AgentState, Message
 
-from .base_checkpointer import BaseCheckpointer
+from .base_checkpointer import BaseCheckpointer, validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
-
-
-def _rows_affected(status: Any) -> int | None:
-    """Row count from an asyncpg command tag such as ``"INSERT 0 1"``, or None if unknown."""
-    if not isinstance(status, str):
-        return None
-    try:
-        return int(status.rsplit(" ", 1)[-1])
-    except ValueError:
-        return None
 
 
 StateT = TypeVar("StateT", bound="AgentState")
@@ -61,7 +51,7 @@ DEFAULT_CACHE_TTL = 86400
 
 # Current durable schema version. Bump when schema changes and add a matching
 # entry to ``PgCheckpointer._migrations``.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 # Advisory-lock key used to serialize schema creation/migration across processes.
 # Any stable arbitrary 64-bit constant works; it only has to be the same in every
@@ -434,10 +424,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             if self.id_type == "int"
             else f"thread_id {thread_id_type} PRIMARY KEY"
         )
-        message_pk = (
-            "message_id SERIAL PRIMARY KEY"
-            if self.id_type == "int"
-            else f"message_id {message_id_type} PRIMARY KEY"
+        # Message ids are unique per thread, not globally (see migration v4), so the key
+        # is declared as a table constraint on (thread_id, message_id).
+        message_col = (
+            "message_id SERIAL" if self.id_type == "int" else f"message_id {message_id_type}"
         )
 
         return [
@@ -489,7 +479,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # Create messages table
             f"""
             CREATE TABLE IF NOT EXISTS {self._get_table_name("messages")} (
-                {message_pk},
+                {message_col} NOT NULL,
                 thread_id {thread_id_type} NOT NULL
                     REFERENCES {self._get_table_name("threads")}(thread_id)
                     ON DELETE CASCADE,
@@ -502,7 +492,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
                 total_tokens INT DEFAULT 0,
                 usages JSONB DEFAULT '{{}}'::jsonb,
-                meta JSONB DEFAULT '{{}}'::jsonb
+                meta JSONB DEFAULT '{{}}'::jsonb,
+                PRIMARY KEY (thread_id, message_id)
             )
             """,
             # Create indexes. Version-dependent indexes on ``states`` are created
@@ -527,6 +518,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         ``_check_and_apply_schema_version``).
         """
         states = self._get_table_name("states")
+        messages = self._get_table_name("messages")
         return {
             # v2: per-thread state versioning for optimistic concurrency control.
             2: [
@@ -568,6 +560,32 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     PRIMARY KEY (thread_id, tool_call_id)
                 )
                 """,
+            ],
+            # v4: message ids are unique per thread. The old key was message_id alone,
+            # so one user could claim an id another thread later needed and make that
+            # thread's checkpoint fail. Guarded: a schema created at v4 or later
+            # already has the two-column key, so the block does nothing there.
+            4: [
+                f"""
+                DO $$
+                DECLARE pk_name text;
+                BEGIN
+                    SELECT conname INTO pk_name FROM pg_constraint
+                    WHERE conrelid = '{messages}'::regclass
+                      AND contype = 'p'
+                      AND array_length(conkey, 1) = 1;
+                    IF pk_name IS NOT NULL THEN
+                        EXECUTE format(
+                            'ALTER TABLE %s DROP CONSTRAINT %I',
+                            '{messages}'::regclass, pk_name
+                        );
+                        EXECUTE format(
+                            'ALTER TABLE %s ADD PRIMARY KEY (thread_id, message_id)',
+                            '{messages}'::regclass
+                        );
+                    END IF;
+                END$$;
+                """,  # noqa: S608
             ],
         }
 
@@ -1673,17 +1691,23 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         completed in an earlier attempt at this node (the process died before the
         node finished, and the node is now being replayed), so the tool must NOT
         be called again -- we return what it returned last time.
+
+        Scoped to the thread's owner when isolation is on (``config["authz"]`` scope
+        ``owner``, else ``enforce_user_isolation``), like the message reads, so a caller
+        naming another user's thread gets no record. With isolation off it skips the join.
         """
-        thread_id, _ = self._validate_config(config)
+        thread_id, user_id = self._validate_config(config)
 
         try:
-            query = (
+            params: list[Any] = [thread_id, str(tool_call_id)]
+            query = self._append_owner_scope(
                 f"SELECT result FROM {self._get_table_name('tool_executions')} "  # noqa: S608
-                f"WHERE thread_id = $1 AND tool_call_id = $2"
+                f"WHERE thread_id = $1 AND tool_call_id = $2",
+                params,
+                user_id,
+                config,
             )
-            row = await self._run_query(
-                lambda conn: conn.fetchrow(query, thread_id, str(tool_call_id))
-            )
+            row = await self._run_query(lambda conn: conn.fetchrow(query, *params))
             if not row:
                 return None
 
@@ -1751,26 +1775,23 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Shared by :meth:`aput_messages` (standalone) and :meth:`aput_checkpoint`
         (atomic with the state write) so both use identical insert semantics.
 
-        ``message_id`` is the primary key on its own, so the conflict also fires for a
-        message stored in a *different* thread. The ``WHERE`` guard limits the update to
-        rows in this thread; when the id belongs to another thread no row is written and
-        :class:`StorageError` is raised, rolling back the surrounding transaction.
+        The primary key is ``(thread_id, message_id)``, so ids are per thread and a
+        conflict can only be a re-save of a message in this same thread.
         """
         messages_table = self._get_table_name("messages")
         for message in messages:
-            status = await conn.execute(
+            await conn.execute(
                 f"""
                     INSERT INTO {messages_table} (
                         message_id, thread_id, role, content, tool_calls,
                         tool_call_id, reasoning, total_tokens, usages, meta
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    ON CONFLICT (message_id) DO UPDATE SET
+                    ON CONFLICT (thread_id, message_id) DO UPDATE SET
                         content = EXCLUDED.content,
                         reasoning = EXCLUDED.reasoning,
                         usages = EXCLUDED.usages,
                         updated_at = NOW()
-                    WHERE {messages_table}.thread_id = EXCLUDED.thread_id
                     """,  # noqa: S608
                 message.message_id,
                 thread_id,
@@ -1783,12 +1804,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 json.dumps(message.usages.model_dump()) if message.usages else None,
                 json.dumps({**(metadata or {}), **(message.metadata or {})}),
             )
-            if _rows_affected(status) == 0:
-                raise StorageError(
-                    message="Message id already belongs to another thread",
-                    error_code="STORAGE_FORBIDDEN_002",
-                    context={"thread_id": thread_id, "message_id": message.message_id},
-                )
 
     async def aput_messages(
         self,
@@ -1851,6 +1866,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         thread_id = config.get("thread_id")
         user_id = config.get("user_id")
 
+        # Message ids are unique per thread only, so the thread is part of the key.
+        if not thread_id:
+            raise ValueError("thread_id must be provided in config")
+
         logger.debug("Retrieving message_id=%s for thread_id=%s", message_id, thread_id)
 
         try:
@@ -1859,12 +1878,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                        tool_call_id, reasoning, created_at, total_tokens,
                        usages, meta
                 FROM {self._get_table_name("messages")}
-                WHERE message_id = $1
+                WHERE message_id = $1 AND thread_id = $2
             """  # noqa: S608
-            params: list[Any] = [message_id]
-            if thread_id:
-                params.append(thread_id)
-                query += f" AND thread_id = ${len(params)}"
+            params: list[Any] = [message_id, thread_id]
             # Owner scoping: a caller may only read messages on threads they own,
             # even if they know the message/thread id.
             query = self._append_owner_scope(query, params, user_id, config)
@@ -1902,6 +1918,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             Exception: If listing fails.
         """
+        offset, limit = validate_page(offset, limit)
         thread_id = config.get("thread_id")
         user_id = config.get("user_id")
 
@@ -1971,17 +1988,18 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         thread_id = config.get("thread_id")
         user_id = config.get("user_id")
 
+        # Message ids are unique per thread only, so the thread is part of the key.
+        if not thread_id:
+            raise ValueError("thread_id must be provided in config")
+
         logger.debug("Deleting message_id=%s for thread_id=%s", message_id, thread_id)
 
         try:
             query = (
                 f"DELETE FROM {self._get_table_name('messages')} "  # noqa: S608
-                f"WHERE message_id = $1"
+                f"WHERE message_id = $1 AND thread_id = $2"
             )
-            params: list[Any] = [message_id]
-            if thread_id:
-                params.append(thread_id)
-                query += f" AND thread_id = ${len(params)}"
+            params: list[Any] = [message_id, thread_id]
             # Owner scoping: never let a caller delete a message on a thread they
             # do not own, even with a known message_id.
             query = self._append_owner_scope(query, params, user_id, config)
@@ -1992,6 +2010,55 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         except Exception as e:
             logger.error("Failed to delete message_id=%s: %s", message_id, e)
+            raise
+
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        """
+        Shallow-merge ``metadata`` into a stored message's metadata.
+
+        Args:
+            config (dict): Configuration dictionary.
+            message_id (str|int): Message identifier.
+            metadata (dict): Keys to set; a key replaces the same stored key.
+
+        Returns:
+            Message | None: The updated message, or None if it does not exist in this
+            thread (or the caller does not own the thread).
+        """
+        thread_id = config.get("thread_id")
+        user_id = config.get("user_id")
+
+        if not thread_id:
+            raise ValueError("thread_id must be provided in config")
+
+        logger.debug("Updating metadata of message_id=%s for thread_id=%s", message_id, thread_id)
+
+        try:
+            query = f"""
+                UPDATE {self._get_table_name("messages")}
+                SET meta = COALESCE(meta, '{{}}'::jsonb) || $3::jsonb, updated_at = NOW()
+                WHERE message_id = $1 AND thread_id = $2
+            """  # noqa: S608
+            params: list[Any] = [message_id, thread_id, json.dumps(metadata)]
+            # Owner scoping: same rule as aget_message, a thread you do not own is
+            # reported as "not found".
+            query = self._append_owner_scope(query, params, user_id, config)
+            query += """
+                RETURNING message_id, thread_id, role, content, tool_calls,
+                          tool_call_id, reasoning, created_at, total_tokens,
+                          usages, meta
+            """
+
+            row = await self._run_query(lambda conn: conn.fetchrow(query, *params))
+            return self._row_to_message(row) if row else None
+
+        except Exception as e:
+            logger.error("Failed to update metadata of message_id=%s: %s", message_id, e)
             raise
 
     def _row_to_message(self, row) -> Message:  # noqa: PLR0912, PLR0915
@@ -2273,6 +2340,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             Exception: If listing fails.
         """
+        offset, limit = validate_page(offset, limit)
         user_id = config.get("user_id")
 
         # `user_id = user_id or "test-user"` used to sit here, which made the check

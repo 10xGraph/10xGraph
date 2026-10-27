@@ -16,7 +16,7 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import ToolCallBlock
 from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
-from tenxgraph.utils.converter import convert_messages
+from tenxgraph.utils.converter import convert_messages, inject_request_blocks
 
 
 logger = logging.getLogger("tenxgraph.testing")
@@ -214,12 +214,15 @@ class TestAgent(BaseAgent):
         self,
         state: AgentState,
         config: dict[str, Any],
+        *,
+        request_blocks: list[str] | None = None,
     ) -> ModelResponseConverter:
         """Execute test agent - returns mock response.
 
         Args:
             state: Current agent state
             config: Execution configuration
+            request_blocks: Fenced texts added to the latest user message of the request
 
         Returns:
             ModelResponseConverter wrapping the mock response
@@ -228,6 +231,8 @@ class TestAgent(BaseAgent):
             state=state,
             system_prompts=self.system_prompt,
         )
+        if request_blocks:
+            messages = inject_request_blocks(messages, *request_blocks)
         response = await self._call_llm(messages)
 
         return ModelResponseConverter(response, converter=_TestAgentConverter())

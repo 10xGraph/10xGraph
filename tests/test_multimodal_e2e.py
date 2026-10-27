@@ -18,7 +18,7 @@ import base64
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -405,24 +405,19 @@ class TestContentPartsToGoogle:
 
     def test_image_url(self):
         """External https:// URLs are fetched and converted to inline bytes for Google."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"fake-image-data"
-            mock_response.headers.get.return_value = "image/jpeg"
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            parts = self.mixin._content_parts_to_google([
+        fetched = {"https://example.com/img.jpg": (b"fake-image-data", "image/jpeg")}
+        parts = self.mixin._content_parts_to_google(
+            [
                 {
                     "type": "image_url",
                     "image_url": {"url": "https://example.com/img.jpg"},
                 },
-            ])
-            assert len(parts) == 1
-            # External URLs are now fetched and converted to inline bytes
-            assert parts[0].inline_data is not None
-            assert parts[0].inline_data.mime_type == "image/jpeg"
+            ],
+            fetched,
+        )
+        assert len(parts) == 1
+        assert parts[0].inline_data is not None
+        assert parts[0].inline_data.mime_type == "image/jpeg"
 
     def test_audio_part(self):
         parts = self.mixin._content_parts_to_google([
@@ -463,15 +458,9 @@ class TestContentPartsToGoogle:
 
     def test_document_with_url(self):
         """External https:// URLs are fetched and converted to inline bytes for Google."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"fake-pdf-data"
-            mock_response.headers.get.return_value = "application/pdf"
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            parts = self.mixin._content_parts_to_google([
+        fetched = {"https://example.com/doc.pdf": (b"fake-pdf-data", "application/pdf")}
+        parts = self.mixin._content_parts_to_google(
+            [
                 {
                     "type": "document",
                     "document": {
@@ -481,11 +470,12 @@ class TestContentPartsToGoogle:
                         "text": None,
                     },
                 },
-            ])
-            assert len(parts) == 1
-            # External URLs are now fetched and converted to inline bytes
-            assert parts[0].inline_data is not None
-            assert parts[0].inline_data.mime_type == "application/pdf"
+            ],
+            fetched,
+        )
+        assert len(parts) == 1
+        assert parts[0].inline_data is not None
+        assert parts[0].inline_data.mime_type == "application/pdf"
 
     def test_video_with_base64(self):
         parts = self.mixin._content_parts_to_google([
@@ -500,24 +490,19 @@ class TestContentPartsToGoogle:
 
     def test_video_with_url(self):
         """External https:// URLs are fetched and converted to inline bytes for Google."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"fake-video-data"
-            mock_response.headers.get.return_value = "video/mp4"
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            parts = self.mixin._content_parts_to_google([
+        fetched = {"https://example.com/vid.mp4": (b"fake-video-data", "video/mp4")}
+        parts = self.mixin._content_parts_to_google(
+            [
                 {
                     "type": "video",
                     "video": {"url": "https://example.com/vid.mp4", "mime_type": "video/mp4"},
                 },
-            ])
-            assert len(parts) == 1
-            # External URLs are now fetched and converted to inline bytes
-            assert parts[0].inline_data is not None
-            assert parts[0].inline_data.mime_type == "video/mp4"
+            ],
+            fetched,
+        )
+        assert len(parts) == 1
+        assert parts[0].inline_data is not None
+        assert parts[0].inline_data.mime_type == "video/mp4"
 
     def test_mixed_all_types(self):
         parts = self.mixin._content_parts_to_google([
@@ -527,28 +512,23 @@ class TestContentPartsToGoogle:
             {"type": "document", "document": {"text": "Doc content", "data": None, "url": None}},
             {"type": "video", "video": {"url": "https://example.com/vid.mp4", "mime_type": "video/mp4"}},
         ])
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.read.return_value = b"fake-video-data"
-            mock_response.headers.get.return_value = "video/mp4"
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
-            parts = self.mixin._content_parts_to_google([
+        fetched = {"https://example.com/vid.mp4": (b"fake-video-data", "video/mp4")}
+        parts = self.mixin._content_parts_to_google(
+            [
                 {"type": "text", "text": "Analyze this:"},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_TINY_PNG_B64}"}},
                 {"type": "input_audio", "input_audio": {"data": _TINY_AUDIO_B64, "format": "wav"}},
                 {"type": "document", "document": {"text": "Doc content", "data": None, "url": None}},
                 {"type": "video", "video": {"url": "https://example.com/vid.mp4", "mime_type": "video/mp4"}},
-            ])
-            assert len(parts) == 5
-            assert parts[0].text == "Analyze this:"
-            assert parts[1].inline_data is not None  # image
-            assert parts[2].inline_data is not None  # audio
-            assert parts[3].text == "Doc content"  # extracted document text
-            # Video URL is now fetched and converted to inline bytes
-            assert parts[4].inline_data is not None
+            ],
+            fetched,
+        )
+        assert len(parts) == 5
+        assert parts[0].text == "Analyze this:"
+        assert parts[1].inline_data is not None  # image
+        assert parts[2].inline_data is not None  # audio
+        assert parts[3].text == "Doc content"  # extracted document text
+        assert parts[4].inline_data is not None  # video, downloaded by the prefetch step
 
 
 # =========================================================================

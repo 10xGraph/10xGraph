@@ -17,7 +17,8 @@ Each WORKER is a **pre-built** ``Agent`` (or any
 caller via :class:`WorkerConfig`, so every worker can be independently
 configured with its own model, tools, memory, skills, retry config, etc.
 
-Round counter lives in ``execution_meta.internal_data["sta_rounds"]``.
+Round counter lives in ``execution_meta.internal_data["sta_rounds"]`` and is reset
+at the start of each turn, so ``max_rounds`` limits one turn, not the whole thread.
 
 Example::
 
@@ -67,10 +68,12 @@ from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.execution_state import register_per_turn_key
 from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.command import Command
@@ -83,8 +86,8 @@ logger = logging.getLogger("tenxgraph.prebuilt.supervisor_team")
 StateT = TypeVar("StateT", bound=AgentState)
 
 # Keys stored in execution_meta.internal_data
-_ROUNDS_KEY = "sta_rounds"
-_ROUTE_HISTORY_KEY = "sta_route_history"
+_ROUNDS_KEY = register_per_turn_key("sta_rounds")
+_ROUTE_HISTORY_KEY = register_per_turn_key("sta_route_history")
 
 _FINISH_TOKEN = "FINISH"  # nosec: B105  # noqa: S105
 _SUPERVISOR_NODE = "SUPERVISOR"
@@ -324,8 +327,9 @@ class SupervisorTeamAgent[StateT: AgentState]:
             :class:`WorkerConfig`.
         supervisor_system_prompt: Override the auto-generated supervisor system
             prompt.  If ``None`` the prompt is built from the worker registry.
-        max_rounds: Maximum number of supervisor → worker delegations before
-            the graph terminates (default ``10``).
+        max_rounds: Maximum number of supervisor → worker delegations per turn
+            before the graph terminates (default ``10``).  The count resets on
+            each new turn of a thread.
         state: Optional custom :class:`~tenxgraph.core.state.AgentState`
             subclass instance.
         context_manager: Optional custom context manager.
@@ -456,6 +460,7 @@ class SupervisorTeamAgent[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
         """Wire the graph and return a compiled, ready-to-invoke graph.
 
@@ -467,6 +472,7 @@ class SupervisorTeamAgent[StateT: AgentState]:
             callback_manager: Observability hooks.
             media_store: Media/file storage backend.
             shutdown_timeout: Graceful-shutdown timeout in seconds.
+            media_policy: Which external media URLs the server may download.
         """
         self._configure_graph()
         return self._graph.compile(
@@ -477,4 +483,5 @@ class SupervisorTeamAgent[StateT: AgentState]:
             callback_manager=callback_manager,
             media_store=media_store,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

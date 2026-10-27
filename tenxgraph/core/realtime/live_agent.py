@@ -171,7 +171,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     # ------------------------------------------------------------------ #
     # Forcing rule: a live agent is not a turn-based node.
     # ------------------------------------------------------------------ #
-    async def execute(self, state: AgentState, config: dict[str, Any]) -> Any:
+    async def execute(
+        self,
+        state: AgentState,
+        config: dict[str, Any],
+        *,
+        request_blocks: list[str] | None = None,
+    ) -> Any:
         raise RuntimeError(
             "LiveAgent runs via CompiledGraph.arealtime(); it is not a turn-based node. "
             "Use .arealtime() (or the AudioAgent prebuilt), not invoke/stream."
@@ -338,7 +344,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     async def _resolve_session_system_instruction(
         self, rt: RealtimeConfig, state: AgentState, config: dict[str, Any]
     ) -> RealtimeConfig:
-        """Flatten the agent's system prompt (+ skills + memory) into ``system_instruction``.
+        """Flatten the agent's system prompt (+ skills, fenced memory) into ``system_instruction``.
 
         Gemini Live takes a single ``system_instruction`` string fixed at connect time, so
         the per-turn prompt list other agents send must be collapsed once, here. This is what
@@ -360,11 +366,17 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         if not base and rt.system_instruction:
             base = [{"role": "system", "content": rt.system_instruction}]
 
-        prompts = self._build_skill_prompts(state, base)
-        prompts = prompts + await self._build_memory_prompts(state, config)
-        prompts = _interpolate_system_prompts(prompts, state)
+        # Only the developer's prompt is interpolated; skill and memory text is appended after.
+        prompts = _interpolate_system_prompts(base, state)
+        prompts = prompts + self._build_skill_prompts(state, [])
 
         instruction = "\n\n".join(str(p["content"]) for p in prompts if p.get("content")).strip()
+        # Memories stay in the session instruction here because the Gemini Live client only
+        # sends text as realtime input, which starts a reply; they get the same fence as the
+        # turn-based path and are not system rank text.
+        memory_block = await self._build_memory_block(state, config)
+        if memory_block:
+            instruction = f"{instruction}\n\n{memory_block}".strip()
         if not instruction:
             return rt
         return rt.model_copy(update={"system_instruction": instruction})

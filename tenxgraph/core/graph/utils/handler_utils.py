@@ -36,6 +36,7 @@ from tenxgraph.utils import (
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import (
+    RESUME_INTERRUPT_ID_KEY,
     RESUME_KEY,
     Interrupt,
     pause_at,
@@ -67,7 +68,7 @@ async def check_interrupted[StateT: AgentState](
                 f"Thread is paused at interrupt '{request.id}' in node '{request.node}'. "
                 f"Resume it with {{'{RESUME_KEY}': value}}."
             )
-        record_resume(state, input_data[RESUME_KEY])
+        record_resume(state, input_data[RESUME_KEY], input_data.get(RESUME_INTERRUPT_ID_KEY))
     elif RESUME_KEY in input_data:
         raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
 
@@ -122,11 +123,17 @@ async def check_interrupted[StateT: AgentState](
         state.execution_meta.interrupted_node = None
         state.execution_meta.interrupt_reason = None
         state.execution_meta.interrupt_data = None
+        # A new turn: loop limits (max_rounds, max_iterations, max_attempts) start over.
+        state.execution_meta.reset_turn_data()
     else:
         # Fresh execution, state is already at START
         logger.info(
             "Starting fresh execution with %d messages", len(input_data.get("messages", []))
         )
+        # A new message after a run that errored is a new turn too, so a failed turn does
+        # not use up the next one's loop budget. A stopped run is a pause (handled above).
+        if state.execution_meta.status == ExecutionStatus.ERROR and input_data.get("messages"):
+            state.execution_meta.reset_turn_data()
 
     return state, config
 

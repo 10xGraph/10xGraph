@@ -64,14 +64,8 @@ class TestImagePartToGoogle:
                 mock_part = MagicMock()
                 mock_from_bytes.return_value = mock_part
 
-                mock_response = MagicMock()
-                mock_response.read.return_value = b"fake-image"
-                mock_response.headers.get.return_value = "image/png"
-                mock_response.__enter__ = MagicMock(return_value=mock_response)
-                mock_response.__exit__ = MagicMock(return_value=False)
-
-                with patch("urllib.request.urlopen", return_value=mock_response):
-                    result = converter._image_part_to_google(part, types)
+                fetched = {"https://example.com/image.png": (b"fake-image", "image/png")}
+                result = converter._image_part_to_google(part, types, fetched)
 
                 mock_from_uri.assert_not_called()  # noqa: S101
                 mock_from_bytes.assert_called_once()  # noqa: S101
@@ -83,8 +77,9 @@ class TestImagePartToGoogle:
 
         part = {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
 
-        with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
-            result = converter._image_part_to_google(part, types)
+        # The download was refused or failed: the prefetch step recorded None
+        fetched = {"https://example.com/image.png": None}
+        result = converter._image_part_to_google(part, types, fetched)
 
         assert len(result) == 1  # noqa: S101
         assert result[0].text == "[Failed to load image]"  # noqa: S101
@@ -160,14 +155,10 @@ class TestBinaryOrUriPartsToGoogle:
                 mock_part = MagicMock()
                 mock_from_bytes.return_value = mock_part
 
-                mock_response = MagicMock()
-                mock_response.read.return_value = b"fake-pdf"
-                mock_response.headers.get.return_value = "application/pdf"
-                mock_response.__enter__ = MagicMock(return_value=mock_response)
-                mock_response.__exit__ = MagicMock(return_value=False)
-
-                with patch("urllib.request.urlopen", return_value=mock_response):
-                    result = converter._binary_or_uri_parts_to_google(media_info, types, default_mime="application/pdf")
+                fetched = {"https://example.com/doc.pdf": (b"fake-pdf", "application/pdf")}
+                result = converter._binary_or_uri_parts_to_google(
+                    media_info, types, default_mime="application/pdf", fetched=fetched
+                )
 
                 mock_from_uri.assert_not_called()  # noqa: S101
                 mock_from_bytes.assert_called_once()  # noqa: S101

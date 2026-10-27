@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import ipaddress
 import json
-import socket
+import socket  # noqa: F401  (tests patch fetch.socket)
 from html.parser import HTMLParser
-from urllib import request
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
 
+from tenxgraph.utils import safe_http
 from tenxgraph.utils.decorators import tool
 
 
 _DEFAULT_MAX_CHARS = 20_000
 _USER_AGENT = "10xgraph-prebuilt-tools/1.0"
+_HTTP_ERROR_STATUS = 400
 
 
 class _HTMLTextParser(HTMLParser):
@@ -46,26 +46,13 @@ class _HTMLTextParser(HTMLParser):
         return " ".join(" ".join(self.parts).split())
 
 
-def _is_public_hostname(hostname: str | None) -> bool:
-    if not hostname:
-        return False
-    try:
-        addresses = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return False
+def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return safe_http.is_public_ip(ip)
 
-    for addr in addresses:
-        ip = ipaddress.ip_address(addr[4][0])
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            return False
-    return True
+
+def _resolve_public_ip(hostname: str | None, port: int) -> str | None:
+    """Resolve ``hostname`` once and return an address to connect to (``None`` if refused)."""
+    return safe_http.resolve_public_ip(hostname, port)
 
 
 def _html_to_text(html: str) -> str:
@@ -75,25 +62,27 @@ def _html_to_text(html: str) -> str:
 
 
 def _fetch_sync(url: str, timeout: float, max_chars: int) -> dict[str, object]:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        return {"error": "only http and https URLs are supported"}
-    if not _is_public_hostname(parsed.hostname):
-        return {"error": "URL host is not public or could not be resolved"}
+    timeout = max(1.0, min(float(timeout), 30.0))
 
-    req = request.Request(url, headers={"User-Agent": _USER_AGENT})  # noqa: S310
+    # Redirects are followed in safe_http, so every hop is checked
     try:
-        with request.urlopen(  # noqa: S310  # nosec B310
-            req, timeout=max(1.0, min(float(timeout), 30.0))
-        ) as response:
-            raw = response.read(max_chars + 1)
-            status_code = response.getcode()
-            final_url = response.geturl()
-            content_type = response.headers.get("content-type", "")
-    except HTTPError as exc:
-        return {"error": f"HTTP error: {exc.code}", "status_code": exc.code}
-    except URLError as exc:
-        return {"error": f"URL error: {exc.reason}"}
+        result = safe_http.fetch(
+            url,
+            timeout=timeout,
+            max_bytes=max_chars + 1,
+            user_agent=_USER_AGENT,
+            resolve=lambda host, port: _resolve_public_ip(host, port),
+        )
+    except safe_http.SafeHTTPError as exc:
+        return {"error": str(exc)}
+    except (OSError, http.client.HTTPException) as exc:
+        return {"error": f"URL error: {exc}"}
+
+    url = result.url
+    status_code, content_type, raw = result.status, result.content_type, result.body
+
+    if status_code >= _HTTP_ERROR_STATUS:
+        return {"error": f"HTTP error: {status_code}", "status_code": status_code}
 
     truncated = len(raw) > max_chars
     body = raw[:max_chars].decode("utf-8", errors="replace")
@@ -104,7 +93,7 @@ def _fetch_sync(url: str, timeout: float, max_chars: int) -> dict[str, object]:
             truncated = True
 
     return {
-        "url": final_url,
+        "url": url,
         "status_code": status_code,
         "content_type": content_type,
         "content": body,
@@ -116,7 +105,7 @@ def _fetch_sync(url: str, timeout: float, max_chars: int) -> dict[str, object]:
     name="fetch_url",
     description=(
         "Fetch a public http/https URL and return text content. Blocks private/local hosts, "
-        "applies a timeout, and truncates long responses."
+        "including through redirects, applies a timeout, and truncates long responses."
     ),
     tags=["web", "fetch", "network"],
     capabilities=["network_access"],

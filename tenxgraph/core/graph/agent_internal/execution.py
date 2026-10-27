@@ -11,11 +11,13 @@ from injectq import Inject, InjectQ
 from injectq.utils.exceptions import DependencyNotFoundError
 
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node.run_tools import tool_name
 from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils.converter import (
     convert_messages,
+    inject_request_blocks,
     strip_media_blocks,
 )
 from tenxgraph.utils.injection import fresh
@@ -609,26 +611,47 @@ class AgentExecutionMixin:
         self,
         state: AgentState,
         config: dict[str, Any],
+        *,
+        request_blocks: list[str] | None = None,
     ) -> ModelResponseConverter:
-        """Execute the Agent node against the current graph state."""
+        """Execute the Agent node against the current graph state.
+
+        ``request_blocks`` are fenced texts (for example retrieved documents) added to the
+        latest user message of this request only, after the memory block and before the
+        user's text. They are never saved to ``state.context``.
+        """
         container = InjectQ.get_instance()
 
         state = await self._trim_context(state)
 
-        # Build effective system prompts (with the skill catalog if skills configured)
-        effective_system_prompt = list(self.system_prompt)
+        # Skill text is loaded, so it is added after the developer's system prompt is
+        # interpolated and never goes through str.format.
+        extra_system_prompts: list[dict[str, Any]] = []
 
         if hasattr(self, "_build_skill_prompts") and callable(self._build_skill_prompts):
-            effective_system_prompt = self._build_skill_prompts(state, self.system_prompt)
+            extra_system_prompts = self._build_skill_prompts(state, [])
 
-        if hasattr(self, "_build_memory_prompts") and callable(self._build_memory_prompts):
-            effective_system_prompt.extend(await self._build_memory_prompts(state, config))
+        # Retrieved memories are user-level data, not system text: they are fenced and added
+        # to the latest user message of this request only (never to state.context).
+        memory_block: str | None = None
+        if hasattr(self, "_build_memory_block") and callable(self._build_memory_block):
+            memory_block = await self._build_memory_block(state, config)
+
+        # Raw (uninterpolated) prompts, used for the LLM-call event below.
+        effective_system_prompt = [*self.system_prompt, *extra_system_prompts]
 
         messages = convert_messages(
-            system_prompts=effective_system_prompt,
+            system_prompts=list(self.system_prompt),
             state=state,
             extra_messages=self.extra_messages or [],
+            extra_system_prompts=extra_system_prompts,
         )
+        # Image, video and audio endpoints take a plain prompt, so memories only apply to
+        # text-like output.
+        if self.output_type in ("text", "json"):
+            blocks = [b for b in (memory_block, *(request_blocks or [])) if b]
+            if blocks:
+                messages = inject_request_blocks(messages, *blocks)
 
         # Resolve internal media refs (graph://media/...) before provider call.
         # This converts internal refs to signed URLs or inline base64, using the
@@ -712,7 +735,12 @@ class AgentExecutionMixin:
             publish_event(llm_event)
 
         converter_key = self._get_converter_key()
-        return ModelResponseConverter(response, converter=converter_key)
+        converter = ModelResponseConverter(response, converter=converter_key)
+        if self.tools_tags:
+            # Record which tools the model was shown, so dispatch can refuse a call to
+            # a tool the tags hid from it.
+            converter.message_metadata["allowed_tools"] = [tool_name(t) for t in tools or []]
+        return converter
 
     async def _resolve_media_in_messages(  # noqa: PLR0915, PLR0912
         self,

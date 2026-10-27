@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from .base_publisher import BasePublisher
 from .events import Event, EventModel, EventType
+from .identity import UserIdMode, transform_user_id, validate_user_id_mode
 from .otel_attributes import (
     GEN_AI_COMPLETION,
     GEN_AI_INPUT_MESSAGES,
@@ -170,8 +171,24 @@ class OtelPublisher(BasePublisher):
         self,
         tracer: Tracer | None = None,
         level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+        user_id_mode: UserIdMode = "raw",
     ) -> None:
+        """Create the publisher.
+
+        Args:
+            tracer: Optional explicit Tracer. Uses the global TracerProvider if None.
+            level: How much data to emit.
+            user_id_mode: How ``user_id`` appears on spans: ``"raw"`` (default, unchanged),
+                ``"hash"`` (16 hex chars of SHA-256, or HMAC-SHA256 when the
+                ``TENXGRAPH_TRACE_USER_ID_KEY`` env var is set; plain SHA-256 can be
+                guessed for short ids) or ``"mask"`` (e.g. ``"al***42"``). See
+                ``tenxgraph.runtime.publisher.identity``.
+
+        Raises:
+            ValueError: If ``user_id_mode`` is not one of the allowed values.
+        """
         super().__init__({})
+        self._user_id_mode: UserIdMode = validate_user_id_mode(user_id_mode)
         self._tracer_arg = tracer
         self._tracer: Tracer | None = None
         self._registry = SpanRegistry()
@@ -245,7 +262,7 @@ class OtelPublisher(BasePublisher):
             )
             span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
             span.set_attribute(GEN_AI_OPERATION, "graph")
-            _set_common_attrs(span, event)
+            _set_common_attrs(span, event, self._user_id_mode)
             span.set_status(StatusCode.ERROR, "validation_rejected")
             span.add_event("graph.validation_rejected", attributes=_extra_attrs(event))
             span.end(end_time=_ns(event.timestamp))
@@ -257,7 +274,7 @@ class OtelPublisher(BasePublisher):
         )
         span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
         span.set_attribute(GEN_AI_OPERATION, "graph")
-        _set_common_attrs(span, event)
+        _set_common_attrs(span, event, self._user_id_mode)
         # Expose thread_id as session.id so Langfuse groups multi-turn conversations
         span.set_attribute(SESSION_ID, str(event.thread_id))
         self._registry.set_graph(event.run_id, span)
@@ -662,11 +679,11 @@ class OtelPublisher(BasePublisher):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _set_common_attrs(span: Span, event: EventModel) -> None:
+def _set_common_attrs(span: Span, event: EventModel, user_id_mode: UserIdMode = "raw") -> None:
     span.set_attribute(GRAPH_THREAD_ID, str(event.thread_id))
     span.set_attribute(GRAPH_RUN_ID, str(event.run_id))
     if event.user_id is not None:
-        span.set_attribute(GRAPH_USER_ID, str(event.user_id))
+        span.set_attribute(GRAPH_USER_ID, transform_user_id(event.user_id, user_id_mode))
 
 
 def _extra_attrs(event: EventModel) -> dict[str, Any]:
@@ -707,6 +724,7 @@ def setup_tracing(
     graph: StateGraph,
     tracer: Tracer | None = None,
     level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    user_id_mode: UserIdMode = "raw",
 ) -> OtelPublisher:
     """Register OtelPublisher as the publisher backend on the graph.
 
@@ -718,6 +736,7 @@ def setup_tracing(
         tracer: Optional explicit Tracer. Uses the global TracerProvider if None.
         level: How much data to emit. STANDARD by default. Use FULL for complete
                prompt/response visibility (may contain PII).
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``; see ``OtelPublisher``.
 
     Returns:
         The OtelPublisher instance.
@@ -726,6 +745,6 @@ def setup_tracing(
         ImportError: If opentelemetry-api is not installed.
     """
     _guard()
-    publisher = OtelPublisher(tracer=tracer, level=level)
+    publisher = OtelPublisher(tracer=tracer, level=level, user_id_mode=user_id_mode)
     graph._publisher = publisher
     return publisher

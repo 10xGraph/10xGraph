@@ -68,9 +68,9 @@ class TestSyncStateMethods:
     def test_put_get_state(self, cp, config_t1):
         state = _make_state()
         result = cp.put_state(config_t1, state)
-        assert result is state
+        assert result == state
         retrieved = cp.get_state(config_t1)
-        assert retrieved is state
+        assert retrieved == state
 
     def test_get_state_missing_returns_none(self, cp, config_t1):
         assert cp.get_state(config_t1) is None
@@ -90,9 +90,9 @@ class TestSyncStateMethods:
     def test_put_get_state_cache(self, cp, config_t1):
         state = _make_state()
         result = cp.put_state_cache(config_t1, state)
-        assert result is state
+        assert result == state
         cached = cp.get_state_cache(config_t1)
-        assert cached is state
+        assert cached == state
 
     def test_get_state_cache_missing_returns_none(self, cp, config_t1):
         assert cp.get_state_cache(config_t1) is None
@@ -102,8 +102,8 @@ class TestSyncStateMethods:
         s2 = _make_state()
         cp.put_state(config_t1, s1)
         cp.put_state(config_t2, s2)
-        assert cp.get_state(config_t1) is s1
-        assert cp.get_state(config_t2) is s2
+        assert cp.get_state(config_t1) == s1
+        assert cp.get_state(config_t2) == s2
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ class TestAsyncStateMethods:
         state = _make_state()
         await cp.aput_state(config_t1, state)
         retrieved = await cp.aget_state(config_t1)
-        assert retrieved is state
+        assert retrieved == state
 
     @pytest.mark.asyncio
     async def test_aget_state_missing(self, cp, config_t1):
@@ -268,7 +268,7 @@ class TestAsyncStateMethods:
         state = _make_state()
         await cp.aput_state_cache(config_t1, state)
         cached = await cp.aget_state_cache(config_t1)
-        assert cached is state
+        assert cached == state
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +427,28 @@ def _owner_cfg(thread_id, user_id):
     from tenxgraph.core.authz import build_authz
 
     return {"thread_id": thread_id, "user_id": user_id, "authz": build_authz(user_id, scope="owner")}
+
+
+@pytest.mark.asyncio
+async def test_inmem_state_cache_write_is_owner_checked(cp):
+    # A non-owner's cache write is dropped; the owner keeps reading their own state.
+    await cp.aput_state(_owner_cfg("t1", "A"), _make_state())
+    poisoned = _make_state()
+    poisoned.context = [_make_message("evil", "poison")]
+    await cp.aput_state_cache(_owner_cfg("t1", "B"), poisoned)
+    cached = await cp.aget_state_cache(_owner_cfg("t1", "A"))
+    assert all(m.text() != "poison" for m in cached.context)
+
+
+@pytest.mark.asyncio
+async def test_inmem_state_cache_write_claims_an_unowned_thread(cp):
+    # Writing the cache of a thread nobody owns yet makes the writer its owner, so the
+    # next user cannot read the planted state.
+    poisoned = _make_state()
+    poisoned.context = [_make_message("evil", "poison")]
+    await cp.aput_state_cache(_owner_cfg("t9", "B"), poisoned)
+    assert await cp.aget_state_cache(_owner_cfg("t9", "A")) is None
+    assert await cp.aget_state_cache(_owner_cfg("t9", "B")) is not None
 
 
 @pytest.mark.asyncio

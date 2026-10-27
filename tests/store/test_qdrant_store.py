@@ -49,7 +49,8 @@ def mock_qdrant_client():
     client.get_collections.return_value = MagicMock(collections=[])
     client.create_collection.return_value = None
     client.upsert.return_value = None
-    client.search.return_value = []
+    client.query_points.return_value = MagicMock(points=[])
+    client.scroll.return_value = ([], None)
     client.retrieve.return_value = []
     client.delete.return_value = None
     return client
@@ -254,7 +255,7 @@ class TestQdrantStore:
             "memory_type": "episodic",
             "timestamp": "2023-01-01T00:00:00"
         }
-        mock_qdrant_client.search.return_value = [mock_point]
+        mock_qdrant_client.query_points.return_value = MagicMock(points=[mock_point])
         
         results = await qdrant_store.asearch(
             config=sample_config,
@@ -265,12 +266,49 @@ class TestQdrantStore:
         assert len(results) == 1
         assert results[0].content == "test content"
         assert results[0].score == 0.95
-        mock_qdrant_client.search.assert_called_once()
+        mock_qdrant_client.query_points.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_asearch_call_arguments(self, qdrant_store, mock_qdrant_client, sample_config):
+        """The vector goes in as `query`; filter, limit and threshold are passed through."""
+        await qdrant_store.asearch(
+            config=sample_config, query="test query", limit=7, score_threshold=0.4
+        )
+
+        kwargs = mock_qdrant_client.query_points.call_args.kwargs
+        assert kwargs["query"] == await qdrant_store.embedding.aembed("test query")
+        assert kwargs["limit"] == 7
+        assert kwargs["score_threshold"] == 0.4
+        assert [c.key for c in kwargs["query_filter"].must] == ["user_id"]
+        assert "query_vector" not in kwargs
+        mock_qdrant_client.scroll.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_aget_all_uses_scroll_with_user_filter(
+        self, qdrant_store, mock_qdrant_client, sample_config
+    ):
+        """Listing scrolls the user's points: no vector, no search call."""
+        record = MagicMock(spec=["id", "payload", "vector"])
+        record.id = "r1"
+        record.vector = None
+        record.payload = {"content": "listed", "user_id": "test_user"}
+        mock_qdrant_client.scroll.return_value = ([record], None)
+
+        results = await qdrant_store.aget_all(config=sample_config, limit=5)
+
+        kwargs = mock_qdrant_client.scroll.call_args.kwargs
+        assert kwargs["limit"] == 5
+        assert [c.key for c in kwargs["scroll_filter"].must] == ["user_id"]
+        assert kwargs["scroll_filter"].must[0].match.value == "test_user"
+        assert "query" not in kwargs and "query_vector" not in kwargs
+        mock_qdrant_client.query_points.assert_not_called()
+        assert [r.content for r in results] == ["listed"]
+        assert results[0].score == 1.0
 
     @pytest.mark.asyncio
     async def test_asearch_does_not_filter_by_thread_id(self, qdrant_store, mock_qdrant_client, sample_config):
         """LTM search is cross-thread; thread_id must NOT be passed to the filter."""
-        mock_qdrant_client.search.return_value = []
+        mock_qdrant_client.query_points.return_value = MagicMock(points=[])
 
         with patch.object(qdrant_store, "_build_qdrant_filter", wraps=qdrant_store._build_qdrant_filter) as mock_filter:
             await qdrant_store.asearch(config=sample_config, query="test")
@@ -376,14 +414,67 @@ class TestQdrantStore:
         
         mock_qdrant_client.delete.assert_called_once()
 
+    @staticmethod
+    def _delete_conditions(mock_qdrant_client):
+        selector = mock_qdrant_client.delete.call_args.kwargs["points_selector"]
+        return {c.key: c.match.value for c in selector.filter.must}
+
+    @pytest.mark.asyncio
+    async def test_aforget_memory_without_narrowing_scopes_to_user(
+        self, qdrant_store, mock_qdrant_client
+    ):
+        await qdrant_store.aforget_memory(config={"user_id": "u1"})
+
+        conditions = self._delete_conditions(mock_qdrant_client)
+        assert conditions["user_id"] == "u1"
+        assert set(conditions) <= {"user_id", "thread_id"}
+
+    @pytest.mark.asyncio
+    async def test_aforget_memory_applies_memory_type_category_and_filters(
+        self, qdrant_store, mock_qdrant_client
+    ):
+        await qdrant_store.aforget_memory(
+            config={"user_id": "u1"},
+            memory_type=MemoryType.SEMANTIC,
+            category="travel",
+            filters={"source": "chat", "pinned": False},
+        )
+
+        conditions = self._delete_conditions(mock_qdrant_client)
+        assert conditions["user_id"] == "u1"
+        assert conditions["memory_type"] == MemoryType.SEMANTIC.value
+        assert conditions["category"] == "travel"
+        assert conditions["source"] == "chat"
+        assert conditions["pinned"] is False
+
+    @pytest.mark.asyncio
+    async def test_aforget_memory_accepts_memory_type_string(
+        self, qdrant_store, mock_qdrant_client
+    ):
+        await qdrant_store.aforget_memory(config={"user_id": "u1"}, memory_type="semantic")
+
+        conditions = self._delete_conditions(mock_qdrant_client)
+        assert conditions["memory_type"] == MemoryType.SEMANTIC.value
+
+    @pytest.mark.asyncio
+    async def test_aforget_memory_rejects_unmatchable_filter_without_deleting(
+        self, qdrant_store, mock_qdrant_client
+    ):
+        with pytest.raises(ValueError, match="Unsupported forget filter"):
+            await qdrant_store.aforget_memory(
+                config={"user_id": "u1"}, filters={"tags": ["a", "b"]}
+            )
+
+        mock_qdrant_client.delete.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_aforget_memory_no_filter(self, qdrant_store, mock_qdrant_client):
-        """Test forgetting memories with no user/agent specified."""
-        config = {}  # No user_id or agent_id
-        
-        await qdrant_store.aforget_memory(config=config)
-        
-        # Should not call delete if no filter criteria
+        """Forgetting without a user_id raises and never deletes."""
+        config = {}  # No user_id
+
+        with pytest.raises(ValueError, match="user_id is required"):
+            await qdrant_store.aforget_memory(config=config)
+
         mock_qdrant_client.delete.assert_not_called()
 
     @pytest.mark.asyncio
@@ -628,3 +719,40 @@ class TestQdrantStoreIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+class _FixedEmbedding:
+    """Maps a text to a fixed 4-d vector so similarity is predictable."""
+
+    dimension = 4
+    _vectors = {"alpha": [1.0, 0.0, 0.0, 0.0], "beta": [0.0, 1.0, 0.0, 0.0]}
+
+    async def aembed(self, text: str) -> list[float]:
+        return self._vectors.get(text, [0.0, 0.0, 1.0, 0.0])
+
+
+class TestQdrantLocalModeEndToEnd:
+    """Runs asearch and aget_all against the real client API in local (in-memory) mode."""
+
+    @pytest.mark.asyncio
+    async def test_asearch_and_aget_all(self):
+        store = QdrantStore(embedding=_FixedEmbedding(), path=":memory:")
+        mine = {"user_id": "alice", "thread_id": "t1"}
+        other = {"user_id": "bob", "thread_id": "t2"}
+        try:
+            await store.astore(mine, "alpha")
+            await store.astore(mine, "beta")
+            await store.astore(other, "alpha")
+
+            found = await store.asearch(mine, "alpha", limit=5)
+            assert found[0].content == "alpha"
+            assert found[0].score > 0.99
+            assert {r.user_id for r in found} == {"alice"}
+
+            above = await store.asearch(mine, "alpha", limit=5, score_threshold=0.5)
+            assert [r.content for r in above] == ["alpha"]
+
+            listed = await store.aget_all(mine, limit=10)
+            assert sorted(r.content for r in listed) == ["alpha", "beta"]
+            assert {r.user_id for r in listed} == {"alice"}
+        finally:
+            await store.client.close()

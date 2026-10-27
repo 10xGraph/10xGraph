@@ -18,6 +18,7 @@ from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.core.state.stream_chunks import StreamChunk
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.utils import (
     CallbackManager,
@@ -109,6 +110,7 @@ class CompiledGraph[StateT: AgentState]:
         interrupt_after: list[str],
         task_manager: BackgroundTaskManager,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ):
         logger.info(
             f"Initializing CompiledGraph with nodes: {list(state_graph.nodes.keys())}",
@@ -117,6 +119,7 @@ class CompiledGraph[StateT: AgentState]:
         # Save initial state
         self._state = state
         self._shutdown_timeout = shutdown_timeout
+        self._media_policy: MediaFetchPolicy = media_policy or MediaFetchPolicy()
 
         # create handlers
         self._invoke_handler: InvokeHandler[StateT] = InvokeHandler[StateT](
@@ -143,6 +146,15 @@ class CompiledGraph[StateT: AgentState]:
         # Guards aclose() against being run more than once (e.g. an explicit
         # aclose() inside an ``async with`` block followed by __aexit__).
         self._closed = False
+
+    @property
+    def media_policy(self) -> MediaFetchPolicy:
+        """The policy for downloading external media URLs (never ``None``).
+
+        Set with ``StateGraph.compile(media_policy=...)``; ``MediaFetchPolicy()`` otherwise.
+        Call ``media_policy.check_url(url)`` to check a URL without touching the network.
+        """
+        return self._media_policy
 
     async def __aenter__(self) -> CompiledGraph[StateT]:
         """Enter an async context; returns this graph unchanged.
@@ -300,12 +312,24 @@ class CompiledGraph[StateT: AgentState]:
         self._guard_not_realtime()
         cfg = self._prepare_config(config, is_stream=False)
 
-        return await self._invoke_handler.invoke(
-            input_data,
-            cfg,
-            self._state,
-            response_granularity,
-        )
+        try:
+            return await self._invoke_handler.invoke(
+                input_data,
+                cfg,
+                self._state,
+                response_granularity,
+            )
+        finally:
+            await self._end_run(cfg)
+
+    async def _end_run(self, cfg: dict[str, Any]) -> None:
+        """Tell the checkpointer this run is over so its stop scope is released."""
+        if not self._checkpointer:
+            return
+        try:
+            await self._checkpointer.aend_run(cfg)
+        except Exception:
+            logger.warning("Failed to release run scope for thread_id: %s", cfg.get("thread_id"))
 
     def stop(self, config: dict[str, Any]) -> dict[str, Any]:
         """Request the current graph execution to stop (sync helper).
@@ -487,13 +511,16 @@ class CompiledGraph[StateT: AgentState]:
         self._guard_not_realtime()
         cfg = self._prepare_config(config, is_stream=True)
 
-        async for chunk in self._stream_handler.stream(
-            input_data,
-            cfg,
-            self._state,
-            response_granularity,
-        ):
-            yield chunk
+        try:
+            async for chunk in self._stream_handler.stream(
+                input_data,
+                cfg,
+                self._state,
+                response_granularity,
+            ):
+                yield chunk
+        finally:
+            await self._end_run(cfg)
 
     def attach_remote_tools(
         self,

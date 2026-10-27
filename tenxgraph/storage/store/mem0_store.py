@@ -118,11 +118,9 @@ class Mem0Store(BaseStore):
 
     def _extract_ids(self, config: dict[str, Any]) -> tuple[str, str | None]:
         """Extract user_id and app_id from per-call config with fallbacks."""
-        user_id = config.get("user_id")
+        # Mem0 always scopes by a concrete user (it ignores authz scope="none").
+        user_id = str(self._require_owner_id(config))
         app_id = config.get("app_id") or self.app_id
-
-        if not user_id:
-            raise ValueError("user_id must be provided in config")
 
         return user_id, app_id
 
@@ -374,6 +372,17 @@ class Mem0Store(BaseStore):
         config: dict[str, Any],
         **kwargs: Any,
     ) -> Any:
+        # Mem0's delete_all only takes entity ids (user, agent, run), not memory_type, category
+        # or metadata filters. Deleting everything for a narrow request would lose data, so refuse.
+        narrowing = [
+            name for name in ("memory_type", "category", "filters") if kwargs.get(name) is not None
+        ]
+        if narrowing:
+            raise ValueError(
+                f"Mem0Store.aforget_memory cannot narrow by {', '.join(narrowing)}: Mem0 deletes "
+                "by user only. Remove the narrowing to delete every memory of the user, or "
+                "delete single memories with adelete."
+            )
         # Delete all memories for a user
         user_id, _ = self._extract_ids(config)
         client = await self._get_client()

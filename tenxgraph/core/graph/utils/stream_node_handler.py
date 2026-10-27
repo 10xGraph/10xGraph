@@ -11,7 +11,6 @@ in agent workflows, supporting both synchronous and asynchronous execution patte
 
 import asyncio
 import inspect
-import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from typing import TYPE_CHECKING, Any, Union
@@ -21,6 +20,14 @@ from injectq import Inject
 from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.stream_utils import check_non_streaming
+from tenxgraph.core.graph.utils.tool_dispatch import (
+    allowed_tool_names,
+    handoff_target,
+    hidden_tool_message,
+    invalid_arguments_message,
+    parse_call_arguments,
+    resolve_max_parallel_tool_calls,
+)
 from tenxgraph.core.graph.utils.utils import process_node_result
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ErrorBlock
@@ -89,8 +96,32 @@ class StreamNodeHandler(BaseLoggingMixin):
         config: dict[str, Any],
     ) -> AsyncIterable[Message | dict[str, Any] | StreamChunk]:
         function_name = tool_call.get("function", {}).get("name", "")
-        function_args: dict = json.loads(tool_call.get("function", {}).get("arguments", "{}"))
         tool_call_id = tool_call.get("id", "")
+        function_args, args_error = parse_call_arguments(tool_call)
+        if args_error:
+            # The model's arguments were unusable: answer with a tool error it can
+            # retry from, and never run the tool with guessed arguments.
+            logger.warning(
+                "Node '%s': tool '%s' called with invalid arguments: %s",
+                self.name,
+                function_name,
+                args_error,
+            )
+            yield invalid_arguments_message(tool_call)
+            yield StreamChunk(
+                event=StreamEvent.ERROR,
+                data={
+                    "status": "tool_failed",
+                    "tool_name": function_name,
+                    "tool_call_id": tool_call_id,
+                    "node": self.name,
+                    "reason": "Tool call arguments were not a valid JSON object",
+                    "error": args_error,
+                },
+                thread_id=config.get("thread_id"),
+                run_id=config.get("run_id"),
+            )
+            return
 
         logger.info(
             "Node '%s' executing tool '%s' with %d arguments",
@@ -220,6 +251,28 @@ class StreamNodeHandler(BaseLoggingMixin):
         # Re-raise any exception that occurred inside the background task.
         await task
 
+    async def _hidden_tool_stream(
+        self,
+        tool_call: dict[str, Any],
+        config: dict[str, Any],
+    ) -> AsyncIterable[Message | StreamChunk]:
+        """Emit the error result for a call to a tool the model was not offered."""
+        message = hidden_tool_message(tool_call)
+        yield message
+        yield StreamChunk(
+            event=StreamEvent.ERROR,
+            data={
+                "status": "tool_failed",
+                "tool_name": tool_call.get("function", {}).get("name", ""),
+                "tool_call_id": tool_call.get("id", ""),
+                "node": self.name,
+                "reason": "Tool was not offered to the model",
+                "error": f"Tool '{tool_call.get('function', {}).get('name', '')}' not found.",
+            },
+            thread_id=config.get("thread_id"),
+            run_id=config.get("run_id"),
+        )
+
     async def _call_tools(
         self,
         last_message: Message,
@@ -232,15 +285,18 @@ class StreamNodeHandler(BaseLoggingMixin):
             and last_message.tools_calls
             and len(last_message.tools_calls) > 0
         ):
-            # Lazy import to avoid circular dependency
-            from tenxgraph.prebuilt.tools.handoff import is_handoff_tool
+            # Only tools the model was actually offered may run (Agent.tools_tags).
+            allowed = allowed_tool_names(last_message)
 
-            # Check for handoff BEFORE executing any tools
+            # A handoff is honoured only for a registered handoff tool. A name that
+            # merely starts with "transfer_to_" is an ordinary (unknown) tool call.
             for tool_call in last_message.tools_calls:
                 tool_name = tool_call.get("function", {}).get("name", "")
-                is_handoff, target_agent = is_handoff_tool(tool_name)
+                if allowed is not None and tool_name not in allowed:
+                    continue
+                target_agent = handoff_target(self.func, tool_name)
 
-                if is_handoff:
+                if target_agent:
                     logger.info(
                         "Handoff detected in node '%s': tool '%s' -> agent '%s'",
                         self.name,
@@ -264,15 +320,27 @@ class StreamNodeHandler(BaseLoggingMixin):
             shared_queue: asyncio.Queue = asyncio.Queue()
             _WORKER_DONE = object()  # per-worker sentinel
 
-            generators = [
-                self._handle_single_tool(tool_call, state, config)
-                for tool_call in last_message.tools_calls
-            ]
+            # At most this many tools run at once; the rest wait for a slot.
+            semaphore = asyncio.Semaphore(resolve_max_parallel_tool_calls(config))
+
+            def _tool_stream(tool_call: dict[str, Any]) -> AsyncIterable:
+                name = tool_call.get("function", {}).get("name", "")
+                if allowed is not None and name not in allowed:
+                    logger.warning(
+                        "Node '%s': tool '%s' was not offered to the model; not executing",
+                        self.name,
+                        name,
+                    )
+                    return self._hidden_tool_stream(tool_call, config)
+                return self._handle_single_tool(tool_call, state, config)
+
+            generators = [_tool_stream(tool_call) for tool_call in last_message.tools_calls]
 
             async def _worker(gen: AsyncIterable) -> None:
                 try:
-                    async for item in gen:
-                        await shared_queue.put(item)
+                    async with semaphore:
+                        async for item in gen:
+                            await shared_queue.put(item)
                 finally:
                     await shared_queue.put(_WORKER_DONE)
 

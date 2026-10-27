@@ -426,6 +426,28 @@ async def test_sqlite_owner_only_state(cp):
 
 
 @pytest.mark.asyncio
+async def test_sqlite_state_cache_write_is_owner_checked(cp):
+    # A non-owner's cache write is dropped; the owner keeps reading their own state.
+    await cp.aput_state(_sqlite_owner_cfg("t1", "A"), MyState())
+    poisoned = MyState()
+    poisoned.context = [Message.text_message("poison", role="user")]
+    await cp.aput_state_cache(_sqlite_owner_cfg("t1", "B"), poisoned)
+    cached = await cp.aget_state_cache(_sqlite_owner_cfg("t1", "A"))
+    assert all(m.text() != "poison" for m in cached.context)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_state_cache_write_claims_an_unowned_thread(cp):
+    # Writing the cache of a thread nobody owns yet makes the writer its owner, so the
+    # next user cannot read the planted state.
+    poisoned = MyState()
+    poisoned.context = [Message.text_message("poison", role="user")]
+    await cp.aput_state_cache(_sqlite_owner_cfg("t9", "B"), poisoned)
+    assert await cp.aget_state_cache(_sqlite_owner_cfg("t9", "A")) is None
+    assert await cp.aget_state_cache(_sqlite_owner_cfg("t9", "B")) is not None
+
+
+@pytest.mark.asyncio
 async def test_sqlite_owner_only_messages(cp):
     await cp.aput_messages(_sqlite_owner_cfg("t1", "A"), [Message.text_message("hi", role="user")])
     assert await cp.alist_messages(_sqlite_owner_cfg("t1", "B")) == []

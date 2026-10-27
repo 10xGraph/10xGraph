@@ -228,6 +228,10 @@ class ToolNode(
             return True
         return any(tool_name(x) == name for x in self._run_remote_tools(config))
 
+    def knows_tool(self, name: str, config: dict[str, t.Any] | None = None) -> bool:
+        """Whether ``invoke`` can route ``name``: local, MCP, remote or per-run client tool."""
+        return name in self._funcs or name in self.mcp_tools or self._is_remote_call(name, config)
+
     def set_remote_tool(self, tool_names: list[dict]) -> None:
         # already validated tool names
         self.remote_tools = tool_names

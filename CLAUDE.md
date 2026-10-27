@@ -76,7 +76,7 @@ from tenxgraph.runtime.adapters.llm import OpenAIConverter, GoogleGenAIConverter
 
 # Prebuilt
 from tenxgraph.prebuilt.agent import ReactAgent, RAGAgent, SwarmAgent, SupervisorTeamAgent
-from tenxgraph.prebuilt.tools import safe_calculator, fetch_url, create_handoff_tool, memory_tool
+from tenxgraph.prebuilt.tools import safe_calculator, fetch_url, create_handoff_tool
 
 # QA
 from tenxgraph.qa.evaluation import AgentEvaluator, EvalConfig, EvalCase, EvalSet
@@ -162,8 +162,17 @@ state lists merge.
 layer) for production; requires `[pg_checkpoint]`.
 
 **Memory / store.** 3-layer model: working state -> checkpointer (hot/durable) -> vector store
-(Qdrant/Mem0) for long-term. `MemoryConfig` / `AgentMemoryConfig` drive it; `memory_tool` and
-`create_memory_preload_node` wire it into a graph.
+(Qdrant/Mem0) for long-term. Memory is Agent-level only: `Agent(memory=MemoryConfig(...))` with
+`UserMemoryConfig` / `AgentMemoryConfig` registers `user_memory_tool` / `agent_memory_tool`
+(postload) or, in preload mode, searches once per graph invocation (cached per Agent under the
+run's `run_id`) and injects a fenced `<user_memories_xxx>` block into the latest user message of
+the request. The graph-level API (`MemoryIntegration`, `create_memory_preload_node`,
+`memory_tool`) was removed. Collection precedence: the scope's `collection` (name or function of the run config) always wins, then a `collection` in developer-built config, then the `QdrantStore` default (name or function). Every store operation needs a non-empty `user_id` (it raises
+otherwise; only authz `scope="none"` skips the read filter). Shared data (agent/app memory, RAG
+knowledge bases) is owned by a reserved `__system__` prefixed id from `system_user_id(name)`
+(`"__system__:<name>"`; `is_system_user_id()` tests for it). Agent memory uses the agent's
+`agent_id` (else `app_id`; `Agent` setup raises if agent memory is enabled with neither), RAG
+defaults to `system_user_id("knowledge_base")`, so shared data sets never mix.
 
 **Skills.** Implements the Agent Skills spec (agentskills.io): `SkillConfig(skills_dir=...)`
 discovers `<dir>/<name>/SKILL.md` skills. Two modes: `on-demand` (an `<available_skills>` catalog

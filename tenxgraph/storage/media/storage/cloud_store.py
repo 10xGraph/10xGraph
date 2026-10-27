@@ -41,7 +41,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from .base import BaseMediaStore
+from .base import BaseMediaStore, validate_storage_key
 
 
 logger = logging.getLogger("tenxgraph.storage.media.cloud")
@@ -100,6 +100,8 @@ class CloudMediaStore(BaseMediaStore):
         self._prefix = prefix
         # Only the default prefix falls back to the pre-rename location.
         self._legacy_prefix = LEGACY_PREFIX if prefix == DEFAULT_PREFIX else None
+        # Serializes read-modify-write of sidecars within this process
+        self._meta_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # BaseMediaStore interface
@@ -133,16 +135,7 @@ class CloudMediaStore(BaseMediaStore):
             "ext": ext,
             **(metadata or {}),
         }
-        with tempfile.NamedTemporaryFile(
-            suffix=".json", delete=False, mode="w", encoding="utf-8"
-        ) as tmp_meta:
-            json.dump(meta, tmp_meta)
-            tmp_meta_path = tmp_meta.name
-
-        try:
-            await self._storage.upload(tmp_meta_path, meta_path)
-        finally:
-            Path(tmp_meta_path).unlink(missing_ok=True)
+        await self._upload_meta(meta, meta_path)
 
         logger.debug("Stored %d bytes as %s at %s", len(data), key, blob_path)
         return key
@@ -194,6 +187,16 @@ class CloudMediaStore(BaseMediaStore):
         meta, _ = await self._locate(storage_key)
         return meta
 
+    async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
+        async with self._meta_lock:
+            meta, prefix = await self._locate(storage_key)
+            if meta is None:
+                return False
+            meta.update(updates)
+            meta = {k: v for k, v in meta.items() if v is not None}
+            await self._upload_meta(meta, self._meta_cloud_path(storage_key, prefix))
+        return True
+
     # ------------------------------------------------------------------
     # Bonus: direct URL access
     # ------------------------------------------------------------------
@@ -235,7 +238,11 @@ class CloudMediaStore(BaseMediaStore):
         derive the object path directly and skip the metadata sidecar lookup.
         That keeps model resolution on a signed-URL path instead of a
         download-then-reupload/base64 path.
+
+        Raises:
+            ValueError: ``storage_key`` is not a key made by :meth:`store`.
         """
+        validate_storage_key(storage_key)
         if mime_type:
             ext = _mime_to_ext(mime_type)
             prefix = self._prefix
@@ -251,10 +258,25 @@ class CloudMediaStore(BaseMediaStore):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    async def _upload_meta(self, meta: dict[str, Any], meta_path: str) -> None:
+        """Upload the sidecar JSON (replacing an existing one)."""
+        with tempfile.NamedTemporaryFile(
+            suffix=".json", delete=False, mode="w", encoding="utf-8"
+        ) as tmp_meta:
+            json.dump(meta, tmp_meta)
+            tmp_meta_path = tmp_meta.name
+
+        try:
+            await self._storage.upload(tmp_meta_path, meta_path)
+        finally:
+            Path(tmp_meta_path).unlink(missing_ok=True)
+
     def _cloud_path(self, key: str, ext: str, prefix: str | None = None) -> str:
+        validate_storage_key(key)
         return f"{prefix or self._prefix}/{key[:2]}/{key[2:4]}/{key}{ext}"
 
     def _meta_cloud_path(self, key: str, prefix: str | None = None) -> str:
+        validate_storage_key(key)
         return f"{prefix or self._prefix}/{key[:2]}/{key[2:4]}/{key}.meta.json"
 
     async def _locate(self, storage_key: str) -> tuple[dict[str, Any] | None, str]:
@@ -262,7 +284,11 @@ class CloudMediaStore(BaseMediaStore):
 
         Tries the configured prefix first, then the legacy prefix (default
         prefix only). Returns ``(None, configured_prefix)`` when not found.
+
+        Raises:
+            ValueError: ``storage_key`` is not 32 lowercase hex characters.
         """
+        validate_storage_key(storage_key)
         meta = await self._download_meta(storage_key)
         if meta is not None or self._legacy_prefix is None:
             return meta, self._prefix

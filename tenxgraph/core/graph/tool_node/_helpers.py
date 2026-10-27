@@ -6,10 +6,13 @@ import datetime as dt
 import decimal
 import enum
 import json
+import logging
 import pathlib
 import typing as t
 import uuid
 
+
+logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 _STATUS_OK: set[str] = {"completed", "success", "ok", "done", "true", "1"}
 _STATUS_FAIL: set[str] = {"failed", "failure", "error", "false", "0"}
@@ -131,3 +134,27 @@ def _extract_block_meta(
             is_error = True
 
     return is_error, data
+
+
+def generic_tool_failure(
+    tool_name: str,
+    tool_call_id: str,
+    exc: BaseException,
+    *,
+    log: logging.Logger | None = None,
+) -> str:
+    """Log an unexpected tool exception and return a message safe for the model.
+
+    The raw exception text can carry paths, DSNs or SQL, so it stays in the server log.
+    The returned text carries a short reference that matches the log record, so an
+    operator can find the failure behind a user report.
+    """
+    ref = uuid.uuid4().hex[:8]
+    (log or logger).error(
+        "Tool '%s' (tool_call_id=%s) failed with an internal error (reference %s)",
+        tool_name,
+        tool_call_id,
+        ref,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    return f"Tool '{tool_name}' failed with an internal error (reference {ref})."

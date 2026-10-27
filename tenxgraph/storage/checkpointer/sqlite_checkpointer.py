@@ -34,9 +34,10 @@ from typing import Any, TypeVar
 from tenxgraph.core.exceptions import StorageError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
+from tenxgraph.utils.private_fs import mkdir_private, touch_private
 from tenxgraph.utils.thread_info import ThreadInfo
 
-from .base_checkpointer import BaseCheckpointer
+from .base_checkpointer import BaseCheckpointer, validate_page
 
 
 try:
@@ -222,12 +223,23 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     async def _get_conn(self) -> "aiosqlite.Connection":
         """Return the shared connection, opening and configuring it if needed."""
         if self._conn is None:
+            self._prepare_db_file()
             conn = await aiosqlite.connect(self.db_path)
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA synchronous=NORMAL")
             self._conn = conn
         return self._conn
+
+    def _prepare_db_file(self) -> None:
+        """Create the db directory (0o700) and an empty db file (0o600) before SQLite does.
+
+        SQLite gives the ``-wal`` and ``-shm`` files the mode of the database file, so they
+        are owner-only too. An existing directory or file keeps its mode.
+        """
+        if isinstance(self.db_path, Path):
+            mkdir_private(self.db_path.parent)
+            touch_private(self.db_path)
 
     @asynccontextmanager
     async def _write(self) -> AsyncIterator["aiosqlite.Connection"]:
@@ -246,8 +258,6 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     async def asetup(self) -> None:
         """Create the database directory (if any) and all required tables."""
-        if isinstance(self.db_path, Path):
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = await self._get_conn()
         async with self._write_lock:
             for stmt in DDL_STATEMENTS:
@@ -315,9 +325,14 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     async def aput_state_cache(self, config: dict[str, Any], state: StateT) -> StateT:
         await self._ensure_setup()
+        # Same rule as aput_state: a non-owner's write is dropped, and the first writer of a
+        # thread becomes its owner, so a cached state can only be read back by its writer.
+        if await self._owner_denied(config):
+            return state
         key = self._get_config_key(config)
         data = self._serialize_state(state)
         async with self._write() as conn:
+            await self._record_owner(conn, config)
             await self._upsert_state_cache(conn, key, data)
         return state
 
@@ -477,6 +492,33 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             raise IndexError(f"Message with ID {message_id} not found for thread: {key}")
         return Message.model_validate(json.loads(row["message_data"]))
 
+    async def aupdate_message_metadata(
+        self,
+        config: dict[str, Any],
+        message_id: str | int,
+        metadata: dict[str, Any],
+    ) -> Message | None:
+        await self._ensure_setup()
+        if await self._owner_denied(config):
+            return None
+        key = self._get_config_key(config)
+        # Read and write under the write lock so two updates cannot lose each other's keys.
+        async with self._write() as conn:
+            async with conn.execute(
+                "SELECT message_data FROM af_messages WHERE thread_id = ? AND message_id = ?",
+                (key, str(message_id)),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            message = Message.model_validate(json.loads(row["message_data"]))
+            message.metadata = {**(message.metadata or {}), **metadata}
+            await conn.execute(
+                "UPDATE af_messages SET message_data = ? WHERE thread_id = ? AND message_id = ?",
+                (_dumps(message.model_dump(mode="json")), key, str(message_id)),
+            )
+        return message
+
     async def alist_messages(
         self,
         config: dict[str, Any],
@@ -484,29 +526,35 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         offset: int | None = None,
         limit: int | None = None,
     ) -> list[Message]:
+        start, limit = validate_page(offset, limit)
         await self._ensure_setup()
         if await self._owner_denied(config):
             return []
         key = self._get_config_key(config)
         conn = await self._get_conn()
-        async with conn.execute(
-            "SELECT message_data FROM af_messages WHERE thread_id = ? ORDER BY id", (key,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-
-        messages: list[Message] = [
-            Message.model_validate(json.loads(row["message_data"])) for row in rows
-        ]
-
-        if search:
-            needle = search.lower()
-            messages = [
-                m for m in messages if hasattr(m, "content") and needle in str(m.content).lower()
-            ]
-
-        start = offset or 0
-        end = (start + limit) if limit else None
-        return messages[start:end]
+        sql = "SELECT message_data FROM af_messages WHERE thread_id = ? ORDER BY id"
+        params: list[Any] = [key]
+        if not search:
+            # No text filter: the window is applied by SQLite, so only it is read.
+            sql += " LIMIT ? OFFSET ?"
+            params += [limit if limit else -1, start]
+        needle = search.lower() if search else None
+        messages: list[Message] = []
+        skipped = 0
+        async with conn.execute(sql, params) as cursor:
+            async for row in cursor:
+                msg = Message.model_validate(json.loads(row["message_data"]))
+                if needle is not None:
+                    if not (hasattr(msg, "content") and needle in str(msg.content).lower()):
+                        continue
+                    # The match depends on the decoded message, so skip and stop here.
+                    if skipped < start:
+                        skipped += 1
+                        continue
+                messages.append(msg)
+                if needle is not None and limit and len(messages) >= limit:
+                    break
+        return messages
 
     async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> bool:
         await self._ensure_setup()
@@ -590,32 +638,39 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         offset: int | None = None,
         limit: int | None = None,
     ) -> list[ThreadInfo]:
+        start, limit = validate_page(offset, limit)
         await self._ensure_setup()
         user_id = config.get("user_id") if isinstance(config, dict) else None
         isolate = self._isolation_enabled(config, user_id)
         conn = await self._get_conn()
-        async with conn.execute(
-            "SELECT thread_data FROM af_threads ORDER BY updated_at DESC"
-        ) as cursor:
-            rows = await cursor.fetchall()
-
-        threads: list[ThreadInfo] = [
-            ThreadInfo.model_validate(json.loads(row["thread_data"])) for row in rows
-        ]
-
+        sql = "SELECT thread_data FROM af_threads"
+        params: list[Any] = []
         # Owner-scope the listing when the policy asks for it.
         if isolate:
-            threads = [t for t in threads if str(t.user_id) == str(user_id)]
-
-        if search:
-            needle = search.lower()
-            threads = [
-                t for t in threads if any(needle in str(v).lower() for v in t.model_dump().values())
-            ]
-
-        start = offset or 0
-        end = (start + limit) if limit else None
-        return threads[start:end]
+            sql += " WHERE CAST(json_extract(thread_data, '$.user_id') AS TEXT) = ?"
+            params.append(str(user_id))
+        sql += " ORDER BY updated_at DESC"
+        if not search:
+            # No text filter: the window is applied by SQLite, so only it is read.
+            sql += " LIMIT ? OFFSET ?"
+            params += [limit if limit else -1, start]
+        needle = search.lower() if search else None
+        threads: list[ThreadInfo] = []
+        skipped = 0
+        async with conn.execute(sql, params) as cursor:
+            async for row in cursor:
+                thread = ThreadInfo.model_validate(json.loads(row["thread_data"]))
+                if needle is not None:
+                    if not any(needle in str(v).lower() for v in thread.model_dump().values()):
+                        continue
+                    # The match depends on the decoded thread, so skip and stop here.
+                    if skipped < start:
+                        skipped += 1
+                        continue
+                threads.append(thread)
+                if needle is not None and limit and len(threads) >= limit:
+                    break
+        return threads
 
     async def aclean_thread(self, config: dict[str, Any]) -> bool:
         await self._ensure_setup()

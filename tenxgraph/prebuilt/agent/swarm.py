@@ -80,12 +80,14 @@ from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.utils.tool_dispatch import tool_call_name
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool, is_handoff_tool
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.constants import END
@@ -160,7 +162,7 @@ def _make_member_route(
         # Handoff tool calls are intercepted here; they are never executed by
         # the ToolNode — the graph routing IS the handoff.
         for tc in last.tools_calls:
-            is_handoff, target = is_handoff_tool(tc.get("name", ""))
+            is_handoff, target = is_handoff_tool(tool_call_name(tc))
             if is_handoff and target and target.upper() in allowed_set:
                 logger.debug("Member %s handing off to %s.", name, target.upper())
                 return target.upper()
@@ -388,6 +390,7 @@ class SwarmAgent[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
         """Wire the graph and return a compiled, ready-to-invoke graph.
 
@@ -399,6 +402,7 @@ class SwarmAgent[StateT: AgentState]:
             callback_manager: Observability hooks.
             media_store: Media/file storage backend.
             shutdown_timeout: Graceful-shutdown timeout in seconds.
+            media_policy: Which external media URLs the server may download.
         """
         self._configure_graph()
         return self._graph.compile(
@@ -409,4 +413,5 @@ class SwarmAgent[StateT: AgentState]:
             callback_manager=callback_manager,
             media_store=media_store,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

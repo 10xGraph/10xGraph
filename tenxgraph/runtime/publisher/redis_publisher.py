@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from tenxgraph.runtime.publisher.events import EventModel
+from tenxgraph.storage.media.url_policy import redact_url
 
 from .base_publisher import BasePublisher
 
@@ -28,6 +29,9 @@ class RedisPublisher(BasePublisher):
     """Publish events to Redis via Pub/Sub channel or Stream.
 
     Supports connection pooling and resource limits for production use.
+
+    TLS is the developer's choice: use a ``rediss://`` URL to encrypt the connection
+    (the default ``redis://`` is plaintext).
 
     Attributes:
         url: Redis URL.
@@ -124,7 +128,7 @@ class RedisPublisher(BasePublisher):
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    f"RedisPublisher failed to connect to Redis at {self.url}"
+                    f"RedisPublisher failed to connect to Redis at {redact_url(self.url)}"
                 ) from exc
 
             return self._redis

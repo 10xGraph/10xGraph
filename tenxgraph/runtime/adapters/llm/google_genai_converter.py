@@ -31,6 +31,7 @@ from tenxgraph.core.state.message_block import (
 )
 
 from .base_converter import BaseConverter
+from .tool_arguments import parse_tool_arguments
 
 
 logger = logging.getLogger("tenxgraph.adapters.google_genai")
@@ -446,10 +447,7 @@ class GoogleGenAIConverter(BaseConverter):
             for tc in tool_calls:
                 func_data = tc.get("function", {})
                 args_str = func_data.get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                except Exception:
-                    args = {}
+                args, _ = parse_tool_arguments(args_str, tool_name=func_data.get("name", ""))
                 blocks.append(
                     ToolCallBlock(
                         name=func_data.get("name", ""),

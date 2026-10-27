@@ -15,7 +15,6 @@ Key differences from Chat Completions:
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -40,6 +39,7 @@ from .base_converter import BaseConverter
 from .reasoning_utils import (
     parse_think_tags,  # noqa: F401
 )
+from .tool_arguments import parse_tool_arguments
 
 
 logger = logging.getLogger("tenxgraph.adapters.openai_responses")
@@ -380,11 +380,12 @@ class OpenAIResponsesConverter(BaseConverter):
 
     @staticmethod
     def _parse_json_args(raw_args: str) -> dict:
-        """Parse tool call arguments, defaulting to an empty dict on invalid JSON."""
-        try:
-            return json.loads(raw_args) if raw_args else {}
-        except json.JSONDecodeError:
-            return {}
+        """Parse tool call arguments, defaulting to an empty dict on invalid JSON.
+
+        Invalid calls keep their raw string in ``tools_calls`` so the ToolNode can
+        reject them (see :func:`parse_tool_arguments`).
+        """
+        return parse_tool_arguments(raw_args)[0]
 
     def _build_final_blocks(self, state: _ResponseStreamState) -> list:
         """Build the final content blocks after a Responses API stream ends."""
@@ -531,10 +532,7 @@ class OpenAIResponsesConverter(BaseConverter):
         raw_args = getattr(item, "arguments", "")
         call_id = getattr(item, "call_id", "")
 
-        try:
-            args_dict = json.loads(raw_args) if raw_args else {}
-        except json.JSONDecodeError:
-            args_dict = {}
+        args_dict, _ = parse_tool_arguments(raw_args, tool_name=name)
 
         block = ToolCallBlock(name=name, args=args_dict, id=call_id)
 

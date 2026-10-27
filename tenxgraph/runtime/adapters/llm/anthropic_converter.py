@@ -20,6 +20,7 @@ from tenxgraph.core.state.message_block import (
 )
 
 from .base_converter import BaseConverter
+from .tool_arguments import parse_tool_arguments
 
 
 logger = logging.getLogger("tenxgraph.adapters.anthropic")
@@ -361,10 +362,7 @@ class AnthropicConverter(BaseConverter):
             blocks.append(ReasoningBlock(summary=accumulated_reasoning))
         for call in tool_calls:
             function = call["function"]
-            try:
-                args = json.loads(function["arguments"])
-            except (TypeError, ValueError):
-                args = {}
+            args, _ = parse_tool_arguments(function["arguments"], tool_name=function["name"])
             blocks.append(ToolCallBlock(id=call["id"], name=function["name"], args=args))
 
         logger.debug(
@@ -389,15 +387,9 @@ class AnthropicConverter(BaseConverter):
     @staticmethod
     def _finalise_tool_call(entry: dict[str, Any]) -> dict[str, Any]:
         """Turn an accumulated tool_use block into an OpenAI-shaped tool call."""
+        # Invalid (e.g. truncated at max_tokens) input is kept verbatim so the
+        # ToolNode can reject the call instead of running it with guessed arguments.
         raw_json = entry["json"] or "{}"
-        try:
-            json.loads(raw_json)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Accumulated tool input for %s was not valid JSON; using {}.",
-                entry.get("name", ""),
-            )
-            raw_json = "{}"
 
         return {
             "id": entry["id"],

@@ -32,11 +32,13 @@ from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.skills.models import SkillConfig
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.execution_state import register_per_turn_key
 from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.config import MultimodalConfig
 from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import MemoryConfig
 from tenxgraph.utils.callbacks import CallbackManager
@@ -49,7 +51,7 @@ logger = logging.getLogger("tenxgraph.prebuilt.plan_act_reflect")
 StateT = TypeVar("StateT", bound=AgentState)
 
 # Key stored in execution_meta.internal_data
-_ITERATIONS_KEY = "par_iterations"
+_ITERATIONS_KEY = register_per_turn_key("par_iterations")
 _INCREMENT_ITERATIONS_NODE = "INCREMENT_ITERATIONS"
 
 # ---------------------------------------------------------------------------
@@ -239,8 +241,9 @@ class PlanActReflectAgent[StateT: AgentState]:
         tools: Callable tools made available to the PLAN agent.
         plan_system_prompt: Override the default planner system prompt.
         reflect_system_prompt: Override the default reflector system prompt.
-        max_iterations: Maximum number of PLAN→ACT→REFLECT cycles before the
-            graph terminates (default ``3``).
+        max_iterations: Maximum number of PLAN→ACT→REFLECT cycles per turn
+            before the graph terminates (default ``3``).  The count resets on
+            each new turn of a thread.
         state: Optional initial ``AgentState`` (or subclass) instance.
         context_manager: Optional custom context manager.
         publisher: Optional publisher for streaming/events.
@@ -444,6 +447,7 @@ class PlanActReflectAgent[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
         """Wire the graph and return a :class:`~tenxgraph.core.graph.CompiledGraph`.
 
@@ -455,6 +459,7 @@ class PlanActReflectAgent[StateT: AgentState]:
             callback_manager: Callback hooks for observability.
             media_store: Media/file storage backend.
             shutdown_timeout: Graceful-shutdown timeout in seconds.
+            media_policy: Which external media URLs the server may download.
 
         Returns:
             A compiled, ready-to-invoke graph.
@@ -468,4 +473,5 @@ class PlanActReflectAgent[StateT: AgentState]:
             callback_manager=callback_manager,
             media_store=media_store,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

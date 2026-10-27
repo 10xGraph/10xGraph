@@ -120,7 +120,7 @@ cloud-storage = ["cloud-storage-manager>=0.1.2"]
 redis = ["redis>=4.2"]
 kafka = ["aiokafka>=0.8.0"]
 rabbitmq = ["aio-pika>=9.0.0"]
-qdrant = ["qdrant-client>=1.7.0"]
+qdrant = ["qdrant-client>=1.10.0"]
 mem0 = ["mem0ai>=0.1.117"]
 a2a_sdk = ["a2a-sdk>=0.2.7"]
 otel = [

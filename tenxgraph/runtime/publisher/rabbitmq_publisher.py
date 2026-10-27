@@ -26,6 +26,9 @@ class RabbitMQPublisher(BasePublisher):
 
     Supports connection pooling and resource limits for production use.
 
+    TLS is the developer's choice: use an ``amqps://`` URL to encrypt the connection
+    (the default ``amqp://`` is plaintext).
+
     Attributes:
         url: RabbitMQ connection URL.
         exchange: Exchange name.

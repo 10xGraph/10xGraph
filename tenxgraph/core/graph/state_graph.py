@@ -23,6 +23,7 @@ from .tool_node import ToolNode
 
 if TYPE_CHECKING:
     from tenxgraph.storage.media.storage.base import BaseMediaStore
+    from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 
     from .compiled_graph import CompiledGraph
 
@@ -427,6 +428,7 @@ class StateGraph[StateT: AgentState]:
         interrupt_after: list[str] | None = None,
         callback_manager: CallbackManager = CallbackManager(),
         shutdown_timeout: float = 30.0,
+        media_policy: "MediaFetchPolicy | None" = None,
     ) -> "CompiledGraph[StateT]":
         """Compile the graph for execution.
 
@@ -439,6 +441,8 @@ class StateGraph[StateT: AgentState]:
             interrupt_after: List of node names to interrupt after execution
             callback_manager: Callback manager for executing hooks
             shutdown_timeout: Timeout in seconds for graceful shutdown (default: 30.0)
+            media_policy: Which external media URLs the server may download (hosts, content
+                types, size, timeout). Defaults to ``MediaFetchPolicy()``.
         """
         logger.info(
             "Compiling graph with %d nodes, %d edges, entry_point='%s'",
@@ -521,6 +525,18 @@ class StateGraph[StateT: AgentState]:
                 media_store,
                 allow_concrete=True,
             )
+        # Bind the media download policy. Always bound, so a policy from an earlier compile in
+        # the same container does not leak into a graph that sets none. A factory is used
+        # because the container ignores a second bind_instance once a value has been resolved.
+        from tenxgraph.storage.media.url_policy import MediaFetchPolicy
+
+        media_policy = media_policy or MediaFetchPolicy()
+        bound_policy = media_policy
+
+        def _media_policy_factory() -> MediaFetchPolicy:
+            return bound_policy
+
+        self._container.bind_factory(MediaFetchPolicy, _media_policy_factory)
         self._container.bind_instance(
             CallbackManager,
             callback_manager,
@@ -549,6 +565,7 @@ class StateGraph[StateT: AgentState]:
             store=store,
             task_manager=self._task_manager,
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )
 
         self._container.bind(CompiledGraph, app)

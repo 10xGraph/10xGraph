@@ -20,6 +20,7 @@ from injectq import inject, Inject
 from tenxgraph.core.exceptions import GraphRecursionError
 from tenxgraph.core.graph.edge import Edge
 from tenxgraph.core.graph.node import Node
+from tenxgraph.core.graph.utils.tool_dispatch import validate_goto
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.core.state import AgentState, Message, ErrorBlock
@@ -417,6 +418,9 @@ class StreamHandler[StateT: AgentState](
                         run_id=config.get("run_id"),
                     )
                     return
+
+                # Fail with a clear error instead of a KeyError on an unknown target.
+                validate_goto(next_node, self.nodes, current_node)
 
                 logger.debug(
                     "Node result processed, next_node=%s, total_messages=%d",

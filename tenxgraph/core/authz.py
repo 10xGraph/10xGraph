@@ -46,6 +46,7 @@ GRAPH_READ = "graph:read"
 CHECKPOINT_READ = "checkpointer:read"
 CHECKPOINT_WRITE = "checkpointer:write"
 CHECKPOINT_DELETE = "checkpointer:delete"
+CHECKPOINT_IMPORT = "checkpointer:import"
 
 # memory / long-term store (the API's /v1/store routes)
 STORE_READ = "store:read"
@@ -74,6 +75,7 @@ ALL_SCOPES = frozenset(
         CHECKPOINT_READ,
         CHECKPOINT_WRITE,
         CHECKPOINT_DELETE,
+        CHECKPOINT_IMPORT,
         STORE_READ,
         STORE_WRITE,
         STORE_DELETE,

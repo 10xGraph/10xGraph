@@ -5,17 +5,20 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .base import BaseMediaStore
+from tenxgraph.utils.private_fs import (
+    mkdir_private,
+    write_private,
+    write_private_atomic,
+)
+
+from .base import BaseMediaStore, validate_storage_key
 
 
 logger = logging.getLogger("tenxgraph.media.storage.local")
-
-_VALID_KEY_RE = re.compile(r"^[a-f0-9]{32}$")
 
 # Extension map for cases where mimetypes doesn't know the type
 _FALLBACK_EXT: dict[str, str] = {
@@ -39,7 +42,7 @@ class LocalFileMediaStore(BaseMediaStore):
 
     def __init__(self, base_dir: str = "./agentflow_media") -> None:
         self._base = Path(base_dir).resolve()
-        self._base.mkdir(parents=True, exist_ok=True)
+        mkdir_private(self._base)
 
     # ------------------------------------------------------------------
     # Interface
@@ -55,15 +58,16 @@ class LocalFileMediaStore(BaseMediaStore):
         file_path = self._key_to_path(key, mime_type)
         meta_path = self._meta_path(key)
 
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_bytes(data)
+        # Owner-only: directories 0o700, files 0o600 (the sidecar holds the owner id)
+        mkdir_private(file_path.parent)
+        write_private(file_path, data)
 
         meta = {
             "mime_type": mime_type,
             "size_bytes": len(data),
             **(metadata or {}),
         }
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        write_private(meta_path, json.dumps(meta).encode("utf-8"))
 
         logger.debug("Stored %d bytes as %s at %s", len(data), key, file_path)
         return key
@@ -121,14 +125,24 @@ class LocalFileMediaStore(BaseMediaStore):
             return None
         return json.loads(meta_path.read_text(encoding="utf-8"))
 
+    async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
+        self._validate_key(storage_key)
+        meta_path = self._meta_path(storage_key)
+        if not meta_path.exists():
+            return False
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta.update(updates)
+        meta = {k: v for k, v in meta.items() if v is not None}
+        write_private_atomic(meta_path, json.dumps(meta).encode("utf-8"))
+        return True
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _validate_key(self, key: str) -> None:
         """Prevent path traversal by validating key format."""
-        if not _VALID_KEY_RE.match(key):
-            raise ValueError(f"Invalid storage key format: {key!r}")
+        validate_storage_key(key)
 
     def _key_to_path(self, key: str, mime_type: str) -> Path:
         ext = _mime_to_ext(mime_type)

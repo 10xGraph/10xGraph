@@ -39,6 +39,12 @@ from .schema import _SCALARS
 
 
 _EMPTY = inspect._empty
+
+
+class ToolArgumentError(TypeError):
+    """The model's arguments do not fit the tool; the message is safe to show the model."""
+
+
 _MAX_DEPTH = 8
 
 # Types that reach the tool as a JSON string (or number) and must be parsed back into
@@ -115,13 +121,13 @@ def _readable_error(
     exc: ValidationError,
     tool_name: str,
     param_name: str,
-) -> TypeError:
+) -> ToolArgumentError:
     """Flatten pydantic field errors into a message that can go back to the model."""
     details = "; ".join(
         f"{'.'.join(str(p) for p in err['loc']) or param_name}: {err['msg']}"
         for err in exc.errors()
     )
-    return TypeError(f"Invalid argument {param_name!r} for tool {tool_name!r}: {details}")
+    return ToolArgumentError(f"Invalid argument {param_name!r} for tool {tool_name!r}: {details}")
 
 
 def coerce_tool_argument(

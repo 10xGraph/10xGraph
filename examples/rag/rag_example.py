@@ -25,9 +25,9 @@ from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.message import Message
 from tenxgraph.prebuilt.agent.rag import (
-    RAGAgent,
     CohereReranker,
     CrossEncoderReranker,
+    RAGAgent,
 )
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.store_schema import MemorySearchResult
@@ -218,7 +218,7 @@ async def scenario_local_reranker():
 """
 PRODUCTION SETUP — swap StubStore for QdrantStore:
 
-    from tenxgraph.storage import create_local_qdrant_store
+    from tenxgraph.storage import create_local_qdrant_store, system_user_id
     from tenxgraph.storage.store.embedding import OpenAIEmbedding
 
     # 1. Create the store
@@ -230,7 +230,13 @@ PRODUCTION SETUP — swap StubStore for QdrantStore:
     # 2. Index your documents once
     await store.asetup()
     for chunk in your_document_chunks:
-        await store.astore(config={}, content=chunk, category="docs")
+        # system_user_id("knowledge_base") owns the shared knowledge base;
+        # RAGAgent searches as that owner by default.
+        await store.astore(
+            config={"user_id": system_user_id("knowledge_base")},
+            content=chunk,
+            category="docs",
+        )
 
     # 3. Build the RAG agent
     rag = RAGAgent(
