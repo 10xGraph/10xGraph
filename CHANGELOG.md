@@ -204,6 +204,19 @@ Starting from this release:
 
 ### Added
 
+- `user_id_mode` (`"raw"` default, `"hash"`, `"mask"`) on `OtelPublisher`, `setup_tracing`,
+  `setup_logfire`, `setup_langsmith`, and as a top-level key of the `setup_observability` config
+  dict. It controls how `user_id` appears on OTEL spans (and so in Logfire and LangSmith).
+  `"hash"` emits 16 hex chars of SHA-256, or of HMAC-SHA256 when the
+  `TENXGRAPH_TRACE_USER_ID_KEY` env var is set (plain SHA-256 can be guessed for short ids).
+  `"mask"` gives `al***42`, or `***` for ids of 4 characters or fewer. An invalid value raises
+  `ValueError`. Event payloads of the Redis, RabbitMQ, Kafka and Console publishers are unchanged.
+- Opt-in TLS and SASL for `KafkaPublisher`: `security_protocol`, `ssl_context` (or
+  `ssl_cafile` / `ssl_certfile` / `ssl_keyfile`), `sasl_mechanism`, `sasl_plain_username`,
+  `sasl_plain_password`. Each is passed to `AIOKafkaProducer` only when set; plaintext stays the
+  default. Redis and RabbitMQ already encrypt with `rediss://` and `amqps://` URLs (now in their
+  docstrings).
+
 - `collection` on `UserMemoryConfig` and `AgentMemoryConfig`: a name or a function
   `(run_config) -> name`, resolved for every memory tool call and preload search. A function
   must read the authenticated identity (`cfg["user"]`, `cfg["user_id"]`), never state, for

@@ -29,6 +29,9 @@ class RedisPublisher(BasePublisher):
 
     Supports connection pooling and resource limits for production use.
 
+    TLS is the developer's choice: use a ``rediss://`` URL to encrypt the connection
+    (the default ``redis://`` is plaintext).
+
     Attributes:
         url: Redis URL.
         mode: Publishing mode ('pubsub' or 'stream').

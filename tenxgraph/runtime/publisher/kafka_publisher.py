@@ -12,6 +12,7 @@ import asyncio
 import importlib
 import json
 import logging
+import ssl
 from typing import Any
 
 from .base_publisher import BasePublisher
@@ -53,6 +54,18 @@ class KafkaPublisher(BasePublisher):
                 - linger_ms: Linger time in milliseconds (default: 0).
                 - compression_type: Compression type (default: None).
                 - request_timeout_ms: Request timeout in ms (default: 30000).
+                - security_protocol: "PLAINTEXT", "SSL", "SASL_PLAINTEXT" or "SASL_SSL".
+                - ssl_context: A pre-built ``ssl.SSLContext``. Wins over the file keys below.
+                - ssl_cafile / ssl_certfile / ssl_keyfile: PEM file paths; when any is set
+                    (and no ``ssl_context``) a default SSLContext is built from them.
+                - sasl_mechanism: e.g. "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512".
+                - sasl_plain_username / sasl_plain_password: SASL credentials.
+
+        Security options are opt-in: each is passed to ``AIOKafkaProducer`` only when
+        set, and the default stays plaintext. They are the developer's choice and are
+        never forced. Use ``security_protocol="SSL"`` (or ``"SASL_SSL"``) to encrypt
+        traffic. Credentials are never logged. Redis and RabbitMQ need no such options:
+        use a ``rediss://`` or ``amqps://`` URL for TLS.
         """
         super().__init__(config or {})
         self.bootstrap_servers: str = self.config.get("bootstrap_servers", "localhost:9092")
@@ -62,8 +75,31 @@ class KafkaPublisher(BasePublisher):
         self.linger_ms: int = self.config.get("linger_ms", 0)
         self.compression_type: str | None = self.config.get("compression_type")
         self.request_timeout_ms: int = self.config.get("request_timeout_ms", 30000)
+        self._security_kwargs: dict[str, Any] = self._build_security_kwargs()
         self._producer = None  # type: ignore[var-annotated]
         self._producer_lock = asyncio.Lock()
+
+    def _build_security_kwargs(self) -> dict[str, Any]:
+        """Collect the opt-in TLS/SASL options that were set; unset ones are omitted."""
+        cfg = self.config
+        kwargs: dict[str, Any] = {}
+        for key in (
+            "security_protocol",
+            "sasl_mechanism",
+            "sasl_plain_username",
+            "sasl_plain_password",
+        ):
+            if cfg.get(key) is not None:
+                kwargs[key] = cfg[key]
+
+        if cfg.get("ssl_context") is not None:
+            kwargs["ssl_context"] = cfg["ssl_context"]
+        elif any(cfg.get(k) for k in ("ssl_cafile", "ssl_certfile", "ssl_keyfile")):
+            ctx = ssl.create_default_context(cafile=cfg.get("ssl_cafile"))
+            if cfg.get("ssl_certfile"):
+                ctx.load_cert_chain(cfg["ssl_certfile"], keyfile=cfg.get("ssl_keyfile"))
+            kwargs["ssl_context"] = ctx
+        return kwargs
 
     async def _get_producer(self):
         """Get or create the Kafka producer instance with connection limits.
@@ -100,6 +136,7 @@ class KafkaPublisher(BasePublisher):
                 linger_ms=self.linger_ms,
                 compression_type=self.compression_type,
                 request_timeout_ms=self.request_timeout_ms,
+                **self._security_kwargs,
             )
             await self._producer.start()
             logger.info(

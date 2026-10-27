@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
+from .identity import UserIdMode, validate_user_id_mode
 from .otel_publisher import ObservabilityLevel, setup_tracing
 
 
@@ -133,12 +134,13 @@ def setup_logfire(
     console: Any = None,
     level: ObservabilityLevel = ObservabilityLevel.STANDARD,
     additional_span_processors: list | None = None,
+    user_id_mode: UserIdMode = "raw",
     **configure_kwargs: Any,
 ) -> None:
     """Configure Logfire as the OTEL backend and instrument the graph.
 
     Calls ``logfire.configure(...)`` to install the global TracerProvider, then
-    calls ``setup_tracing(graph, level=level)`` so OtelPublisher feeds into it.
+    calls ``setup_tracing`` so OtelPublisher feeds into it.
 
     Must be called **before** ``graph.compile()``.
 
@@ -152,6 +154,8 @@ def setup_logfire(
         level: Observability level — SPANS, STANDARD (default), or FULL.
         additional_span_processors: Extra SpanProcessors to attach alongside
             the Logfire processor (e.g. a LangSmith OTLP processor).
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
         **configure_kwargs: Additional keyword arguments forwarded to
             ``logfire.configure()``.
 
@@ -178,7 +182,7 @@ def setup_logfire(
     # graph is None when only provider configuration is wanted (e.g. the API
     # bootstrap binds the publisher into the DI container itself).
     if graph is not None:
-        setup_tracing(graph, level=level)
+        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
 
 
 def setup_langsmith(
@@ -189,13 +193,14 @@ def setup_langsmith(
     endpoint: str = "https://api.smith.langchain.com/otel",
     level: ObservabilityLevel = ObservabilityLevel.STANDARD,
     tracer_provider: Any = None,
+    user_id_mode: UserIdMode = "raw",
 ) -> None:
     """Attach a LangSmith OTLP HTTP exporter and instrument the graph.
 
     Builds an ``OTLPSpanExporter`` pointing at LangSmith's OTEL endpoint,
     wraps it in a ``BatchSpanProcessor``, and attaches it to either the
     supplied ``tracer_provider`` or a fresh ``TracerProvider`` set as the
-    global provider.  Then calls ``setup_tracing(graph, level=level)``.
+    global provider.  Then calls ``setup_tracing`` so ``OtelPublisher`` feeds into it.
 
     Must be called **before** ``graph.compile()``.
 
@@ -212,6 +217,8 @@ def setup_langsmith(
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
 
     Raises:
         ImportError: If ``opentelemetry-exporter-otlp-proto-http`` or
@@ -234,7 +241,7 @@ def setup_langsmith(
     # graph is None when only provider configuration is wanted (e.g. the API
     # bootstrap binds the publisher into the DI container itself).
     if graph is not None:
-        setup_tracing(graph, level=level)
+        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
 
 
 def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> None:
@@ -252,6 +259,7 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
 
         {
             "level": "standard",
+            "user_id_mode": "raw",  # or "hash" / "mask"
             "logfire": {
                 "enabled": True,
                 "service_name": "my-agent",
@@ -260,6 +268,10 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
             },
             "langsmith": {"enabled": True, "project": "my-project", "endpoint": null},
         }
+
+    ``user_id_mode`` (``"raw"`` default, ``"hash"``, ``"mask"``) controls how
+    ``user_id`` appears on spans; see ``tenxgraph.runtime.publisher.identity``.
+    ``"hash"`` uses HMAC-SHA256 when ``TENXGRAPH_TRACE_USER_ID_KEY`` is set.
 
     Secrets (``LOGFIRE_TOKEN``, ``LANGSMITH_API_KEY``) must be in environment
     variables — never in the config dict.
@@ -270,8 +282,10 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
 
     Raises:
         ImportError: If a requested backend's package is not installed.
-        ValueError: If LangSmith is enabled but no API key is available.
+        ValueError: If LangSmith is enabled but no API key is available, or
+            ``user_id_mode`` is not one of ``raw``, ``hash``, ``mask``.
     """
+    user_id_mode = validate_user_id_mode(config.get("user_id_mode") or "raw")
     raw_level = config.get("level", "standard")
     try:
         level = ObservabilityLevel(raw_level)
@@ -305,6 +319,7 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
             console=logfire_cfg.get("console"),
             level=level,
             additional_span_processors=[ls_processor],
+            user_id_mode=user_id_mode,
         )
         return
 
@@ -315,6 +330,7 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
             send_to_logfire=bool(logfire_cfg.get("send_to_logfire", True)),
             console=logfire_cfg.get("console"),
             level=level,
+            user_id_mode=user_id_mode,
         )
         return
 
@@ -324,4 +340,5 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
         project=langsmith_cfg.get("project"),
         endpoint=langsmith_cfg.get("endpoint") or "https://api.smith.langchain.com/otel",
         level=level,
+        user_id_mode=user_id_mode,
     )
