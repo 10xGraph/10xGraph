@@ -1,0 +1,12 @@
+Lumen security overview
+
+Data is encrypted in transit with TLS 1.2 or newer and at rest with AES-256.
+
+Single sign-on (SAML 2.0 and OIDC) is available on the Business plan. Audit logs record
+sign-ins, dashboard sharing and API key changes, and are kept for one year.
+
+Lumen stores customer data in the EU (Frankfurt) or the US (Virginia). The region is chosen
+when the workspace is created and cannot be changed later.
+
+To report a vulnerability, email security@lumen.example. We acknowledge reports within two
+business days.

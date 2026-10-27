@@ -1,0 +1,85 @@
+# Docs assistant: API + web UI + Postgres + Redis + Qdrant.
+#   cp .env.example .env   (add the three API keys)
+#   docker compose up --build
+#   docker compose run --rm ingest        (once, loads backend/data into Qdrant)
+x-api-env: &api-env
+  POSTGRES_DSN: postgresql://docs:docs@postgres:5432/docs
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_HOST: qdrant
+  QDRANT_PORT: "6333"
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set it in .env}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?set it in .env}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:?set it in .env}
+
+services:
+  api:
+    build: ./backend
+    environment:
+      <<: *api-env
+      # The image defaults to MODE=production, which refuses wildcard CORS origins and
+      # hosts. The browser only talks to nginx (same origin), so development mode keeps
+      # this demo to one command. See the README for the production settings.
+      MODE: development
+    # Matches the --graceful-timeout in the image: on SIGTERM the server stops accepting
+    # runs and lets in-flight ones finish before closing Postgres, Redis and Qdrant.
+    stop_grace_period: 600s
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      qdrant: { condition: service_started }
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      api: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:3000:80"
+
+  ingest:
+    build: ./backend
+    profiles: ["ingest"]
+    command: ["python", "ingest.py"]
+    environment: *api-env
+    depends_on:
+      qdrant: { condition: service_started }
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: docs
+      POSTGRES_PASSWORD: docs
+      POSTGRES_DB: docs
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docs -d docs"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    volumes:
+      - qdrantdata:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+
+volumes:
+  pgdata:
+  qdrantdata:

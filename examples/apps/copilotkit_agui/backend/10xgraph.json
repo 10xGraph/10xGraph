@@ -1,0 +1,11 @@
+{
+  "agent": "graph.agent:app",
+  "env": ".env",
+  "auth": null,
+  "remote_tools": [],
+  "ag_ui": {
+    "enabled": true,
+    "allow_client_tools": true
+  },
+  "thread_name_generator": null
+}

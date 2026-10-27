@@ -1,0 +1,29 @@
+# Postgres (durable state) and Redis (hot-state cache) for postgres.py.
+# Start: docker compose -f examples/persistence/docker-compose.yml up -d
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tenx
+      POSTGRES_PASSWORD: tenx
+      POSTGRES_DB: tenx
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tenx"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pgdata:

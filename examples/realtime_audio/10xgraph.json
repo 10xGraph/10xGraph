@@ -1,0 +1,5 @@
+{
+  "agent": "graph:app",
+  "checkpointer": "graph:checkpointer",
+  "env": ".env"
+}

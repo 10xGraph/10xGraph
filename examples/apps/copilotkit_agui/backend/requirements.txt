@@ -1,0 +1,3 @@
+10xgraph[openai]
+10xgraph-api[ag-ui]
+python-dotenv
