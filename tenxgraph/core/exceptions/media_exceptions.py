@@ -8,9 +8,13 @@ or no viable transport path exists.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from tenxgraph.storage.media.capabilities import MediaTransportMode
+
+if TYPE_CHECKING:
+    # Type-only: a runtime import made ``import tenxgraph.core.exceptions.media_exceptions``
+    # circular (storage.media imports this module back).
+    from tenxgraph.storage.media.capabilities import MediaTransportMode
 
 
 logger = logging.getLogger("tenxgraph.exceptions.media")

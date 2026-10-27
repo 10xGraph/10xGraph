@@ -145,6 +145,24 @@ Starting from this release:
   run cleared the thread's stop flag, so stopping run 1 and starting run 2 before run 1 noticed
   left run 1 running (a runaway tool loop could not be stopped). A stop request now records the
   run it targets, and a new run clears only a stale request.
+- **`PRELOAD` memories are no longer a system message.** They were added as a
+  `[Long-term Memory Context]` system message, so one poisoned memory (text a tool wrote after
+  reading a web page) ran with system rank in every later thread of that user, and because it
+  changed each turn it also broke provider prompt caching of the whole history. They now go
+  into the latest user message of the request as a separate text part before the user's own
+  text, inside a `<user_memories_xxxxxxxx>` block with a random suffix per request, a line
+  saying the notes are background information and not instructions, and any `<user_memories`
+  text inside a memory escaped. The block is added to the request only: it is never saved to
+  `state.context`, so the next turn moves it to the newest user message. Image, video and audio
+  output agents get no block. In `LiveAgent` the same fenced block stays in the session
+  instruction. `Agent._build_memory_prompts` is replaced by `Agent._build_memory_block`, and
+  the memory system prompts describe the new placement. The search runs once per graph
+  invocation instead of once per model call: the finished block (or an empty result) is cached
+  per Agent under the run's `run_id` and the latest user message, so every model call of a tool
+  loop sends the identical block, and the next `invoke`/`stream` call, including a resume,
+  searches again. The cache is bounded (256 entries per Agent) and is never saved to state or
+  the checkpointer. Without a `run_id` (an Agent called outside a compiled graph) nothing is
+  cached.
 
 ### Added
 
@@ -205,12 +223,23 @@ Starting from this release:
 
 ### Removed
 
+- **The graph-level memory API.** Memory is now configured only on the Agent
+  (`Agent(memory=MemoryConfig(...))`, `UserMemoryConfig`, `AgentMemoryConfig`,
+  `user_memory_tool`, `agent_memory_tool`). Removed with no deprecation period:
+  `MemoryIntegration` (`wire`, `preload_node`, `tools`, `system_prompt`),
+  `create_memory_preload_node`, `get_memory_system_prompt` and the `memory_tool` function, from
+  `tenxgraph.storage`, `tenxgraph.storage.store`, `tenxgraph.prebuilt` and
+  `tenxgraph.prebuilt.tools`. Migration: pass `memory=MemoryConfig(retrieval_mode="preload" |
+  "postload", user_memory=UserMemoryConfig(...))` to `Agent` instead of wiring a preload node
+  and a `ToolNode([memory_tool])`.
 - `tenxgraph.storage.media.temp_cache.fetch_and_cache` and its private helpers. Nothing called
   it, and it downloaded any URL with aiohttp and no checks. `TemporaryMediaCache` and
   `TempCacheEntry` stay.
 
 ### Fixed
 
+- `import tenxgraph.core.exceptions.media_exceptions` as the first import no longer fails with a
+  circular import (`MediaTransportMode` is now a type-only import).
 - `ainvoke` and `astream` release the run's stop scope when the run ends (`aend_run`), so a stop
   request that targeted a finished run is dropped instead of lingering until its TTL.
 - `ainvoke` now follows a `Command` returned by a ToolNode (update and goto), as `astream`

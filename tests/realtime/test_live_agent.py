@@ -470,6 +470,26 @@ class TestSystemInstruction:
         )
 
     @pytest.mark.asyncio
+    async def test_memory_block_is_fenced_in_system_instruction(self):
+        from unittest.mock import AsyncMock
+
+        client = FakeRealtimeClient([TurnCompleteEvent()])
+        agent = LiveAgent(
+            MODEL,
+            system_prompt=[{"role": "system", "content": "Base."}],
+            realtime_client_factory=_factory(client),
+        )
+        agent._build_memory_block = AsyncMock(
+            return_value="<user_memories_ab12cd34>\nnotes\n</user_memories_ab12cd34>"
+        )
+
+        await _drain(agent, _closed_queue(), {"thread_id": "t1"})
+
+        assert client.connected_config.system_instruction == (
+            "Base.\n\n<user_memories_ab12cd34>\nnotes\n</user_memories_ab12cd34>"
+        )
+
+    @pytest.mark.asyncio
     async def test_explicit_system_instruction_preserved_when_no_system_prompt(self):
         client = FakeRealtimeClient([TurnCompleteEvent()])
         cfg = RealtimeConfig(model=MODEL, system_instruction="Be terse.")

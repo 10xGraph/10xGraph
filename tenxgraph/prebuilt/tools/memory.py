@@ -1,15 +1,11 @@
 """Model-facing memory tools for AgentFlow agents.
 
 These are the tools that are registered with the agent's ToolNode and exposed
-to the LLM.  Lower-level helpers (``MemoryIntegration``, preload-node factory,
-read-mode constants) live in ``tenxgraph.storage.store.long_term_memory``.
+to the LLM.  Lower-level helpers (read-mode constants, write dedup) live in
+``tenxgraph.storage.store.long_term_memory``.
 
 Public API
 ----------
-``memory_tool``
-    Legacy LLM-callable tool used by the ``MemoryIntegration`` / manual graph
-    wiring path.  Supports ``search``, ``store``, ``update``, ``delete``.
-
 ``make_user_memory_tool(memory_config)``
     Factory that returns the ``user_memory_tool`` used by
     ``Agent(..., memory=MemoryConfig(...))``.  Supports ``search`` and
@@ -49,7 +45,7 @@ logger = logging.getLogger("tenxgraph.prebuilt.tools.memory")
 # Scope helpers
 # ---------------------------------------------------------------------------
 # Used by both the user/agent memory tool factories below AND by the preload
-# path in AgentMemoryMixin._build_memory_prompts.
+# path in AgentMemoryMixin._build_memory_block.
 # ---------------------------------------------------------------------------
 
 
@@ -130,114 +126,6 @@ async def _search_scope_memory(
         score_threshold=score_threshold,
     )
     return json.dumps(_format_search_results(results))
-
-
-# ---------------------------------------------------------------------------
-# memory_tool - legacy LLM-callable tool (MemoryIntegration / manual wiring)
-# ---------------------------------------------------------------------------
-
-
-@tool(
-    name="memory_tool",
-    description=(
-        "Search, store, update or delete long-term memories. "
-        "Use action='search' with a query to recall relevant memories. "
-        "Use action='store' with content and a short snake_case memory_key "
-        "(e.g. 'user_name', 'favorite_language') to save new memories. "
-        "The system uses memory_key to detect duplicates — if a memory with the "
-        "same key already exists it will be updated automatically. "
-        "Use action='delete' with memory_id to remove memories."
-    ),
-    tags=["memory", "long_term_memory"],
-)
-async def memory_tool(  # noqa: PLR0911, PLR0913
-    action: Literal["search", "store", "update", "delete"] = "search",
-    content: str = "",
-    memory_key: str = "",
-    memory_id: str = "",
-    query: str = "",
-    memory_type: str | None = None,
-    category: str | None = None,
-    metadata: dict[str, Any] | None = None,
-    limit: int = 5,
-    score_threshold: float | None = None,
-    write_mode: Literal["merge", "replace"] = "merge",
-    # Injectable params (excluded from LLM schema automatically)
-    config: dict[str, Any] | None = None,
-    store: BaseStore | None = Inject[BaseStore],
-    task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
-) -> str:
-    """Search, store, update, or delete long-term memories."""
-    store = fresh(store)
-    task_manager = fresh(task_manager)
-    if store is None:
-        return json.dumps({"error": "no memory store configured"})
-
-    cfg = config or {}
-    # Resolve memory_type and category from config if not explicitly provided.
-    resolved_memory_type = memory_type or cfg.get("memory_type", "episodic")
-    resolved_category = category or cfg.get("category", "general")
-    mem_type = _validate_memory_type(resolved_memory_type)
-
-    # Inject memory_key into metadata so _do_write can find it.
-    if memory_key:
-        metadata = {**(metadata or {}), "memory_key": memory_key}
-
-    # --- Validation ---
-    if action == "search" and not query:
-        return json.dumps({"error": "query is required for search"})
-    if action == "store" and not content:
-        return json.dumps({"error": "content is required for store"})
-    if action == "update" and not memory_id:
-        return json.dumps({"error": "memory_id is required for update"})
-    if action == "update" and not content:
-        return json.dumps({"error": "content is required for update"})
-    if action == "delete" and not memory_id:
-        return json.dumps({"error": "memory_id is required for delete"})
-
-    try:
-        # --- Read ---
-        if action == "search":
-            # Flush any in-flight background writes so the search sees the
-            # latest data (e.g. writes scheduled during a previous query).
-            await _flush_pending_writes(task_manager)
-
-            # Search across ALL threads for the user — long-term memory
-            # is not scoped to a single conversation thread.
-            results = await store.asearch(
-                _strip_thread_id(cfg),
-                query,
-                memory_type=mem_type,
-                limit=limit,
-                score_threshold=score_threshold,
-            )
-            return json.dumps(_format_search_results(results))
-
-        # --- Write (always async / background) ---
-        write_coro = _do_write(
-            store,
-            cfg,
-            action,
-            content,
-            memory_id,
-            mem_type,
-            resolved_category,
-            metadata,
-            write_mode,
-        )
-        try:
-            task_manager.create_task(
-                write_coro,
-                name=f"memory_{action}_{memory_id or 'new'}",
-            )
-        except Exception:
-            write_coro.close()
-            raise
-        return json.dumps({"status": "scheduled", "action": action})
-
-    except Exception as e:
-        logger.exception("memory_tool error (action=%s): %s", action, e)
-        return json.dumps({"error": str(e)})
 
 
 # ---------------------------------------------------------------------------

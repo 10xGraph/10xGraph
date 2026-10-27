@@ -17,6 +17,7 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils.converter import (
     convert_messages,
+    inject_memory_block,
     strip_media_blocks,
 )
 from tenxgraph.utils.injection import fresh
@@ -616,15 +617,18 @@ class AgentExecutionMixin:
 
         state = await self._trim_context(state)
 
-        # Skill and memory text is loaded or retrieved, so it is added after the
-        # developer's system prompt is interpolated and never goes through str.format.
+        # Skill text is loaded, so it is added after the developer's system prompt is
+        # interpolated and never goes through str.format.
         extra_system_prompts: list[dict[str, Any]] = []
 
         if hasattr(self, "_build_skill_prompts") and callable(self._build_skill_prompts):
             extra_system_prompts = self._build_skill_prompts(state, [])
 
-        if hasattr(self, "_build_memory_prompts") and callable(self._build_memory_prompts):
-            extra_system_prompts.extend(await self._build_memory_prompts(state, config))
+        # Retrieved memories are user-level data, not system text: they are fenced and added
+        # to the latest user message of this request only (never to state.context).
+        memory_block: str | None = None
+        if hasattr(self, "_build_memory_block") and callable(self._build_memory_block):
+            memory_block = await self._build_memory_block(state, config)
 
         # Raw (uninterpolated) prompts, used for the LLM-call event below.
         effective_system_prompt = [*self.system_prompt, *extra_system_prompts]
@@ -635,6 +639,10 @@ class AgentExecutionMixin:
             extra_messages=self.extra_messages or [],
             extra_system_prompts=extra_system_prompts,
         )
+        # Image, video and audio endpoints take a plain prompt, so memories only apply to
+        # text-like output.
+        if memory_block and self.output_type in ("text", "json"):
+            messages = inject_memory_block(messages, memory_block)
 
         # Resolve internal media refs (graph://media/...) before provider call.
         # This converts internal refs to signed URLs or inline base64, using the

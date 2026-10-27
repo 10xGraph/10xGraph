@@ -338,7 +338,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     async def _resolve_session_system_instruction(
         self, rt: RealtimeConfig, state: AgentState, config: dict[str, Any]
     ) -> RealtimeConfig:
-        """Flatten the agent's system prompt (+ skills + memory) into ``system_instruction``.
+        """Flatten the agent's system prompt (+ skills, fenced memory) into ``system_instruction``.
 
         Gemini Live takes a single ``system_instruction`` string fixed at connect time, so
         the per-turn prompt list other agents send must be collapsed once, here. This is what
@@ -363,9 +363,14 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         # Only the developer's prompt is interpolated; skill and memory text is appended after.
         prompts = _interpolate_system_prompts(base, state)
         prompts = prompts + self._build_skill_prompts(state, [])
-        prompts = prompts + await self._build_memory_prompts(state, config)
 
         instruction = "\n\n".join(str(p["content"]) for p in prompts if p.get("content")).strip()
+        # Memories stay in the session instruction here because the Gemini Live client only
+        # sends text as realtime input, which starts a reply; they get the same fence as the
+        # turn-based path and are not system rank text.
+        memory_block = await self._build_memory_block(state, config)
+        if memory_block:
+            instruction = f"{instruction}\n\n{memory_block}".strip()
         if not instruction:
             return rt
         return rt.model_copy(update={"system_instruction": instruction})
