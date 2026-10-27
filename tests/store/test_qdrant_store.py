@@ -378,12 +378,12 @@ class TestQdrantStore:
 
     @pytest.mark.asyncio
     async def test_aforget_memory_no_filter(self, qdrant_store, mock_qdrant_client):
-        """Test forgetting memories with no user/agent specified."""
-        config = {}  # No user_id or agent_id
-        
-        await qdrant_store.aforget_memory(config=config)
-        
-        # Should not call delete if no filter criteria
+        """Forgetting without a user_id raises and never deletes."""
+        config = {}  # No user_id
+
+        with pytest.raises(ValueError, match="user_id is required"):
+            await qdrant_store.aforget_memory(config=config)
+
         mock_qdrant_client.delete.assert_not_called()
 
     @pytest.mark.asyncio

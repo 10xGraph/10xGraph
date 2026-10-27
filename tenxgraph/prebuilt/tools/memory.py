@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 from injectq import Inject
 
-from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.base_store import BaseStore, system_user_id
 from tenxgraph.storage.store.long_term_memory import (
     _do_write,
     _flush_pending_writes,
@@ -80,6 +80,13 @@ def _memory_scope_config(
         **(runtime_config or {}),
     }
 
+    # The scope's own collection always wins over any collection in the merged config,
+    # including one from the run config. A function gets the run config (identity comes
+    # from the authenticated config, never state).
+    scope_collection = scope_config.resolve_collection(cfg)
+    if scope_collection is not None:
+        cfg["collection"] = scope_collection
+
     if scope == "user":
         user_id = getattr(scope_config, "user_id", None)
         if user_id:
@@ -88,6 +95,13 @@ def _memory_scope_config(
 
     agent_id = getattr(scope_config, "agent_id", None)
     app_id = getattr(scope_config, "app_id", None)
+    # Agent/app memory is shared data: it is owned by a reserved system owner named after the
+    # agent (or app), never by the user of the current run. The user filter then keeps one
+    # agent's shared memories apart from another's.
+    owner = agent_id or app_id
+    if not owner:
+        raise ValueError("Agent memory needs agent_id or app_id to name its shared owner")
+    cfg["user_id"] = system_user_id(owner)
     if agent_id:
         cfg["agent_id"] = agent_id
         # Existing Qdrant-backed stores use ``thread_id`` as the secondary

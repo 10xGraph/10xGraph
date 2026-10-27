@@ -90,7 +90,7 @@ from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.storage.base import BaseMediaStore
 from tenxgraph.storage.media.url_policy import MediaFetchPolicy
-from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.base_store import BaseStore, system_user_id
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
 from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.constants import END
@@ -293,12 +293,16 @@ class RAGAgent[StateT: AgentState]:
             (default :attr:`~tenxgraph.storage.store.store_schema.RetrievalStrategy.SIMILARITY`).
         score_threshold: Minimum similarity score; ``None`` means no cutoff.
         store_config: Extra key/value pairs passed as the ``config`` argument
-            to every ``store.asearch`` call (e.g. ``{"user_id": "u42"}``).  The
-            same dict is used for every user, so the knowledge base is shared.
+            to every ``store.asearch`` call (e.g. ``{"collection": "docs"}``).  The
+            same dict is used for every user, so the knowledge base is shared.  Unless
+            it sets ``user_id``, the search runs as ``system_user_id("knowledge_base")``
+            (``"__system__:knowledge_base"``), the reserved owner of shared data, so index
+            the knowledge base with ``{"user_id": system_user_id("knowledge_base")}``.
         store_config_builder: Optional ``(run_config) -> dict`` that builds the
             ``config`` for ``store.asearch`` from the run config of each request.
-            When set it replaces ``store_config``, so the search can be scoped per
-            user or tenant.  ``QdrantStore`` filters on ``config["user_id"]`` and
+            When set it replaces ``store_config`` and is used as is (no default owner
+            is added; the store raises if it has no ``user_id``), so the search can be
+            scoped per user or tenant.  ``QdrantStore`` filters on ``config["user_id"]`` and
             picks the collection from ``config["collection"]``::
 
                 rag = RAGAgent(
@@ -397,7 +401,7 @@ class RAGAgent[StateT: AgentState]:
         if self._store_config_builder is not None:
             store_config = self._store_config_builder(config)
         else:
-            store_config = self._store_config
+            store_config = {"user_id": system_user_id("knowledge_base"), **self._store_config}
         logger.debug("RAGAgent RETRIEVE: query=%r top_k=%d", query, self._top_k)
         results = await self._store.asearch(
             config=store_config,

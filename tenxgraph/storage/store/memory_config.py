@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -12,7 +13,26 @@ from .long_term_memory import ReadMode
 
 
 class _MemoryScopeConfig(BaseModel):
-    """Shared settings for a memory scope."""
+    """Shared settings for a memory scope.
+
+    ``collection`` names the vector-store collection for this scope: a fixed name, or a
+    function ``(run_config) -> name``. Precedence for the collection a memory operation uses:
+
+    1. This ``collection`` field (resolved with the run config when it is a function). It
+       always wins, so a ``collection`` in a run config can never override it.
+    2. A ``collection`` already in the merged config (``MemoryConfig.config``, the scope's
+       ``config``, or a run config built by the developer's own code).
+    3. The store default (``QdrantStore(collection=...)``).
+
+    A function must read the authenticated identity from the run config (for example
+    ``cfg["user"]``, set by the auth backend, or ``cfg["user_id"]``), never graph state or any
+    client-chosen field. One collection per company::
+
+        UserMemoryConfig(collection=lambda cfg: f"company_{cfg['user']['tenant_id']}")
+
+    A function must return a non-empty ``str``; otherwise ``ValueError`` is raised when the
+    scope's config is built.
+    """
 
     enabled: bool = True
     store: BaseStore | None = None
@@ -20,9 +40,35 @@ class _MemoryScopeConfig(BaseModel):
     category: str = "general"
     limit: int | None = None
     score_threshold: float | None = None
+    collection: str | Callable[[dict[str, Any]], str] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("collection")
+    @classmethod
+    def _validate_collection(
+        cls, value: str | Callable[[dict[str, Any]], str] | None
+    ) -> str | Callable[[dict[str, Any]], str] | None:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("collection must not be empty")
+        return value
+
+    def resolve_collection(self, run_config: dict[str, Any]) -> str | None:
+        """Return this scope's collection name, or ``None`` when the scope sets none."""
+        if self.collection is None:
+            return None
+        if isinstance(self.collection, str):
+            return self.collection
+        result = self.collection(run_config)
+        if not isinstance(result, str) or not result.strip():
+            raise ValueError(
+                "memory scope collection function must return a non-empty string, "
+                f"got {result!r}"
+            )
+        return result.strip()
 
     @field_validator("memory_type", "category")
     @classmethod

@@ -3,28 +3,28 @@
 from __future__ import annotations
 
 import re
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import ImageBlock, MediaRef, TextBlock
-from tenxgraph.storage.store.base_store import BaseStore
-from tenxgraph.storage.store.store_schema import MemorySearchResult
 from tenxgraph.prebuilt.agent.rag import (
-    RAGAgent,
+    _DOCS_CACHE_SIZE,
+    _RERANK_NODE,
+    _RETRIEVE_NODE,
+    _SYNTHESIZE_NODE,
     BaseReranker,
     CohereReranker,
     CrossEncoderReranker,
+    RAGAgent,
     _build_documents_block,
-    _DOCS_CACHE_SIZE,
-    _RETRIEVE_NODE,
-    _RERANK_NODE,
-    _SYNTHESIZE_NODE,
 )
+from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.store_schema import MemorySearchResult
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +173,12 @@ class TestCohereReranker:
                 CohereReranker(api_key="key")
 
     def test_default_model(self):
-        with patch("builtins.__import__", side_effect=lambda name, *a, **k: MagicMock() if name == "cohere" else __import__(name, *a, **k)):
+        with patch(
+            "builtins.__import__",
+            side_effect=lambda name, *a, **k: MagicMock()
+            if name == "cohere"
+            else __import__(name, *a, **k),
+        ):
             try:
                 r = CohereReranker.__new__(CohereReranker)
                 r._api_key = "k"
@@ -390,6 +395,22 @@ class TestRetrieveNode:
         assert store.asearch.call_args.kwargs["config"] == {"user_id": "u42"}
 
     @pytest.mark.asyncio
+    async def test_default_owner_is_system_user(self):
+        from tenxgraph.storage.store.base_store import system_user_id
+
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(store=store, agent=_fake_agent(), store_config={"collection": "kb"})
+        await rag._make_retrieve_node()(_state_with(_msg("q")), {**RUN, "user_id": "alice"})
+        assert store.asearch.call_args.kwargs["config"] == {
+            "user_id": system_user_id("knowledge_base"),
+            "collection": "kb",
+        }
+        # the stored developer config is not mutated
+        assert rag._store_config == {"collection": "kb"}
+        assert store.asearch.call_args.kwargs["config"]["user_id"] == "__system__:knowledge_base"
+
+    @pytest.mark.asyncio
     async def test_store_config_builder_receives_run_config(self):
         store = FakeStore()
         store.asearch = AsyncMock(return_value=[])
@@ -409,6 +430,22 @@ class TestRetrieveNode:
         await rag._make_retrieve_node()(_state_with(_msg("q")), cfg)
         assert seen == [cfg]
         assert store.asearch.call_args.kwargs["config"] == {"user_id": "u7"}
+
+    @pytest.mark.asyncio
+    async def test_builder_collection_reaches_asearch(self):
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(
+            store=store,
+            agent=_fake_agent(),
+            store_config_builder=lambda cfg: {
+                "user_id": cfg["user_id"],
+                "collection": f"company_{cfg['user']['tenant_id']}",
+            },
+        )
+        cfg = {**RUN, "user_id": "u7", "user": {"tenant_id": "acme"}}
+        await rag._make_retrieve_node()(_state_with(_msg("q")), cfg)
+        assert store.asearch.call_args.kwargs["config"]["collection"] == "company_acme"
 
     @pytest.mark.asyncio
     async def test_empty_store_results_caches_empty_list(self):
@@ -434,9 +471,7 @@ class TestRetrieveNode:
 class TestRerankNode:
     @pytest.mark.asyncio
     async def test_reranks_docs(self):
-        rag = RAGAgent(
-            store=_fake_store(), agent=_fake_agent(), reranker=FakeReranker(), top_n=2
-        )
+        rag = RAGAgent(store=_fake_store(), agent=_fake_agent(), reranker=FakeReranker(), top_n=2)
         rag._docs_cache[("run-1", "q")] = ["a", "b", "c"]
         state = _state_with(_msg("q"))
         result = await rag._make_rerank_node()(state, RUN)

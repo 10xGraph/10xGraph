@@ -46,6 +46,17 @@ class AgentMemoryMixin:
         if not isinstance(memory, MemoryConfig):
             raise TypeError(f"Expected MemoryConfig, got {type(memory)}")
 
+        agent_memory = memory.agent_memory
+        if (
+            agent_memory
+            and agent_memory.enabled
+            and not (agent_memory.agent_id or agent_memory.app_id)
+        ):
+            raise ValueError(
+                "MemoryConfig.agent_memory is enabled but has neither agent_id nor app_id; "
+                "set one so shared agent memory has its own owner"
+            )
+
         self._memory_config = memory
 
         if memory.inject_system_prompt:

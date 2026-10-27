@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib import import_module as _import_module
 from typing import Any as _Any
 
-from .base_store import BaseStore
+from .base_store import SYSTEM_USER_PREFIX, BaseStore, is_system_user_id, system_user_id
 from .embedding import BaseEmbedding, GoogleEmbedding, OpenAIEmbedding
 from .long_term_memory import (
     ReadMode,
@@ -55,6 +55,9 @@ __all__ = [
     "MemoryType",
     "OpenAIEmbedding",
     "QdrantStore",
+    "SYSTEM_USER_PREFIX",
+    "is_system_user_id",
+    "system_user_id",
     "ReadMode",
     "UserMemoryConfig",
     "AgentMemoryConfig",

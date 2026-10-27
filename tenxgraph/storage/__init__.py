@@ -50,6 +50,7 @@ from .media import (
 # --- Store (vector / long-term memory) ---
 from .store import (
     DEFAULT_COLLECTION,
+    SYSTEM_USER_PREFIX,
     AgentMemoryConfig,
     BaseEmbedding,
     BaseStore,
@@ -70,6 +71,8 @@ from .store import (
     create_mem0_store_with_qdrant,
     create_remote_qdrant_store,
     get_agent_memory_system_prompt,
+    is_system_user_id,
+    system_user_id,
 )
 
 
@@ -121,6 +124,9 @@ __all__ = [
     "OpenAIEmbedding",
     "PgCheckpointer",
     "ProviderMediaCache",
+    "SYSTEM_USER_PREFIX",
+    "is_system_user_id",
+    "system_user_id",
     "SqliteCheckpointer",
     "QdrantStore",
     "ReadMode",

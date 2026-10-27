@@ -118,11 +118,9 @@ class Mem0Store(BaseStore):
 
     def _extract_ids(self, config: dict[str, Any]) -> tuple[str, str | None]:
         """Extract user_id and app_id from per-call config with fallbacks."""
-        user_id = config.get("user_id")
+        # Mem0 always scopes by a concrete user (it ignores authz scope="none").
+        user_id = str(self._require_owner_id(config))
         app_id = config.get("app_id") or self.app_id
-
-        if not user_id:
-            raise ValueError("user_id must be provided in config")
 
         return user_id, app_id
 

@@ -8,6 +8,7 @@ with configurable embedding services.
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -85,7 +86,7 @@ class QdrantStore(BaseStore):
         port: int | None = None,
         url: str | None = None,
         api_key: str | None = None,
-        collection: str | None = None,
+        collection: str | Callable[[dict[str, Any]], str] | None = None,
         distance_metric: DistanceMetric = DistanceMetric.COSINE,
         **kwargs: Any,
     ):
@@ -99,7 +100,12 @@ class QdrantStore(BaseStore):
             port: Port for remote Qdrant server
             url: URL for Qdrant cloud
             api_key: API key for Qdrant cloud
-            collection: Collection name to use (defaults to DEFAULT_COLLECTION)
+            collection: Default collection: a name, or a function ``(config) -> name`` that
+                receives the config passed to each operation. Used when the config has no
+                ``collection`` (defaults to DEFAULT_COLLECTION). A function must read the
+                authenticated identity (``config["user"]`` / ``config["user_id"]``), never
+                state. Precedence: scope ``collection`` (memory config), then a ``collection``
+                in the config, then this default.
             distance_metric: Default distance metric
             **kwargs: Additional client parameters
         """
@@ -130,15 +136,20 @@ class QdrantStore(BaseStore):
         self._collection_lock = asyncio.Lock()
         self._setup_lock = asyncio.Lock()
 
-        self.collection = collection or DEFAULT_COLLECTION
+        self.collection: str | Callable[[dict[str, Any]], str] = collection or DEFAULT_COLLECTION
         self._default_distance_metric = distance_metric
 
         logger.info(f"Initialized QdrantStore with config: path={path}, host={host}, url={url}")
 
     async def asetup(self) -> Any:
-        """Set up the store and ensure default collection exists."""
+        """Set up the store and ensure the default collection exists.
+
+        With a function default there is no fixed name, so nothing is created here;
+        collections are created lazily by the first operation that uses them.
+        """
         async with self._setup_lock:
-            await self._ensure_collection_exists(self.collection)
+            if isinstance(self.collection, str):
+                await self._ensure_collection_exists(self.collection)
         return True
 
     def _distance_metric_to_qdrant(self, metric: DistanceMetric):
@@ -157,7 +168,13 @@ class QdrantStore(BaseStore):
         """Extract user_id, thread_id, and collection from config."""
         user_id = config.get("user_id")
         thread_id = config.get("thread_id")
-        collection = config.get("collection", self.collection)
+        collection = config.get("collection")
+        if collection is None:
+            collection = self.collection
+            if callable(collection):
+                collection = collection(config)
+        if not isinstance(collection, str) or not collection.strip():
+            raise ValueError(f"collection must be a non-empty string, got {collection!r}")
         return user_id, thread_id, collection
 
     def _point_to_search_result(self, point) -> MemorySearchResult:
@@ -393,8 +410,13 @@ class QdrantStore(BaseStore):
         metadata: dict[str, Any] | None = None,
         **kwargs,
     ) -> str:
-        """Store a new memory."""
+        """Store a new memory.
+
+        A record always has an owner: an empty ``user_id`` raises, even under
+        ``scope="none"``. Use ``system_user_id(name)`` for shared data.
+        """
         user_id, thread_id, collection = self._extract_config_values(config)
+        user_id = self._require_owner_id(config, user_id)
 
         from qdrant_client.http.models import PointStruct
 
@@ -467,6 +489,7 @@ class QdrantStore(BaseStore):
         from the search filter so results span all conversations for the user.
         """
         user_id, _thread_id, collection = self._extract_config_values(config)
+        scoped_user_id = self._require_user_id(config, user_id)
 
         # Ensure collection exists
         await self._ensure_collection_exists(collection)
@@ -479,7 +502,7 @@ class QdrantStore(BaseStore):
         # Build filter — search by user only; thread_id is excluded. The user filter is
         # dropped when the authz policy is scope="none" (allow_all).
         search_filter = self._build_qdrant_filter(
-            user_id=self._scope_user_id(config, user_id),
+            user_id=scoped_user_id,
             memory_type=memory_type,
             category=category,
             filters=filters,
@@ -508,6 +531,7 @@ class QdrantStore(BaseStore):
     ) -> MemorySearchResult | None:
         """Get a specific memory by ID."""
         user_id, _thread_id, collection = self._extract_config_values(config)
+        scoped_user_id = self._require_user_id(config, user_id)
 
         try:
             # Ensure collection exists
@@ -527,7 +551,6 @@ class QdrantStore(BaseStore):
 
             # Verify user access only — thread_id is intentionally not checked
             # because long-term memory is cross-thread. Skipped under scope="none".
-            scoped_user_id = self._scope_user_id(config, user_id)
             if scoped_user_id and result.user_id != scoped_user_id:
                 return None
 
@@ -545,14 +568,13 @@ class QdrantStore(BaseStore):
     ) -> list[MemorySearchResult]:
         """Get all memories for a user."""
         user_id, _, collection = self._extract_config_values(config)
+        scoped_user_id = self._require_user_id(config, user_id)
 
         # Ensure collection exists
         await self._ensure_collection_exists(collection)
 
         # Build filter (user filter dropped under scope="none").
-        search_filter = self._build_qdrant_filter(
-            user_id=self._scope_user_id(config, user_id),
-        )
+        search_filter = self._build_qdrant_filter(user_id=scoped_user_id)
 
         # Perform search
         search_result = await self.client.search(
@@ -580,6 +602,7 @@ class QdrantStore(BaseStore):
         from qdrant_client.http.models import PointStruct
 
         user_id, _thread_id, collection = self._extract_config_values(config)
+        scoped_user_id = self._require_user_id(config, user_id)
 
         # Get existing memory
         existing = await self.aget(config, memory_id)
@@ -588,7 +611,6 @@ class QdrantStore(BaseStore):
 
         # Verify user access only — thread_id is not an access-control boundary
         # for long-term memory (memories are shared across all threads for a user).
-        scoped_user_id = self._scope_user_id(config, user_id)
         if scoped_user_id and existing.user_id != scoped_user_id:
             raise PermissionError("User does not have permission to update this memory")
 
@@ -649,6 +671,7 @@ class QdrantStore(BaseStore):
         from qdrant_client.http import models
 
         user_id, _thread_id, collection = self._extract_config_values(config)
+        scoped_user_id = self._require_user_id(config, user_id)
 
         # Verify memory exists and user has access
         existing = await self.aget(config, memory_id)
@@ -657,7 +680,6 @@ class QdrantStore(BaseStore):
 
         # Verify user access only — thread_id is not an access-control boundary
         # for long-term memory.
-        scoped_user_id = self._scope_user_id(config, user_id)
         if scoped_user_id and existing.user_id != scoped_user_id:
             raise PermissionError("User does not have permission to delete this memory")
 
@@ -674,27 +696,26 @@ class QdrantStore(BaseStore):
         config: dict[str, Any],
         **kwargs,
     ) -> None:
-        """Delete all memories for a user or agent."""
+        """Delete all memories of one user, optionally narrowed to one thread.
+
+        ``user_id`` is required (also under ``scope="none"``): forgetting is always for a named
+        owner, never the whole collection.
+        """
         from qdrant_client.http import models
 
-        user_id, agent_id, collection = self._extract_config_values(config)
+        user_id, thread_id, collection = self._extract_config_values(config)
+        user_id = self._require_owner_id(config, user_id)
 
-        # Build filter for memories to delete
-        delete_filter = self._build_qdrant_filter(user_id=user_id, thread_id=agent_id)
+        delete_filter = self._build_qdrant_filter(user_id=user_id, thread_id=thread_id)
+        await self.client.delete(
+            collection_name=collection,
+            points_selector=models.FilterSelector(filter=delete_filter),
+        )
 
-        if delete_filter:
-            # Delete matching memories
-            await self.client.delete(
-                collection_name=collection,
-                points_selector=models.FilterSelector(filter=delete_filter),
-            )
-
-            logger.info(
-                f"Deleted all memories for user_id={user_id}, agent_id={agent_id} "
-                f"in collection {collection}"
-            )
-        else:
-            logger.warning("No user_id or agent_id specified for memory deletion")
+        logger.info(
+            f"Deleted all memories for user_id={user_id}, thread_id={thread_id} "
+            f"in collection {collection}"
+        )
 
     async def arelease(self) -> None:
         """Clean up resources."""
@@ -709,7 +730,7 @@ class QdrantStore(BaseStore):
 def create_local_qdrant_store(
     path: str,
     embedding: BaseEmbedding,
-    collection: str = DEFAULT_COLLECTION,
+    collection: str | Callable[[dict[str, Any]], str] = DEFAULT_COLLECTION,
     **kwargs,
 ) -> QdrantStore:
     """Create a local Qdrant store."""
@@ -725,7 +746,7 @@ def create_remote_qdrant_store(
     host: str,
     port: int,
     embedding: BaseEmbedding,
-    collection: str = DEFAULT_COLLECTION,
+    collection: str | Callable[[dict[str, Any]], str] = DEFAULT_COLLECTION,
     **kwargs,
 ) -> QdrantStore:
     """Create a remote Qdrant store."""
@@ -742,7 +763,7 @@ def create_cloud_qdrant_store(
     url: str,
     api_key: str,
     embedding: BaseEmbedding,
-    collection: str = DEFAULT_COLLECTION,
+    collection: str | Callable[[dict[str, Any]], str] = DEFAULT_COLLECTION,
     **kwargs,
 ) -> QdrantStore:
     """Create a cloud Qdrant store."""

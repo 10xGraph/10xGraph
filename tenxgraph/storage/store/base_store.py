@@ -24,6 +24,30 @@ from .store_schema import DistanceMetric, MemorySearchResult, MemoryType, Retrie
 
 logger = logging.getLogger("tenxgraph.store")
 
+SYSTEM_USER_PREFIX = "__system__"
+"""Reserved prefix for owners of shared, ownerless data (agent/app memory, RAG knowledge bases).
+
+Stores refuse an empty ``user_id``, so data that belongs to no person is written and read under
+``system_user_id(name)``. Each name is its own owner, so shared data sets stay separate. The API
+refuses any authenticated identity that starts with this prefix, so no real user can act as one.
+"""
+
+_USER_ID_REQUIRED = (
+    "user_id is required for memory operations; use system_user_id(name) for shared data"
+)
+
+
+def system_user_id(name: str) -> str:
+    """Return the reserved owner id ``"__system__:<name>"`` for shared data called ``name``."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("system_user_id name must be a non-empty string")
+    return f"{SYSTEM_USER_PREFIX}:{name.strip()}"
+
+
+def is_system_user_id(user_id: Any) -> bool:
+    """True if ``user_id`` is a string that starts with the reserved ``__system__`` prefix."""
+    return isinstance(user_id, str) and user_id.startswith(SYSTEM_USER_PREFIX)
+
 
 class BaseStore(ABC):
     """
@@ -75,6 +99,50 @@ class BaseStore(ABC):
         if isolation_scope(config) == SCOPE_NONE:
             return None
         return user_id
+
+    @staticmethod
+    def _valid_user_id(user_id: Any) -> bool:
+        """True for a non-empty string (after stripping) or an int."""
+        if isinstance(user_id, bool):
+            return False
+        if isinstance(user_id, int):
+            return True
+        return isinstance(user_id, str) and bool(user_id.strip())
+
+    def _require_user_id(
+        self, config: dict[str, Any], user_id: str | int | None = None
+    ) -> str | int | None:
+        """Return the user_id to filter reads/updates/deletes by, or raise if it is missing.
+
+        ``user_id`` defaults to ``config["user_id"]``. A missing, ``None``, empty or blank id
+        raises ``ValueError`` (a store must never fall back to "every user"). The only
+        exception is the explicit authz policy ``scope="none"`` (admin / ``allow_all``), where
+        ``None`` is returned and callers skip the user filter.
+        """
+        if user_id is None:
+            user_id = config.get("user_id")
+        if not self._valid_user_id(user_id):
+            from tenxgraph.core.authz import SCOPE_NONE, isolation_scope
+
+            if isolation_scope(config) == SCOPE_NONE:
+                return None  # scope="none": deliberately no user filter
+            raise ValueError(_USER_ID_REQUIRED)
+        return self._scope_user_id(config, user_id)
+
+    def _require_owner_id(
+        self, config: dict[str, Any], user_id: str | int | None = None
+    ) -> str | int:
+        """Return the concrete user_id a record is written under, or raise if it is missing.
+
+        Used by writes and by ``aforget_memory``. Unlike ``_require_user_id`` this ignores
+        ``scope="none"``: a stored record always has an owner (use ``system_user_id(name)`` for
+        shared data), and a bulk forget always names whose memories to delete.
+        """
+        if user_id is None:
+            user_id = config.get("user_id")
+        if not self._valid_user_id(user_id):
+            raise ValueError(_USER_ID_REQUIRED)
+        return user_id  # type: ignore[return-value]
 
     async def generate_framework_id(self) -> str:
         """Generate a unique ID using the framework's DI-registered ID generator.

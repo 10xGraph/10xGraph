@@ -181,9 +181,42 @@ Starting from this release:
   entries, keyed by `run_id` and the user text), written by `RETRIEVE`, updated by `RERANK`,
   read by `SYNTHESIZE`. If the entry is missing (a restart between nodes, eviction, or no
   `run_id`), `SYNTHESIZE` retrieves and reranks again instead of answering without documents.
+- **Long-term memory stores no longer fail open on an empty `user_id` (Q5).** `QdrantStore`
+  dropped the user filter when `user_id` was empty, so `asearch` and `aget_all` returned every
+  user's memories and `aforget_memory` with only a `thread_id` deleted across users. Every
+  store operation (search, get, get_all, store, update, delete, forget) now raises `ValueError`
+  ("user_id is required for memory operations; use system_user_id(name) for shared data") when the
+  `user_id` is missing, `None`, empty or blank. Only the authz policy `scope="none"` still
+  skips the user filter on reads. Writes and `aforget_memory` need a concrete `user_id` even
+  then, so a record never has an empty owner and a forget never wipes the whole collection.
+  `Mem0Store` raises the same message.
+- **Shared agent memory was searched as the current user.** `agent_memory_tool` and the preload
+  block merged the run's `user_id` into the agent-scope config, so shared agent memory was only
+  found under the user who wrote it. Agent scope now uses a reserved shared owner,
+  `system_user_id(agent_id)` (or `system_user_id(app_id)`), so one agent's shared memories are
+  not mixed with another's. `Agent(memory=...)` raises `ValueError` at setup if agent memory is
+  enabled with neither `agent_id` nor `app_id`.
+- **A run-config `collection` can no longer override the memory scope's collection (Q6).**
+  `QdrantStore` took `config["collection"]` and `_memory_scope_config` merged the run config
+  last, so a `collection` in the run config replaced the developer's and was created if missing.
+  The scope's own `collection` (new, see Added) now always wins. Then comes a `collection` in
+  the merged config from the developer's own code, then the store default.
 
 ### Added
 
+- `collection` on `UserMemoryConfig` and `AgentMemoryConfig`: a name or a function
+  `(run_config) -> name`, resolved for every memory tool call and preload search. A function
+  must read the authenticated identity (`cfg["user"]`, `cfg["user_id"]`), never state, for
+  example `UserMemoryConfig(collection=lambda cfg: f"company_{cfg['user']['tenant_id']}")`.
+  An empty name, or a function that returns anything but a non-empty string, raises `ValueError`.
+- `QdrantStore(collection=...)` (and the `create_*_qdrant_store` factories) also accept a function
+  `(config) -> name`, used when the config has no `collection`. With a function default,
+  `asetup()` creates no collection (there is no fixed name); collections are created on first use.
+- `SYSTEM_USER_PREFIX` (`"__system__"`), `system_user_id(name)` (returns `"__system__:<name>"`)
+  and `is_system_user_id(user_id)`, exported from `tenxgraph.storage` and
+  `tenxgraph.storage.store`: the reserved owners of shared, ownerless data (agent/app memory,
+  RAG knowledge bases). Any id starting with `__system__` is reserved; the API refuses it as a
+  real user's id.
 - `RAGAgent(store_config_builder=...)`: an optional `(run_config) -> dict` used to build the
   `store.asearch` config for each request, so the knowledge-base search can be scoped per user
   or tenant (`lambda cfg: {"user_id": cfg["user_id"]}` with `QdrantStore`). Without it the fixed
@@ -229,6 +262,12 @@ Starting from this release:
 
 ### Changed
 
+- **Behaviour change:** store calls with an empty `user_id` used to work and now raise.
+  `RAGAgent` searches as `system_user_id("knowledge_base")` unless `store_config` sets
+  `user_id` (index the knowledge base with
+  `config={"user_id": system_user_id("knowledge_base")}`); `store_config_builder` output is
+  used as is and must include `user_id`. Records written with an empty owner before this
+  change are not found by any user-scoped read; re-index them under the intended owner.
 - Postgres schema version 4 changes the messages primary key. The migration runs automatically
   the first time the checkpointer sets up its schema, under the existing advisory lock.
   `aget_message` and `adelete_message` on `PgCheckpointer` now require `thread_id` in the config
