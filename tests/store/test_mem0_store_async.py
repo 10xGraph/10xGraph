@@ -158,3 +158,29 @@ async def test_batch_and_forget(store):
     await store.aforget_memory(config)
     res2 = await store.asearch(config, "A")
     assert not res2
+
+
+@pytest.mark.asyncio
+async def test_forget_with_narrowing_raises_and_deletes_nothing(store):
+    config = {"user_id": "u1"}
+    await store.astore(config, "A", category="travel")
+
+    for narrowing in (
+        {"category": "travel"},
+        {"memory_type": MemoryType.SEMANTIC},
+        {"filters": {"source": "chat"}},
+    ):
+        with pytest.raises(ValueError, match="cannot narrow"):
+            await store.aforget_memory(config, **narrowing)
+
+    assert await store.asearch(config, "A")
+
+
+@pytest.mark.asyncio
+async def test_forget_with_none_narrowing_deletes_all_of_user(store):
+    config = {"user_id": "u1"}
+    await store.astore(config, "A")
+
+    await store.aforget_memory(config, memory_type=None, category=None, filters=None)
+
+    assert not await store.asearch(config, "A")

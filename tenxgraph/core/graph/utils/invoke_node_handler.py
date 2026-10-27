@@ -181,7 +181,10 @@ class InvokeNodeHandler(BaseLoggingMixin):
         # forever, since the LLM SDK timeout does not cover tool execution.
         timeout = resolve_timeout(config, "tool_timeout", DEFAULT_TOOL_TIMEOUT_SECONDS)
 
-        tool_attrs = {"node": self.name, "tool": function_name}
+        # The name comes from the model. Only a tool this node can run is a safe metric
+        # label; anything else would create a new series per made-up name.
+        known = self.func.knows_tool(function_name, config)  # type: ignore
+        tool_attrs = {"node": self.name, "tool": function_name if known else "unknown"}
         metrics.counter("tenxgraph.tool.calls").inc(attributes=tool_attrs)
 
         with metrics.timer("tenxgraph.tool.duration", attributes=tool_attrs):

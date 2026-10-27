@@ -3,6 +3,7 @@
 import pytest
 from pydantic import BaseModel
 
+from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.execution_state import ExecutionState, register_per_turn_key
@@ -177,6 +178,45 @@ async def test_resume_of_paused_thread_keeps_counters(stream):
     assert await _rounds(app, "t") == 1
     await _turn(app, "t", stream, {"resume": "ok"})
     assert await _rounds(app, "t") == 1
+
+
+def _failing_graph(fail: list):
+    async def count(state: AgentState):
+        data = state.execution_meta.internal_data
+        data[_ROUNDS_KEY] = data.get(_ROUNDS_KEY, 0) + 1
+        return []
+
+    async def work(state: AgentState):
+        if fail:
+            fail.pop()
+            raise RuntimeError("tool failed")
+        return Message.text_message("done", role="assistant")
+
+    g = StateGraph()
+    g.add_node("COUNT", count)
+    g.add_node("WORK", work)
+    g.add_edge("COUNT", "WORK")
+    g.add_edge("WORK", END)
+    g.set_entry_point("COUNT")
+    return g.compile(checkpointer=InMemoryCheckpointer())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_new_message_after_error_resets_counters(stream):
+    app = _failing_graph(fail=[1])
+    with pytest.raises(NodeError):
+        await _turn(app, "t", stream)  # turn 1: counts 1, then errors
+    state = await app._checkpointer.aget_state({"thread_id": "t"})
+    assert state.execution_meta.status == "error"
+    assert state.execution_meta.internal_data.get(_ROUNDS_KEY) == 1
+
+    # The next message continues at the failed node, as a new turn: the failed turn's
+    # count is cleared instead of eating into this turn's budget.
+    await _turn(app, "t", stream)
+    state = await app._checkpointer.aget_state({"thread_id": "t"})
+    assert state.execution_meta.status == "completed"
+    assert state.execution_meta.internal_data.get(_ROUNDS_KEY) is None
 
 
 def test_reset_turn_data_clears_only_registered_keys():

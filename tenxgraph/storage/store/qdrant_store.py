@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from tenxgraph.core.state import Message
+from tenxgraph.storage.media.url_policy import redact_url
 
 from .base_store import BaseStore
 from .embedding.base_embedding import BaseEmbedding
@@ -139,7 +140,11 @@ class QdrantStore(BaseStore):
         self.collection: str | Callable[[dict[str, Any]], str] = collection or DEFAULT_COLLECTION
         self._default_distance_metric = distance_metric
 
-        logger.info(f"Initialized QdrantStore with config: path={path}, host={host}, url={url}")
+        # A Qdrant URL can carry credentials, so the log shows it without them.
+        shown_url = redact_url(url) if url else url
+        logger.info(
+            f"Initialized QdrantStore with config: path={path}, host={host}, url={shown_url}"
+        )
 
     async def asetup(self) -> Any:
         """Set up the store and ensure the default collection exists.
@@ -509,16 +514,17 @@ class QdrantStore(BaseStore):
         )
 
         # Perform search
-        search_result = await self.client.search(
+        # (query_points replaced search in qdrant-client 1.10; payloads are returned by default)
+        response = await self.client.query_points(
             collection_name=collection,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=search_filter,
             limit=limit,
             score_threshold=score_threshold,
         )
 
         # Convert to search results
-        results = [self._point_to_search_result(point) for point in search_result]
+        results = [self._point_to_search_result(point) for point in response.points]
 
         logger.debug(f"Found {len(results)} memories for query in collection {collection}")
         return results
@@ -576,16 +582,16 @@ class QdrantStore(BaseStore):
         # Build filter (user filter dropped under scope="none").
         search_filter = self._build_qdrant_filter(user_id=scoped_user_id)
 
-        # Perform search
-        search_result = await self.client.search(
+        # Listing needs no vector, so scroll through the filtered points (payloads are
+        # returned by default; scroll points carry no score).
+        points, _next_offset = await self.client.scroll(
             collection_name=collection,
-            query_vector=[],
-            query_filter=search_filter,
+            scroll_filter=search_filter,
             limit=limit,
         )
 
         # Convert to search results
-        results = [self._point_to_search_result(point) for point in search_result]
+        results = [self._point_to_search_result(point) for point in points]
 
         logger.debug(f"Found {len(results)} memories for query in collection {collection}")
         return results
@@ -696,24 +702,47 @@ class QdrantStore(BaseStore):
         config: dict[str, Any],
         **kwargs,
     ) -> None:
-        """Delete all memories of one user, optionally narrowed to one thread.
+        """Delete the memories of one user, optionally narrowed.
 
         ``user_id`` is required (also under ``scope="none"``): forgetting is always for a named
-        owner, never the whole collection.
+        owner, never the whole collection. With no narrowing every memory of that user in the
+        collection goes. ``thread_id`` (from config), ``memory_type``, ``category`` and
+        ``filters`` (keyword arguments) narrow the delete, all combined with AND. A ``filters``
+        value that cannot be matched exactly raises instead of being skipped, because skipping
+        it would delete more than the caller asked for.
         """
         from qdrant_client.http import models
 
         user_id, thread_id, collection = self._extract_config_values(config)
         user_id = self._require_owner_id(config, user_id)
 
-        delete_filter = self._build_qdrant_filter(user_id=user_id, thread_id=thread_id)
+        memory_type = kwargs.get("memory_type")
+        if isinstance(memory_type, str):
+            memory_type = MemoryType(memory_type)
+        category = kwargs.get("category")
+        filters = kwargs.get("filters")
+        for key, value in (filters or {}).items():
+            if not isinstance(value, str | int | bool):
+                raise ValueError(
+                    f"Unsupported forget filter {key!r}: only str, int and bool values can be "
+                    "matched exactly"
+                )
+
+        delete_filter = self._build_qdrant_filter(
+            user_id=user_id,
+            thread_id=thread_id,
+            memory_type=memory_type,
+            category=category,
+            filters=filters,
+        )
         await self.client.delete(
             collection_name=collection,
             points_selector=models.FilterSelector(filter=delete_filter),
         )
 
         logger.info(
-            f"Deleted all memories for user_id={user_id}, thread_id={thread_id} "
+            f"Deleted memories for user_id={user_id}, thread_id={thread_id}, "
+            f"memory_type={memory_type}, category={category}, filters={filters} "
             f"in collection {collection}"
         )
 

@@ -38,7 +38,7 @@ except ImportError:
 
 from tenxgraph.core.state import AgentState, Message
 
-from .base_checkpointer import BaseCheckpointer
+from .base_checkpointer import BaseCheckpointer, validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -1918,6 +1918,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             Exception: If listing fails.
         """
+        offset, limit = validate_page(offset, limit)
         thread_id = config.get("thread_id")
         user_id = config.get("user_id")
 
@@ -2339,6 +2340,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             Exception: If listing fails.
         """
+        offset, limit = validate_page(offset, limit)
         user_id = config.get("user_id")
 
         # `user_id = user_id or "test-user"` used to sit here, which made the check

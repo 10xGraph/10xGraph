@@ -372,6 +372,17 @@ class Mem0Store(BaseStore):
         config: dict[str, Any],
         **kwargs: Any,
     ) -> Any:
+        # Mem0's delete_all only takes entity ids (user, agent, run), not memory_type, category
+        # or metadata filters. Deleting everything for a narrow request would lose data, so refuse.
+        narrowing = [
+            name for name in ("memory_type", "category", "filters") if kwargs.get(name) is not None
+        ]
+        if narrowing:
+            raise ValueError(
+                f"Mem0Store.aforget_memory cannot narrow by {', '.join(narrowing)}: Mem0 deletes "
+                "by user only. Remove the narrowing to delete every memory of the user, or "
+                "delete single memories with adelete."
+            )
         # Delete all memories for a user
         user_id, _ = self._extract_ids(config)
         client = await self._get_client()

@@ -3,6 +3,7 @@ import copy
 import logging
 import time
 from collections import defaultdict
+from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from tenxgraph.core.exceptions import StorageError
@@ -10,7 +11,7 @@ from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.thread_info import ThreadInfo
 
-from .base_checkpointer import BaseCheckpointer
+from .base_checkpointer import BaseCheckpointer, validate_page
 
 
 if TYPE_CHECKING:
@@ -423,24 +424,25 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             list[Message]: List of message objects.
         """
+        start, limit = validate_page(offset, limit)
         if self._owner_denied(config):
             return []
         key = self._get_config_key(config)
+        end = (start + limit) if limit else None
         async with self._messages_lock:
             messages = self._messages.get(key, [])
 
             # Apply search filter if provided
             if search:
                 # Simple string search in message content
+                needle = search.lower()
                 messages = [
                     msg
                     for msg in messages
-                    if hasattr(msg, "content") and search.lower() in str(msg.content).lower()
+                    if hasattr(msg, "content") and needle in str(msg.content).lower()
                 ]
 
             # Apply offset and limit
-            start = offset or 0
-            end = (start + limit) if limit else None
             return messages[start:end]
 
     async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> bool:
@@ -580,10 +582,12 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             list[ThreadInfo]: List of thread information objects.
         """
+        start, limit = validate_page(offset, limit)
+        end = (start + limit) if limit else None
         user_id = config.get("user_id") if isinstance(config, dict) else None
         isolate = self._isolation_enabled(config, user_id)
         async with self._threads_lock:
-            threads = list(self._threads.values())
+            threads = self._threads.values()
 
             # Owner-scope the listing when the policy asks for it.
             if isolate:
@@ -591,16 +595,15 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
             # Apply search filter if provided
             if search:
+                needle = search.lower()
                 threads = [
                     thread
                     for thread in threads
-                    if any(search.lower() in str(value).lower() for value in thread.values())
+                    if any(needle in str(value).lower() for value in thread.values())
                 ]
 
             # Apply offset and limit
-            start = offset or 0
-            end = (start + limit) if limit else None
-            return [ThreadInfo.model_validate(thread) for thread in threads[start:end]]
+            return [ThreadInfo.model_validate(t) for t in islice(threads, start, end)]
 
     async def aclean_thread(self, config: dict[str, Any]) -> bool:
         """

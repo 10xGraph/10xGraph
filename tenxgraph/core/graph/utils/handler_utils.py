@@ -130,6 +130,10 @@ async def check_interrupted[StateT: AgentState](
         logger.info(
             "Starting fresh execution with %d messages", len(input_data.get("messages", []))
         )
+        # A new message after a run that errored is a new turn too, so a failed turn does
+        # not use up the next one's loop budget. A stopped run is a pause (handled above).
+        if state.execution_meta.status == ExecutionStatus.ERROR and input_data.get("messages"):
+            state.execution_meta.reset_turn_data()
 
     return state, config
 

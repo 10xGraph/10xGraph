@@ -26,6 +26,22 @@ StateT = TypeVar("StateT", bound="AgentState")
 # recorded here cannot be clobbered by the run it is trying to stop.
 STOP_REQUEST_NAMESPACE = "stop_request"
 
+# Largest page the list methods (``alist_messages`` / ``alist_threads``) return. An explicit
+# ``limit`` above it is lowered to it, and a negative ``limit`` or ``offset`` raises
+# ``ValueError``. ``limit=None`` or ``0`` keeps meaning "no limit given" for in-process callers
+# that read a whole thread; the API always sends a bounded page.
+MAX_LIST_LIMIT = 1000
+
+
+def validate_page(offset: int | None, limit: int | None) -> tuple[int, int | None]:
+    """Check ``offset`` / ``limit`` and return ``(offset, limit)``; ``limit`` is None for "all"."""
+    if offset is not None and offset < 0:
+        raise ValueError(f"offset must be >= 0, got {offset}")
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be >= 0, got {limit}")
+    return offset or 0, (min(limit, MAX_LIST_LIMIT) if limit else None)
+
+
 # How long an unconsumed stop request stays live. A stop is meant to be observed
 # within a node or two; this bound only keeps an abandoned flag from lingering
 # forever if the run dies before consuming it.

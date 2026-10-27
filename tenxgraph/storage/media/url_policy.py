@@ -41,6 +41,10 @@ def redact_url(url: str) -> str:
     try:
         parts = urlsplit(url)
         host = parts.hostname or ""
+        if not parts.scheme or not host:
+            return "<invalid url>"
+        if ":" in host:
+            host = f"[{host}]"
         if parts.port:
             host = f"{host}:{parts.port}"
         return f"{parts.scheme}://{host}{parts.path}"

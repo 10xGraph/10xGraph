@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from tenxgraph.runtime.publisher.events import EventModel
+from tenxgraph.storage.media.url_policy import redact_url
 
 from .base_publisher import BasePublisher
 
@@ -127,7 +128,7 @@ class RedisPublisher(BasePublisher):
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    f"RedisPublisher failed to connect to Redis at {self.url}"
+                    f"RedisPublisher failed to connect to Redis at {redact_url(self.url)}"
                 ) from exc
 
             return self._redis

@@ -26,6 +26,16 @@ Starting from this release:
 
 ### Security
 
+- **`RedisPublisher` connection errors no longer include the Redis password.** The error text
+  shows the URL through `redact_url` (userinfo, query and fragment removed), so
+  `redis://:s3cret@host:6379/0` appears as `redis://host:6379/0`. `redact_url` now also keeps
+  IPv6 hosts in brackets and returns `<invalid url>` for a string with no scheme or host.
+- **Checkpointer list methods validate and bound paging.** `alist_messages` and `alist_threads` on
+  the SQLite, in-memory and Postgres checkpointers now raise `ValueError` for a negative `limit`
+  or `offset` (a negative `limit` used to drop the last row) and lower an explicit `limit` to
+  `MAX_LIST_LIMIT` (1000, in `base_checkpointer`, the same cap as the API). `limit=None` or `0`
+  still returns everything. SQLite applies `LIMIT`/`OFFSET` and the owner filter in SQL instead of
+  loading every row (with `search`, rows are streamed and reading stops once the page is full).
 - **`PgCheckpointer` tool-ledger reads are scoped to the thread owner.** `aget_tool_result`
   now applies the same owner filter as the message reads: with `enforce_user_isolation=True`
   (the default) or an `authz` scope of `owner`, a caller naming another user's thread gets no
@@ -317,6 +327,17 @@ Starting from this release:
 
 ### Fixed
 
+- **`QdrantStore` search and list work on current qdrant-client (B15).** `asearch` and `aget_all`
+  called `AsyncQdrantClient.search()`, which qdrant-client 1.18 no longer has, so both raised
+  `AttributeError` (and `aget_all` passed an empty vector). `asearch` now uses `query_points` and
+  `aget_all` uses `scroll` with the same user filter. The `qdrant` extra now requires
+  `qdrant-client>=1.10.0`, and a Qdrant server must be 1.10 or newer.
+- **`aforget_memory` no longer widens a narrow forget.** `QdrantStore` ignored `memory_type`,
+  `category` and `filters` and deleted every memory of the user; it now applies them (AND,
+  with the user and thread), and raises `ValueError` for a filter value it cannot match
+  exactly instead of skipping it. `Mem0Store` can only delete by user, so it raises
+  `ValueError` when any of the three is passed. A forget without them still deletes all of
+  the user's memories.
 - **`aput_state_cache` follows the owner rule in `SqliteCheckpointer` and
   `InMemoryCheckpointer`.** With owner isolation on, a cache write from another user was
   accepted, and a write to a thread nobody owned yet planted state the first real user then
@@ -338,8 +359,9 @@ Starting from this release:
   `PlanActReflectAgent(max_iterations=...)` and `StructuredOutputAgent(max_attempts=...)` kept
   their counters in the checkpointed `execution_meta.internal_data` and never reset them, so
   with `max_rounds=2` turn 3 of a thread ended at once. The counters now clear when a new turn
-  starts on a finished thread; resuming a paused thread (interrupt, client tool, `resume`)
-  keeps them. Prebuilt agents register such keys with `register_per_turn_key`. Behaviour
+  starts on a finished thread or with a new message after a run that ended in an error (a
+  failed turn does not use up the next one's budget); resuming a paused or stopped thread
+  (interrupt, client tool, stop, `resume`) keeps them. Prebuilt agents register such keys with `register_per_turn_key`. Behaviour
   change: an app that relied on a lifetime budget now gets the full limit on every turn.
 - **The `graceful_shutdown` example no longer runs `eval()` on model input.** Its `calculate`
   tool passed the model's expression to `eval()` with empty builtins and called it safe; an

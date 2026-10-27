@@ -34,7 +34,8 @@ def client():
     mock = AsyncMock()
     mock.get_collections.return_value = MagicMock(collections=[])
     mock.retrieve.return_value = []
-    mock.search.return_value = []
+    mock.query_points.return_value = MagicMock(points=[])
+    mock.scroll.return_value = ([], None)
     return mock
 
 
@@ -69,13 +70,14 @@ async def test_qdrant_operation_raises_without_user_id(qdrant, client, op, confi
         await _calls(qdrant)[op](config)
     client.upsert.assert_not_called()
     client.delete.assert_not_called()
-    client.search.assert_not_called()
+    client.query_points.assert_not_called()
+    client.scroll.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_qdrant_read_filters_by_user(qdrant, client):
     await qdrant.asearch({"user_id": "alice"}, "q")
-    flt = client.search.call_args.kwargs["query_filter"]
+    flt = client.query_points.call_args.kwargs["query_filter"]
     assert [c.key for c in flt.must] == ["user_id"]
     assert flt.must[0].match.value == "alice"
 
@@ -84,9 +86,9 @@ async def test_qdrant_read_filters_by_user(qdrant, client):
 async def test_qdrant_scope_none_reads_all_users(qdrant, client):
     config = {"user_id": "", "user": {"authz": build_authz("admin", scope=SCOPE_NONE)}}
     await qdrant.asearch(config, "q")
-    assert client.search.call_args.kwargs["query_filter"] is None
+    assert client.query_points.call_args.kwargs["query_filter"] is None
     await qdrant.aget_all(config)
-    assert client.search.call_args.kwargs["query_filter"] is None
+    assert client.scroll.call_args.kwargs["scroll_filter"] is None
 
 
 @pytest.mark.asyncio
