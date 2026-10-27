@@ -587,7 +587,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         user_id = config.get("user_id") if isinstance(config, dict) else None
         isolate = self._isolation_enabled(config, user_id)
         async with self._threads_lock:
-            threads = self._threads.values()
+            threads: list[dict[str, Any]] = list(self._threads.values())
 
             # Owner-scope the listing when the policy asks for it.
             if isolate:

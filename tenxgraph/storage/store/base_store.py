@@ -24,13 +24,12 @@ from .store_schema import DistanceMetric, MemorySearchResult, MemoryType, Retrie
 
 logger = logging.getLogger("tenxgraph.store")
 
+# Reserved prefix for owners of shared, ownerless data (agent/app memory, RAG knowledge bases).
+#
+# Stores refuse an empty `user_id`, so data that belongs to no person is written and read under
+# `system_user_id(name)`. Each name is its own owner, so shared data sets stay separate. The API
+# refuses any authenticated identity that starts with this prefix, so no real user can act as one.
 SYSTEM_USER_PREFIX = "__system__"
-"""Reserved prefix for owners of shared, ownerless data (agent/app memory, RAG knowledge bases).
-
-Stores refuse an empty ``user_id``, so data that belongs to no person is written and read under
-``system_user_id(name)``. Each name is its own owner, so shared data sets stay separate. The API
-refuses any authenticated identity that starts with this prefix, so no real user can act as one.
-"""
 
 _USER_ID_REQUIRED = (
     "user_id is required for memory operations; use system_user_id(name) for shared data"
