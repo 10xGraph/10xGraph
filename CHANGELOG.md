@@ -26,6 +26,12 @@ Starting from this release:
 
 ### Security
 
+- **Tool metrics no longer label by model-invented tool names.** `tenxgraph.tool.calls`,
+  `.duration`, `.timeouts` and `.errors` carried the `tool` attribute from the name the model
+  wrote, before any check that such a tool exists, so a model emitting many made-up names created
+  an unbounded number of series. The label is now the real name only for a tool the ToolNode can
+  run (local, MCP, configured or per-run client, handoff), and `"unknown"` otherwise. The call
+  still returns the usual "Tool not found" result.
 - **`RedisPublisher` connection errors no longer include the Redis password.** The error text
   shows the URL through `redact_url` (userinfo, query and fragment removed), so
   `redis://:s3cret@host:6379/0` appears as `redis://host:6379/0`. `redact_url` now also keeps
