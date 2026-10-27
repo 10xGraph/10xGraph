@@ -163,9 +163,31 @@ Starting from this release:
   searches again. The cache is bounded (256 entries per Agent) and is never saved to state or
   the checkpointer. Without a `run_id` (an Agent called outside a compiled graph) nothing is
   cached.
+- **`RAGAgent` no longer breaks out of its context wrapper or saves retrieved documents into
+  the thread.** Chunks went into an unescaped `<context>` tag, so a chunk containing
+  `</context>` ended the block, and `SYNTHESIZE` replaced the user's message in
+  `state.context` with the augmented text: the documents were saved, the thread grew every
+  turn, and the original message's images and files, id and metadata were lost. The documents
+  now go into a `<retrieved_documents_xxxxxxxx>` block (random suffix per request, a line
+  saying they are reference material and not instructions, any `<retrieved_documents` text in a
+  chunk escaped) that is added to the latest user message of the outgoing request only, after
+  any memory block and before the user's text. `state.context` is not modified. The same helpers
+  (`wrap_request_block`, `inject_request_blocks` in `utils/converter.py`) now serve memories and
+  documents. `Agent.execute` and `BaseAgent.execute` take a keyword-only
+  `request_blocks: list[str] | None`; a custom agent passed to `RAGAgent` must accept it
+  (`RAGAgent` raises `TypeError` otherwise). Image, video and audio output agents get no block.
+  The document list is no longer written to `execution_meta.internal_data["rag_docs"]` (the
+  `_RAG_DOCS_KEY` constant is gone): `RAGAgent` keeps it in a bounded per-run cache (256
+  entries, keyed by `run_id` and the user text), written by `RETRIEVE`, updated by `RERANK`,
+  read by `SYNTHESIZE`. If the entry is missing (a restart between nodes, eviction, or no
+  `run_id`), `SYNTHESIZE` retrieves and reranks again instead of answering without documents.
 
 ### Added
 
+- `RAGAgent(store_config_builder=...)`: an optional `(run_config) -> dict` used to build the
+  `store.asearch` config for each request, so the knowledge-base search can be scoped per user
+  or tenant (`lambda cfg: {"user_id": cfg["user_id"]}` with `QdrantStore`). Without it the fixed
+  `store_config` is used for everyone, as before.
 - `BaseCheckpointer.aupdate_message_metadata(config, message_id, metadata)` (and the sync
   `update_message_metadata`) merges keys into a stored message's metadata, replacing keys that
   already exist, and returns the updated message or `None` if the message is not in that thread.

@@ -2382,6 +2382,44 @@ class TestMemoryBlockInjection:
         sent = agent._call_llm_with_retry.call_args.kwargs["messages"]
         assert sent[-1]["content"] == "draw"
 
+    @pytest.mark.asyncio
+    async def test_execute_request_blocks_after_memory_before_user_text(self):
+        agent = _make_openai_agent()
+        state = AgentState(context=[Message.text_message("hello", role="user")])
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=MagicMock())
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value="MEM")
+        with patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
+            await agent.execute(state, {"_node_name": "AGENT"}, request_blocks=["DOCS"])
+        sent = agent._call_llm_with_retry.call_args.kwargs["messages"]
+        assert [p["text"] for p in sent[-1]["content"]] == ["MEM", "DOCS", "hello"]
+        assert state.context[0].text() == "hello"
+        assert len(state.context) == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_request_blocks_without_memory_and_non_text_skip(self):
+        agent = _make_openai_agent()
+        state = AgentState(context=[Message.text_message("hello", role="user")])
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=MagicMock())
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value=None)
+        with patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
+            await agent.execute(state, {"_node_name": "AGENT"}, request_blocks=["DOCS"])
+            sent = agent._call_llm_with_retry.call_args.kwargs["messages"]
+            assert [p["text"] for p in sent[-1]["content"]] == ["DOCS", "hello"]
+            agent.output_type = "image"
+            await agent.execute(state, {"_node_name": "AGENT"}, request_blocks=["DOCS"])
+        sent = agent._call_llm_with_retry.call_args.kwargs["messages"]
+        assert sent[-1]["content"] == "hello"
+
     def test_agent_prompt_describes_user_message_placement(self):
         from tenxgraph.storage.store.long_term_memory import get_agent_memory_system_prompt
 

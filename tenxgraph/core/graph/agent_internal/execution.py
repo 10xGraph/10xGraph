@@ -17,7 +17,7 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils.converter import (
     convert_messages,
-    inject_memory_block,
+    inject_request_blocks,
     strip_media_blocks,
 )
 from tenxgraph.utils.injection import fresh
@@ -611,8 +611,15 @@ class AgentExecutionMixin:
         self,
         state: AgentState,
         config: dict[str, Any],
+        *,
+        request_blocks: list[str] | None = None,
     ) -> ModelResponseConverter:
-        """Execute the Agent node against the current graph state."""
+        """Execute the Agent node against the current graph state.
+
+        ``request_blocks`` are fenced texts (for example retrieved documents) added to the
+        latest user message of this request only, after the memory block and before the
+        user's text. They are never saved to ``state.context``.
+        """
         container = InjectQ.get_instance()
 
         state = await self._trim_context(state)
@@ -641,8 +648,10 @@ class AgentExecutionMixin:
         )
         # Image, video and audio endpoints take a plain prompt, so memories only apply to
         # text-like output.
-        if memory_block and self.output_type in ("text", "json"):
-            messages = inject_memory_block(messages, memory_block)
+        if self.output_type in ("text", "json"):
+            blocks = [b for b in (memory_block, *(request_blocks or [])) if b]
+            if blocks:
+                messages = inject_request_blocks(messages, *blocks)
 
         # Resolve internal media refs (graph://media/...) before provider call.
         # This converts internal refs to signed URLs or inline base64, using the

@@ -14,11 +14,17 @@ Graph topology::
 
 ``RERANK`` is skipped entirely when no reranker is provided.
 
-Retrieved documents are stored in
-``state.execution_meta.internal_data["rag_docs"]`` (a ``list[str]``) so they
-are available to any node that runs after ``RETRIEVE``.  ``SYNTHESIZE``
-prepends them to the user query as a ``<context>`` block before calling the
-LLM, keeping the agent's own ``system_prompt`` untouched.
+Retrieved documents are kept in a bounded per-run cache on the ``RAGAgent``
+(keyed by ``run_id``), never in saved state.  ``SYNTHESIZE`` fences them in a
+``<retrieved_documents_xxxxxxxx>`` block (random suffix, escaped body, a "not
+instructions" line) and passes it to ``agent.execute(..., request_blocks=[...])``,
+which adds it to the latest user message of the outgoing request only, before the
+user's text.  ``state.context`` is never modified, so the saved thread keeps the
+user's original message (attachments, id, metadata) and does not grow.  If the
+cache has no entry (for example after a process restart between nodes),
+``SYNTHESIZE`` retrieves and reranks again instead of answering without documents.
+The agent's own ``system_prompt`` is untouched.  The ``agent`` must accept the
+``request_blocks`` keyword (``Agent`` and ``BaseAgent`` subclasses do).
 
 Example — no reranker::
 
@@ -67,7 +73,10 @@ Example — fully local with CrossEncoder::
 
 from __future__ import annotations
 
+import inspect
 import logging
+from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from injectq import InjectQ
@@ -77,7 +86,6 @@ from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
-from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.storage.base import BaseMediaStore
@@ -86,6 +94,7 @@ from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
 from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.constants import END
+from tenxgraph.utils.converter import wrap_documents_block
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
@@ -93,8 +102,10 @@ logger = logging.getLogger("tenxgraph.prebuilt.rag")
 
 StateT = TypeVar("StateT", bound=AgentState)
 
-# Key used to pass retrieved documents through state between nodes.
-_RAG_DOCS_KEY = "rag_docs"
+# Retrieved documents are handed between nodes through a per-run cache on the RAGAgent, not
+# through saved state. A run is one invoke/stream call, so a few hundred entries cover any
+# realistic number of runs in flight; the LRU bounds memory in long-lived servers.
+_DOCS_CACHE_SIZE = 256
 
 # Node names — module-level constants so tests and interrupt_before/after can
 # reference them without magic strings.
@@ -232,10 +243,18 @@ class CrossEncoderReranker:
 # ---------------------------------------------------------------------------
 
 
-def _build_context_message(docs: list[str], original_query: str) -> str:
-    """Wrap retrieved chunks + original query into one user-message string."""
+def _build_documents_block(docs: list[str]) -> str:
+    """Number the retrieved chunks and fence them as data for the outgoing request."""
     numbered = "\n".join(f"[{i + 1}] {doc.strip()}" for i, doc in enumerate(docs))
-    return f"<context>\n{numbered}\n</context>\n\n{original_query}"
+    return wrap_documents_block(numbered)
+
+
+def _latest_user_query(state: AgentState) -> str:
+    """Text of the latest user message in the context, or an empty string."""
+    for msg in reversed(state.context):
+        if msg.role == "user":
+            return msg.text()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +274,12 @@ class RAGAgent[StateT: AgentState]:
 
     Args:
         store: Knowledge-base store (e.g. ``QdrantStore``).  The RETRIEVE node
-            calls ``store.asearch(query, limit=top_k)`` and stores the result
-            texts in ``state.execution_meta.internal_data["rag_docs"]``.
+            calls ``store.asearch(query, limit=top_k)`` and keeps the result
+            texts in the per-run cache.
         agent: Pre-built agent that synthesises the final answer.  The
-            SYNTHESIZE node calls ``agent.execute(state, config)`` after
-            injecting the retrieved documents into the user message.
+            SYNTHESIZE node calls
+            ``agent.execute(state, config, request_blocks=[...])`` with the fenced
+            documents, which are added to the outgoing request only.
         reranker: Optional reranker.  When provided, a RERANK node is inserted
             between RETRIEVE and SYNTHESIZE.  Use :class:`CohereReranker` for
             API-based reranking or :class:`CrossEncoderReranker` for fully
@@ -273,7 +293,22 @@ class RAGAgent[StateT: AgentState]:
             (default :attr:`~tenxgraph.storage.store.store_schema.RetrievalStrategy.SIMILARITY`).
         score_threshold: Minimum similarity score; ``None`` means no cutoff.
         store_config: Extra key/value pairs passed as the ``config`` argument
-            to every ``store.asearch`` call (e.g. ``{"user_id": "u42"}``).
+            to every ``store.asearch`` call (e.g. ``{"user_id": "u42"}``).  The
+            same dict is used for every user, so the knowledge base is shared.
+        store_config_builder: Optional ``(run_config) -> dict`` that builds the
+            ``config`` for ``store.asearch`` from the run config of each request.
+            When set it replaces ``store_config``, so the search can be scoped per
+            user or tenant.  ``QdrantStore`` filters on ``config["user_id"]`` and
+            picks the collection from ``config["collection"]``::
+
+                rag = RAGAgent(
+                    store=store,
+                    agent=agent,
+                    store_config_builder=lambda cfg: {"user_id": cfg["user_id"]},
+                )
+
+            Take identity from the authenticated run config, never from state or
+            client-chosen fields.
 
     Graph infra params (forwarded to :class:`StateGraph`):
         state, context_manager, publisher, id_generator, container
@@ -289,6 +324,7 @@ class RAGAgent[StateT: AgentState]:
         retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
         score_threshold: float | None = None,
         store_config: dict[str, Any] | None = None,
+        store_config_builder: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         # Graph infra
         state: StateT | None = None,
         context_manager: BaseContextManager[StateT] | None = None,
@@ -309,6 +345,10 @@ class RAGAgent[StateT: AgentState]:
         self._retrieval_strategy = retrieval_strategy
         self._score_threshold = score_threshold
         self._store_config: dict[str, Any] = store_config or {}
+        self._store_config_builder = store_config_builder
+        # (run_id, query) -> documents; written by RETRIEVE, updated by RERANK, read by
+        # SYNTHESIZE. Never saved to state or the checkpointer.
+        self._docs_cache: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
 
         # Graph infra — stored for _new_graph() reuse across compile() calls.
         self._state = state
@@ -333,61 +373,74 @@ class RAGAgent[StateT: AgentState]:
         )
 
     # ------------------------------------------------------------------
+    # Retrieval + per-run cache
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cache_key(config: dict[str, Any], query: str) -> tuple[str, str] | None:
+        run_id = (config or {}).get("run_id")
+        return (str(run_id), query) if run_id else None
+
+    def _cache_put(self, key: tuple[str, str] | None, docs: list[str]) -> None:
+        if key is None:
+            return
+        self._docs_cache[key] = docs
+        self._docs_cache.move_to_end(key)
+        while len(self._docs_cache) > _DOCS_CACHE_SIZE:
+            self._docs_cache.popitem(last=False)
+
+    async def _fetch_docs(self, query: str, config: dict[str, Any]) -> list[str]:
+        """Search the knowledge base; the search config is scoped per request if configured."""
+        if not query:
+            logger.warning("RAGAgent RETRIEVE: no user message found in context.")
+            return []
+        if self._store_config_builder is not None:
+            store_config = self._store_config_builder(config)
+        else:
+            store_config = self._store_config
+        logger.debug("RAGAgent RETRIEVE: query=%r top_k=%d", query, self._top_k)
+        results = await self._store.asearch(
+            config=store_config,
+            query=query,
+            limit=self._top_k,
+            score_threshold=self._score_threshold,
+            retrieval_strategy=self._retrieval_strategy,
+        )
+        docs = [r.content for r in results if r.content]
+        logger.debug("RAGAgent RETRIEVE: got %d docs", len(docs))
+        return docs
+
+    async def _rerank_docs(self, query: str, docs: list[str]) -> list[str]:
+        if self._reranker is None or not docs:
+            return docs
+        logger.debug("RAGAgent RERANK: %d docs -> top_%d", len(docs), self._top_n)
+        return await self._reranker.arerank(query, docs, top_n=self._top_n)
+
+    # ------------------------------------------------------------------
     # Node factories
     # ------------------------------------------------------------------
 
     def _make_retrieve_node(self):
-        store = self._store
-        top_k = self._top_k
-        retrieval_strategy = self._retrieval_strategy
-        score_threshold = self._score_threshold
-        store_config = self._store_config
-
         async def _retrieve(state: AgentState, config: dict) -> AgentState:
-            query = ""
-            for msg in reversed(state.context):
-                if msg.role == "user":
-                    query = msg.text()
-                    break
-
-            if not query:
-                logger.warning("RAGAgent RETRIEVE: no user message found in context.")
-                state.execution_meta.internal_data[_RAG_DOCS_KEY] = []
-                return state
-
-            logger.debug("RAGAgent RETRIEVE: query=%r top_k=%d", query, top_k)
-            results = await store.asearch(
-                config=store_config,
-                query=query,
-                limit=top_k,
-                score_threshold=score_threshold,
-                retrieval_strategy=retrieval_strategy,
-            )
-            docs = [r.content for r in results if r.content]
-            logger.debug("RAGAgent RETRIEVE: got %d docs", len(docs))
-            state.execution_meta.internal_data[_RAG_DOCS_KEY] = docs
+            query = _latest_user_query(state)
+            key = self._cache_key(config, query)
+            # Without a run_id there is nowhere to hand the documents over, so SYNTHESIZE
+            # does the search itself rather than searching twice.
+            if key is not None:
+                self._cache_put(key, await self._fetch_docs(query, config))
             return state
 
         return _retrieve
 
     def _make_rerank_node(self):
-        reranker = self._reranker
-        top_n = self._top_n
-
         async def _rerank(state: AgentState, config: dict) -> AgentState:
-            docs: list[str] = state.execution_meta.internal_data.get(_RAG_DOCS_KEY, [])
-            if not docs:
-                return state
-
-            query = ""
-            for msg in reversed(state.context):
-                if msg.role == "user":
-                    query = msg.text()
-                    break
-
-            logger.debug("RAGAgent RERANK: %d docs → top_%d", len(docs), top_n)
-            ranked = await reranker.arerank(query, docs, top_n=top_n)  # type: ignore[union-attr]
-            state.execution_meta.internal_data[_RAG_DOCS_KEY] = ranked
+            query = _latest_user_query(state)
+            key = self._cache_key(config, query)
+            if key is None or key not in self._docs_cache:
+                return state  # SYNTHESIZE retrieves and reranks on a miss
+            docs = self._docs_cache[key]
+            if docs:
+                self._cache_put(key, await self._rerank_docs(query, docs))
             return state
 
         return _rerank
@@ -396,27 +449,29 @@ class RAGAgent[StateT: AgentState]:
         agent = self._agent
 
         async def _synthesize(state: AgentState, config: dict) -> AgentState:
-            docs: list[str] = state.execution_meta.internal_data.get(_RAG_DOCS_KEY, [])
+            query = _latest_user_query(state)
+            key = self._cache_key(config, query)
 
-            if docs:
-                original_query = ""
-                last_user_idx = -1
-                for i, msg in enumerate(state.context):
-                    if msg.role == "user":
-                        original_query = msg.text()
-                        last_user_idx = i
+            if key is not None and key in self._docs_cache:
+                self._docs_cache.move_to_end(key)
+                docs = self._docs_cache[key]
+            else:
+                # No entry: no run_id, evicted, or the process restarted between nodes.
+                # Search again rather than answer without documents.
+                docs = await self._rerank_docs(query, await self._fetch_docs(query, config))
+                self._cache_put(key, docs)
 
-                if last_user_idx >= 0 and original_query:
-                    augmented = _build_context_message(docs, original_query)
-                    augmented_msg = Message.text_message(augmented, role="user")  # type: ignore[arg-type]
-                    state.context = [
-                        *list(state.context[:last_user_idx]),
-                        augmented_msg,
-                        *list(state.context[last_user_idx + 1 :]),
-                    ]
-                    logger.debug("RAGAgent SYNTHESIZE: injected %d docs.", len(docs))
+            if not docs:
+                return await agent.execute(state, config)
 
-            return await agent.execute(state, config)
+            if "request_blocks" not in inspect.signature(agent.execute).parameters:
+                raise TypeError(
+                    f"{type(agent).__name__}.execute must accept a 'request_blocks' keyword "
+                    "so RAGAgent can add the retrieved documents to the request without "
+                    "modifying the saved thread."
+                )
+            logger.debug("RAGAgent SYNTHESIZE: passing %d docs.", len(docs))
+            return await agent.execute(state, config, request_blocks=[_build_documents_block(docs)])
 
         return _synthesize
 

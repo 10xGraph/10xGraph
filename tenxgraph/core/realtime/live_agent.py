@@ -171,7 +171,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     # ------------------------------------------------------------------ #
     # Forcing rule: a live agent is not a turn-based node.
     # ------------------------------------------------------------------ #
-    async def execute(self, state: AgentState, config: dict[str, Any]) -> Any:
+    async def execute(
+        self,
+        state: AgentState,
+        config: dict[str, Any],
+        *,
+        request_blocks: list[str] | None = None,
+    ) -> Any:
         raise RuntimeError(
             "LiveAgent runs via CompiledGraph.arealtime(); it is not a turn-based node. "
             "Use .arealtime() (or the AudioAgent prebuilt), not invoke/stream."

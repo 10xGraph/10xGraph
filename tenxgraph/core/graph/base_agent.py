@@ -78,6 +78,8 @@ class BaseAgent(ABC):
         self,
         state: AgentState,
         config: dict[str, Any],
+        *,
+        request_blocks: list[str] | None = None,
     ) -> Any:
         """Execute the agent logic.
 
@@ -86,6 +88,8 @@ class BaseAgent(ABC):
         Args:
             state: Current agent state with context
             config: Execution configuration
+            request_blocks: Fenced texts to add to the latest user message of the
+                outgoing request only (never to saved state).
 
         Returns:
             ModelResponseConverter, list[Message], or dict
