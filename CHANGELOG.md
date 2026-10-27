@@ -312,6 +312,23 @@ Starting from this release:
 
 ### Fixed
 
+- **`aput_state_cache` follows the owner rule in `SqliteCheckpointer` and
+  `InMemoryCheckpointer`.** With owner isolation on, a cache write from another user was
+  accepted, and a write to a thread nobody owned yet planted state the first real user then
+  read. Now a non-owner's write is dropped and the first writer of a thread becomes its
+  owner, as `aput_state` already did. Postgres was not affected (its cache key includes the
+  user).
+- **A tool call with cut-off, empty or non-object arguments no longer fails the node.** The
+  OpenAI converter called `json.loads` on the model's arguments with no guard, so a call truncated
+  at `max_tokens` (`{"a": `) raised and killed the run. All converters (OpenAI chat, OpenAI
+  Responses, Anthropic, Google) now share `parse_tool_arguments`
+  (`tenxgraph.runtime.adapters.llm.tool_arguments`): empty means no arguments, a JSON object is
+  used, anything else is invalid. An invalid call keeps its raw argument string in `tools_calls`,
+  and the ToolNode (invoke and stream) answers it with the tool error "Tool call arguments were
+  not valid JSON (they may have been cut off). Call the tool again with a complete JSON object."
+  instead of running the tool with empty arguments, so the model can retry. Previously the Anthropic
+  converter replaced bad streamed input with `{}` and ran the tool, and the stream handler did not
+  catch bad arguments at all. History sent back to Anthropic and Google uses `{}` for such a call.
 - **Multi-agent loop limits are per turn, not per thread.** `SupervisorTeamAgent(max_rounds=...)`,
   `PlanActReflectAgent(max_iterations=...)` and `StructuredOutputAgent(max_attempts=...)` kept
   their counters in the checkpointed `execution_meta.internal_data` and never reset them, so

@@ -430,6 +430,28 @@ def _owner_cfg(thread_id, user_id):
 
 
 @pytest.mark.asyncio
+async def test_inmem_state_cache_write_is_owner_checked(cp):
+    # A non-owner's cache write is dropped; the owner keeps reading their own state.
+    await cp.aput_state(_owner_cfg("t1", "A"), _make_state())
+    poisoned = _make_state()
+    poisoned.context = [_make_message("evil", "poison")]
+    await cp.aput_state_cache(_owner_cfg("t1", "B"), poisoned)
+    cached = await cp.aget_state_cache(_owner_cfg("t1", "A"))
+    assert all(m.text() != "poison" for m in cached.context)
+
+
+@pytest.mark.asyncio
+async def test_inmem_state_cache_write_claims_an_unowned_thread(cp):
+    # Writing the cache of a thread nobody owns yet makes the writer its owner, so the
+    # next user cannot read the planted state.
+    poisoned = _make_state()
+    poisoned.context = [_make_message("evil", "poison")]
+    await cp.aput_state_cache(_owner_cfg("t9", "B"), poisoned)
+    assert await cp.aget_state_cache(_owner_cfg("t9", "A")) is None
+    assert await cp.aget_state_cache(_owner_cfg("t9", "B")) is not None
+
+
+@pytest.mark.asyncio
 async def test_inmem_owner_only_state(cp):
     from tenxgraph.core.exceptions import StorageError
 

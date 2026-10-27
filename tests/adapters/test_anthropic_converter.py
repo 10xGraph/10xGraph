@@ -247,7 +247,7 @@ class TestStreaming:
         assert arguments["t2"] == '{"y":2}'
 
     @pytest.mark.asyncio
-    async def test_malformed_tool_json_degrades_to_empty_object(self):
+    async def test_malformed_tool_json_is_kept_raw_with_empty_block_args(self):
         events = [
             SimpleNamespace(
                 type="content_block_start",
@@ -258,7 +258,9 @@ class TestStreaming:
             SimpleNamespace(type="content_block_stop", index=0),
         ]
         final = (await _collect(events))[-1]
-        assert final.tools_calls[0]["function"]["arguments"] == "{}"
+        # The raw text is kept so the ToolNode rejects the call; the block has {}.
+        assert final.tools_calls[0]["function"]["arguments"] == "not json"
+        assert final.content[0].args == {}
 
     @pytest.mark.asyncio
     async def test_thinking_deltas_accumulate_into_reasoning(self):

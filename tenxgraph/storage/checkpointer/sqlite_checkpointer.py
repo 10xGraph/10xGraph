@@ -325,9 +325,14 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     async def aput_state_cache(self, config: dict[str, Any], state: StateT) -> StateT:
         await self._ensure_setup()
+        # Same rule as aput_state: a non-owner's write is dropped, and the first writer of a
+        # thread becomes its owner, so a cached state can only be read back by its writer.
+        if await self._owner_denied(config):
+            return state
         key = self._get_config_key(config)
         data = self._serialize_state(state)
         async with self._write() as conn:
+            await self._record_owner(conn, config)
             await self._upsert_state_cache(conn, key, data)
         return state
 

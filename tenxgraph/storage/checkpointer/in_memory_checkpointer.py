@@ -197,8 +197,13 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             StateT: The cached state object.
         """
+        # Same rule as aput_state: a non-owner's write is dropped, and the first writer of a
+        # thread becomes its owner, so a cached state can only be read back by its writer.
+        if self._owner_denied(config):
+            return state
         key = self._get_config_key(config)
         async with self._state_lock:
+            self._record_owner(config)
             self._state_cache[key] = copy.deepcopy(state)
             logger.debug(f"Stored state cache for key: {key}")
             return state

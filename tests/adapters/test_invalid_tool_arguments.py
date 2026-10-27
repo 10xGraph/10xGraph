@@ -32,7 +32,7 @@ class TestParser:
     def test_json_object(self):
         assert parse_tool_arguments(VALID_OBJ) == ({"a": 1}, None)
 
-    @pytest.mark.parametrize("raw", INVALID + [5, ["x"]])
+    @pytest.mark.parametrize("raw", [*INVALID, 5, ["x"]])
     def test_invalid_gives_error(self, raw):
         args, error = parse_tool_arguments(raw)
         assert args == {}
@@ -83,7 +83,7 @@ def _expected(raw):
 
 class TestOpenAIChat:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", INVALID + ["", VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
     async def test_non_stream(self, raw):
         msg = await OpenAIConverter().convert_response(_openai_response(raw))
         block = next(b for b in msg.content if isinstance(b, ToolCallBlock))
@@ -93,14 +93,14 @@ class TestOpenAIChat:
         assert msg.tools_calls[0]["function"]["arguments"] == kept
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", INVALID + ["", VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
     async def test_stream_final_blocks(self, raw):
         tc = {"id": "c1", "type": "function", "function": {"name": "calc", "arguments": raw}}
         blocks = OpenAIConverter._build_stream_blocks("", "", [tc])
         assert blocks[0].args == _expected(raw)[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", INVALID + [VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, VALID_OBJ])
     async def test_stream_delta_keeps_call(self, raw):
         tool_call = SimpleNamespace(
             id="tc-1", type="function", function=SimpleNamespace(name="calc", arguments=raw)
@@ -114,19 +114,19 @@ class TestOpenAIChat:
 
 
 class TestOpenAIResponses:
-    @pytest.mark.parametrize("raw", INVALID + ["", VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
     def test_item_extraction(self, raw):
         item = SimpleNamespace(type="function_call", name="calc", arguments=raw, call_id="c1")
         block, tool_call = OpenAIResponsesConverter._extract_tool_call_from_item(item)
         assert block.args == _expected(raw)[0]
         assert tool_call["function"]["arguments"] == (raw or "{}")
 
-    @pytest.mark.parametrize("raw", INVALID + ["", VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
     def test_parse_json_args(self, raw):
         assert OpenAIResponsesConverter._parse_json_args(raw) == _expected(raw)[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", INVALID + [VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, VALID_OBJ])
     async def test_stream(self, raw):
         events = [
             SimpleNamespace(
@@ -145,14 +145,14 @@ class TestOpenAIResponses:
             ),
         ]
 
-        async def aiter():
+        async def _aiter():
             for e in events:
                 yield e
 
         out = [
             m
             async for m in OpenAIResponsesConverter().convert_streaming_response(
-                config={}, node_name="n", response=aiter()
+                config={}, node_name="n", response=_aiter()
             )
         ]
         final = out[-1]
@@ -206,7 +206,7 @@ async def _anthropic_stream(raw_fragments):
 
 class TestAnthropic:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", INVALID + [VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, VALID_OBJ])
     async def test_stream_keeps_raw_for_invalid(self, raw):
         final = (await _anthropic_stream([raw]))[-1]
         block = next(b for b in final.content if isinstance(b, ToolCallBlock))
@@ -218,7 +218,7 @@ class TestAnthropic:
         final = (await _anthropic_stream([]))[-1]
         assert final.tools_calls[0]["function"]["arguments"] == "{}"
 
-    @pytest.mark.parametrize("raw", INVALID + ["", VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
     def test_history_input_is_always_an_object(self, raw):
         msg = {
             "role": "assistant",
@@ -232,7 +232,7 @@ class TestAnthropic:
 
 
 class TestGoogle:
-    @pytest.mark.parametrize("raw", INVALID + ["", VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
     def test_history_args_are_a_mapping(self, raw):
         pytest.importorskip("google.genai")
         from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
@@ -243,7 +243,7 @@ class TestGoogle:
         assert part.function_call.args == _expected(raw)[0]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", INVALID + [VALID_OBJ])
+    @pytest.mark.parametrize("raw", [*INVALID, VALID_OBJ])
     async def test_stream_final_blocks(self, raw):
         pytest.importorskip("google.genai")
         from tenxgraph.runtime.adapters.llm import google_genai_converter as mod
