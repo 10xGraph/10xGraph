@@ -193,6 +193,16 @@ class TestRouteToolCallShapes:
         assert fn(state) == "WRITER"
 
 
+class _Conv:
+    """Stands in for ModelResponseConverter: the agent node awaits ``invoke()``."""
+
+    def __init__(self, message: Message):
+        self._message = message
+
+    async def invoke(self) -> Message:
+        return self._message
+
+
 class _ScriptedAgent(BaseAgent):
     """Emits a scripted assistant message (provider-shaped tool calls), once per visit."""
 
@@ -208,7 +218,7 @@ class _ScriptedAgent(BaseAgent):
         msg = Message.text_message(f"{self.name} says hi", role="assistant")
         if tcs:
             msg.tools_calls = tcs
-        return [msg]
+        return _Conv(msg)
 
     async def _call_llm(self, messages, tools=None, **kwargs):
         raise NotImplementedError

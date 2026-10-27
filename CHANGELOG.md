@@ -312,6 +312,11 @@ Starting from this release:
 
 ### Fixed
 
+- **`SwarmAgent` handoffs now fire with real model output.** The route read the tool name from
+  the top level of each tool call, but every provider stores it at `function.name`, so no
+  handoff was ever seen. The name is now read from `function.name` (the flat `name` key is still
+  accepted). `can_handoff_to` is enforced: a call to a target that is not allowed does not jump
+  and gets a tool-not-found result.
 - `import tenxgraph.core.exceptions.media_exceptions` as the first import no longer fails with a
   circular import (`MediaTransportMode` is now a type-only import).
 - `ainvoke` and `astream` release the run's stop scope when the run ends (`aend_run`), so a stop
