@@ -112,7 +112,7 @@ def _configured_root(config: dict[str, Any] | None) -> Path:
     if root:
         warnings.warn(
             "Setting the file tool root through the run config (file_tool_root / "
-            "workspace_root) is deprecated and will be removed in 0.11: anyone who can set "
+            "workspace_root) is deprecated and will be removed in 2.0: anyone who can set "
             "the run config can point the tools at any directory. Use "
             "create_file_tools(root=...) instead.",
             DeprecationWarning,

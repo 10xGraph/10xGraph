@@ -2,14 +2,14 @@
 
 ## Supported versions
 
-`10xgraph` (formerly `10xscale-agentflow`) is pre-1.0 and ships from a single release line. Security
+`10xgraph` (formerly `10xscale-agentflow`) is at 1.0 (release candidate `1.0.0rc1`) and ships from a single release line. Security
 fixes are applied to the latest published release only. Pin a known-good version
 in production and upgrade promptly when a security release is announced.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.10.x  | :white_check_mark: |
-| < 0.10  | :x:                |
+| 1.0.x   | :white_check_mark: |
+| < 1.0   | :x:                |
 
 ## Reporting a vulnerability
 

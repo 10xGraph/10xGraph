@@ -20,9 +20,119 @@ Starting from this release:
   simply started raising `ModuleNotFoundError`; that will not happen again.)
 - Breaking changes are listed under a `### Breaking` heading, with the migration.
 
+### Versioning
+
+From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned together:
+
+- **major.minor is identical across the three packages.** `10xgraph` 1.1.x works with
+  `10xgraph-api` 1.1.x and `10xgraph-client` 1.1.x.
+- **Patch numbers move independently.** A patch release contains only bug or security fixes.
+- **Any new feature means all three packages release the next `X.Y.0` together.** A package with
+  no changes of its own ships that release as "version alignment, no changes".
+- **Breaking changes need a new major version (2.0)**, and the feature they change is deprecated
+  for at least one minor release first.
+- The deprecated `agentflow` import alias is removed in 2.0.
+
 ---
 
 ## [Unreleased]
+
+## [1.0.0rc1] - 2026-10-28
+
+First 1.0 release candidate. The public API is now stable under the versioning policy above,
+and the version is aligned with `10xgraph-api` and `10xgraph-client` 1.0. This candidate is
+the 0.10.3 code plus the hardening round listed below, which includes the breaking changes
+here. Each bullet gives the migration; the detailed entry further down has the full text.
+
+### Breaking
+
+- **The graph-level memory API is removed** (`MemoryIntegration`, `create_memory_preload_node`,
+  `get_memory_system_prompt`, `memory_tool`). Pass `Agent(memory=MemoryConfig(...))` instead.
+  See Removed.
+- **`fetch_and_cache` is removed** from `tenxgraph.storage.media.temp_cache`. Download through
+  `fetch_media_url` with a `MediaFetchPolicy`. See Removed.
+- **Store operations with a missing or empty `user_id` now raise `ValueError`**, on `QdrantStore`
+  and `Mem0Store`. Pass a concrete `user_id`, or `system_user_id(name)` for shared data. Re-index
+  records written with an empty owner. `RAGAgent` now searches as
+  `system_user_id("knowledge_base")` unless `store_config` sets `user_id`, and
+  `store_config_builder` output must include `user_id`. See Changed and the Q5 entry in Security.
+- **Agent memory is owned by `system_user_id(agent_id)` (or `app_id`), not the current user.**
+  `Agent(memory=...)` raises `ValueError` if agent memory is enabled with neither id. Memories
+  written under a user by the old behaviour are not found; re-store them. See Security.
+- **A `collection` in the run config no longer overrides the memory scope's collection.** Set
+  `collection` on `UserMemoryConfig` / `AgentMemoryConfig`. See Security (Q6).
+- **`PRELOAD` memories are no longer a system message.** They arrive as a fenced block in the
+  latest user message of each request and are never saved to `state.context`.
+  `Agent._build_memory_prompts` is replaced by `Agent._build_memory_block`; prompts or tests that
+  look for the `[Long-term Memory Context]` system message need updating. See Security.
+- **`RAGAgent` changes its context handling.** Retrieved documents go into a request-only block,
+  `state.context` is no longer rewritten, and `execution_meta.internal_data["rag_docs"]` and
+  `_RAG_DOCS_KEY` are gone. A custom agent passed to `RAGAgent` must accept the keyword-only
+  `request_blocks` argument on `execute`, or `RAGAgent` raises `TypeError`. See Security.
+- **Skill and memory text is no longer run through `str.format`.** Only your own `system_prompt`
+  is interpolated, and a bad placeholder is logged instead of failing the run. Remove any
+  reliance on `{placeholder}` expansion inside skill or memory text. See Security.
+- **Handoffs need a registered handoff tool.** A `transfer_to_<X>` call only jumps if a tool made
+  with `create_handoff_tool` is on that ToolNode; a `Command.goto` to an unknown node raises
+  `GraphError` (`GRAPH_007`). `SwarmAgent` now enforces `can_handoff_to`. See Security and
+  Fixed.
+- **Tools hidden by `tools_tags` can no longer be called.** Calls to a tool the Agent did not
+  advertise return "Tool not found". Add the tag or the tool if the call was intended. See
+  Security.
+- **An MCP tool with the same name as a local or remote tool raises `ValueError`.** Rename one of
+  them. See Security.
+- **Parallel tool calls are capped at 10 per turn by default.** Set `max_parallel_tool_calls` in
+  the run config, or `TENXGRAPH_MAX_PARALLEL_TOOL_CALLS`, to change it. See Security.
+- **Unexpected tool errors no longer reach the model verbatim.** The model sees
+  `Tool '<name>' failed with an internal error (reference <ref>)` and the full error is logged.
+  A tool that wants the model to see a message must return it as a string; a raised
+  `ValueError` is no longer shown. See Security.
+- **A tool call with invalid JSON arguments is answered with a tool error** instead of running
+  with empty arguments. See Fixed.
+- **Multi-agent loop limits are per turn.** `max_rounds`, `max_iterations` and `max_attempts`
+  reset on each new turn instead of being a lifetime budget per thread. See Fixed.
+- **Resume is checked.** A `resume_interrupt_id` that is not the pending interrupt's raises
+  `InterruptMismatchError`, and a value that fails the interrupt's `response_schema` raises
+  `ResumeValidationError`. See Security.
+- **File tools refuse secret files and `file_search` stays inside the root.** `.env`, keys,
+  `.ssh`, `.aws`, `.git` and similar paths are refused or skipped for any root; use
+  `create_file_tools(root, deny=..., use_default_deny=False)` to change that. Prefer
+  `create_file_tools(root=...)` to the run-config root, which is deprecated. See Security and
+  Deprecated.
+- **`fetch_url` no longer follows redirects to internal addresses or uses `HTTP_PROXY` /
+  `HTTPS_PROXY`.** Fetches that relied on a proxy or on an internal redirect now fail. See
+  Security.
+- **Client-supplied media URLs are fetched under a `MediaFetchPolicy`.** Only `http` and `https`
+  to public hosts, 20 MB, 10 s, and `image/*` and `application/pdf` by default. Audio and video
+  links on Google graphs stop downloading until you allow those content types; pass
+  `compile(media_policy=MediaFetchPolicy(...))`. The private `_convert_to_google_format` no
+  longer downloads. See Security and Changed.
+- **`CloudMediaStore` raises `ValueError` for storage keys that are not 32 lowercase hex
+  characters.** Objects stored under other keys by custom code are no longer reachable through
+  the store. See Security.
+- **Local media and the SQLite checkpointer create owner-only files** (`0o700` folders, `0o600`
+  files). Other OS users or services that read them lose access; widen the mode yourself if
+  that is intended. See Security.
+- **Checkpointer list methods validate paging.** `alist_messages` and `alist_threads` raise
+  `ValueError` for a negative `limit` or `offset`, and an explicit `limit` is lowered to
+  `MAX_LIST_LIMIT` (1000). See Security.
+- **`PgCheckpointer` schema version 4 changes the messages primary key to
+  `(thread_id, message_id)`**, and `aget_message` / `adelete_message` require `thread_id` in the
+  config. The migration runs automatically on first setup. `aget_tool_result` is scoped to the
+  thread owner. See Security and Changed.
+- **Checkpointers apply the owner rule to state-cache writes**, and the in-memory checkpointer
+  returns copies of state, so mutating a loaded state no longer changes the store until you save
+  it. See Security and Fixed.
+- **Tool metrics label unknown tools as `"unknown"`** instead of the model-invented name. See
+  Security.
+- **`PromptInjectionValidator` behaves differently.** Non-strict mode scans only the first
+  `max_length` characters, strict mode now raises on bad base64, and text in other languages is
+  no longer rejected. See Security and Fixed.
+- **`QdrantStore.aforget_memory` applies `memory_type`, `category` and `filters`**, and
+  `Mem0Store.aforget_memory` raises `ValueError` if any of them is passed. The `qdrant` extra
+  needs `qdrant-client>=1.10.0` and a Qdrant server 1.10 or newer. See Fixed.
+- **The old example folders and the `a2a_sdk` example are removed**; use the reorganised
+  `examples/` folders. See Changed.
 
 ### Security
 
@@ -338,7 +448,7 @@ Starting from this release:
 ### Deprecated
 
 - Setting the file tool root through the run config (`file_tool_root` / `workspace_root`)
-  now emits a `DeprecationWarning` and will be removed in 0.11. Use `create_file_tools(root=...)`.
+  now emits a `DeprecationWarning` and will be removed in 2.0. Use `create_file_tools(root=...)`.
 
 ### Removed
 
@@ -722,11 +832,11 @@ from tenxgraph import StateGraph
   checkpointer instance; call `checkpointer.bind_state_type(MyState)` when reading threads
   outside a compiled graph.
 
-## [1.0.0] - 2026-07-19
+## [0.9.0] - 2026-07-21
 
-First stable release. The public API is now covered by the deprecation policy above,
-and the package is classified `Development Status :: 5 - Production/Stable`. This
-release is the production-hardening round on top of `0.8.0`: durable state gets
+This release was prepared as `1.0.0` but published to PyPI as `0.9.0`. It is the
+production-hardening round on top of `0.8.0`, and the package is classified
+`Development Status :: 5 - Production/Stable`: durable state gets
 optimistic concurrency and an idempotent tool ledger, execution is bounded by real
 timeouts and cancellation, and per-user isolation is enforced across the storage
 layer.
