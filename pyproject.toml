@@ -411,7 +411,8 @@ ENVIRONMENT = "pytest"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4.2",
+    # pytest 9.2 removed Node._nodeid, which pytest-benchmark 5.3 still reads; drop the cap once it is fixed.
+    "pytest>=8.4.2,<9.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
     "pytest-env>=1.1.5",
