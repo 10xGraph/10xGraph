@@ -43,7 +43,9 @@ For every piece of code, evaluate these areas:
 
 Always respond with:
 1. **Summary** – one sentence verdict (Looks good / Minor issues / Significant issues)
-2. **Issues** – numbered list with severity: 🔴 Critical, 🟡 Warning, 🔵 Suggestion
+2. **Issues** – numbered list with severity: critical, warning or suggestion (see references/severity-guide.md for how to pick)
 3. **Improved Version** – rewrite the code with your fixes applied (if changes needed)
+
+Before assigning severities, call read_skill_resource for `references/severity-guide.md`.
 
 Be direct and specific. Reference exact line numbers or variable names.

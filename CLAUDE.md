@@ -209,8 +209,11 @@ pip install -e ".[google-genai,openai,anthropic,mcp,pg_checkpoint]"
   `benchmarks/`, `integration/`). Markers: `asyncio`, `integration` (needs real DBs), `slow`.
 - Lint config is in `pyproject.toml` `[tool.ruff]` (broad rule set; per-file ignores for a few
   large modules). `mypy` and `bandit` are also configured there.
-- `examples/` is organized by feature (react, rag, swarm, supervisor_team, memory, skills, mcp,
-  a2a_sdk, evaluation, testing, multimodal, structured_output, ...). Use these as canonical usage.
+- `examples/` is organized by feature (quickstart, graph_basics, streaming, tools, mcp, providers,
+  graceful_shutdown, human_in_the_loop, callbacks, multi_agent, evaluation, ..., plus `use_cases/`
+  and full-stack `apps/`); `examples/README.md` is the index. Each folder's README carries
+  docs-site frontmatter. Model strings are hardcoded per file and rotate across providers. Use
+  these as canonical usage.
 
 ## Known doc drift (do not copy from these without checking)
 

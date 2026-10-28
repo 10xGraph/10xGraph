@@ -1,0 +1,3 @@
+10xgraph[anthropic,openai,google-genai,qdrant,pg_checkpoint]
+10xgraph-api
+python-dotenv

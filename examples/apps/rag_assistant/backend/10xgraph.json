@@ -1,0 +1,26 @@
+{
+  "agent": "graph.agent:app",
+  "env": "../.env",
+  "auth": null,
+  "remote_tools": [],
+  "ag_ui": {
+    "enabled": false
+  },
+  "rate_limit": {
+    "enabled": true,
+    "backend": "redis",
+    "redis": {
+      "url": "${REDIS_URL}",
+      "prefix": "docs-assistant:rate-limit"
+    },
+    "requests": 60,
+    "window": 60,
+    "by": "ip",
+    "fail_open": true,
+    "exclude_paths": ["/ping", "/docs", "/redoc", "/openapi.json"]
+  },
+  "test": {
+    "path": "tests",
+    "coverage": false
+  }
+}

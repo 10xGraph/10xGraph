@@ -1,0 +1,117 @@
+{
+  "eval_set_id": "d3e29848-36fa-45bc-a304-834ed1c4fa0f",
+  "name": "weather_trajectory",
+  "description": "",
+  "eval_cases": [
+    {
+      "eval_id": "nyc_weather",
+      "name": "",
+      "description": "",
+      "conversation": [
+        {
+          "invocation_id": "a66b69b8-0d94-4772-8972-925736410b28",
+          "user_content": {
+            "role": "user",
+            "content": "What is the weather in New York City right now?",
+            "metadata": {}
+          },
+          "expected_tool_trajectory": [
+            {
+              "name": "get_weather",
+              "args": {
+                "location": "New York City"
+              },
+              "call_id": null,
+              "result": null
+            }
+          ],
+          "expected_node_order": [],
+          "expected_intermediate_responses": [],
+          "expected_final_response": {
+            "role": "assistant",
+            "content": "The weather in New York City is sunny",
+            "metadata": {}
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "",
+        "user_id": "test_user",
+        "state": {},
+        "config": {}
+      },
+      "tags": [],
+      "metadata": {}
+    },
+    {
+      "eval_id": "tokyo_forecast",
+      "name": "",
+      "description": "",
+      "conversation": [
+        {
+          "invocation_id": "fd7826c5-3212-4cdf-9166-2134a3e9e1aa",
+          "user_content": {
+            "role": "user",
+            "content": "Give me a 3-day forecast for Tokyo.",
+            "metadata": {}
+          },
+          "expected_tool_trajectory": [
+            {
+              "name": "get_forecast",
+              "args": {},
+              "call_id": null,
+              "result": null
+            }
+          ],
+          "expected_node_order": [],
+          "expected_intermediate_responses": [],
+          "expected_final_response": {
+            "role": "assistant",
+            "content": "3-day forecast for Tokyo: sunny, cloudy, sunny",
+            "metadata": {}
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "",
+        "user_id": "test_user",
+        "state": {},
+        "config": {}
+      },
+      "tags": [],
+      "metadata": {}
+    },
+    {
+      "eval_id": "no_tool",
+      "name": "",
+      "description": "",
+      "conversation": [
+        {
+          "invocation_id": "de6d84d2-4011-4a0b-8846-ab21c71497c6",
+          "user_content": {
+            "role": "user",
+            "content": "What is the capital of Germany?",
+            "metadata": {}
+          },
+          "expected_tool_trajectory": [],
+          "expected_node_order": [],
+          "expected_intermediate_responses": [],
+          "expected_final_response": {
+            "role": "assistant",
+            "content": "Berlin",
+            "metadata": {}
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "",
+        "user_id": "test_user",
+        "state": {},
+        "config": {}
+      },
+      "tags": [],
+      "metadata": {}
+    }
+  ],
+  "metadata": {}
+}
