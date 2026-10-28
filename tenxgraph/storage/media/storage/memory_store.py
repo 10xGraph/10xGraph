@@ -49,6 +49,9 @@ class InMemoryMediaStore(BaseMediaStore):
             **metadata,
         }
 
+    async def list_keys(self) -> list[str]:
+        return list(self._data)
+
     async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
         entry = self._data.get(storage_key)
         if entry is None:

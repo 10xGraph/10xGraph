@@ -154,7 +154,7 @@ class EventModel(BaseModel):
         default=None, description="User ID associated with this execution"
     )
     timestamp: float = Field(
-        default_factory=datetime.now().timestamp,
+        default_factory=lambda: datetime.now().timestamp(),
         description="UNIX timestamp of when chunk was created",
     )
     is_error: bool = Field(

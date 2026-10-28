@@ -63,6 +63,27 @@ StateT = TypeVar("StateT", bound=AgentState)
 logger = logging.getLogger("tenxgraph.graph")
 
 
+PAUSE_KINDS = ("interrupt", "before", "after", "remote_tool")
+
+
+def is_pause_chunk(chunk: StreamChunk) -> bool:
+    """True for any pause update: ``interrupt()``, interrupt_before/after, remote-tool wait.
+
+    It is a control signal (the run stopped and waits for a resume), so it reaches clients at
+    every response granularity, unlike the other ``UPDATES`` progress chunks.
+    """
+    data = chunk.data
+    return (
+        chunk.event == StreamEvent.UPDATES
+        and isinstance(data, dict)
+        and (
+            data.get("status") == "interrupted"
+            or "interrupt" in data
+            or data.get("pause") in PAUSE_KINDS
+        )
+    )
+
+
 class StreamHandler[StateT: AgentState](
     BaseLoggingMixin,
     InterruptConfigMixin,
@@ -250,6 +271,7 @@ class StreamHandler[StateT: AgentState](
                             "step": step,
                             "max_steps": max_steps,
                             "reason": "Graph execution interrupted before node execution",
+                            "pause": "before",
                         },
                         thread_id=config.get("thread_id"),
                         run_id=config.get("run_id"),
@@ -411,6 +433,7 @@ class StreamHandler[StateT: AgentState](
                             "node": current_node,
                             "step": step,
                             "max_steps": max_steps,
+                            "pause": "interrupt",
                             "reason": "Graph execution paused by interrupt()",
                             "interrupt": paused.interrupt.model_dump(mode="json"),
                         },
@@ -483,6 +506,7 @@ class StreamHandler[StateT: AgentState](
                             "step": step,
                             "max_steps": max_steps,
                             "reason": "Remote tool call - graph interrupted",
+                            "pause": "remote_tool",
                         },
                         thread_id=config.get("thread_id"),
                         run_id=config.get("run_id"),
@@ -521,7 +545,8 @@ class StreamHandler[StateT: AgentState](
                             "node": current_node,
                             "step": step,
                             "max_steps": max_steps,
-                            "reason": "Graph execution interrupted before node execution",
+                            "reason": "Graph execution interrupted after node execution",
+                            "pause": "after",
                         },
                         thread_id=config.get("thread_id"),
                         run_id=config.get("run_id"),
@@ -823,10 +848,12 @@ class StreamHandler[StateT: AgentState](
                 case ResponseGranularity.FULL:
                     yield chunk
                 case ResponseGranularity.PARTIAL:
-                    if chunk.event != StreamEvent.UPDATES:
+                    if chunk.event != StreamEvent.UPDATES or is_pause_chunk(chunk):
                         yield chunk
                 case ResponseGranularity.LOW:
-                    if chunk.event in [StreamEvent.MESSAGE, StreamEvent.ERROR]:
+                    if chunk.event in [StreamEvent.MESSAGE, StreamEvent.ERROR] or is_pause_chunk(
+                        chunk
+                    ):
                         yield chunk
 
         # Publish graph completion event

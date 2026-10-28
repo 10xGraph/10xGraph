@@ -72,6 +72,17 @@ class BaseMediaStore(ABC):
             "size_bytes": len(data),
         }
 
+    async def list_keys(self) -> list[str]:
+        """Return the storage keys of every stored object.
+
+        Lets a caller enumerate files (for example to list one owner's uploads by reading
+        each key's metadata). Backends that cannot enumerate keep this default.
+
+        Raises:
+            NotImplementedError: The backend does not support it.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support list_keys()")
+
     async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
         """Shallow-merge ``updates`` into the stored metadata.
 

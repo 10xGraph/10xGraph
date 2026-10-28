@@ -125,6 +125,17 @@ class LocalFileMediaStore(BaseMediaStore):
             return None
         return json.loads(meta_path.read_text(encoding="utf-8"))
 
+    async def list_keys(self) -> list[str]:
+        keys = []
+        for meta_path in self._base.glob("*/*/*.meta.json"):
+            key = meta_path.name[: -len(".meta.json")]
+            try:
+                validate_storage_key(key)
+            except ValueError:
+                continue
+            keys.append(key)
+        return keys
+
     async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
         self._validate_key(storage_key)
         meta_path = self._meta_path(storage_key)
