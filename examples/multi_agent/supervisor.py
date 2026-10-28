@@ -54,7 +54,7 @@ analyst = Agent(
 writer = Agent(
     model="deepseek-chat",  # DeepSeek, through its OpenAI-compatible endpoint
     base_url="https://api.deepseek.com",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    api_key=os.environ["DEEPSEEK_API_KEY"],
     system_prompt=[
         {"role": "system", "content": "You write a concise summary from the work done so far."}
     ],

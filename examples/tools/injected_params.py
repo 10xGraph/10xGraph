@@ -37,7 +37,7 @@ def whoami(
 agent = ReactAgent(
     model="deepseek-chat",
     base_url="https://api.deepseek.com",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    api_key=os.environ["DEEPSEEK_API_KEY"],
     system_prompt=[{"role": "system", "content": "Call whoami once, then report its output."}],
     tools=[whoami],
 )

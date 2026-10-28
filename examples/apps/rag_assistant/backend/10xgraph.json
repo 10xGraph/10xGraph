@@ -1,6 +1,6 @@
 {
   "agent": "graph.agent:app",
-  "env": ".env",
+  "env": "../.env",
   "auth": null,
   "remote_tools": [],
   "ag_ui": {

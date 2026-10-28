@@ -71,7 +71,7 @@ Checked in the API server source under `routers/ag_ui/` (router, service, event 
 - Python 3.12 or newer, Node.js 20 or newer (or Docker).
 - Keys: `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`.
 - Backend install: `pip install "10xgraph[openai]" "10xgraph-api[ag-ui]" python-dotenv` (see `backend/requirements.txt`).
-- Frontend package versions in `frontend/package.json` use caret ranges (`@copilotkit/*` ^1.50.0, `@ag-ui/client` ^0.0.40). I could not confirm these exact versions on npm. The `@copilotkit/*/v2` import paths come from the integration guide, so use a CopilotKit release that ships them and adjust the ranges if `npm install` complains.
+- Frontend package versions in `frontend/package.json` use caret ranges (`@copilotkit/*` ^1.50.0, `@ag-ui/client` ^0.0.40). `frontend/package-lock.json` pins them (CopilotKit 1.82.0 and `@ag-ui/client` 0.0.40 at the time of writing), which ship the `@copilotkit/*/v2` import paths the app uses. The Dockerfile installs with `npm ci`, so Docker builds use exactly those versions.
 - The frontend uses the `@copilotkit/react-core/v2` chat components, as in the guide, so `@copilotkit/react-ui` is not installed.
 
 ## Run it

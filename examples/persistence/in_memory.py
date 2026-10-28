@@ -37,7 +37,7 @@ async def main() -> None:
     agent = ReactAgent(
         model="deepseek-chat",  # DeepSeek through its OpenAI-compatible endpoint
         base_url="https://api.deepseek.com",
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        api_key=os.environ["DEEPSEEK_API_KEY"],
         system_prompt=[{"role": "system", "content": "You are a friendly assistant."}],
         tools=[get_weather],
     )

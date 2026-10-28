@@ -50,7 +50,7 @@ async def run_agent() -> None:
     agent = ReactAgent(
         model="deepseek-chat",
         base_url="https://api.deepseek.com",
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        api_key=os.environ["DEEPSEEK_API_KEY"],
         tools=[get_order, cancel_order, current_time],
         # The model is only shown tools tagged "read" (plus untagged ones). A call to a
         # hidden tool, such as cancel_order, is refused at dispatch.

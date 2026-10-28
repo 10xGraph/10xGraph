@@ -93,7 +93,7 @@ DeepSeek uses the OpenAI client with a different endpoint:
 writer = Agent(
     model="deepseek-chat",
     base_url="https://api.deepseek.com",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    api_key=os.environ["DEEPSEEK_API_KEY"],
     system_prompt=prompts.REPORT,
     reasoning_config=None,
 )

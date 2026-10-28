@@ -69,7 +69,7 @@ def build_graph():
     writer = Agent(
         model="deepseek-chat",
         base_url="https://api.deepseek.com",
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        api_key=os.environ["DEEPSEEK_API_KEY"],
         system_prompt=prompts.REPORT,
         reasoning_config=None,  # plain chat model; no reasoning parameters
     )

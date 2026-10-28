@@ -39,7 +39,7 @@ def add_to_cart(item: str, price: float, state: CartState) -> ToolResult:
 agent = ReactAgent(
     model="deepseek-chat",
     base_url="https://api.deepseek.com",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    api_key=os.environ["DEEPSEEK_API_KEY"],
     state=CartState(),
     system_prompt=[{"role": "system", "content": "Use add_to_cart for every item the user lists."}],
     tools=[add_to_cart],

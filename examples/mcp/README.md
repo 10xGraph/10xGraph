@@ -90,7 +90,7 @@ For a remote server with authentication, put the credential in `headers`, as `gi
 ```python
 "github": {
     "url": "https://api.githubcopilot.com/mcp/",
-    "headers": {"Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"},
+    "headers": {"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"},
     "transport": "streamable-http",
 }
 ```

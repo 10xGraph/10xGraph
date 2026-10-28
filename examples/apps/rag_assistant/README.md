@@ -76,7 +76,7 @@ npm install
 npm run dev                                  # http://localhost:5173, proxies /api to :8000
 ```
 
-Export the variables from `.env` in the shell that starts the API (or copy `.env` into `backend/`), because `10xgraph.json` references `${REDIS_URL}`.
+`10xgraph.json` points `env` at `../.env`, so the API reads the same `.env` file as Docker Compose. Inside the container that file does not exist and is skipped; Compose passes the variables instead.
 
 ### Tests
 

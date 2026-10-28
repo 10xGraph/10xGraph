@@ -6,6 +6,8 @@ JSON and HTML reports. Run from the repo root: 10xgraph eval examples/evaluation
 (needs OPENAI_API_KEY)
 """
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from weather_agent import build_agent
 
@@ -32,4 +34,4 @@ EVAL_CONFIG = EvalConfig(
 
 
 def get_eval_set() -> EvalSet:
-    return EvalSet.from_file("examples/evaluation/weather.evalset.json")
+    return EvalSet.from_file(str(Path(__file__).parent / "weather.evalset.json"))
