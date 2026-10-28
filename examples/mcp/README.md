@@ -116,6 +116,6 @@ The model is a string in the code. Change `gemini-2.5-flash` to `gpt-5-mini` (`p
 
 ## Next steps
 
-- [`../tool-decorator/`](../tools/) for tools written as Python functions.
+- [`../tools/`](../tools/) for tools written as Python functions.
 - [`../providers/`](../providers/) for the model options.
 - [`../dependency_injection/`](../dependency_injection/) for passing your own services to tools.

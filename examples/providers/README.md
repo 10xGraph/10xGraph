@@ -103,4 +103,4 @@ Every entry is just a model string plus options. To try another company, run ano
 
 - [`../mcp/`](../mcp/) for tools served over MCP.
 - [`../dependency_injection/`](../dependency_injection/) for passing your own services to tools.
-- [`../react/`](../quickstart/) for the ReAct loop itself.
+- [`../quickstart/`](../quickstart/) for the ReAct loop itself.

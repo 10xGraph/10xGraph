@@ -93,5 +93,5 @@ override_node assistant: stub
 ## Next steps
 
 - [`../testing/`](../testing/) for test helpers that avoid live LLM calls.
-- [`../tool-decorator/`](../tools/) for tool definitions.
+- [`../tools/`](../tools/) for tool definitions.
 - [`../mcp/`](../mcp/) for tools that live in another process.
