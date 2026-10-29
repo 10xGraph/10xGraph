@@ -5,7 +5,7 @@ This module tests MemoryRecord, MemorySearchResult, and associated enums
 including validation, serialization, and edge cases.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import Mock
 from uuid import UUID
 import pytest
@@ -321,7 +321,7 @@ class TestMemoryRecord:
     
     def test_from_message_with_timestamp(self):
         """Test creating MemoryRecord from Message with timestamp."""
-        test_time = datetime(2023, 6, 15, 10, 30, 0)
+        test_time = datetime(2023, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
         timestamp_float = test_time.timestamp()
         message = Message(
             role="user",

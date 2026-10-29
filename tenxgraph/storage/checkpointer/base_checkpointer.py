@@ -165,6 +165,38 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             )
         return self._state_type.model_validate(data)  # type: ignore[return-value]
 
+    @staticmethod
+    def _strip_message_from_state(state: AgentState, message_id: str | int) -> bool:
+        """Remove a message from ``state.context`` in place. True when something was removed.
+
+        Deleting a message must also remove it from the state the next run starts from,
+        otherwise the "deleted" message is still sent to the model and returned by GET state.
+        """
+        context = getattr(state, "context", None)
+        if not context:
+            return False
+        kept = [m for m in context if str(getattr(m, "message_id", None)) != str(message_id)]
+        if len(kept) == len(context):
+            return False
+        state.context = kept
+        return True
+
+    @staticmethod
+    def _strip_message_from_payload(payload: dict[str, Any], message_id: str | int) -> bool:
+        """Same as :meth:`_strip_message_from_state` for a persisted state payload (a dict)."""
+        context = payload.get("context")
+        if not isinstance(context, list) or not context:
+            return False
+        kept = [
+            m
+            for m in context
+            if not (isinstance(m, dict) and str(m.get("message_id")) == str(message_id))
+        ]
+        if len(kept) == len(context):
+            return False
+        payload["context"] = kept
+        return True
+
     ###########################
     #### SETUP ################
     ###########################

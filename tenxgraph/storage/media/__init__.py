@@ -16,7 +16,12 @@ from .provider_media import (
     should_use_google_file_api,
 )
 from .resolver import MediaRefResolver
-from .security import enforce_file_size, sanitize_filename, validate_magic_bytes
+from .security import (
+    check_image_pixels,
+    enforce_file_size,
+    sanitize_filename,
+    validate_magic_bytes,
+)
 from .storage import BaseMediaStore, CloudMediaStore, InMemoryMediaStore, LocalFileMediaStore
 from .url_policy import MediaFetchPolicy, MediaURLError, fetch_media_url
 
@@ -36,6 +41,7 @@ __all__ = [
     "MediaURLError",
     "MultimodalConfig",
     "ProviderMediaCache",
+    "check_image_pixels",
     "create_openai_file_attachment",
     "create_openai_file_search_tool",
     "enforce_file_size",

@@ -58,7 +58,7 @@ async def main() -> None:
         system_prompt=[{"role": "system", "content": "You are an order-support assistant."}],
         tools=[get_order_status],
     )
-    # shutdown_timeout is the total budget aclose() may spend flushing and releasing.
+    # shutdown_timeout sets the aclose() defaults: 50% grace, 25% stop, 25% cancel and drain.
     graph = agent.compile(checkpointer=InMemoryCheckpointer(), shutdown_timeout=20.0)
 
     print("Service running. Press Ctrl+C (or send SIGTERM) to stop.")
@@ -79,9 +79,10 @@ async def main() -> None:
                 await asyncio.wait_for(manager.wait_for_shutdown(), timeout=3.0)
     finally:
         print("Shutting down...")
-        # Flushes background checkpoint writes, then releases checkpointer,
-        # publisher and store. Returns one stats entry per component.
-        stats = await graph.aclose()
+        # New runs are refused. Active runs get 10s to finish, then 5s after a stop (each
+        # saves its thread INTERRUPTED), then the rest are cancelled; background writes are
+        # drained and the checkpointer, publisher and store are released.
+        stats = await graph.aclose(grace=10.0, stop_timeout=5.0, timeout=5.0)
         print(json.dumps(stats, indent=2, default=str))
         manager.unregister_signal_handlers()
 

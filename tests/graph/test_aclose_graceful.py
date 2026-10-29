@@ -6,6 +6,7 @@ background tasks, release resources.
 """
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
@@ -29,6 +30,7 @@ class Rig:
     def __init__(self, behavior: str, *, checkpointer=True, shutdown_timeout: float = 8.0):
         self.behavior = behavior
         self.started = asyncio.Event()
+        self.thread_started = threading.Event()
         self.release = asyncio.Event()
         self.checkpointer = (
             InMemoryCheckpointer() if checkpointer is True else (checkpointer or None)
@@ -38,12 +40,17 @@ class Rig:
         graph.add_node("WORK", self._work)
         graph.add_edge("WORK", END)
         graph.set_entry_point("WORK")
+        # aclose() would clear the in-memory checkpointer; the tests read it afterwards.
         self.app = graph.compile(
-            checkpointer=self.checkpointer, shutdown_timeout=shutdown_timeout
+            checkpointer=self.checkpointer,
+            shutdown_timeout=shutdown_timeout,
+            owns_resources=False,
         )
 
     async def _work(self, state: AgentState):
-        self.started.set()
+        self.thread_started.set()
+        with contextlib.suppress(RuntimeError):
+            self.started.set()
         if self.behavior == "short":
             await asyncio.sleep(0.4)
         elif self.behavior == "hang":
@@ -153,7 +160,7 @@ async def test_cancel_phase_works_on_a_stuck_tool():
     graph.add_edge("TOOL", "MODEL")
     graph.set_entry_point("MODEL")
     checkpointer = InMemoryCheckpointer()
-    app = graph.compile(checkpointer=checkpointer, shutdown_timeout=8)
+    app = graph.compile(checkpointer=checkpointer, shutdown_timeout=8, owns_resources=False)
 
     task = asyncio.create_task(app.ainvoke(_input("go"), {"thread_id": "t-tool"}))
     await asyncio.wait_for(started.wait(), 5)
@@ -183,7 +190,7 @@ async def test_new_runs_raise_graph_closed_error():
         async for _ in rig.app.astream(_input(), {"thread_id": "late"}):
             pass
     with pytest.raises(GraphClosedError):
-        rig.app._refuse_if_closing()  # noqa: SLF001
+        rig.app._refuse_if_closing()
 
 
 @pytest.mark.asyncio
@@ -224,22 +231,12 @@ async def test_sync_invoke_in_another_thread_is_stopped_by_aclose():
     def run_sync() -> None:
         try:
             outcome["result"] = rig.app.invoke(_input(), {"thread_id": "t-sync"})
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             outcome["error"] = e
-
-    # The node's Event belongs to the thread's loop, so use a thread-safe signal instead.
-    started = threading.Event()
-    original = rig._work  # noqa: SLF001
-
-    async def work(state):
-        started.set()
-        return await original(state)
-
-    rig.app._state_graph.nodes["WORK"].func = work  # noqa: SLF001
 
     thread = threading.Thread(target=run_sync)
     thread.start()
-    assert await asyncio.to_thread(started.wait, 5)
+    assert await asyncio.to_thread(rig.thread_started.wait, 5)
 
     begin = time.monotonic()
     stats = await rig.app.aclose(grace=0.2, stop_timeout=3, timeout=2)
@@ -260,17 +257,15 @@ async def test_aclose_with_no_runs_and_twice_is_a_no_op():
     first = await rig.app.aclose()
     assert first["runs"] == {"active": 0, "finished": 0, "stopped": 0, "cancelled": 0}
     assert "background_tasks" in first
-    assert await rig.app.aclose(grace=0, stop_timeout=0, timeout=0) == {
-        "status": "already_closed"
-    }
+    assert await rig.app.aclose(grace=0, stop_timeout=0, timeout=0) == {"status": "already_closed"}
 
 
 @pytest.mark.asyncio
 async def test_defaults_split_the_compile_timeout():
     rig = Rig("short", shutdown_timeout=8)
-    assert rig.app._shutdown_phases(None, None, None) == (4.0, 2.0, 2.0)  # noqa: SLF001
-    assert rig.app._shutdown_phases(1, None, None) == (1, 2.0, 2.0)  # noqa: SLF001
-    assert rig.app._shutdown_phases(None, None, 10) == (5.0, 2.5, 2.5)  # noqa: SLF001
+    assert rig.app._shutdown_phases(None, None, None) == (4.0, 2.0, 2.0)
+    assert rig.app._shutdown_phases(1, None, None) == (1, 2.0, 2.0)
+    assert rig.app._shutdown_phases(None, None, 10) == (4.0, 2.0, 10)
     await rig.app.aclose()
 
 
@@ -280,7 +275,7 @@ async def test_finished_runs_are_unregistered():
     task = rig.start("t-done")
     await asyncio.wait_for(rig.started.wait(), 5)
     await task
-    assert rig.app._runs.active() == []  # noqa: SLF001
+    assert rig.app._runs.active() == []
 
 
 @pytest.mark.asyncio
@@ -357,3 +352,76 @@ async def test_local_stop_flag_does_not_leak_into_the_next_run():
     rig.behavior = "short"
     result = await rig.app.ainvoke(_input(), {"thread_id": "t-leak"})
     assert result["messages"][-1].text() == "done"
+
+
+# --- BD6: opt-in signal helper ----------------------------------------------------------
+
+
+class FakeLoop:
+    def __init__(self):
+        self.handlers: dict = {}
+        self.removed: list = []
+
+    def add_signal_handler(self, sig, callback, *args):
+        self.handlers[sig] = (callback, args)
+
+    def remove_signal_handler(self, sig):
+        self.removed.append(sig)
+
+    def create_task(self, coro):
+        return asyncio.ensure_future(coro)
+
+
+class FakeGraph:
+    def __init__(self):
+        self.calls: list = []
+
+    async def aclose(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"closed": True}
+
+
+@pytest.mark.asyncio
+async def test_signal_helper_connects_sigterm_and_sigint_to_aclose():
+    import signal
+
+    from tenxgraph.utils.shutdown import install_shutdown_signals
+
+    loop, graph = FakeLoop(), FakeGraph()
+    handle = install_shutdown_signals(graph, loop=loop, grace=5, stop_timeout=2, timeout=3)
+
+    assert set(loop.handlers) == {signal.SIGTERM, signal.SIGINT}
+    callback, args = loop.handlers[signal.SIGTERM]
+    callback(*args)
+    callback(*args)  # a second signal does not start a second close
+    assert await handle.wait() == {"closed": True}
+    assert graph.calls == [{"grace": 5, "stop_timeout": 2, "timeout": 3}]
+
+    handle.uninstall()
+    assert set(loop.removed) == {signal.SIGTERM, signal.SIGINT}
+
+
+@pytest.mark.asyncio
+async def test_signal_helper_is_main_thread_only():
+    from tenxgraph.utils.shutdown import install_shutdown_signals
+
+    errors: list = []
+
+    def attempt():
+        try:
+            install_shutdown_signals(FakeGraph(), loop=FakeLoop())
+        except RuntimeError as e:
+            errors.append(e)
+
+    await asyncio.to_thread(attempt)
+    assert len(errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_nothing_installs_signal_handlers_by_default():
+    import signal
+
+    before = signal.getsignal(signal.SIGTERM)
+    rig = Rig("short")
+    await rig.app.aclose()
+    assert signal.getsignal(signal.SIGTERM) == before

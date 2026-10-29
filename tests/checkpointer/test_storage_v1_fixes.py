@@ -11,9 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from tenxgraph.core.authz import build_authz
+from tenxgraph.core.exceptions import StorageError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
+from tenxgraph.utils.thread_info import ThreadInfo
 
 
 def _in_memory():
@@ -55,11 +58,7 @@ async def test_delete_message_removes_it_from_state_and_cache(make):
 async def test_clean_thread_removes_tool_ledger_in_memory():
     cp = InMemoryCheckpointer()
     await cp.aput_state(CFG, AgentState())
-    await cp.aput_thread(
-        CFG, __import__("tenxgraph.utils.thread_info", fromlist=["ThreadInfo"]).ThreadInfo(
-            thread_id="t1", user_id="u1"
-        )
-    )
+    await cp.aput_thread(CFG, ThreadInfo(thread_id="t1", user_id="u1"))
     await cp.aput_tool_result(CFG, "call-1", {"out": "x"})
     assert await cp.aget_tool_result(CFG, "call-1") is not None
 
@@ -91,20 +90,17 @@ async def test_sqlite_two_first_writers_second_is_refused():
     cannot write into a thread the first one just claimed."""
     cp = _sqlite()
     await cp.asetup()
-    a = {"thread_id": "race", "user_id": "a"}
-    b = {"thread_id": "race", "user_id": "b"}
+    a = {"thread_id": "race", "user_id": "a", "authz": build_authz("a", scope="owner")}
+    b = {"thread_id": "race", "user_id": "b", "authz": build_authz("b", scope="owner")}
     # Simulate B having passed the unlocked pre-check before A claimed the thread.
     async def _never_denied(_config):
         return False
 
     cp._owner_denied = _never_denied  # type: ignore[method-assign]
     await cp.aput_state(a, AgentState())
-    from tenxgraph.exceptions import StorageError
-
     with pytest.raises(StorageError):
         await cp.aput_state(b, AgentState())
-    assert await cp.aget_thread_owner("race") is None or True
-    # B's write did not land
+    # B's claim did not replace A's.
     state_row = await (await cp._get_conn()).execute_fetchall(
         "SELECT owner_id FROM af_thread_owner WHERE thread_id = 'race'"
     )

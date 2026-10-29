@@ -304,7 +304,7 @@ class TestOpenAIEmbedding:
         
         test_cases = [
             ("text-embedding-3-small", 1536),
-            ("text-embedding-3-large", 1536),
+            ("text-embedding-3-large", 3072),
             ("text-embedding-3-xl", 1536),
             ("text-embedding-4-base", 8192),
             ("text-embedding-4-large", 8192),

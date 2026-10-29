@@ -9,13 +9,13 @@ with configurable embedding services.
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from tenxgraph.core.state import Message
 from tenxgraph.storage.media.url_policy import redact_url
 
-from .base_store import BaseStore
+from .base_store import BaseStore, limit_to_token_budget
 from .embedding.base_embedding import BaseEmbedding
 from .store_schema import (
     DistanceMetric,
@@ -236,7 +236,7 @@ class QdrantStore(BaseStore):
         )
 
         # Add user/agent filters
-        if user_id:
+        if user_id is not None:
             conditions.append(
                 FieldCondition(
                     key="user_id",
@@ -524,7 +524,9 @@ class QdrantStore(BaseStore):
         )
 
         # Convert to search results
-        results = [self._point_to_search_result(point) for point in response.points]
+        results = limit_to_token_budget(
+            [self._point_to_search_result(point) for point in response.points], max_tokens
+        )
 
         logger.debug(f"Found {len(results)} memories for query in collection {collection}")
         return results
@@ -649,7 +651,7 @@ class QdrantStore(BaseStore):
             "thread_id": existing.thread_id,
             "memory_type": existing.memory_type.value,
             "category": updated_metadata.get("category", "general"),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Create updated point

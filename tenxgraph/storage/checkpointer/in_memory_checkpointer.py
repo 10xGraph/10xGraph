@@ -65,8 +65,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # (config["authz"]) asks for it -- see _owner_denied / _record_owner.
         self._thread_owner: dict[str, str] = {}
 
-        # Tool execution ledger (idempotency): "<thread>:<tool_call_id>" -> result
-        self._tool_results: dict[str, dict[str, Any]] = {}
+        # Tool execution ledger (idempotency): (thread, tool_call_id) -> result
+        self._tool_results: dict[tuple[str, str], dict[str, Any]] = {}
 
         # Async locks for concurrent access
         self._state_lock = asyncio.Lock()
@@ -265,8 +265,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
     # -------------------------
     # Tool execution ledger
     # -------------------------
-    def _tool_key(self, config: dict[str, Any], tool_call_id: str) -> str:
-        return f"{self._get_config_key(config)}:{tool_call_id}"
+    def _tool_key(self, config: dict[str, Any], tool_call_id: str) -> tuple[str, str]:
+        # A tuple, not "thread:call": a thread id containing a colon must not alias another's.
+        return (self._get_config_key(config), str(tool_call_id))
 
     async def aget_tool_result(
         self,
@@ -488,8 +489,16 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                 if msg.message_id == message_id:
                     messages.remove(msg)
                     logger.debug(f"Deleted message with ID {message_id} for key: {key}")
-                    return True
-            raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+                    break
+            else:
+                raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+        # The state (and its cache copy) carries the message too; a deleted message must not
+        # come back on the next run or in GET state.
+        async with self._state_lock:
+            for store in (self._states, self._state_cache):
+                if key in store:
+                    self._strip_message_from_state(store[key], message_id)
+        return True
 
     # -------------------------
     # Message methods sync
@@ -648,6 +657,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             self._states.pop(key, None)
             self._state_cache.pop(key, None)
+        async with self._tool_lock:
+            for ledger_key in [k for k in self._tool_results if k[0] == key]:
+                del self._tool_results[ledger_key]
         async with self._messages_lock:
             self._messages.pop(key, None)
             self._message_metadata.pop(key, None)

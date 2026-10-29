@@ -1,7 +1,7 @@
 import secrets
 from collections.abc import Awaitable
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -70,7 +70,7 @@ class MemorySearchResult(BaseModel):
     vector: list[float] | None = Field(default=None)
     user_id: str | None = None
     thread_id: str | None = None
-    timestamp: datetime | None = Field(default_factory=datetime.now)
+    timestamp: datetime | None = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("vector")
     @classmethod
@@ -93,7 +93,7 @@ class MemoryRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     category: str = Field(default="general")
     vector: list[float] | None = None
-    timestamp: datetime | None = Field(default_factory=datetime.now)
+    timestamp: datetime | None = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("vector")
     @classmethod
@@ -118,7 +118,7 @@ class MemoryRecord(BaseModel):
         # Convert timestamp (float) to ISO format string
         timestamp_str = None
         if message.timestamp:
-            timestamp_dt = datetime.fromtimestamp(message.timestamp)
+            timestamp_dt = datetime.fromtimestamp(message.timestamp, tz=UTC)
             timestamp_str = timestamp_dt.isoformat()
 
         metadata = {

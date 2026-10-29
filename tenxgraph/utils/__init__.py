@@ -66,7 +66,9 @@ from .logging import (
 from .shutdown import (
     DelayedKeyboardInterrupt,
     GracefulShutdownManager,
+    SignalShutdown,
     delayed_keyboard_interrupt,
+    install_shutdown_signals,
     setup_exception_handler,
     shutdown_with_timeout,
 )
@@ -135,5 +137,7 @@ __all__ = [
     "run_coroutine",
     "setup_exception_handler",
     "shutdown_with_timeout",
+    "SignalShutdown",
+    "install_shutdown_signals",
     "tool",
 ]

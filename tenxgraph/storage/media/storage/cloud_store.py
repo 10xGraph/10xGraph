@@ -41,7 +41,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from .base import BaseMediaStore, validate_storage_key
+from .base import BaseMediaStore, MediaTooLargeError, check_size_limit, validate_storage_key
 
 
 logger = logging.getLogger("tenxgraph.storage.media.cloud")
@@ -89,13 +89,17 @@ class CloudMediaStore(BaseMediaStore):
             ``"10xgraph-media"``. When the default is used, objects
             stored under the legacy ``"agentflow-media"`` prefix are still found
             on read (new writes always go to the new prefix).
+        max_size_bytes: Optional cap. ``store()`` refuses larger data and ``retrieve()`` stops
+            a download that grows past it. ``None`` (the default) means no cap.
     """
 
     def __init__(
         self,
         storage: Any,
         prefix: str = DEFAULT_PREFIX,
+        max_size_bytes: int | None = None,
     ) -> None:
+        self._max_size_bytes = max_size_bytes
         self._storage = storage
         self._prefix = prefix
         # Only the default prefix falls back to the pre-rename location.
@@ -113,6 +117,7 @@ class CloudMediaStore(BaseMediaStore):
         mime_type: str,
         metadata: dict[str, Any] | None = None,
     ) -> str:
+        check_size_limit(len(data), self._max_size_bytes)
         key = uuid4().hex
         ext = _mime_to_ext(mime_type)
         blob_path = self._cloud_path(key, ext)
@@ -150,7 +155,10 @@ class CloudMediaStore(BaseMediaStore):
         blob_path = self._cloud_path(storage_key, ext, prefix)
 
         url = await self._storage.get_public_url(blob_path, expiration=300)
-        data = await self._download_from_url(url)
+        if self._max_size_bytes is None:
+            data = await self._download_from_url(url)
+        else:
+            data = await self._download_from_url(url, max_bytes=self._max_size_bytes)
 
         return data, mime_type
 
@@ -164,20 +172,22 @@ class CloudMediaStore(BaseMediaStore):
         blob_path = self._cloud_path(storage_key, ext, prefix)
         meta_path = self._meta_cloud_path(storage_key, prefix)
 
-        deleted = False
+        # Blob first. If it cannot be removed the sidecar stays, so the object is still
+        # findable and the delete can be retried; removing the sidecar alone would leave the
+        # blob behind with nothing pointing at it.
         try:
-            result = await self._storage.delete(blob_path)
-            deleted = deleted or result
+            blob_deleted = bool(await self._storage.delete(blob_path))
         except Exception:
-            logger.warning("Failed to delete blob %s", blob_path)
+            logger.warning("Failed to delete blob %s; keeping its metadata", blob_path)
+            return False
 
         try:
-            result = await self._storage.delete(meta_path)
-            deleted = deleted or result
+            meta_deleted = bool(await self._storage.delete(meta_path))
         except Exception:
             logger.warning("Failed to delete meta %s", meta_path)
+            meta_deleted = False
 
-        return deleted
+        return blob_deleted or meta_deleted
 
     async def exists(self, storage_key: str) -> bool:
         meta, _ = await self._locate(storage_key)
@@ -316,7 +326,7 @@ class CloudMediaStore(BaseMediaStore):
             return None
 
     @staticmethod
-    async def _download_from_url(url: str) -> bytes:
+    async def _download_from_url(url: str, max_bytes: int | None = None) -> bytes:
         """Download bytes from a signed URL.
 
         Prefers ``httpx`` (async). The stdlib fallback is synchronous, so it is
@@ -329,21 +339,35 @@ class CloudMediaStore(BaseMediaStore):
         try:
             import httpx
         except ImportError:
-            return await asyncio.to_thread(CloudMediaStore._download_from_url_blocking, url)
+            return await asyncio.to_thread(
+                CloudMediaStore._download_from_url_blocking, url, max_bytes
+            )
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url)
+        async with (
+            httpx.AsyncClient(follow_redirects=True) as client,
+            client.stream("GET", url) as resp,
+        ):
             resp.raise_for_status()
-            return resp.content
+            buf = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buf.extend(chunk)
+                if max_bytes is not None and len(buf) > max_bytes:
+                    raise MediaTooLargeError(f"Download exceeds {max_bytes} bytes")
+            return bytes(buf)
 
     @staticmethod
-    def _download_from_url_blocking(url: str) -> bytes:
+    def _download_from_url_blocking(url: str, max_bytes: int | None = None) -> bytes:
         """Synchronous stdlib download. Must only be called off the event loop."""
         import urllib.request
 
         _validate_download_url(url)
         with urllib.request.urlopen(url) as resp:  # noqa: S310  # nosec B310
-            return resp.read()
+            if max_bytes is None:
+                return resp.read()
+            data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise MediaTooLargeError(f"Download exceeds {max_bytes} bytes")
+            return data
 
 
 def _validate_download_url(url: str) -> None:

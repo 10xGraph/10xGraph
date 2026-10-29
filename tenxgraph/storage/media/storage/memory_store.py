@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from .base import BaseMediaStore
+from .base import BaseMediaStore, check_size_limit
 
 
 class InMemoryMediaStore(BaseMediaStore):
     """Dict-backed media store.  Data lives in process memory only."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_size_bytes: int | None = None) -> None:
+        self._max_size_bytes = max_size_bytes
         self._data: dict[str, tuple[bytes, str, dict[str, Any]]] = {}
 
     async def store(
@@ -20,6 +21,7 @@ class InMemoryMediaStore(BaseMediaStore):
         mime_type: str,
         metadata: dict[str, Any] | None = None,
     ) -> str:
+        check_size_limit(len(data), self._max_size_bytes)
         key = uuid4().hex
         self._data[key] = (data, mime_type, metadata or {})
         return key

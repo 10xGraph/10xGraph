@@ -37,14 +37,14 @@ vector store configuration). You can also use helper factory function
 import logging
 import secrets
 from collections.abc import Awaitable, Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from injectq import InjectQ
 
 from tenxgraph.core.state import Message
 
-from .base_store import BaseStore
+from .base_store import BaseStore, limit_to_token_budget
 from .qdrant_store import DEFAULT_COLLECTION
 from .store_schema import MemorySearchResult, MemoryType
 
@@ -61,6 +61,29 @@ except ImportError:
     AsyncMemory = None
 
 logger = logging.getLogger("tenxgraph.store")
+
+# Keys that choose whose memories a Mem0 call touches. The store sets them from the
+# authenticated config; a caller-supplied ``filters`` dict may never carry them.
+_RESERVED_FILTER_KEYS = frozenset({"user_id", "agent_id", "app_id", "run_id"})
+_LOGICAL_FILTER_KEYS = frozenset({"AND", "OR", "NOT"})
+
+
+def _strip_reserved_filters(filters: Any) -> Any:
+    """Drop reserved owner keys from a filter dict, also inside AND / OR / NOT groups."""
+    if not isinstance(filters, dict):
+        return filters
+    clean: dict[str, Any] = {}
+    for key, value in filters.items():
+        if key in _RESERVED_FILTER_KEYS:
+            continue
+        if key in _LOGICAL_FILTER_KEYS and isinstance(value, list):
+            groups = [_strip_reserved_filters(item) for item in value]
+            groups = [g for g in groups if g not in ({}, None)]
+            if groups:
+                clean[key] = groups
+            continue
+        clean[key] = value
+    return clean
 
 
 class Mem0Store(BaseStore):
@@ -191,7 +214,7 @@ class Mem0Store(BaseStore):
 
         # memory_type and category come from the arguments; caller metadata cannot replace them.
         mem_meta = {
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             **(metadata or {}),
             "memory_type": memory_type.value,
             "category": category,
@@ -228,15 +251,19 @@ class Mem0Store(BaseStore):
     ) -> list[MemorySearchResult]:
         user_id, app_id = self._extract_ids(config)
 
+        # mem0ai 2.x takes the owner inside ``filters``. The scope is applied last, so
+        # nothing in the caller's filters can replace it.
+        scoped_filters = {
+            **(_strip_reserved_filters(filters) or {}),
+            "user_id": user_id,
+            "agent_id": app_id,
+        }
+        search_kwargs: dict[str, Any] = {"top_k": limit, "filters": scoped_filters}
+        if score_threshold is not None:
+            search_kwargs["threshold"] = score_threshold
+
         client = await self._get_client()
-        result = await client.search(  # type: ignore
-            query=query,
-            user_id=user_id,
-            agent_id=app_id,
-            limit=limit,
-            filters=filters,
-            threshold=score_threshold,
-        )
+        result = await client.search(query=query, **search_kwargs)  # type: ignore
 
         if "results" not in result:
             logger.warning("Mem0 search response missing 'results': %s", result)
@@ -248,9 +275,9 @@ class Mem0Store(BaseStore):
                 result,
             )
 
-        out: list[MemorySearchResult] = [
-            self._create_result(raw, user_id) for raw in result["results"]
-        ]
+        out: list[MemorySearchResult] = limit_to_token_budget(
+            [self._create_result(raw, user_id) for raw in result["results"]], max_tokens
+        )
 
         logger.debug(
             "Searched memories for user=%s app=%s query=%s found=%d",
@@ -287,9 +314,8 @@ class Mem0Store(BaseStore):
 
         client = await self._get_client()
         result = await client.get_all(  # type: ignore
-            user_id=user_id,
-            agent_id=app_id,
-            limit=limit,
+            filters={"user_id": user_id, "agent_id": app_id},
+            top_k=limit,
         )
 
         if "results" not in result:
@@ -330,7 +356,7 @@ class Mem0Store(BaseStore):
 
         new_text = content.text() if isinstance(content, Message) else str(content)
         updated_meta = {**(existing.metadata or {}), **(metadata or {})}
-        updated_meta["updated_at"] = datetime.now().isoformat()
+        updated_meta["updated_at"] = datetime.now(UTC).isoformat()
 
         client = await self._get_client()
         res = await client.update(  # type: ignore

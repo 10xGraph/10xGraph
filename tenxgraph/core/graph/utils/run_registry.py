@@ -90,16 +90,15 @@ class RunRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._runs: dict[str, RunHandle] = {}
+        self._runs: dict[int, RunHandle] = {}
 
     def register(self, handle: RunHandle) -> None:
         with self._lock:
-            self._runs[handle.run_id] = handle
+            self._runs[id(handle)] = handle
 
     def unregister(self, handle: RunHandle) -> None:
         with self._lock:
-            if self._runs.get(handle.run_id) is handle:
-                del self._runs[handle.run_id]
+            self._runs.pop(id(handle), None)
 
     def active(self) -> list[RunHandle]:
         with self._lock:

@@ -29,6 +29,8 @@ class MultimodalConfig(BaseModel):
         document_handling: How to process documents before sending.
         max_image_size_mb: Maximum allowed image size in megabytes.
         max_image_dimension: Resize images if either dimension exceeds this.
+        max_image_pixels: Refuse images with more pixels than this before decoding
+            (``None`` disables the check).
         supported_image_types: Allowed image MIME types.
         supported_doc_types: Allowed document MIME types.
     """
@@ -37,6 +39,7 @@ class MultimodalConfig(BaseModel):
     document_handling: DocumentHandling = DocumentHandling.EXTRACT_TEXT
     max_image_size_mb: float = 10.0
     max_image_dimension: int = 2048
+    max_image_pixels: int | None = 50_000_000
     supported_image_types: set[str] = {
         "image/jpeg",
         "image/png",

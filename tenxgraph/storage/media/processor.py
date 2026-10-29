@@ -16,6 +16,7 @@ from typing import Any
 from tenxgraph.core.state.message_block import ImageBlock
 
 from .config import MultimodalConfig
+from .security import check_image_pixels
 
 
 logger = logging.getLogger("tenxgraph.media.processor")
@@ -67,6 +68,14 @@ class MediaProcessor:
                     f"Image data too large (~{approx_bytes} bytes). "
                     f"Max allowed: {max_bytes} bytes ({self.config.max_image_size_mb} MB)"
                 )
+            try:
+                raw = base64.b64decode(media.data_base64)
+            except ValueError:  # not valid base64: the caller's decode will report it
+                raw = b""
+            self._check_pixels(raw)
+
+    def _check_pixels(self, raw: bytes) -> None:
+        check_image_pixels(raw, self.config.max_image_pixels)
 
     def resize_image(self, block: ImageBlock) -> ImageBlock:
         """Resize an inline base64 image if it exceeds ``max_image_dimension``.
@@ -89,6 +98,7 @@ class MediaProcessor:
             return block
 
         raw = base64.b64decode(block.media.data_base64)
+        self._check_pixels(raw)
         img = Image.open(io.BytesIO(raw))
         max_dim = self.config.max_image_dimension
 
@@ -176,6 +186,7 @@ class MediaProcessor:
             return None
 
         raw = base64.b64decode(block.media.data_base64)
+        self._check_pixels(raw)
         try:
             return Image.open(io.BytesIO(raw))
         except Exception as exc:
@@ -212,6 +223,7 @@ class MediaProcessor:
             return block
 
         raw = base64.b64decode(block.media.data_base64)
+        self._check_pixels(raw)
         img = Image.open(io.BytesIO(raw))
 
         if img.width <= max_dim and img.height <= max_dim:
@@ -264,6 +276,7 @@ class MediaProcessor:
             return block
 
         raw = base64.b64decode(block.media.data_base64)
+        self._check_pixels(raw)
         img = Image.open(io.BytesIO(raw))
 
         if target_format.upper() == "JPEG" and img.mode in ("RGBA", "P", "LA"):

@@ -118,7 +118,7 @@ redis = ["redis>=4.2"]
 kafka = ["aiokafka>=0.8.0"]
 rabbitmq = ["aio-pika>=9.0.0"]
 qdrant = ["qdrant-client>=1.10.0"]
-mem0 = ["mem0ai>=0.1.117"]
+mem0 = ["mem0ai>=2.0,<3"]
 a2a_sdk = ["a2a-sdk>=0.2.7"]
 otel = [
     "opentelemetry-api>=1.20.0",
@@ -424,7 +424,7 @@ dev = [
     "redis>=6.4.0",
     "fastmcp>=2.12.3",
     "mcp>=1.14.1",
-    "mem0ai>=0.1.117",
+    "mem0ai>=2.0,<3",
     "google-genai>=1.56.0",
     "a2a_sdk",
     "aiohttp",

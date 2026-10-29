@@ -51,6 +51,7 @@ from tenxgraph.utils.interrupt import (
     record_resume,
 )
 
+from .run_registry import current_run
 from .utils import (
     CANCELLED_REASON,
     CRASHED_REASON,
@@ -403,8 +404,15 @@ async def check_stop_requested[StateT: AgentState](
     # The state blob is still consulted, so a custom checkpointer that does not
     # back the stop key keeps working the way it did before.
     stop_requested = state.is_stopped_requested() or reloaded.is_stopped_requested()
+    # The run's in-process flag (set by astop and aclose) needs no checkpointer or cache.
+    run = current_run.get()
+    if run is not None and run.stop_requested:
+        stop_requested = True
     if not stop_requested and checkpointer:
-        stop_requested = await checkpointer.ais_stop_requested(config)
+        try:
+            stop_requested = await checkpointer.ais_stop_requested(config)
+        except Exception as e:  # an unreachable cache must not fail the run
+            logger.warning("Stop check failed (%r); relying on the in-process stop flag", e)
 
     # Check if a stop was requested externally (e.g., frontend)
     if stop_requested:
@@ -558,6 +566,10 @@ async def finalize_cancelled_run(
     load (decision D1): a new user message starts a new turn, a call with no new input resumes
     at this node.
     """
+    # A hard cancel by ``aclose()`` is recorded as a shutdown, not a plain cancel.
+    run = current_run.get()
+    if run is not None and run.cancel_reason and reason == CANCELLED_REASON:
+        reason = run.cancel_reason
     try:
         await close_unanswered_tool_calls(state, config, messages)
         state.set_interrupt(

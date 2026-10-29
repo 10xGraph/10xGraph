@@ -24,6 +24,8 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypeVar
 
+from .run_registry import RunHandle, current_run
+
 
 logger = logging.getLogger("tenxgraph.graph")
 
@@ -51,7 +53,7 @@ async def _cancel_and_wait(task: asyncio.Task) -> None:
         task.result()  # surfaces an error the cleanup raised
 
 
-async def execute_with_guards(
+async def execute_with_guards(  # noqa: PLR0912
     work: Awaitable[T],
     *,
     timeout: float | None = None,
@@ -80,9 +82,18 @@ async def execute_with_guards(
     task: asyncio.Task = asyncio.ensure_future(work)
     loop = asyncio.get_running_loop()
     deadline = (loop.time() + timeout) if timeout else None
+    run = current_run.get()
+    wake: asyncio.Task | None = None
+    if run is not None:
+        run.node_tasks.add(task)
+        wake = run.wake_waiter()
+    last_remote_check = loop.time()
 
     try:
         while True:
+            # An in-process stop (astop, aclose) acts at once and needs no checkpointer.
+            if run is not None and run.stop_requested:
+                await _stop_work(task, run, on_stop, "Stop requested while work was in flight")
             remaining: float | None = None
             if deadline is not None:
                 remaining = deadline - loop.time()
@@ -96,22 +107,56 @@ async def execute_with_guards(
             if stop_check is not None:
                 wait_for = poll_interval if remaining is None else min(poll_interval, remaining)
 
-            done, _ = await asyncio.wait({task}, timeout=wait_for)
+            waiting: set[asyncio.Future] = {task} if wake is None else {task, wake}
+            done, _ = await asyncio.wait(
+                waiting, timeout=wait_for, return_when=asyncio.FIRST_COMPLETED
+            )
 
             if task in done:
                 # Surfaces the work's own exception, if it raised.
                 return task.result()
 
-            if stop_check is not None and await stop_check():
-                logger.info("Stop requested while work was in flight; cancelling it")
-                await _cancel_and_wait(task)
-                raise (on_stop() if on_stop else asyncio.CancelledError())
+            if wake is not None and wake in done:
+                continue  # the stop flag is set: handled at the top of the loop
+
+            if stop_check is not None and loop.time() - last_remote_check >= poll_interval - 1e-3:
+                last_remote_check = loop.time()
+                if await _remote_stop(stop_check):
+                    await _stop_work(task, run, on_stop, "Stop requested while work was in flight")
 
     except asyncio.CancelledError:
         # The caller (or the whole run) is being cancelled: don't leak the task.
         if not task.done():
             await _cancel_and_wait(task)
         raise
+    finally:
+        if run is not None:
+            run.node_tasks.discard(task)
+        if wake is not None:
+            wake.cancel()
+
+
+async def _remote_stop(stop_check: Callable[[], Awaitable[bool]]) -> bool:
+    """Ask the checkpointer whether a stop was requested; an unreachable cache is "no"."""
+    try:
+        return await stop_check()
+    except Exception as e:  # the in-process flag still works when the cache is down
+        logger.warning("Stop check failed (%r); relying on the in-process stop flag", e)
+        return False
+
+
+async def _stop_work(
+    task: asyncio.Task,
+    run: RunHandle | None,
+    on_stop: Callable[[], Exception] | None,
+    message: str,
+) -> None:
+    """Cancel ``task`` for a stop, then raise. A hard cancel that arrived meanwhile wins."""
+    logger.info("%s; cancelling it", message)
+    await _cancel_and_wait(task)
+    if run is not None and run.cancel_requested:
+        raise asyncio.CancelledError()
+    raise (on_stop() if on_stop else asyncio.CancelledError())
 
 
 class _StreamFailure:
@@ -124,7 +169,7 @@ class _StreamFailure:
 _STREAM_DONE = object()
 
 
-async def stream_with_guards(  # noqa: PLR0912
+async def stream_with_guards(  # noqa: PLR0912, PLR0915
     source: AsyncIterator[T],
     *,
     timeout: float | None = None,
@@ -161,12 +206,21 @@ async def stream_with_guards(  # noqa: PLR0912
     task: asyncio.Task = asyncio.ensure_future(produce())
     loop = asyncio.get_running_loop()
     deadline = (loop.time() + timeout) if timeout else None
+    run = current_run.get()
+    wake: asyncio.Task | None = None
+    if run is not None:
+        run.node_tasks.add(task)
+        wake = run.wake_waiter()
+    last_remote_check = loop.time()
+    stop_message = "Stop requested while a node was streaming"
 
     try:
         while True:
             try:
                 item = queue.get_nowait()
             except asyncio.QueueEmpty:
+                if run is not None and run.stop_requested:
+                    await _stop_work(task, run, on_stop, stop_message)
                 remaining: float | None = None
                 if deadline is not None:
                     remaining = deadline - loop.time()
@@ -176,14 +230,28 @@ async def stream_with_guards(  # noqa: PLR0912
                 wait_for = remaining
                 if stop_check is not None:
                     wait_for = poll_interval if remaining is None else min(poll_interval, remaining)
+                get_task: asyncio.Task = asyncio.ensure_future(queue.get())
+                waiting: set[asyncio.Future] = {get_task} if wake is None else {get_task, wake}
                 try:
-                    item = await asyncio.wait_for(queue.get(), wait_for)
-                except TimeoutError:
-                    if stop_check is not None and await stop_check():
-                        logger.info("Stop requested while a node was streaming; cancelling it")
-                        await _cancel_and_wait(task)
-                        raise (on_stop() if on_stop else asyncio.CancelledError())
+                    await asyncio.wait(
+                        waiting, timeout=wait_for, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    if not get_task.done():
+                        get_task.cancel()
+                        await asyncio.wait({get_task})
+                if get_task.cancelled():
+                    if run is not None and run.stop_requested:
+                        continue  # handled at the top of the loop
+                    if (
+                        stop_check is not None
+                        and loop.time() - last_remote_check >= poll_interval - 1e-3
+                    ):
+                        last_remote_check = loop.time()
+                        if await _remote_stop(stop_check):
+                            await _stop_work(task, run, on_stop, stop_message)
                     continue
+                item = get_task.result()
 
             if item is _STREAM_DONE:
                 break
@@ -191,14 +259,20 @@ async def stream_with_guards(  # noqa: PLR0912
                 raise item.error
             yield item
 
-        if not task.cancelled():
-            exc = task.exception()
-            if exc is not None:
-                raise exc
+        if task.cancelled():
+            # Cancelled from outside (a hard cancel): not the same as a finished stream.
+            raise asyncio.CancelledError()
+        exc = task.exception()
+        if exc is not None:
+            raise exc
     finally:
         # Also runs when the consumer is cancelled or closes the stream early: no orphan.
         if not task.done():
             await _cancel_and_wait(task)
+        if run is not None:
+            run.node_tasks.discard(task)
+        if wake is not None:
+            wake.cancel()
 
 
 def resolve_timeout(config: dict[str, Any], key: str, default: float | None) -> float | None:

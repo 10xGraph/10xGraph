@@ -8,6 +8,7 @@ import pytest
 
 from tenxgraph.core.graph import StateGraph, ToolNode
 from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.execution_state import ExecutionStatus
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
@@ -24,11 +25,17 @@ def _calls(*names: str) -> list[dict]:
 def _unanswered(context: list[Message]) -> list[str]:
     """Ids of tool calls that no later tool message answers."""
     answered = {
-        b.call_id for m in context if m.role == "tool" for b in m.content
+        b.call_id
+        for m in context
+        if m.role == "tool"
+        for b in m.content
         if isinstance(b, ToolResultBlock)
     }
     return [
-        c["id"] for m in context if m.role == "assistant" for c in (m.tools_calls or [])
+        c["id"]
+        for m in context
+        if m.role == "assistant"
+        for c in (m.tools_calls or [])
         if c["id"] not in answered
     ]
 
@@ -90,3 +97,26 @@ async def test_handoff_answers_every_tool_call(names, mode):
     assert _unanswered(saved.context) == []
     # one answer per call, and the handoff is not replayed on a later read
     assert sum(1 for m in saved.context if m.role == "tool") == len(names)
+
+
+@pytest.mark.asyncio
+async def test_resume_after_answered_handoff_does_not_rerun_it():
+    seen: list[list[Message]] = []
+    runs: list[str] = []
+    cp = InMemoryCheckpointer()
+    app = _build(("transfer_to_worker",), seen, runs).compile(checkpointer=cp)
+    config = {"thread_id": "t2"}
+    await app.ainvoke({"messages": [Message.text_message("hi", role="user")]}, config=config)
+
+    # Rewind to the tool node, as a crash right after the node was saved would leave it.
+    state = await cp.aget_state(config)
+    state.context = state.context[:3]  # user, assistant call, handoff answer
+    state.execution_meta.current_node = "TOOL"
+    state.execution_meta.status = ExecutionStatus.RUNNING
+    await cp.aput_state(config, state)
+    await app.ainvoke({"messages": []}, config=config)
+
+    after = (await cp.aget_state(config)).context
+    assert sum(1 for m in after if m.role == "tool") == 1
+    assert _unanswered(after) == []
+    assert len(seen) == 1  # the worker ran once, in the first run only

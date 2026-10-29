@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import mimetypes
+import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from tenxgraph.utils.private_fs import (
     mkdir_private,
-    write_private,
     write_private_atomic,
 )
 
-from .base import BaseMediaStore, validate_storage_key
+from .base import BaseMediaStore, check_size_limit, validate_storage_key
 
 
 logger = logging.getLogger("tenxgraph.media.storage.local")
@@ -40,7 +43,10 @@ class LocalFileMediaStore(BaseMediaStore):
     The two-level sharding prevents too many files in a single directory.
     """
 
-    def __init__(self, base_dir: str = "./agentflow_media") -> None:
+    def __init__(
+        self, base_dir: str = "./agentflow_media", max_size_bytes: int | None = None
+    ) -> None:
+        self._max_size_bytes = max_size_bytes
         self._base = Path(base_dir).resolve()
         mkdir_private(self._base)
 
@@ -54,20 +60,28 @@ class LocalFileMediaStore(BaseMediaStore):
         mime_type: str,
         metadata: dict[str, Any] | None = None,
     ) -> str:
+        check_size_limit(len(data), self._max_size_bytes)
         key = uuid4().hex
         file_path = self._key_to_path(key, mime_type)
         meta_path = self._meta_path(key)
 
         # Owner-only: directories 0o700, files 0o600 (the sidecar holds the owner id)
         mkdir_private(file_path.parent)
-        write_private(file_path, data)
-
         meta = {
             "mime_type": mime_type,
             "size_bytes": len(data),
             **(metadata or {}),
         }
-        write_private(meta_path, json.dumps(meta).encode("utf-8"))
+        # Both files are written through a temp file and renamed, so a crash never leaves a
+        # half-written blob or sidecar. The sidecar goes last: it is what makes the object
+        # visible, so a crash between the two leaves at most an unreferenced blob.
+        write_private_atomic(file_path, data)
+        try:
+            write_private_atomic(meta_path, json.dumps(meta).encode("utf-8"))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                file_path.unlink()
+            raise
 
         logger.debug("Stored %d bytes as %s at %s", len(data), key, file_path)
         return key
@@ -86,6 +100,21 @@ class LocalFileMediaStore(BaseMediaStore):
             raise KeyError(f"Media file missing for key: {storage_key}")
 
         return file_path.read_bytes(), mime
+
+    async def iter_bytes(
+        self, storage_key: str, chunk_size: int = 1024 * 1024
+    ) -> AsyncIterator[bytes]:
+        self._validate_key(storage_key)
+        meta_path = self._meta_path(storage_key)
+        if not meta_path.exists():
+            raise KeyError(f"Media not found: {storage_key}")
+        mime = json.loads(meta_path.read_text(encoding="utf-8"))["mime_type"]
+        file_path = self._key_to_path(storage_key, mime)
+        if not file_path.exists():
+            raise KeyError(f"Media file missing for key: {storage_key}")
+        with file_path.open("rb") as fh:
+            while chunk := fh.read(chunk_size):
+                yield chunk
 
     async def delete(self, storage_key: str) -> bool:
         self._validate_key(storage_key)
@@ -146,6 +175,48 @@ class LocalFileMediaStore(BaseMediaStore):
         meta = {k: v for k, v in meta.items() if v is not None}
         write_private_atomic(meta_path, json.dumps(meta).encode("utf-8"))
         return True
+
+    async def sweep_orphans(self, min_age_seconds: float = 3600.0) -> int:
+        """Delete files a crash left behind and return how many were removed.
+
+        Removes a blob with no sidecar, a sidecar with no blob, and stray temp files, each only
+        when it is older than ``min_age_seconds`` so an upload in progress is never touched.
+        Complete objects are never removed. Runs on a worker thread.
+        """
+        return await asyncio.to_thread(self._sweep_orphans_sync, min_age_seconds)
+
+    def _sweep_orphans_sync(self, min_age_seconds: float) -> int:
+        cutoff = time.time() - min_age_seconds
+        removed = 0
+        for path in self._base.glob("*/*/*"):
+            try:
+                if not path.is_file() or path.stat().st_mtime > cutoff:
+                    continue
+                if not self._is_orphan(path):
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+        if removed:
+            logger.info("Swept %d orphan media files", removed)
+        return removed
+
+    def _is_orphan(self, path: Path) -> bool:
+        name = path.name
+        if name.startswith(".") and name.endswith(".tmp"):
+            return True
+        key = name[:32]
+        try:
+            validate_storage_key(key)
+        except ValueError:
+            return False
+        meta_path = self._meta_path(key)
+        if name.endswith(".meta.json"):
+            return not any(
+                p.exists() and p != meta_path for p in path.parent.glob(f"{key}.*")
+            )
+        return not meta_path.exists()
 
     # ------------------------------------------------------------------
     # Internal helpers
