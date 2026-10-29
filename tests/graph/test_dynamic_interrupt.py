@@ -273,3 +273,67 @@ def test_sync_stream_pauses_and_sync_invoke_resumes():
     assert any((c.data or {}).get("status") == "interrupted" for c in chunks)
     result = app.invoke({"resume": "ok"}, _config("t-sync"), response_granularity=FULL)
     assert _texts(result) == ["answer=ok"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "granularity",
+    [ResponseGranularity.LOW, ResponseGranularity.PARTIAL, ResponseGranularity.FULL],
+)
+async def test_stream_sends_the_pause_update_at_every_granularity(granularity):
+    app = _approval_graph([])
+    chunks = [
+        c
+        async for c in app.astream(
+            {"messages": [Message.text_message("refund")]},
+            _config(f"pause-{granularity.value}"),
+            response_granularity=granularity,
+        )
+    ]
+    pauses = [c for c in chunks if c.data and c.data.get("status") == "interrupted"]
+    assert len(pauses) == 1
+    assert pauses[0].data["node"] == "ASK"
+    assert pauses[0].data["interrupt"]["value"] == {"amount": 50}
+    # Other progress updates stay filtered below FULL.
+    other = [c for c in chunks if c.event == StreamEvent.UPDATES and c not in pauses]
+    assert bool(other) == (granularity == ResponseGranularity.FULL)
+
+
+def _static_graph(**kwargs):
+    async def work(state: AgentState):
+        return Message.text_message("done", role="assistant")
+
+    graph = StateGraph()
+    graph.add_node("WORK", work)
+    graph.add_edge("WORK", END)
+    graph.set_entry_point("WORK")
+    return graph.compile(checkpointer=InMemoryCheckpointer(), **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granularity", list(ResponseGranularity))
+@pytest.mark.parametrize(
+    ("kwargs", "pause", "status"),
+    [
+        ({"interrupt_before": ["WORK"]}, "before", "invoking_node"),
+        ({"interrupt_after": ["WORK"]}, "after", "node_invoked"),
+    ],
+)
+async def test_interrupt_before_and_after_pass_at_every_granularity(
+    granularity, kwargs, pause, status
+):
+    app = _static_graph(**kwargs)
+    chunks = [
+        c
+        async for c in app.astream(
+            {"messages": [Message.text_message("go")]},
+            _config(f"static-{pause}-{granularity.value}"),
+            response_granularity=granularity,
+        )
+    ]
+    pauses = [c for c in chunks if c.data and c.data.get("pause") == pause]
+    assert len(pauses) == 1
+    assert pauses[0].data["status"] == status
+    assert pauses[0].data["node"] == "WORK"
+    other = [c for c in chunks if c.event == StreamEvent.UPDATES and c not in pauses]
+    assert bool(other) == (granularity == ResponseGranularity.FULL)

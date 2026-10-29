@@ -181,6 +181,30 @@ async def test_stream_pauses_for_a_run_tool_and_resumes():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("granularity", list(ResponseGranularity))
+async def test_remote_tool_pause_update_reaches_every_granularity(granularity):
+    from tenxgraph.core.state import StreamEvent
+
+    app = _graph()
+    config = {"thread_id": f"t-pause-{granularity.value}", "remote_tools": [PICK_COLOR]}
+    chunks = [
+        c
+        async for c in app.astream(
+            {"messages": [Message.text_message("pick")]},
+            config=config,
+            response_granularity=granularity,
+        )
+    ]
+    pauses = [c for c in chunks if (c.data or {}).get("pause") == "remote_tool"]
+    assert len(pauses) == 1
+    assert pauses[0].event == StreamEvent.UPDATES
+    assert pauses[0].data["status"] == "node_invoked"
+    assert pauses[0].data["node"] == "TOOL"
+    other = [c for c in chunks if c.event == StreamEvent.UPDATES and c not in pauses]
+    assert bool(other) == (granularity == ResponseGranularity.FULL)
+
+
+@pytest.mark.asyncio
 async def test_parallel_server_tool_result_is_kept_while_waiting_for_the_client():
     from tenxgraph.core.state import ToolResultBlock
 

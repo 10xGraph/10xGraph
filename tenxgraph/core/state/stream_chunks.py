@@ -52,7 +52,7 @@ class StreamChunk(BaseModel):
     # Optional metadata
     metadata: dict | None = None
     timestamp: float = Field(
-        default_factory=datetime.now().timestamp,
+        default_factory=lambda: datetime.now().timestamp(),
         description="UNIX timestamp of when chunk was created",
     )
 
