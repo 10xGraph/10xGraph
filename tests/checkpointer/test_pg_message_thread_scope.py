@@ -76,7 +76,7 @@ async def test_get_and_delete_message_filter_by_thread(checkpointer):
     cfg = {"thread_id": "t1", "user_id": "u1"}
     captured: list = []
 
-    async def run(fn):
+    async def run(fn, **_kwargs):
         conn = AsyncMock()
         conn.fetchrow.return_value = None
         await fn(conn)
@@ -84,7 +84,9 @@ async def test_get_and_delete_message_filter_by_thread(checkpointer):
 
     checkpointer._run_query = run
     await checkpointer.adelete_message(cfg, "m1")
-    sql, *params = captured[0].execute.call_args.args
+    sql, *params = next(
+        c.args for c in captured[0].execute.call_args_list if "DELETE FROM" in c.args[0]
+    )
     assert "message_id = $1 AND thread_id = $2" in sql
     assert params[:2] == ["m1", "t1"]
 

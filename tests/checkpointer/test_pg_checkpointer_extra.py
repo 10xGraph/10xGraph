@@ -152,6 +152,7 @@ async def test_message_methods_cover_query_paths(cp):
     )
     conn.fetch = AsyncMock(return_value=[])
     conn.execute = AsyncMock()
+    conn.transaction = MagicMock(return_value=_NoopTxn())
 
     cp._pg_pool = MagicMock()
     cp._pg_pool.acquire.return_value = _AcquireCtx(conn)
@@ -271,7 +272,16 @@ def test_create_pg_pool(cp):
     
     with patch("asyncpg.create_pool") as mock_create_pool:
         cp._create_pg_pool(pg_pool=None, postgres_dsn="postgres://url", pool_config={"min_size": 5})
-        mock_create_pool.assert_called_once_with(dsn="postgres://url", min_size=5)
+        mock_create_pool.assert_called_once_with(
+            dsn="postgres://url", command_timeout=60.0, timeout=30.0, min_size=5
+        )
+
+class _NoopTxn:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *a):
+        return False
 
 
 @pytest.mark.asyncio

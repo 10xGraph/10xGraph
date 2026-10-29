@@ -380,6 +380,7 @@ markers = [
     "asyncio: mark test as async test",
     "integration: mark test as integration test requiring real databases",
     "slow: mark test as slow test that takes longer to run",
+    "real_schema_init: let PgCheckpointer create its schema on first use (default in tests/checkpointer: skipped)",
 ]
 
 [tool.coverage.run]

@@ -153,6 +153,7 @@ class TestPgCheckpointer:
         assert 'CREATE TABLE IF NOT EXISTS "public"."messages"' in sql_text
         assert "CREATE INDEX" in sql_text
 
+    @pytest.mark.real_schema_init
     @pytest.mark.asyncio
     async def test_setup_async(self, checkpointer, mock_pg_pool):
         """Test async setup method."""
