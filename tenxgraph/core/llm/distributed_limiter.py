@@ -142,7 +142,7 @@ class DistributedLimiter:
                 return _Slot(self, None)
             if got:
                 return _Slot(self, token)
-            await asyncio.sleep(delay * (0.5 + random.random()))  # noqa: S311
+            await asyncio.sleep(delay * (0.5 + random.random()))  # noqa: S311  # nosec B311
             delay = min(delay * 2, 0.5)
 
     async def _renew_loop(self, token: str) -> None:

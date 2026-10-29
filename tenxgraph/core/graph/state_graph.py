@@ -419,7 +419,7 @@ class StateGraph[StateT: AgentState]:
         logger.debug("Overrode node '%s' with new function", name)
         return self
 
-    def compile(  # noqa: PLR0913
+    def compile(
         self,
         checkpointer: BaseCheckpointer[StateT] | None = None,
         store: BaseStore | None = None,

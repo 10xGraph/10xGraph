@@ -471,7 +471,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             # Also reached when this generator is cancelled or closed mid-wait: never leave
             # the pending receive running. gather() absorbs the tasks' own cancellation but
             # still raises if the cancel was aimed at this task.
-            pending = [stop_task]
+            pending: list[asyncio.Future[Any]] = [stop_task]
             if next_task is not None and not next_task.done():
                 pending.append(next_task)
             for task in pending:

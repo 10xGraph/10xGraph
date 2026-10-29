@@ -724,7 +724,7 @@ class AgentExecutionMixin:
                             retry_cfg.max_delay,
                         )
                         if retry_cfg.jitter > 0:
-                            delay *= 1 - retry_cfg.jitter * random.random()  # noqa: S311
+                            delay *= 1 - retry_cfg.jitter * random.random()  # noqa: S311  # nosec B311
                         asked = _retry_after_seconds(exc)
                         if asked is not None:
                             if asked > retry_cfg.max_delay:

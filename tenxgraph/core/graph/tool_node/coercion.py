@@ -65,9 +65,8 @@ def _is_plain(annotation: t.Any, depth: int = 0) -> bool:
         return True
     if origin is not None:
         args = [a for a in t.get_args(annotation) if a is not Ellipsis]
-        return (
-            origin in (*_PLAIN_LEAVES, t.Union, types.UnionType)
-            and all(_is_plain(a, depth + 1) for a in args)
+        return origin in (*_PLAIN_LEAVES, t.Union, types.UnionType) and all(
+            _is_plain(a, depth + 1) for a in args
         )
     return annotation in _PLAIN_LEAVES
 

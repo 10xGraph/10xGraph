@@ -258,9 +258,7 @@ class LocalFileMediaStore(BaseMediaStore):
             return False
         meta_path = self._meta_path(key)
         if name.endswith(".meta.json"):
-            return not any(
-                p.exists() and p != meta_path for p in path.parent.glob(f"{key}.*")
-            )
+            return not any(p.exists() and p != meta_path for p in path.parent.glob(f"{key}.*"))
         return not meta_path.exists()
 
     # ------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from .base_embedding import BaseEmbedding
 
@@ -76,7 +77,7 @@ class OpenAIEmbedding(BaseEmbedding):
         except OpenAIError as e:
             raise RuntimeError(f"OpenAI API error: {e}") from e
 
-    def _extra_args(self) -> dict[str, int]:
+    def _extra_args(self) -> dict[str, Any]:
         return {"dimensions": self._dimensions} if self._dimensions else {}
 
     @property

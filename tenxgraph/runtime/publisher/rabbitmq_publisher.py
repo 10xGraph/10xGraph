@@ -68,9 +68,9 @@ class RabbitMQPublisher(BasePublisher):
         self.connection_timeout: int = self.config.get("connection_timeout", 10)
         self.heartbeat: int = self.config.get("heartbeat", 60)
 
-        self._conn = None  # type: ignore[var-annotated]
-        self._channel = None  # type: ignore[var-annotated]
-        self._exchange = None  # type: ignore[var-annotated]
+        self._conn: Any = None
+        self._channel: Any = None
+        self._exchange: Any = None
         self._connection_lock = asyncio.Lock()
 
     async def _ensure(self):
