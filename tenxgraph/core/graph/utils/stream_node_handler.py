@@ -51,6 +51,7 @@ from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import GraphInterrupt
 from tenxgraph.utils.interrupt import activate as activate_interrupts
+from tenxgraph.utils.log_safety import log_safe
 
 from .handler_mixins import BaseLoggingMixin
 from .tool_runtime import ToolRuntimeMixin
@@ -129,8 +130,8 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                     "Node '%s': tool '%s' (call %s) already executed; "
                     "replaying recorded result instead of re-running it",
                     self.name,
-                    function_name,
-                    tool_call_id,
+                    log_safe(function_name),
+                    log_safe(tool_call_id),
                 )
                 for chunk in self._result_chunks(recorded, function_name, {}, tool_call_id, config):
                     yield chunk
@@ -144,8 +145,8 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             logger.warning(
                 "Node '%s': tool '%s' called with invalid arguments: %s",
                 self.name,
-                function_name,
-                args_error,
+                log_safe(function_name),
+                log_safe(args_error, 500),
             )
             yield StreamChunk(
                 event=StreamEvent.ERROR,
@@ -166,7 +167,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         logger.info(
             "Node '%s' executing tool '%s' with %d arguments",
             self.name,
-            function_name,
+            log_safe(function_name),
             len(function_args),
         )
         logger.debug("Tool arguments: %s", function_args)

@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Any
 
+from tenxgraph.core.llm.client_factory import get_default_llm_timeout
 from tenxgraph.utils.decorators import tool
 
 
@@ -57,7 +58,9 @@ def _google_web_search_sync(query: str, model: str, max_chars: int) -> dict[str,
             )
         }
 
-    client = genai.Client()
+    client = genai.Client(
+        http_options=types.HttpOptions(timeout=int(get_default_llm_timeout() * 1000))
+    )
     response = client.models.generate_content(
         model=model,
         contents=query,
@@ -87,7 +90,11 @@ def _vertex_ai_search_sync(
             )
         }
 
-    client = genai.Client(http_options=types.HttpOptions(api_version="v1"))
+    client = genai.Client(
+        http_options=types.HttpOptions(
+            api_version="v1", timeout=int(get_default_llm_timeout() * 1000)
+        )
+    )
     response = client.models.generate_content(
         model=model,
         contents=query,
@@ -153,3 +160,44 @@ async def vertex_ai_search(
         safe_max_chars,
     )
     return json.dumps(result)
+
+
+def create_google_web_search(model: str = _DEFAULT_MODEL):
+    """Create a ``google_web_search`` tool with the model fixed, so the LLM cannot pick it."""
+
+    @tool(
+        name="google_web_search",
+        description=(
+            "Search the public web with Gemini Google Search grounding and return the "
+            "grounded answer plus grounding metadata."
+        ),
+        tags=["web", "search", "google"],
+        capabilities=["network_access"],
+    )
+    async def scoped_google_web_search(query: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
+        """Search the public web with Gemini Google Search grounding."""
+        return await google_web_search(query, model=model, max_chars=max_chars)
+
+    return scoped_google_web_search
+
+
+def create_vertex_ai_search(datastore: str, model: str = _DEFAULT_MODEL):
+    """Create a ``vertex_ai_search`` tool locked to one datastore and model.
+
+    Prefer this over the module-level ``vertex_ai_search``, whose ``datastore`` and ``model``
+    arguments are chosen by the LLM.
+    """
+    if not datastore:
+        raise ValueError("datastore is required")
+
+    @tool(
+        name="vertex_ai_search",
+        description="Search a configured Vertex AI Search datastore with Gemini grounding.",
+        tags=["search", "google", "vertex_ai"],
+        capabilities=["network_access"],
+    )
+    async def scoped_vertex_ai_search(query: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
+        """Search the configured Vertex AI Search datastore with Gemini grounding."""
+        return await vertex_ai_search(query, datastore=datastore, model=model, max_chars=max_chars)
+
+    return scoped_vertex_ai_search

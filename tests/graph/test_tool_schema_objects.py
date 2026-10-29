@@ -530,5 +530,19 @@ class TestScalarCoercion:
             """Save."""
             return ""
 
-        out = self._prepare(save, {"a": "5", "b": "x", "c": "1.5", "d": "yes"})
-        assert out == {"a": "5", "b": "x", "c": "1.5", "d": "yes"}
+        out = self._prepare(save, {"a": 5, "b": "x", "c": 1.5, "d": True})
+        assert out == {"a": 5, "b": "x", "c": 1.5, "d": True}
+
+    def test_plain_primitives_convert_cleanly_or_are_rejected(self):
+        """G-49 (T7-1, lax): "5" becomes 5; what cannot convert is refused."""
+
+        def save(a: int, b: str, c: float, d: bool) -> str:
+            """Save."""
+            return ""
+
+        ok = {"a": 5, "b": "x", "c": 1.5, "d": True}
+        assert self._prepare(save, {**ok, "a": "5", "c": "1.5"})["a"] == 5
+        assert self._prepare(save, {**ok, "c": "1.5"})["c"] == 1.5
+        for bad in ({"a": "abc"}, {"a": [1]}, {"d": "maybe"}):
+            with pytest.raises(TypeError):
+                self._prepare(save, {**ok, **bad})

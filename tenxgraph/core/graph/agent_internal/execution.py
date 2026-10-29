@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import copy
 import logging
@@ -17,6 +18,12 @@ from injectq.utils.exceptions import DependencyNotFoundError
 
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.tool_node.run_tools import tool_name
+from tenxgraph.core.llm.distributed_limiter import DistributedLimiter, limiter_key
+from tenxgraph.core.llm.stream_idle import (
+    peek_first_chunk,
+    resolve_stream_idle_timeout,
+    stream_idle_timeout_var,
+)
 from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
@@ -24,6 +31,7 @@ from tenxgraph.utils.converter import (
     convert_messages,
     inject_request_blocks,
     strip_media_blocks,
+    strip_provider_blocks,
 )
 from tenxgraph.utils.injection import fresh
 
@@ -137,6 +145,38 @@ def _retry_after_seconds(exc: BaseException) -> float | None:
         if parsed_ms is not None:
             return parsed_ms / 1000.0
     return None if raw is None else _parse_retry_after(raw)
+
+
+def _make_stream_end_hook(llm_event: Any) -> Any:
+    """Build the callback that ends a streaming LLM span with the stream's token usage."""
+
+    def hook(final: Any, error: BaseException | None) -> None:
+        from tenxgraph.runtime.publisher.events import EventType
+        from tenxgraph.runtime.publisher.publish import publish_event
+
+        if error is not None:
+            llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
+            llm_event.is_error = True
+            llm_event.data["error"] = type(error).__name__
+        else:
+            llm_event.event_type = EventType.END  # type: ignore[assignment]
+        usages = getattr(final, "usages", None)
+        if usages is not None:
+            llm_event.data["input_tokens"] = getattr(usages, "prompt_tokens", 0) or 0
+            llm_event.data["output_tokens"] = getattr(usages, "completion_tokens", 0) or 0
+            llm_event.data["cache_read_tokens"] = getattr(usages, "cache_read_input_tokens", 0) or 0
+            llm_event.data["cache_creation_tokens"] = (
+                getattr(usages, "cache_creation_input_tokens", 0) or 0
+            )
+            llm_event.data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
+        meta = getattr(final, "metadata", None) or {}
+        if meta.get("finish_reason"):
+            llm_event.data["finish_reason"] = str(meta["finish_reason"])
+        if meta.get("model"):
+            llm_event.data["response_model"] = str(meta["model"])
+        publish_event(llm_event)
+
+    return hook
 
 
 def _extract_input_tokens(response: Any) -> int:
@@ -515,6 +555,35 @@ class AgentExecutionMixin:
             sem = registry[provider] = asyncio.Semaphore(limit)
         return sem
 
+    def _llm_distributed_limiter(
+        self, provider: str, model: str, retry_cfg: Any
+    ) -> DistributedLimiter | None:
+        limit = getattr(retry_cfg, "distributed_max_concurrent_calls", None)
+        if not limit:
+            return None
+        client = getattr(retry_cfg, "distributed_redis", None)
+        url = getattr(retry_cfg, "distributed_redis_url", None)
+        if client is None and not url:
+            logger.warning(
+                "distributed_max_concurrent_calls is set but no distributed_redis or "
+                "distributed_redis_url was given; the shared cap is off"
+            )
+            return None
+        key = limiter_key(getattr(retry_cfg, "distributed_key_prefix", "") or "", provider, model)
+        registry: dict[str, DistributedLimiter] = self.__dict__.setdefault(
+            "_llm_distributed_limiters", {}
+        )
+        limiter = registry.get(key)
+        if limiter is None:
+            limiter = registry[key] = DistributedLimiter(
+                key=key,
+                limit=int(limit),
+                lease_seconds=float(getattr(retry_cfg, "distributed_lease_seconds", 300.0)),
+                redis=client,
+                redis_url=url,
+            )
+        return limiter
+
     async def _call_bound(
         self,
         bound: Any,
@@ -523,13 +592,18 @@ class AgentExecutionMixin:
         tools: list | None,
         stream: bool,
         kwargs: dict[str, Any],
+        shared: DistributedLimiter | None = None,
     ) -> Any:
         _api_style_var.set(None)
-        if sem is None:
+        stream_idle_timeout_var.set(resolve_stream_idle_timeout(bound.llm_kwargs))
+        async with contextlib.AsyncExitStack() as stack:
+            if sem is not None:
+                await stack.enter_async_context(sem)
+            if shared is not None:
+                await stack.enter_async_context(shared.acquire())
             result = await bound._call_llm(messages, tools, stream, **kwargs)
-        else:
-            async with sem:
-                result = await bound._call_llm(messages, tools, stream, **kwargs)
+            if stream:
+                result = await peek_first_chunk(result, stream_idle_timeout_var.get())
         converter_key_var.set(self._converter_key_of(bound))
         return result
 
@@ -612,10 +686,13 @@ class AgentExecutionMixin:
                 last_exc = last_exc or exc
                 continue
             sem = self._llm_semaphore(provider, retry_cfg)
+            shared = self._llm_distributed_limiter(provider, model, retry_cfg)
 
             for retry in range(max_retries + 1):  # 0 .. max_retries
                 try:
-                    result = await self._call_bound(bound, sem, messages, tools, stream, kwargs)
+                    result = await self._call_bound(
+                        bound, sem, messages, tools, stream, kwargs, shared
+                    )
 
                     if breaker is not None:
                         breaker.record_success()
@@ -696,6 +773,8 @@ class AgentExecutionMixin:
         **kwargs: Any,
     ) -> Any:
         """Route requests to the active provider and API style."""
+        # Signed thinking blocks are Anthropic-only; no other provider may receive them.
+        messages = messages if self.provider == "anthropic" else strip_provider_blocks(messages)
         logger.debug(
             "Calling LLM: provider=%s, output_type=%s, model=%s, stream=%s",
             self.provider,
@@ -804,7 +883,7 @@ class AgentExecutionMixin:
             "client-side with the tokenizer matching your model."
         )
 
-    async def execute(
+    async def execute(  # noqa: PLR0915
         self,
         state: AgentState,
         config: dict[str, Any],
@@ -913,13 +992,24 @@ class AgentExecutionMixin:
         publish_event(llm_event)
 
         converter_key_var.set(None)
-        response = await self._call_llm_with_retry(
-            messages=messages,
-            tools=tools if tools else None,
-            stream=is_stream,
-        )
+        try:
+            response = await self._call_llm_with_retry(
+                messages=messages,
+                tools=tools if tools else None,
+                stream=is_stream,
+            )
+        except BaseException as exc:
+            # Close the LLM span: without an ERROR event the publisher keeps it open
+            # for the life of the process.
+            llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
+            llm_event.is_error = True
+            llm_event.data["error"] = type(exc).__name__
+            publish_event(llm_event)
+            raise
 
         if not is_stream:
+            # A stream is read later by the caller, so its span ends when the stream does
+            # (see ``on_stream_end`` below), with the usage from the last chunks.
             llm_event.event_type = EventType.END  # type: ignore[assignment]
             llm_event.data["output_response"] = _extract_response_text(response)
             llm_event.data["input_tokens"] = _extract_input_tokens(response)
@@ -936,6 +1026,8 @@ class AgentExecutionMixin:
         # when a fallback on another provider took over.
         converter_key = converter_key_var.get() or self._get_converter_key()
         converter = ModelResponseConverter(response, converter=converter_key)
+        if is_stream:
+            converter.on_stream_end = _make_stream_end_hook(llm_event)
         if self.tools_tags:
             # Record which tools the model was shown, so dispatch can refuse a call to
             # a tool the tags hid from it.

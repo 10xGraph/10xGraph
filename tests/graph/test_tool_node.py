@@ -574,7 +574,8 @@ class TestToolNodeMCPUserInfo:
             mock_client.call_tool.assert_called_once()
             call_args = mock_client.call_tool.call_args
             assert call_args[0][0] == "mcp_tool"  # name
-            assert call_args[0][1]["user"] == user_info  # input_data contains user info
+            assert "user" not in call_args[0][1]  # not a tool argument
+            assert call_args[1]["meta"] == {"user": user_info}  # request metadata
 
     @pytest.mark.asyncio
     async def test_mcp_execute_does_not_pass_user_info_when_disabled(self):

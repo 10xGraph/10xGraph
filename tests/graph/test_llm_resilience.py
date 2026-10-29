@@ -267,3 +267,167 @@ async def test_openai_chat_stream_requests_usage():
     assert "stream_options" not in create.call_args.kwargs
     await agent._call_openai(msgs, None, True, stream_options={"include_usage": False})
     assert create.call_args.kwargs["stream_options"] == {"include_usage": False}
+
+
+# ---------------------------------------------------------------- G-46 cross-process cap
+
+
+class _FakeRedis:
+    """Minimal stand-in for the sorted-set lease the limiter runs in Lua."""
+
+    def __init__(self, shared: dict | None = None, fail: bool = False):
+        self.members: dict[str, dict[str, float]] = shared if shared is not None else {}
+        self.fail = fail
+        self.now = 0.0
+
+    async def eval(self, script, numkeys, key, *args):
+        if self.fail:
+            raise ConnectionError("redis down")
+        if "'XX'" in script:  # lease renewal: only a member that is still there
+            lease_ms, token = args
+            zset = self.members.setdefault(key, {})
+            self.renewals = getattr(self, "renewals", 0) + 1
+            if token in zset:
+                zset[token] = self.now + int(lease_ms)
+                return 1
+            return 0
+        limit, lease_ms, token = args
+        zset = self.members.setdefault(key, {})
+        for tok in [t for t, exp in zset.items() if exp <= self.now]:
+            del zset[tok]
+        if len(zset) < int(limit):
+            zset[token] = self.now + int(lease_ms)
+            return 1
+        return 0
+
+    async def zrem(self, key, token):
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.members.get(key, {}).pop(token, None)
+
+
+def _dist_cfg(redis, **kw) -> RetryConfig:
+    return RetryConfig(
+        max_retries=0,
+        jitter=0.0,
+        distributed_max_concurrent_calls=kw.pop("limit", 2),
+        distributed_redis=redis,
+        **kw,
+    )
+
+
+def _peak_probe():
+    state = {"active": 0, "peak": 0}
+
+    async def fake_call(self, messages, tools=None, stream=False, **kw):
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        return SimpleNamespace()
+
+    return state, fake_call
+
+
+@pytest.mark.asyncio
+async def test_distributed_cap_is_shared_across_agents():
+    shared: dict = {}
+    agents = [_agent(retry=_dist_cfg(_FakeRedis(shared))) for _ in range(3)]  # 3 "processes"
+    state, fake_call = _peak_probe()
+    with patch.object(Agent, "_call_llm", fake_call):
+        await asyncio.gather(*[agents[i % 3]._call_llm_with_retry([]) for i in range(9)])
+    assert state["peak"] == 2
+    assert shared["llm_slots:openai:gpt-4o"] == {}  # every slot released
+
+
+@pytest.mark.asyncio
+async def test_distributed_cap_off_by_default():
+    assert RetryConfig().distributed_max_concurrent_calls is None
+    agent = _agent()
+    state, fake_call = _peak_probe()
+    with patch.object(Agent, "_call_llm", fake_call):
+        await asyncio.gather(*[agent._call_llm_with_retry([]) for _ in range(5)])
+    assert state["peak"] == 5
+
+
+@pytest.mark.asyncio
+async def test_distributed_cap_fails_open_with_warning(caplog):
+    agent = _agent(retry=_dist_cfg(_FakeRedis(fail=True)))
+    state, fake_call = _peak_probe()
+    with caplog.at_level("WARNING"), patch.object(Agent, "_call_llm", fake_call):
+        await asyncio.gather(*[agent._call_llm_with_retry([]) for _ in range(4)])
+    assert state["peak"] == 4
+    assert any("Distributed LLM limiter" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_distributed_slot_released_on_cancel_and_lease_expiry():
+    shared: dict = {}
+    redis = _FakeRedis(shared)
+    agent = _agent(retry=_dist_cfg(redis, limit=1, distributed_key_prefix="p:"))
+    started = asyncio.Event()
+
+    async def hang(self, messages, tools=None, stream=False, **kw):
+        started.set()
+        await asyncio.sleep(10)
+
+    with patch.object(Agent, "_call_llm", hang):
+        task = asyncio.create_task(agent._call_llm_with_retry([]))
+        await started.wait()
+        assert len(shared["p:llm_slots:openai:gpt-4o"]) == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert shared["p:llm_slots:openai:gpt-4o"] == {}
+
+    # A crashed process never releases; its lease expires and the slot is reusable.
+    shared["p:llm_slots:openai:gpt-4o"]["dead"] = 300_000.0
+    state, fake_call = _peak_probe()
+    redis.now = 300_001.0
+    with patch.object(Agent, "_call_llm", fake_call):
+        await asyncio.wait_for(agent._call_llm_with_retry([]), 2)
+    assert "dead" not in shared["p:llm_slots:openai:gpt-4o"]
+
+
+@pytest.mark.asyncio
+async def test_distributed_lease_is_renewed_while_the_call_runs():
+    shared: dict = {}
+    redis = _FakeRedis(shared)
+    # lease 0.09 s: renewed about every 0.03 s; the call runs far past one lease.
+    agent = _agent(retry=_dist_cfg(redis, limit=1, distributed_lease_seconds=0.09))
+    key = "llm_slots:openai:gpt-4o"
+    seen: dict = {}
+
+    async def slow(self, messages, tools=None, stream=False, **kw):
+        seen["before"] = dict(shared[key])
+        redis.now = 5_000.0  # the clock moves on; only a renewal can push the expiry forward
+        await asyncio.sleep(0.25)
+        seen["during"] = dict(shared[key])
+        return SimpleNamespace()
+
+    with patch.object(Agent, "_call_llm", slow):
+        await agent._call_llm_with_retry([])
+
+    assert redis.renewals >= 2
+    (token,) = seen["before"]
+    assert seen["during"][token] > seen["before"][token]
+    assert shared[key] == {}  # released
+    renewals_at_release = redis.renewals
+    await asyncio.sleep(0.15)
+    assert redis.renewals == renewals_at_release  # the heartbeat stopped with the release
+
+
+@pytest.mark.asyncio
+async def test_distributed_renew_failure_is_fail_open():
+    redis = _FakeRedis({})
+    agent = _agent(retry=_dist_cfg(redis, limit=1, distributed_lease_seconds=0.06))
+
+    async def slow(self, messages, tools=None, stream=False, **kw):
+        redis.fail = True  # Redis goes down mid-call: renew fails, the call is unaffected
+        await asyncio.sleep(0.15)
+        redis.fail = False
+        return SimpleNamespace(ok=True)
+
+    with patch.object(Agent, "_call_llm", slow):
+        result = await agent._call_llm_with_retry([])
+    assert result.ok

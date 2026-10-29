@@ -57,7 +57,9 @@ async def test_first_query_creates_schema_once(monkeypatch):
     await cp.aget_thread_owner("t1")
     sql = [c.args[0] for c in conn.execute.call_args_list]
     assert any("pg_advisory_xact_lock" in q for q in sql)
-    assert sum(q.strip().startswith("CREATE TABLE IF NOT EXISTS \"public\".\"threads\"") for q in sql) == 1
+    assert (
+        sum(q.strip().startswith('CREATE TABLE IF NOT EXISTS "public"."threads"') for q in sql) == 1
+    )
     assert cp._schema_initialized
 
 
@@ -147,3 +149,40 @@ def test_timeouts_default_and_override(monkeypatch):
         cp._create_pg_pool(None, "postgres://u", {"command_timeout": 5})
     assert create.call_args.kwargs["command_timeout"] == 5
     assert create.call_args.kwargs["timeout"] == 30.0
+
+
+# G-37: a retried write whose first attempt already committed is not a conflict.
+
+
+@pytest.mark.asyncio
+async def test_retry_of_committed_write_is_not_stale(monkeypatch):
+    from tenxgraph.core.state import AgentState
+
+    cp, conn = _make(monkeypatch)
+    state = AgentState()
+    cp._lock_thread_for_write = AsyncMock(return_value=5)  # the first attempt made it 5
+    stored = json.dumps(cp._serialize_state_payload(state))
+    conn.fetchrow = AsyncMock(return_value={"state_data": stored})
+    cfg = {"thread_id": "t1", "user_id": "u1"}
+    version = await cp._write_state_row(conn, "t1", "u1", state, cfg, 4, retried=True)
+    assert version == 5
+    assert not any(c.args[0].lstrip().startswith("INSERT") for c in conn.execute.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_other_writers_commit_is_still_stale_on_retry_and_first_attempt(monkeypatch):
+    from tenxgraph.core.exceptions.storage_exceptions import StaleStateError
+    from tenxgraph.core.state import AgentState
+
+    cp, conn = _make(monkeypatch)
+    cp._lock_thread_for_write = AsyncMock(return_value=5)
+    other = json.dumps({"context": [{"message_id": "someone-else"}]})
+    conn.fetchrow = AsyncMock(return_value={"state_data": other})
+    cfg = {"thread_id": "t1", "user_id": "u1"}
+    with pytest.raises(StaleStateError):
+        await cp._write_state_row(conn, "t1", "u1", AgentState(), cfg, 4, retried=True)
+    # A first attempt never takes the shortcut, even when the stored row happens to be equal.
+    same = json.dumps(cp._serialize_state_payload(AgentState()))
+    conn.fetchrow = AsyncMock(return_value={"state_data": same})
+    with pytest.raises(StaleStateError):
+        await cp._write_state_row(conn, "t1", "u1", AgentState(), cfg, 4)

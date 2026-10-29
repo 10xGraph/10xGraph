@@ -86,6 +86,11 @@ def _strip_reserved_filters(filters: Any) -> Any:
     return clean
 
 
+def _keys(result: Any) -> list[str]:
+    """Top-level keys of a Mem0 response, for logs; never the stored memory text."""
+    return sorted(str(k) for k in result) if isinstance(result, dict) else []
+
+
 class Mem0Store(BaseStore):
     """Mem0 implementation of long-term memory.
 
@@ -131,7 +136,7 @@ class Mem0Store(BaseStore):
                 else:
                     self._client = AsyncMemory()  # type: ignore
             except Exception as e:  # pragma: no cover - defensive
-                logger.error(f"Failed to initialize Mem0 client: {e}")
+                logger.error("Failed to initialize Mem0 client (%s)", type(e).__name__)
                 raise
         return self._client
 
@@ -266,13 +271,12 @@ class Mem0Store(BaseStore):
         result = await client.search(query=query, **search_kwargs)  # type: ignore
 
         if "results" not in result:
-            logger.warning("Mem0 search response missing 'results': %s", result)
+            logger.warning("Mem0 search response missing 'results'; keys=%s", _keys(result))
             return []
 
         if "relations" in result:
             logger.warning(
-                "Mem0 search response contains 'relations', which is not supported yet: %s",
-                result,
+                "Mem0 search response contains 'relations', which is not supported yet",
             )
 
         out: list[MemorySearchResult] = limit_to_token_budget(
@@ -319,13 +323,12 @@ class Mem0Store(BaseStore):
         )
 
         if "results" not in result:
-            logger.warning("Mem0 get_all response missing 'results': %s", result)
+            logger.warning("Mem0 get_all response missing 'results'; keys=%s", _keys(result))
             return []
 
         if "relations" in result:
             logger.warning(
-                "Mem0 get_all response contains 'relations', which is not supported yet: %s",
-                result,
+                "Mem0 get_all response contains 'relations', which is not supported yet",
             )
 
         out: list[MemorySearchResult] = [

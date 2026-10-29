@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote
 
 from injectq import InjectQ
 
+from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.exceptions.storage_exceptions import (
     SchemaVersionError,
     StaleStateError,
@@ -29,12 +30,12 @@ except ImportError:
     Pool = None  # type: ignore
 
 try:
-    from redis.asyncio import ConnectionPool, Redis
+    from redis.asyncio import BlockingConnectionPool, Redis
 
     HAS_REDIS = True
 except ImportError:
     HAS_REDIS = False
-    ConnectionPool = None  # type: ignore
+    BlockingConnectionPool = None  # type: ignore
     Redis = None  # type: ignore
 
 from tenxgraph.core.state import AgentState, Message
@@ -104,7 +105,9 @@ return 1
 
 # Infrastructure timeouts. Without them a blackholed Postgres or Redis hangs a run instead of
 # failing it. They apply to pools this class builds (a pool you pass in keeps its own settings)
-# and are overridden key by key through ``pool_config`` / ``redis_pool_config``.
+# and are overridden key by key through ``pool_config`` / ``redis_pool_config``. The Redis pool
+# is bounded too: a caller past ``max_connections`` waits up to ``timeout`` seconds for a free
+# connection, then fails, instead of opening connections without limit.
 DEFAULT_PG_ACQUIRE_TIMEOUT = 30.0  # seconds to wait for a free pooled connection
 DEFAULT_PG_POOL_CONFIG: dict[str, Any] = {
     "command_timeout": 60.0,  # per query
@@ -114,6 +117,8 @@ DEFAULT_REDIS_POOL_CONFIG: dict[str, Any] = {
     "socket_connect_timeout": 5.0,
     "socket_timeout": 10.0,
     "health_check_interval": 30,
+    "max_connections": 50,
+    "timeout": 5.0,  # seconds to wait for a free pooled connection
 }
 
 # Sentinel version used when the caller has no durable version yet (brand-new
@@ -335,7 +340,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         self._owns_redis = True
         return Redis(
-            connection_pool=ConnectionPool.from_url(  # type: ignore
+            connection_pool=BlockingConnectionPool.from_url(  # type: ignore
                 redis_url,
                 **{**DEFAULT_REDIS_POOL_CONFIG, **redis_pool_config},
             )
@@ -683,9 +688,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             if self._schema_initialized:
                 return
 
-            async with (await self._get_pg_pool()).acquire(
-                timeout=self.pg_acquire_timeout
-            ) as conn:
+            async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
                 try:
                     async with conn.transaction():
                         # Serialize schema creation ACROSS processes (multiple
@@ -860,10 +863,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             if isinstance(data, bytes | bytearray):
                 data = data.decode()
+            parsed = json.loads(data) if isinstance(data, str) else data
+            if isinstance(parsed, dict):
+                self._check_state_format(parsed)  # same refusal as _decode_state
             if isinstance(data, str):
                 return state_class.model_validate(json.loads(data))
             # Assume it's already a dict/list
             return state_class.model_validate(data)
+        except StateFormatVersionError:
+            raise
         except Exception:
             # Last-resort: coerce to string and attempt parse, else raise
             if isinstance(data, str):
@@ -952,9 +960,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         await self._initialize_schema()
 
         async def _operation():
-            async with (await self._get_pg_pool()).acquire(
-                timeout=self.pg_acquire_timeout
-            ) as conn:
+            async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
                 if in_transaction:
                     async with conn.transaction():
                         return await fn(conn)
@@ -1099,7 +1105,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         return self._encode_state(state)
 
-    def _deserialize_state_payload(self, data: dict[str, Any]) -> StateT:
+    def _deserialize_state_payload(self, data: dict[str, Any], thread_id: Any = None) -> StateT:
         """Reconstruct a state from a persisted payload using the bound state class.
 
         The Redis cache copy also carries the checkpoint version, which is not a
@@ -1107,7 +1113,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         data = dict(data)
         data.pop(_CACHE_VERSION_KEY, None)
-        return self._decode_state(data)
+        return self._decode_state(data, thread_id)
 
     def _thread_scope(
         self,
@@ -1221,6 +1227,20 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         )
         return int(version_row["v"]) if version_row else 0
 
+    async def _state_row_matches(
+        self, conn, thread_id: str | int, version: int, state_json: str
+    ) -> bool:
+        """Whether the stored state row at ``version`` holds the same state as ``state_json``."""
+        row = await conn.fetchrow(
+            f"SELECT state_data FROM {self._get_table_name('states')} "  # noqa: S608
+            f"WHERE thread_id = $1 AND version = $2",
+            thread_id,
+            version,
+        )
+        if row is None:
+            return False
+        return self._loads_jsonb(row["state_data"]) == json.loads(state_json)
+
     async def _write_state_row(
         self,
         conn,
@@ -1229,6 +1249,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         state: StateT,
         config: dict[str, Any],
         expected_version: int | None,
+        *,
+        retried: bool = False,
     ) -> int:
         """Append a new versioned state row inside an existing transaction.
 
@@ -1237,10 +1259,28 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         committed in the meantime and this write is rejected as stale rather than
         silently overwriting it. Old rows beyond the history window are pruned.
 
+        ``retried`` is set when this is a repeat of a write whose first attempt died on a
+        connection error. The first attempt may have committed before the reply was lost; the
+        thread is then exactly one version ahead holding this very state, and the write is
+        reported as done instead of failing against its own commit.
+
         Returns:
             int: The new version assigned to the written row.
         """
         current_version = await self._lock_thread_for_write(conn, thread_id, user_id, config)
+
+        state_json = json.dumps(self._serialize_state_payload(state))
+        if (
+            retried
+            and expected_version is not None
+            and current_version == int(expected_version) + 1
+            and await self._state_row_matches(conn, thread_id, current_version, state_json)
+        ):
+            logger.warning(
+                "Write for thread_id=%s had already committed before its retry; keeping it",
+                thread_id,
+            )
+            return current_version
 
         if expected_version is not None and int(expected_version) != current_version:
             raise StaleStateError(
@@ -1257,7 +1297,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
 
         new_version = current_version + 1
-        state_json = json.dumps(self._serialize_state_payload(state))
         await conn.execute(
             f"""
             INSERT INTO {self._get_table_name("states")}
@@ -1321,10 +1360,19 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         with metrics.timer("pg_checkpointer.save_state.duration"):
             try:
+                attempts = 0
 
                 async def _store_state(conn):
+                    nonlocal attempts
+                    attempts += 1
                     return await self._write_state_row(
-                        conn, thread_id, user_id, state, config, expected_version
+                        conn,
+                        thread_id,
+                        user_id,
+                        state,
+                        config,
+                        expected_version,
+                        retried=attempts > 1,
                     )
 
                 new_version = await self._run_query(_store_state, in_transaction=True)
@@ -1408,10 +1456,19 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         metrics.counter("pg_checkpointer.save_checkpoint.attempts").inc()
         with metrics.timer("pg_checkpointer.save_checkpoint.duration"):
             try:
+                attempts = 0
 
                 async def _store_checkpoint(conn):
+                    nonlocal attempts
+                    attempts += 1
                     version = await self._write_state_row(
-                        conn, thread_id, user_id, state, config, expected_version
+                        conn,
+                        thread_id,
+                        user_id,
+                        state,
+                        config,
+                        expected_version,
+                        retried=attempts > 1,
                     )
                     if messages:
                         await self._insert_messages(conn, thread_id, messages, metadata)
@@ -1483,7 +1540,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     "State found for thread_id=%s at version=%s", thread_id, row["version"]
                 )
                 config[STATE_VERSION_CONFIG_KEY] = int(row["version"])
-                return self._deserialize_state_payload(data)
+                return self._deserialize_state_payload(data, thread_id)
 
             logger.debug("No state found for thread_id=%s", thread_id)
             return None
@@ -1689,7 +1746,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     logger.debug("Cache hit for thread_id=%s", thread_id)
                     if version is not None:
                         config[STATE_VERSION_CONFIG_KEY] = int(version)
-                    return self._deserialize_state_payload(data)
+                    return self._deserialize_state_payload(data, thread_id)
 
             # Cache miss - fallback to PostgreSQL
             logger.debug("Cache miss for thread_id=%s, falling back to PostgreSQL", thread_id)
@@ -1762,9 +1819,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # Ids are percent-encoded, which leaves no glob characters in them; the
             # namespace prefix may still carry the deployment prefix, so escape that.
             pattern = (
-                re.sub(r"([\\*?\[\]])", r"\\\1", ns_prefix)
-                + quote(prefix or "", safe="")
-                + "*"
+                re.sub(r"([\\*?\[\]])", r"\\\1", ns_prefix) + quote(prefix or "", safe="") + "*"
             )
             keys: list[str] = []
             cursor = 0

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import http.client
 import ipaddress
 import json
+import logging
 import socket  # noqa: F401  (tests patch fetch.socket)
 from html.parser import HTMLParser
 
 from tenxgraph.utils import safe_http
 from tenxgraph.utils.decorators import tool
 
+
+logger = logging.getLogger("tenxgraph.prebuilt.fetch")
 
 _DEFAULT_MAX_CHARS = 20_000
 _USER_AGENT = "10xgraph-prebuilt-tools/1.0"
@@ -61,8 +65,26 @@ def _html_to_text(html: str) -> str:
     return parser.text()
 
 
-def _fetch_sync(url: str, timeout: float, max_chars: int) -> dict[str, object]:
+def _host_allowed(host: str | None, allowed_hosts: tuple[str, ...] | None) -> bool:
+    if allowed_hosts is None:
+        return True
+    name = (host or "").casefold().rstrip(".")
+    return any(fnmatch.fnmatchcase(name, pattern.casefold()) for pattern in allowed_hosts)
+
+
+def _fetch_sync(
+    url: str,
+    timeout: float,
+    max_chars: int,
+    allowed_hosts: tuple[str, ...] | None = None,
+) -> dict[str, object]:
     timeout = max(1.0, min(float(timeout), 30.0))
+
+    def _resolve(host: str | None, port: int) -> str | None:
+        # Called for the first request and for every redirect hop.
+        if not _host_allowed(host, allowed_hosts):
+            return None
+        return _resolve_public_ip(host, port)
 
     # Redirects are followed in safe_http, so every hop is checked
     try:
@@ -71,12 +93,14 @@ def _fetch_sync(url: str, timeout: float, max_chars: int) -> dict[str, object]:
             timeout=timeout,
             max_bytes=max_chars + 1,
             user_agent=_USER_AGENT,
-            resolve=lambda host, port: _resolve_public_ip(host, port),
+            resolve=_resolve,
         )
     except safe_http.SafeHTTPError as exc:
         return {"error": str(exc)}
     except (OSError, http.client.HTTPException) as exc:
-        return {"error": f"URL error: {exc}"}
+        # The raw text can name internal hosts and ports; it stays in the server log.
+        logger.warning("fetch_url failed: %s", type(exc).__name__, exc_info=True)
+        return {"error": f"URL error: {type(exc).__name__}"}
 
     url = result.url
     status_code, content_type, raw = result.status, result.content_type, result.body
@@ -115,3 +139,34 @@ async def fetch_url(url: str, timeout: float = 10.0, max_chars: int = _DEFAULT_M
     safe_max_chars = max(1, min(int(max_chars), _DEFAULT_MAX_CHARS))
     result = await asyncio.to_thread(_fetch_sync, url, timeout, safe_max_chars)
     return json.dumps(result)
+
+
+def create_fetch_url(allowed_hosts: list[str] | tuple[str, ...]):
+    """Create a ``fetch_url`` tool that only fetches the given hosts.
+
+    ``allowed_hosts`` holds host names or glob patterns such as ``"docs.example.com"`` or
+    ``"*.example.com"``, matched ignoring case. The list is checked on the first request and
+    on every redirect, on top of the public-address check the plain tool already applies.
+    """
+    hosts = tuple(allowed_hosts)
+    if not hosts:
+        raise ValueError("allowed_hosts must not be empty")
+
+    @tool(
+        name="fetch_url",
+        description=(
+            "Fetch an http/https URL on an approved host and return text content. Applies a "
+            "timeout and truncates long responses."
+        ),
+        tags=["web", "fetch", "network"],
+        capabilities=["network_access"],
+    )
+    async def scoped_fetch_url(
+        url: str, timeout: float = 10.0, max_chars: int = _DEFAULT_MAX_CHARS
+    ) -> str:
+        """Fetch a URL on an approved host and return normalized text content."""
+        safe_max_chars = max(1, min(int(max_chars), _DEFAULT_MAX_CHARS))
+        result = await asyncio.to_thread(_fetch_sync, url, timeout, safe_max_chars, hosts)
+        return json.dumps(result)
+
+    return scoped_fetch_url

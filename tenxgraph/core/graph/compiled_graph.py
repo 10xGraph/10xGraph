@@ -147,6 +147,7 @@ class CompiledGraph[StateT: AgentState]:
         shutdown_timeout: float = 30.0,
         media_policy: MediaFetchPolicy | None = None,
         owns_resources: bool = True,
+        node_aliases: dict[str, str] | None = None,
     ):
         logger.info(
             f"Initializing CompiledGraph with nodes: {list(state_graph.nodes.keys())}",
@@ -163,12 +164,14 @@ class CompiledGraph[StateT: AgentState]:
             edges=state_graph.edges,
             interrupt_after=interrupt_after,
             interrupt_before=interrupt_before,
+            node_aliases=node_aliases,
         )
         self._stream_handler: StreamHandler[StateT] = StreamHandler[StateT](
             nodes=state_graph.nodes,
             edges=state_graph.edges,
             interrupt_after=interrupt_after,
             interrupt_before=interrupt_before,
+            node_aliases=node_aliases,
         )
 
         self._checkpointer: BaseCheckpointer[StateT] | None = checkpointer
@@ -287,11 +290,14 @@ class CompiledGraph[StateT: AgentState]:
             # run under one fake account. "anonymous" matches what the API layer
             # uses when no auth is configured, so the two agree.
             cfg["user_id"] = DEFAULT_ANONYMOUS_USER_ID
-            logger.debug(
-                "No user_id in config; using '%s'. Enable auth if you need per-user "
-                "isolation -- every anonymous run shares one identity.",
-                DEFAULT_ANONYMOUS_USER_ID,
-            )
+            if not getattr(self, "_warned_anonymous", False):
+                self._warned_anonymous = True
+                logger.warning(
+                    "No user_id in config; using '%s'. Every run without a user_id shares "
+                    "that one identity and its threads. Pass user_id in config for per-user "
+                    "isolation. This is logged once per graph.",
+                    DEFAULT_ANONYMOUS_USER_ID,
+                )
         if "run_id" not in cfg:
             cfg["run_id"] = _new_id()
 
@@ -849,7 +855,9 @@ class CompiledGraph[StateT: AgentState]:
             )
 
         name, node = live[0]
-        agent = node.func
+        # Every connection runs on its own copy: the agent holds per-session state (provider
+        # socket, resume handle, transcript buffers), so a shared one would cross-wire users.
+        agent = node.func.new_session()
         agent._node_name = name
         cfg = self._prepare_config(config, is_stream=True)
         callback_manager = InjectQ.get_instance().try_get(CallbackManager)

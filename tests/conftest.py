@@ -74,6 +74,47 @@ def isolate_injectq_container():
     InjectQ.reset_instance()
 
 
+@pytest.fixture(autouse=True)
+def close_sqlite_checkpointers(monkeypatch):
+    """Close every SqliteCheckpointer connection a test opened and never released.
+
+    aiosqlite runs each connection on a non-daemon worker thread. A test that opens a
+    checkpointer and forgets ``arelease()`` (or whose event loop is gone by then) leaves that
+    thread parked on its queue, and the pytest process then never exits after the tests pass.
+    Applications release through ``graph.aclose()``; this is the test-side equivalent.
+    """
+    import asyncio
+    import contextlib
+    import threading
+
+    from tenxgraph.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
+
+    opened: list[SqliteCheckpointer] = []
+    original = SqliteCheckpointer._get_conn
+
+    async def tracking_get_conn(self):
+        if self not in opened:
+            opened.append(self)
+        return await original(self)
+
+    monkeypatch.setattr(SqliteCheckpointer, "_get_conn", tracking_get_conn)
+    yield
+
+    def release_all() -> None:
+        async def run() -> None:
+            for checkpointer in opened:
+                if checkpointer._conn is not None:
+                    with contextlib.suppress(Exception):  # best effort cleanup
+                        await checkpointer.arelease()
+
+        asyncio.run(run())
+
+    # A fresh thread: the test's own loop may still be running or already closed.
+    worker = threading.Thread(target=release_all)
+    worker.start()
+    worker.join(timeout=10)
+
+
 def _compat_node_init(self, name, func, publisher=None):
     """Test-only compatibility shim for legacy Node(name, func, publisher) calls."""
     _ORIGINAL_NODE_INIT(self, name, func)
@@ -91,7 +132,7 @@ def setup_test_environment():
     # Set dummy OpenAI API key for tests
     # Using a valid-looking but fake key that won't make actual API calls
     os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-key-for-testing-only")
-    
+
     # Set dummy Google API key for tests
     os.environ.setdefault("GEMINI_API_KEY", "dummy-gemini-key-for-testing-only")
 
@@ -105,10 +146,10 @@ def setup_test_environment():
     # Keep tests compatible while core graph transitions from
     # Node(name, func, publisher) to Node(name, func).
     Node.__init__ = _compat_node_init
-    
+
     yield
 
     Node.__init__ = _ORIGINAL_NODE_INIT
-    
+
     # Note: We don't clean up the environment variables since they're test-only
     # and won't affect any other processes

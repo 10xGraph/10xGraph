@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -14,6 +16,8 @@ class InMemoryMediaStore(BaseMediaStore):
     def __init__(self, max_size_bytes: int | None = None) -> None:
         self._max_size_bytes = max_size_bytes
         self._data: dict[str, tuple[bytes, str, dict[str, Any]]] = {}
+        # Makes a read-modify-write (``modify_metadata``) one step
+        self._meta_lock = asyncio.Lock()
 
     async def store(
         self,
@@ -53,6 +57,20 @@ class InMemoryMediaStore(BaseMediaStore):
 
     async def list_keys(self) -> list[str]:
         return list(self._data)
+
+    async def modify_metadata(
+        self,
+        storage_key: str,
+        fn: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> bool:
+        async with self._meta_lock:
+            current = await self.get_metadata(storage_key)
+            if current is None:
+                return False
+            updates = fn(current)
+            if updates:
+                await self.update_metadata(storage_key, updates)
+            return True
 
     async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
         entry = self._data.get(storage_key)

@@ -7,11 +7,18 @@ import contextlib
 import json
 import logging
 import mimetypes
+import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+
+try:  # POSIX only; elsewhere the in-process lock is all there is
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from tenxgraph.utils.private_fs import (
     mkdir_private,
@@ -49,6 +56,9 @@ class LocalFileMediaStore(BaseMediaStore):
         self._max_size_bytes = max_size_bytes
         self._base = Path(base_dir).resolve()
         mkdir_private(self._base)
+        # One lock for sidecar read-modify-writes in this process, so they do not each park a
+        # worker thread on the file lock below
+        self._meta_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Interface
@@ -166,15 +176,50 @@ class LocalFileMediaStore(BaseMediaStore):
         return keys
 
     async def update_metadata(self, storage_key: str, updates: dict[str, Any]) -> bool:
+        return await self.modify_metadata(storage_key, lambda _meta: updates)
+
+    async def modify_metadata(
+        self,
+        storage_key: str,
+        fn: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> bool:
+        """Atomic read-modify-write of one sidecar.
+
+        Serialized by a lock in this process and an exclusive ``flock`` on
+        ``{base_dir}/.meta.lock`` across processes (several workers sharing the folder), and the
+        sidecar is replaced with an atomic rename. The ``flock`` is POSIX only.
+        """
         self._validate_key(storage_key)
+        async with self._meta_lock:
+            return await asyncio.to_thread(self._modify_sync, storage_key, fn)
+
+    def _modify_sync(
+        self, storage_key: str, fn: Callable[[dict[str, Any]], dict[str, Any] | None]
+    ) -> bool:
         meta_path = self._meta_path(storage_key)
-        if not meta_path.exists():
-            return False
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta.update(updates)
-        meta = {k: v for k, v in meta.items() if v is not None}
-        write_private_atomic(meta_path, json.dumps(meta).encode("utf-8"))
+        with self._file_lock():
+            if not meta_path.exists():
+                return False
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            updates = fn(dict(meta))
+            if updates:
+                meta.update(updates)
+                meta = {k: v for k, v in meta.items() if v is not None}
+                write_private_atomic(meta_path, json.dumps(meta).encode("utf-8"))
         return True
+
+    @contextlib.contextmanager
+    def _file_lock(self):
+        if fcntl is None:  # pragma: no cover
+            yield
+            return
+        lock_path = self._base / ".meta.lock"
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing the descriptor releases the lock
 
     async def sweep_orphans(self, min_age_seconds: float = 3600.0) -> int:
         """Delete files a crash left behind and return how many were removed.

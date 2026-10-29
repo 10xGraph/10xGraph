@@ -72,3 +72,54 @@ class ResumeValidationError(GraphError, ValueError):
             context (dict): Additional contextual information (default: None)
         """
         super().__init__(message, error_code, context)
+
+
+class NothingToResumeError(GraphError, ValueError):
+    """
+    Raised when a resume is sent to a thread that is not paused at an ``interrupt()``.
+
+    A client error (the API answers 409). It is also a ``ValueError``, as it was before it had
+    its own type, so existing handlers keep working.
+    """
+
+    def __init__(
+        self,
+        message: str = "Nothing to resume: this thread is not paused at an interrupt()",
+        error_code: str = "INTERRUPT_003",
+        context: dict[str, Any] | None = None,
+    ):
+        """
+        Initialize a NothingToResumeError.
+
+        Args:
+            message (str): Description of the problem.
+            error_code (str): Unique error code (default: "INTERRUPT_003")
+            context (dict): Additional contextual information (default: None)
+        """
+        super().__init__(message, error_code, context)
+
+
+class InterruptPendingError(GraphError, ValueError):
+    """
+    Raised when a plain new message is sent to a thread paused at an ``interrupt()``.
+
+    The paused node needs the answer, so the thread must be resumed with a ``resume`` value.
+    A client error (the API answers 409). It is also a ``ValueError``, as it was before it had
+    its own type, so existing handlers keep working.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "INTERRUPT_004",
+        context: dict[str, Any] | None = None,
+    ):
+        """
+        Initialize an InterruptPendingError.
+
+        Args:
+            message (str): Description of the problem.
+            error_code (str): Unique error code (default: "INTERRUPT_004")
+            context (dict): Additional contextual information (default: None)
+        """
+        super().__init__(message, error_code, context)

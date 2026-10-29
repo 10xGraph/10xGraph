@@ -205,7 +205,7 @@ def _resolve_decision(raw: str, worker_names: list[str], rounds: int) -> str:
        e.g. worker ``CODE`` matching ``DECODE``).
     3. Nothing recognisable → ``END``.
     """
-    if _FINISH_TOKEN in raw:
+    if re.search(rf"\b{_FINISH_TOKEN}\b", raw):
         logger.debug("Supervisor signalled FINISH after %d round(s).", rounds)
         return END
 

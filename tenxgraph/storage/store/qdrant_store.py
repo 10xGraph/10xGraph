@@ -243,7 +243,7 @@ class QdrantStore(BaseStore):
                     match=MatchValue(value=user_id),
                 ),
             )
-        if thread_id:
+        if thread_id is not None and thread_id != "":
             conditions.append(
                 FieldCondition(
                     key="thread_id",

@@ -24,6 +24,7 @@ from tenxgraph.core.graph.edge import Edge
 from tenxgraph.core.graph.node import Node
 from tenxgraph.core.graph.utils.guards import resolve_timeout, stream_with_guards
 from tenxgraph.core.graph.utils.tool_dispatch import validate_goto
+from tenxgraph.core.graph.utils.error_text import client_error_text
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 from tenxgraph.utils.logging import log_context_scope, set_log_context
@@ -40,6 +41,7 @@ from .handler_utils import (
     close_unanswered_tool_calls,
     finalize_cancelled_run,
     RESUME_AFTER_NODE_KEY,
+    resolve_stored_node,
     interrupt_graph,
     is_remote_tool_marker,
     node_after,
@@ -127,6 +129,7 @@ class StreamHandler[StateT: AgentState](
         interrupt_before: list[str] | None = None,
         interrupt_after: list[str] | None = None,
         get_node_factory: Callable[[str], Node] | None = None,
+        node_aliases: dict[str, str] | None = None,
         callback_mgr: CallbackManager = Inject[CallbackManager],
     ):
         callback_mgr = fresh(callback_mgr)
@@ -139,6 +142,7 @@ class StreamHandler[StateT: AgentState](
         self.interrupt_after = interrupt_after or []
         self._set_interrupts(interrupt_before, interrupt_after)
         self.callback_mgr = callback_mgr
+        self.node_aliases: dict[str, str] = dict(node_aliases or {})
 
     async def _execute_node_stream(
         self,
@@ -237,11 +241,19 @@ class StreamHandler[StateT: AgentState](
                 )
 
         # Get current execution info from state
-        current_node = state.execution_meta.current_node
+        stored_node = state.execution_meta.current_node
         step = state.execution_meta.step
+        # A deploy may have renamed or removed the node this thread was stored at.
+        current_node = resolve_stored_node(
+            stored_node, self.nodes, self.node_aliases, config.get("thread_id")
+        )
+        if current_node != stored_node:
+            state.execution_meta.current_node = current_node
+            if state.execution_meta.interrupted_node == stored_node:
+                state.execution_meta.interrupted_node = current_node
         # Paused for client-side tools whose results are now in the context: move past
         # that node (the next node can depend on those results).
-        if config.pop(RESUME_AFTER_NODE_KEY, None) == current_node:
+        if config.pop(RESUME_AFTER_NODE_KEY, None) in (stored_node, current_node):
             current_node = get_next_node(current_node, state, self.edges)
         if current_node != END:
             current_node = skip_answered_tool_node(
@@ -811,7 +823,7 @@ class StreamHandler[StateT: AgentState](
         except Exception as e:
             # Handle execution errors
             logger.exception("Graph execution failed: %s", e)
-            state.error(str(e))
+            state.error(client_error_text(e))
             # Close tool calls the failed node never answered, so the saved history is valid.
             await close_unanswered_tool_calls(state, config, messages)
 
@@ -847,7 +859,7 @@ class StreamHandler[StateT: AgentState](
                     "node": current_node,
                     "step": step,
                     "max_steps": max_steps,
-                    "reason": str(e),
+                    "reason": client_error_text(e),
                 },
                 thread_id=config.get("thread_id"),
                 run_id=config.get("run_id"),

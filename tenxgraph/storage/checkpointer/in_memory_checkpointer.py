@@ -275,6 +275,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         tool_call_id: str,
     ) -> dict[str, Any] | None:
         """Return a recorded tool result, so a replayed tool call is not re-fired."""
+        if self._owner_denied(config):
+            return None  # not the owner -> no record, do not reveal existence
         async with self._tool_lock:
             return self._tool_results.get(self._tool_key(config, tool_call_id))
 
@@ -285,7 +287,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         result: dict[str, Any],
     ) -> Any | None:
         """Record that a tool call completed, with its result."""
+        if self._owner_denied(config):
+            raise StorageError("Thread is owned by a different user")
         async with self._tool_lock:
+            self._record_owner(config)
             self._tool_results[self._tool_key(config, tool_call_id)] = result
             return True
 

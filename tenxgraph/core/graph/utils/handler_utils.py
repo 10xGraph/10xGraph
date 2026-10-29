@@ -25,6 +25,7 @@ from typing import Any, TypeVar
 
 from injectq import Inject
 
+from tenxgraph.core.exceptions import StoredNodeMissingError
 from tenxgraph.core.state import AgentState, ExecutionStatus
 from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.core.state.message import Message
@@ -75,18 +76,20 @@ async def check_interrupted[StateT: AgentState](
     callback_mgr: CallbackManager = Inject[CallbackManager],
 ) -> tuple[StateT, dict[str, Any]]:
     callback_mgr = fresh(callback_mgr)
+    from tenxgraph.core.exceptions import InterruptPendingError, NothingToResumeError
+
     request = pending_interrupt(state)
     if request is not None:
         # Paused by interrupt(): the retried node needs the answer, and a plain new message
         # cannot stand in for it.
         if RESUME_KEY not in input_data:
-            raise ValueError(
+            raise InterruptPendingError(
                 f"Thread is paused at interrupt '{request.id}' in node '{request.node}'. "
                 f"Resume it with {{'{RESUME_KEY}': value}}."
             )
         record_resume(state, input_data[RESUME_KEY], input_data.get(RESUME_INTERRUPT_ID_KEY))
     elif RESUME_KEY in input_data:
-        raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
+        raise NothingToResumeError()
 
     if state.is_interrupted():
         logger.info(
@@ -235,6 +238,33 @@ REMOTE_TOOL_REASON = "remote_tool_call"
 
 # Run-config key telling the loop to continue after the node that paused for a client tool.
 RESUME_AFTER_NODE_KEY = "_resume_after_node"
+
+
+def resolve_stored_node(
+    stored: str,
+    nodes: dict[str, Any],
+    node_aliases: dict[str, str] | None,
+    thread_id: Any,
+) -> str:
+    """Map the node a thread was stored at onto a node the deployed graph has.
+
+    A node the graph still has is returned unchanged. A missing one is followed through
+    ``node_aliases`` (set at ``compile()``); with no usable alias the run stops with
+    ``StoredNodeMissingError`` instead of a bare ``KeyError`` deep in the loop.
+    """
+    if stored in nodes:
+        return stored
+    seen = {stored}
+    name = stored
+    while name in (node_aliases or {}):
+        name = (node_aliases or {})[name]
+        if name in nodes:
+            logger.info("Thread '%s': stored node '%s' resumes at '%s'", thread_id, stored, name)
+            return name
+        if name in seen:
+            break
+        seen.add(name)
+    raise StoredNodeMissingError(stored, thread_id, available_nodes=list(nodes))
 
 
 def is_remote_tool_marker(item: Any) -> bool:

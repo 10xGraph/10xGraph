@@ -35,6 +35,7 @@ _ANTHROPIC_EXCLUDED_KWARGS = CALL_EXCLUDED_KWARGS | frozenset(
         "reasoning_effort",
         "auth_token",
         "middleware",
+        "stream_idle_timeout",
     }
 )
 

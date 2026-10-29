@@ -52,3 +52,11 @@ def holder_count(resource: object | None) -> int:
         return 0
     with _lock:
         return len(_holders.get(id(resource), ()))
+
+
+def holders(resource: object | None) -> list[Any]:
+    """The live graphs holding ``resource`` (for the compile-time sharing warning)."""
+    if resource is None:
+        return []
+    with _lock:
+        return list(_holders.get(id(resource), ()))

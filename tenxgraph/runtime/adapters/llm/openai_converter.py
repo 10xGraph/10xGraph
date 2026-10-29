@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, cast
 
+from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
@@ -460,7 +461,7 @@ class OpenAIConverter(BaseConverter):
         swallowing them would save a truncated answer as a complete one.
         """
         if hasattr(stream, "__aiter__"):
-            async for chunk in stream:  # type: ignore
+            async for chunk in iter_with_idle_timeout(stream):
                 yield chunk
         else:
             for chunk in stream:

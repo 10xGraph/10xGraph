@@ -2,6 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, TypeVar, get_args
 
+from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import run_coroutine
 from tenxgraph.utils.thread_info import ThreadInfo
@@ -146,9 +147,17 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         }
         return data
 
-    def _decode_state(self, data: dict[str, Any]) -> StateT:
+    @staticmethod
+    def _check_state_format(data: dict[str, Any], thread_id: Any = None) -> None:
+        """Refuse a row written in a newer format than this version reads."""
+        found = (data.get(STATE_META_KEY) or {}).get("format")
+        if isinstance(found, int) and found > STATE_FORMAT_VERSION:
+            raise StateFormatVersionError(found, STATE_FORMAT_VERSION, thread_id)
+
+    def _decode_state(self, data: dict[str, Any], thread_id: Any = None) -> StateT:
         """Rebuild a state from a persisted row using the bound state class."""
         data = dict(data)
+        self._check_state_format(data, thread_id)
         meta = data.pop(STATE_META_KEY, None) or {}
         legacy_path = data.pop(_LEGACY_CLASS_PATH_KEY, None)
         stored_name = meta.get("class") or (

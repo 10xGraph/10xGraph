@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import inspect
 import json
 import logging
 import typing as t
@@ -22,13 +25,52 @@ from ._helpers import _normalize_resource_uri, generic_tool_failure
 logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 
+DEFAULT_MCP_CONNECT_TIMEOUT = 30.0
+
+
 class MCPMixin:
     _client: t.Any | None
     # The concrete ToolNode defines these
     mcp_tools: list[str]  # type: ignore[assignment]
     _pass_user_info_to_mcp: bool  # type: ignore[assignment]
 
+    @contextlib.asynccontextmanager
+    async def _mcp_session(self) -> t.AsyncIterator[None]:
+        """Open the MCP client session, bounding only the connect by ``mcp_connect_timeout``."""
+        timeout = getattr(self, "_mcp_connect_timeout", None)
+        async with contextlib.AsyncExitStack() as stack:
+            if timeout is None:
+                await stack.enter_async_context(self._client)
+            else:
+                try:
+                    async with asyncio.timeout(timeout):
+                        await stack.enter_async_context(self._client)
+                except TimeoutError as exc:
+                    raise TimeoutError(f"MCP connect timed out after {timeout}s") from exc
+            yield
+
+    def _cap_mcp_result(self, blocks: list[ContentBlock]) -> list[ContentBlock]:
+        """Cut an MCP result that is longer than ``mcp_max_result_chars`` (opt-in)."""
+        cap = getattr(self, "_mcp_max_result_chars", None)
+        if cap is None:
+            return blocks
+        for block in blocks:
+            output = getattr(block, "output", None)
+            if output is None:
+                continue
+            text = output if isinstance(output, str) else json.dumps(output, default=str)
+            if len(text) > cap:
+                block.output = text[:cap] + f"\n[output cut: {len(text) - cap} more characters]"
+        return blocks
+
     def _serialize_result(
+        self,
+        tool_call_id: str,
+        res: t.Any,
+    ) -> list[ContentBlock]:
+        return self._cap_mcp_result(self._serialize_result_uncapped(tool_call_id, res))
+
+    def _serialize_result_uncapped(
         self,
         tool_call_id: str,
         res: t.Any,
@@ -82,6 +124,44 @@ class MCPMixin:
             )
         ]
 
+    async def _list_server_tools(self, refresh: bool = False) -> list[t.Any] | None:
+        """List the server's tools, from the per-node cache when ``mcp_cache_tools`` is on.
+
+        Returns None when the server cannot be listed; a failed listing is never cached.
+        """
+        cached = getattr(self, "_mcp_tools_cache", None)
+        if cached is not None and not refresh:
+            return cached
+        try:
+            async with self._mcp_session():
+                if not await self._client.ping():
+                    return None
+                server_tools = list(await self._client.list_tools())
+        except Exception as e:
+            logger.exception("Failed to fetch MCP tools: %s", e)
+            return None
+        if getattr(self, "_mcp_cache_tools", False):
+            self._mcp_tools_cache = server_tools
+        return server_tools
+
+    async def refresh_mcp_tools(self) -> list[dict]:
+        """Drop the cached MCP tool list and fetch it again from the server."""
+        self._mcp_tools_cache = None
+        if not self._client:
+            return []
+        await self._list_server_tools(refresh=True)
+        return await self._get_mcp_tool()
+
+    def _mcp_exposed_name(self, name: str) -> str:
+        return f"{getattr(self, '_mcp_prefix', None) or ''}{name}"
+
+    def _mcp_server_name(self, name: str) -> str:
+        """The server's own name for a tool the model sees as ``name``."""
+        prefix = getattr(self, "_mcp_prefix", None)
+        if prefix and name.startswith(prefix):
+            return name[len(prefix) :]
+        return name
+
     async def _get_mcp_tool(self, tags: set[str] | None = None) -> list[dict]:
         """Fetch tools from the MCP client, optionally filtering by tags.
 
@@ -95,48 +175,60 @@ class MCPMixin:
         if not self._client:
             return tools
 
-        server_tools: list[t.Any] = []
-        try:
-            async with self._client:
-                res = await self._client.ping()
-                if not res:
-                    return tools
-                server_tools = await self._client.list_tools()
-        except Exception as e:
-            logger.exception("Failed to fetch MCP tools: %s", e)
+        server_tools = await self._list_server_tools()
+        if server_tools is None:
             return tools
+
+        # Keep only the tools the developer allowed, so a hidden tool is also not callable.
+        include = getattr(self, "_mcp_include", None)
+        exclude = getattr(self, "_mcp_exclude", frozenset())
+        server_tools = [
+            i
+            for i in server_tools
+            if (include is None or i.name in include) and i.name not in exclude
+        ]
 
         # Raised outside the try above so a collision is never swallowed.
         local_names = set(getattr(self, "_funcs", {}))
         local_names |= set(getattr(self, "remote_tool_names", []))
         names: list[str] = []
         for i in server_tools:
-            if i.name in local_names:
+            exposed = self._mcp_exposed_name(i.name)
+            if exposed in local_names:
                 raise ValueError(
-                    f"MCP tool '{i.name}' has the same name as a local or remote tool on "
+                    f"MCP tool '{exposed}' has the same name as a local or remote tool on "
                     "this ToolNode. Rename one of them."
                 )
-            if i.name not in names:
-                names.append(i.name)
+            if exposed not in names:
+                names.append(exposed)
 
         self.mcp_tools = names
 
+        max_desc = getattr(self, "_mcp_max_description_chars", None)
         advertised: set[str] = set()
         for i in server_tools:
-            if i.name in advertised:
+            exposed = self._mcp_exposed_name(i.name)
+            if exposed in advertised:
                 continue
             if tags:
                 meta = i.meta or {}
                 tool_tags = set(meta.get("_fastmcp", {}).get("tags", []))
                 if not tool_tags.intersection(tags):
                     continue
-            advertised.add(i.name)
+            advertised.add(exposed)
+            description = i.description
+            if (
+                max_desc is not None
+                and isinstance(description, str)
+                and len(description) > max_desc
+            ):
+                description = description[:max_desc] + "..."
             tools.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": i.name,
-                        "description": i.description,
+                        "name": exposed,
+                        "description": description,
                         "parameters": i.inputSchema,
                     },
                 }
@@ -214,7 +306,7 @@ class MCPMixin:
                 publish_event(event)
                 return res
 
-            async with self._client:
+            async with self._mcp_session():
                 if not await self._client.ping():
                     error_result = Message.tool_message(
                         content=[
@@ -235,16 +327,30 @@ class MCPMixin:
                         context, input_data, error_result
                     )
 
+                call_kwargs: dict[str, t.Any] = {}
                 if self._pass_user_info_to_mcp:
                     mcp_user_info = config.get("user")
-                    if mcp_user_info and isinstance(mcp_user_info, dict):
-                        input_data["user"] = mcp_user_info
-                    else:
+                    if not (mcp_user_info and isinstance(mcp_user_info, dict)):
                         user_id = config.get("user_id")
-                        if user_id:
-                            input_data["user"] = {"user_id": user_id}
+                        mcp_user_info = {"user_id": user_id} if user_id else None
+                    if mcp_user_info:
+                        # Request metadata, not a tool argument: a strict input schema
+                        # would reject an extra "user" argument, and a lax one would
+                        # hand every claim to the tool body.
+                        params = inspect.signature(self._client.call_tool).parameters
+                        if "meta" in params or any(
+                            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+                        ):
+                            call_kwargs["meta"] = {"user": mcp_user_info}
+                        else:
+                            logger.warning(
+                                "pass_user_info_to_mcp needs a fastmcp client whose "
+                                "call_tool accepts meta; user info was not sent."
+                            )
 
-                res: t.Any = await self._client.call_tool(name, input_data)
+                res: t.Any = await self._client.call_tool(
+                    self._mcp_server_name(name), input_data, **call_kwargs
+                )
 
                 final_res = self._serialize_result(tool_call_id, res)
 
@@ -255,7 +361,9 @@ class MCPMixin:
 
                 res = await callback_mgr.execute_after_invoke(context, input_data, result)
                 event.event_type = EventType.END
-                event.data["message"] = result.model_dump()
+                # Publish what after_invoke returned, not the raw result it replaced.
+                published = res if hasattr(res, "model_dump") else result
+                event.data["message"] = published.model_dump()
                 event.metadata["status"] = "MCP tool execution complete"
                 event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
                 publish_event(event)

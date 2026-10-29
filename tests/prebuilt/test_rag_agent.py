@@ -662,3 +662,16 @@ class TestRAGIntegration:
         rag = RAGAgent(store=_fake_store(), agent=_fake_agent(), reranker=FakeReranker())
         graph = rag.compile()
         assert graph is not None
+
+
+class TestRerankerFailure:
+    @pytest.mark.asyncio
+    async def test_reranker_error_falls_back_to_retrieval_order(self):
+        class BrokenReranker:
+            async def arerank(self, query, documents, top_n):
+                raise RuntimeError("cohere is down")
+
+        rag = RAGAgent(
+            store=_fake_store(), agent=_fake_agent(), reranker=BrokenReranker(), top_n=2
+        )
+        assert await rag._rerank_docs("q", ["a", "b", "c"]) == ["a", "b"]

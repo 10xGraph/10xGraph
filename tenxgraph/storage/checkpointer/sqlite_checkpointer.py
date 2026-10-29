@@ -240,8 +240,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     def _serialize_state(self, state: StateT) -> str:
         return _dumps(self._encode_state(state))
 
-    def _deserialize_state(self, raw: str) -> StateT:
-        return self._decode_state(json.loads(raw))
+    def _deserialize_state(self, raw: str, thread_id: Any = None) -> StateT:
+        return self._decode_state(json.loads(raw), thread_id)
 
     async def _ensure_setup(self) -> None:
         if self._setup_done:
@@ -343,7 +343,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             row = await cursor.fetchone()
         if row is None:
             return None
-        return self._deserialize_state(row["state_data"])
+        return self._deserialize_state(row["state_data"], config.get("thread_id"))
 
     async def aclear_state(self, config: dict[str, Any]) -> bool:
         await self._ensure_setup()
@@ -400,7 +400,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             row = await cursor.fetchone()
         if row is None:
             return None
-        return self._deserialize_state(row["state_data"])
+        return self._deserialize_state(row["state_data"], config.get("thread_id"))
 
     async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
         await self._ensure_setup()

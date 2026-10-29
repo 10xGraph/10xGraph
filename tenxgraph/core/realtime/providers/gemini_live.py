@@ -9,6 +9,7 @@ testable with lightweight stand-ins.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -122,6 +123,9 @@ def normalize_message(message: Any) -> list[RealtimeEvent]:
     return events
 
 
+DEFAULT_CONNECT_TIMEOUT = 30.0
+
+
 class GeminiLiveClient:
     """``RealtimeClient`` implementation backed by the Gemini Live API.
 
@@ -139,7 +143,11 @@ class GeminiLiveClient:
         use_vertex_ai: bool = False,
         project: str | None = None,
         location: str | None = None,
+        connect_timeout: float | None = DEFAULT_CONNECT_TIMEOUT,
     ) -> None:
+        # Seconds to wait for the live connection to open; None waits without a limit.
+        # Only the connect is bounded, never the session itself.
+        self._connect_timeout = connect_timeout
         self._client = client
         self._connector = connector
         self._api_key = api_key
@@ -282,8 +290,18 @@ class GeminiLiveClient:
         self._config = config
         connector = self._get_connector()
         live_config = self._build_connect_config(config, resume_handle=resume_handle)
-        self._cm = connector(model=config.model, config=live_config)
-        self._session = await self._cm.__aenter__()
+        cm = connector(model=config.model, config=live_config)
+        if self._connect_timeout is None:
+            session = await cm.__aenter__()
+        else:
+            try:
+                session = await asyncio.wait_for(cm.__aenter__(), timeout=self._connect_timeout)
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Gemini Live connect timed out after {self._connect_timeout}s"
+                ) from exc
+        self._cm = cm
+        self._session = session
 
     def _require_session(self) -> Any:
         if self._session is None:

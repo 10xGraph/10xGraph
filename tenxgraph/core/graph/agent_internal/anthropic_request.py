@@ -24,6 +24,7 @@ import logging
 from typing import Any
 
 from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
+from tenxgraph.utils.converter import THINKING_BLOCKS_KEY
 
 
 logger = logging.getLogger("tenxgraph.agent.anthropic")
@@ -227,7 +228,8 @@ def convert_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
 
 def convert_assistant_tool_calls(message: dict[str, Any]) -> dict[str, Any]:
     """Turn an assistant ``tool_calls`` array into ``tool_use`` content blocks."""
-    blocks: list[dict[str, Any]] = []
+    # Signed thinking blocks go first, unchanged: Anthropic rejects an edited or reordered one.
+    blocks: list[dict[str, Any]] = list(message.get(THINKING_BLOCKS_KEY) or [])
 
     content = message.get("content")
     if content:
@@ -292,12 +294,13 @@ def merge_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "assistant" and message.get("tool_calls"):
             merged.append(convert_assistant_tool_calls(message))
         else:
-            merged.append(
-                {
-                    "role": role,
-                    "content": convert_content_parts(message.get("content", "")),
-                }
-            )
+            content = convert_content_parts(message.get("content", ""))
+            thinking = message.get(THINKING_BLOCKS_KEY) if role == "assistant" else None
+            if thinking:
+                if isinstance(content, str):
+                    content = [{"type": "text", "text": content}] if content else []
+                content = [*thinking, *(content or [])]
+            merged.append({"role": role, "content": content})
 
     flush()
     return merged

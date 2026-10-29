@@ -39,6 +39,7 @@ GRAPH_INVOKE = "graph:invoke"
 GRAPH_STREAM = "graph:stream"
 GRAPH_STOP = "graph:stop"
 GRAPH_FIX = "graph:fix"
+# Kept so existing imports work; the setup endpoint is gone and no scope check uses it.
 GRAPH_SETUP = "graph:setup"
 GRAPH_READ = "graph:read"
 
@@ -70,7 +71,6 @@ ALL_SCOPES = frozenset(
         GRAPH_STREAM,
         GRAPH_STOP,
         GRAPH_FIX,
-        GRAPH_SETUP,
         GRAPH_READ,
         CHECKPOINT_READ,
         CHECKPOINT_WRITE,

@@ -429,3 +429,50 @@ class TestSystemPromptInterpolationSafety:
         )
 
         assert messages[0]["content"] == bad
+
+
+# ---------------------------------------------------------------------------
+# G-83: media conversion bugs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mime", "expected"),
+    [("audio/mpeg", "mp3"), ("audio/mp3", "mp3"), ("audio/x-wav", "wav"), ("audio/wav", "wav")],
+)
+def test_audio_format_is_wav_or_mp3(mime, expected):
+    from tenxgraph.core.state.message_block import AudioBlock, MediaRef
+    from tenxgraph.utils.converter import _audio_block_to_openai
+
+    block = AudioBlock(media=MediaRef(kind="data", data_base64="AAAA", mime_type=mime))
+    assert _audio_block_to_openai(block)["input_audio"]["format"] == expected
+
+
+def test_file_id_image_is_not_sent_as_image_url():
+    from tenxgraph.core.state.message_block import ImageBlock, MediaRef
+    from tenxgraph.utils.converter import _image_block_to_openai
+
+    part = _image_block_to_openai(ImageBlock(media=MediaRef(kind="file_id", file_id="file-1")))
+    assert part["type"] == "text"
+    assert "file-1" in part["text"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_refs_inlines_data_uri_without_crashing():
+    from unittest.mock import AsyncMock
+
+    from tenxgraph.core.state.message_block import ImageBlock, MediaRef
+    from tenxgraph.utils.converter import resolve_media_refs
+
+    msg = Message.text_message("x")
+    msg.content = [
+        ImageBlock(media=MediaRef(kind="url", url="graph://media/abc", mime_type="image/png"))
+    ]
+    resolver = Mock()
+    resolver.resolve_for_openai = AsyncMock(
+        return_value={"image_url": {"url": "data:image/png;base64,QUJD"}}
+    )
+    await resolve_media_refs([msg], resolver, provider="openai", model="gpt-4o")
+    media = msg.content[0].media
+    assert media.kind == "data"
+    assert media.data_base64 == "QUJD"

@@ -667,3 +667,40 @@ class TestSwarmIntegration:
         writer_tn = members["WRITER"].agent.tool_node
         assert writer_tn is not None
         assert "transfer_to_triage" in writer_tn._funcs
+
+
+# ===========================================================================
+# G-82: member names are matched case-insensitively
+# ===========================================================================
+
+
+class TestMixedCaseMembers:
+    def test_route_returns_registered_name_for_lowercase_member(self):
+        fn = _make_member_route("triage", ["researcher"], None)
+        state = _state_with(_msg("", tool_calls=[_tc("transfer_to_researcher")]))
+        assert fn(state) == "researcher"
+
+    def test_route_returns_registered_name_for_mixed_case_member(self):
+        fn = _make_member_route("TRIAGE", ["Researcher"], None)
+        state = _state_with(_msg("", tool_calls=[_tc("transfer_to_researcher")]))
+        assert fn(state) == "Researcher"
+
+    def test_can_handoff_to_resolves_to_registered_names(self):
+        swarm = SwarmAgent(
+            members={
+                "triage": SwarmMemberConfig(agent=_fake_agent(), can_handoff_to=["WRITER"]),
+                "Writer": SwarmMemberConfig(agent=_fake_agent()),
+            },
+            entry="triage",
+        )
+        assert swarm._resolve_targets("triage") == ["Writer"]
+
+    def test_duplicate_names_ignoring_case_rejected(self):
+        with pytest.raises(ValueError, match="unique"):
+            SwarmAgent(
+                members={
+                    "A": SwarmMemberConfig(agent=_fake_agent()),
+                    "a": SwarmMemberConfig(agent=_fake_agent()),
+                },
+                entry="A",
+            )

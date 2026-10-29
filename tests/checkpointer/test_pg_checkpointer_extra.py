@@ -855,3 +855,23 @@ async def test_aget_tool_result_follows_the_authz_scope_over_the_setting(cp):
 
     query, *_ = conn.fetchrow.await_args.args
     assert "SELECT thread_id FROM" not in query
+
+
+def test_redis_pool_is_bounded_by_default_and_overridable(monkeypatch):
+    """G-43: the pool built from a URL has a connection cap, overridable key by key."""
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    cp = PgCheckpointer(postgres_dsn="postgres://x", redis=MagicMock())
+
+    pool = cp._create_redis_pool(
+        redis=None, redis_pool=None, redis_url="redis://localhost:6379/0", redis_pool_config={}
+    ).connection_pool
+    assert pool.max_connections == 50
+
+    pool = cp._create_redis_pool(
+        redis=None,
+        redis_pool=None,
+        redis_url="redis://localhost:6379/0",
+        redis_pool_config={"max_connections": 7},
+    ).connection_pool
+    assert pool.max_connections == 7

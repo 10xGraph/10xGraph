@@ -419,7 +419,7 @@ class StateGraph[StateT: AgentState]:
         logger.debug("Overrode node '%s' with new function", name)
         return self
 
-    def compile(
+    def compile(  # noqa: PLR0913
         self,
         checkpointer: BaseCheckpointer[StateT] | None = None,
         store: BaseStore | None = None,
@@ -430,6 +430,7 @@ class StateGraph[StateT: AgentState]:
         shutdown_timeout: float = 30.0,
         media_policy: "MediaFetchPolicy | None" = None,
         owns_resources: bool = True,
+        node_aliases: dict[str, str] | None = None,
     ) -> "CompiledGraph[StateT]":
         """Compile the graph for execution.
 
@@ -448,6 +449,10 @@ class StateGraph[StateT: AgentState]:
                 publisher. A resource shared by several live graphs is closed only when the
                 last of them closes. Pass ``False`` when you manage the resource (for
                 example your own connection pool): this graph then never closes it.
+            node_aliases: Opt-in map ``{old_name: new_name}`` for threads stored at a node a
+                deploy renamed or removed. A thread stored at ``old_name`` resumes at
+                ``new_name``. Without an alias, such a thread fails with
+                ``StoredNodeMissingError`` naming the node and the thread.
         """
         logger.info(
             "Compiling graph with %d nodes, %d edges, entry_point='%s'",
@@ -501,7 +506,25 @@ class StateGraph[StateT: AgentState]:
             from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 
             checkpointer = InMemoryCheckpointer[StateT]()
-            logger.debug("No checkpointer provided, using InMemoryCheckpointer")
+            logger.warning(
+                "No checkpointer given to compile(); using InMemoryCheckpointer. Threads live "
+                "in this process only and are lost on restart; with more than one process "
+                "they are not shared. Pass a PgCheckpointer (or SqliteCheckpointer for one "
+                "process) for anything beyond a demo."
+            )
+
+        from tenxgraph.utils import resource_registry
+
+        if any(
+            getattr(holder, "_state_graph", None) is not self
+            for holder in resource_registry.holders(checkpointer)
+        ):
+            logger.warning(
+                "This checkpointer is already used by another compiled graph in this process. "
+                "Graphs that share a checkpointer share its threads, and the store and "
+                "context manager bound in one InjectQ container. Run one graph per process "
+                "or container, or give each graph its own checkpointer and container."
+            )
 
         # Stored rows hold data only; the checkpointer rebuilds them into this class.
         checkpointer.bind_state_type(type(self._state))
@@ -572,6 +595,7 @@ class StateGraph[StateT: AgentState]:
             shutdown_timeout=shutdown_timeout,
             media_policy=media_policy,
             owns_resources=owns_resources,
+            node_aliases=node_aliases,
         )
 
         self._container.bind(CompiledGraph, app)

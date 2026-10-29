@@ -117,3 +117,34 @@ async def test_unsupported_ledger_warns_once(caplog):
     warnings = [r for r in caplog.records if "tool execution ledger" in r.getMessage().lower()]
     assert len(warnings) == 1
     assert "NoLedgerCheckpointer" in warnings[0].getMessage()
+
+
+# --- G-90: in-memory has a ledger; G-30: it is scoped to the thread owner ---------------
+
+
+@pytest.mark.asyncio
+async def test_in_memory_has_a_ledger_and_does_not_warn(caplog):
+    from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+
+    mem = InMemoryCheckpointer()
+    cfg = {"thread_id": "t1", "user_id": "u1"}
+    with caplog.at_level(logging.WARNING):
+        await mem.aput_tool_result(cfg, "c1", {"output": "ok"})
+        assert await mem.aget_tool_result(cfg, "c1") == {"output": "ok"}
+    assert not any("does not implement the tool execution ledger" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_in_memory_ledger_is_scoped_to_the_thread_owner():
+    from tenxgraph.core.authz import build_authz
+    from tenxgraph.core.exceptions import StorageError
+    from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
+
+    mem = InMemoryCheckpointer()
+    owner = {"thread_id": "t1", "user_id": "u1", "authz": build_authz("u1", scope="owner")}
+    other = {"thread_id": "t1", "user_id": "u2", "authz": build_authz("u2", scope="owner")}
+    await mem.aput_tool_result(owner, "c1", {"output": "secret"})
+    assert await mem.aget_tool_result(other, "c1") is None
+    with pytest.raises(StorageError):
+        await mem.aput_tool_result(other, "c2", {"output": "x"})
+    assert await mem.aget_tool_result(owner, "c1") == {"output": "secret"}

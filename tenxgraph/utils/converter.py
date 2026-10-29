@@ -10,6 +10,7 @@ from tenxgraph.core.state.message_block import (
     AudioBlock,
     DocumentBlock,
     ImageBlock,
+    ReasoningBlock,
     RemoteToolCallBlock,
     TextBlock,
     ToolResultBlock,
@@ -23,6 +24,33 @@ if TYPE_CHECKING:
     from tenxgraph.storage.media.resolver import MediaRefResolver
 
 logger = logging.getLogger("tenxgraph.utils")
+
+
+# Key on an assistant message dict carrying the Anthropic thinking blocks to replay. Only the
+# Anthropic request path reads it; every other provider path drops it (strip_provider_blocks).
+THINKING_BLOCKS_KEY = "_anthropic_thinking"
+
+
+def _thinking_blocks_for_replay(blocks: list[Any]) -> list[dict[str, Any]]:
+    """Signed ``thinking`` and ``redacted_thinking`` blocks, unchanged, in stored order."""
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, ReasoningBlock):
+            continue
+        if block.redacted_data:
+            out.append({"type": "redacted_thinking", "data": block.redacted_data})
+        elif block.signature:
+            out.append(
+                {"type": "thinking", "thinking": block.summary, "signature": block.signature}
+            )
+    return out
+
+
+def strip_provider_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop Anthropic-only thinking blocks so no other provider receives them."""
+    if not any(THINKING_BLOCKS_KEY in m for m in messages):
+        return messages
+    return [{k: v for k, v in m.items() if k != THINKING_BLOCKS_KEY} for m in messages]
 
 
 _MEDIA_BLOCK_TYPES = ImageBlock | AudioBlock | VideoBlock | DocumentBlock
@@ -102,7 +130,7 @@ async def resolve_media_refs(
                 if resolved and "image_url" in resolved:
                     url = resolved["image_url"]["url"]
                     if url.startswith("data:"):
-                        _, b64_data = url.partition(",")
+                        _, _, b64_data = url.partition(",")
                         mime = url.split(":")[1].split(";")[0]
                         block.media = media.model_copy(  # type: ignore[union-attr]
                             update={
@@ -189,11 +217,24 @@ def _image_block_to_openai(block: ImageBlock) -> dict[str, Any]:
     elif media.kind == "url" and media.url:
         url = media.url
     elif media.kind == "file_id" and media.file_id:
-        url = media.file_id
+        # Chat Completions image_url takes a URL or data URI, never a file id.
+        return {"type": "text", "text": f"[Image file_id: {media.file_id}]"}
     else:
-        # Fallback: try url, then file_id
-        url = media.url or media.file_id or ""
+        url = media.url or ""
+        if not url and media.file_id:
+            return {"type": "text", "text": f"[Image file_id: {media.file_id}]"}
     return {"type": "image_url", "image_url": {"url": url}}
+
+
+_AUDIO_FORMATS = {
+    "mpeg": "mp3",
+    "mp3": "mp3",
+    "x-mp3": "mp3",
+    "wav": "wav",
+    "x-wav": "wav",
+    "wave": "wav",
+    "vnd.wave": "wav",
+}
 
 
 def _audio_block_to_openai(block: AudioBlock) -> dict[str, Any]:
@@ -202,8 +243,10 @@ def _audio_block_to_openai(block: AudioBlock) -> dict[str, Any]:
     if media.kind == "data" and media.data_base64:
         fmt = "wav"
         if media.mime_type:
-            # e.g. "audio/mp3" -> "mp3"
-            fmt = media.mime_type.split("/")[-1]
+            # OpenAI accepts only "wav" and "mp3"; map the common MIME spellings
+            # (audio/mpeg, audio/x-wav, audio/wave, audio/mp3) onto those.
+            subtype = media.mime_type.split("/")[-1].split(";")[0].strip().lower()
+            fmt = _AUDIO_FORMATS.get(subtype, subtype)
         return {
             "type": "input_audio",
             "input_audio": {"data": media.data_base64, "format": fmt},
@@ -385,17 +428,25 @@ def _convert_dict(message: Message) -> dict[str, Any] | None:
             "tool_call_id": call_id,
         }
 
+    thinking = _thinking_blocks_for_replay(blocks) if message.role == "assistant" else []
+
     if message.role == "assistant" and message.tools_calls:
-        return {
+        result: dict[str, Any] = {
             "role": message.role,
             "content": message.text(),
             "tool_calls": message.tools_calls,
         }
+        if thinking:
+            result[THINKING_BLOCKS_KEY] = thinking
+        return result
 
     # Check for multimodal blocks
     content = _build_content(blocks)
 
-    return {"role": message.role, "content": content}
+    result = {"role": message.role, "content": content}
+    if thinking:
+        result[THINKING_BLOCKS_KEY] = thinking
+    return result
 
 
 def _interpolate_system_prompts(

@@ -1921,7 +1921,7 @@ class TestExecute:
         assert [m["role"] for m in sent] == ["system", "system"]
         assert [m["content"] for m in sent] == ["Base {topic}", "skill " + hostile]
 
-    async def test_execute_stream_no_end_event(self):
+    async def test_execute_stream_ends_span_with_usage_when_stream_ends(self):
         agent = _make_openai_agent()
         state = AgentState()
         config = {"_node_name": "AGENT", "is_stream": True}
@@ -1940,9 +1940,42 @@ class TestExecute:
              patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter") as mock_converter:
 
             await agent.execute(state, config)
+            # START only: the span stays open until the stream has been read (G-47).
+            assert mock_publish.call_count == 1
+            hook = mock_converter.return_value.on_stream_end
+            final = SimpleNamespace(
+                usages=SimpleNamespace(
+                    prompt_tokens=11,
+                    completion_tokens=7,
+                    cache_read_input_tokens=3,
+                    cache_creation_input_tokens=2,
+                    reasoning_tokens=1,
+                ),
+                metadata={"finish_reason": "stop", "model": "m-1"},
+            )
+            hook(final, None)
 
-        # Only START event — no END event for streams
-        assert mock_publish.call_count == 1
+        assert mock_publish.call_count == 2
+        end = mock_publish.call_args.args[0]
+        assert end.event_type.value == "end"
+        assert end.data["input_tokens"] == 11
+        assert end.data["output_tokens"] == 7
+        assert end.data["cache_read_tokens"] == 3
+        assert end.data["cache_creation_tokens"] == 2
+        assert end.data["reasoning_tokens"] == 1
+        assert end.data["finish_reason"] == "stop"
+        assert end.data["response_model"] == "m-1"
+
+    async def test_execute_stream_hook_reports_stream_error(self):
+        from tenxgraph.core.graph.agent_internal.execution import _make_stream_end_hook
+        from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+
+        ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
+        with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
+            _make_stream_end_hook(ev)(None, RuntimeError("boom"))
+        sent = pub.call_args.args[0]
+        assert sent.event_type == EventType.ERROR
+        assert sent.data["error"] == "RuntimeError"
 
     async def test_execute_with_multimodal_config_skips_strip(self):
         agent = _make_openai_agent(multimodal_config=MagicMock())
@@ -2542,3 +2575,50 @@ class TestMemoryBlockPerRunCache:
             await agent._build_memory_block(state, {"run_id": f"r{i}"})
         assert len(agent._memory_block_cache) == memory_module._MEMORY_BLOCK_CACHE_SIZE
         assert ("r0", "hi") not in agent._memory_block_cache
+
+
+@pytest.mark.asyncio
+class TestLlmSpanClosed:
+    """G-47: every LLM START event is followed by an END or ERROR event."""
+
+    async def _run(self, *, stream: bool, response=None, error: Exception | None = None):
+        agent = _make_openai_agent()
+        state = AgentState()
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=response, side_effect=error)
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value=None)
+
+        seen = []
+
+        def record(event, *args, **kwargs):
+            if str(getattr(event.event, "value", event.event)) == "llm_call":
+                kind = getattr(event.event_type, "value", event.event_type)
+                seen.append((str(kind), dict(event.data)))
+
+        with patch(
+            "tenxgraph.core.graph.agent_internal.execution.convert_messages",
+            return_value=[{"role": "user", "content": "hi"}],
+        ), patch(
+            "tenxgraph.core.graph.agent_internal.execution.strip_media_blocks",
+            side_effect=lambda msgs: msgs,
+        ), patch(
+            "tenxgraph.runtime.publisher.publish.publish_event", side_effect=record
+        ), patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
+            try:
+                await agent.execute(state, {"_node_name": "AGENT", "is_stream": stream})
+            except RuntimeError as exc:
+                assert error is not None and str(exc) == str(error)
+        return seen
+
+    async def test_failed_call_publishes_error_event_without_provider_text(self):
+        seen = await self._run(stream=False, error=RuntimeError("secret provider detail"))
+        assert [t for t, _ in seen] == ["start", "error"]
+        assert "secret provider detail" not in str(seen[-1][1])
+
+    async def test_streaming_call_ends_span_when_stream_ends_not_before(self):
+        seen = await self._run(stream=True, response=MagicMock())
+        # The END comes from the converter's on_stream_end hook, once the stream was read.
+        assert [t for t, _ in seen] == ["start"]

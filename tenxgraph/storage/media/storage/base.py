@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from tenxgraph.core.state.message_block import MediaRef
@@ -154,6 +154,48 @@ class BaseMediaStore(ABC):
             NotImplementedError: The backend does not support it.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support update_metadata()")
+
+    async def modify_metadata(
+        self,
+        storage_key: str,
+        fn: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> bool:
+        """Read the metadata, let ``fn`` decide the change, and write it as one step.
+
+        ``fn`` receives a copy of the current metadata and returns the ``update_metadata``
+        updates, or ``None`` / an empty dict for no change. It must be a plain function (no
+        awaiting): a store may call it more than once. Returns ``False`` when the object does
+        not exist. Use it instead of ``get_metadata`` plus ``update_metadata`` whenever the
+        new value depends on the old one (a list append), so concurrent updates are not lost.
+
+        The default is those two calls and is NOT atomic. The bundled stores override it.
+
+        Raises:
+            NotImplementedError: The backend does not support ``update_metadata``.
+        """
+        metadata = await self.get_metadata(storage_key)
+        if metadata is None:
+            return False
+        updates = fn(dict(metadata))
+        if updates:
+            return await self.update_metadata(storage_key, updates)
+        return True
+
+    async def list_keys_for_owner(self, owner_id: str) -> list[str]:
+        """Return the keys of the objects whose metadata records ``owner_id`` as owner.
+
+        The default lists every key and reads each one's metadata. A backend that cannot
+        enumerate all keys but keeps a per-owner index (the cloud store) overrides it.
+
+        Raises:
+            NotImplementedError: The backend cannot enumerate its keys.
+        """
+        owned = []
+        for key in await self.list_keys():
+            metadata = await self.get_metadata(key)
+            if metadata and str(metadata.get("owner_id")) == str(owner_id):
+                owned.append(key)
+        return owned
 
     async def get_direct_url(
         self,

@@ -756,3 +756,14 @@ class TestQdrantLocalModeEndToEnd:
             assert {r.user_id for r in listed} == {"alice"}
         finally:
             await store.client.close()
+
+
+class TestIntegerZeroIds:
+    def test_user_id_zero_is_still_filtered(self, qdrant_store):
+        flt = qdrant_store._build_qdrant_filter(user_id=0, thread_id=0)
+        keys = {(c.key, c.match.value) for c in flt.must}
+        assert ("user_id", 0) in keys
+        assert ("thread_id", 0) in keys
+
+    def test_none_user_id_adds_no_filter(self, qdrant_store):
+        assert qdrant_store._build_qdrant_filter(user_id=None) is None

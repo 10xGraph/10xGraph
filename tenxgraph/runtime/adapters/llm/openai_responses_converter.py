@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
@@ -232,7 +233,7 @@ class OpenAIResponsesConverter(BaseConverter):
     async def _iterate_stream_events(self, stream: Any) -> AsyncGenerator[Any]:
         """Yield stream events from async or sync Responses API iterators."""
         try:
-            async for event in stream:
+            async for event in iter_with_idle_timeout(stream):
                 yield event
             return
         except TypeError:

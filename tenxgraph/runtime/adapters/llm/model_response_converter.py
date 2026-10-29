@@ -43,6 +43,10 @@ class ModelResponseConverter:
         # Extra metadata merged into every Message this converter produces, e.g.
         # {"allowed_tools": [...]} so dispatch can tell which tools the model was shown.
         self.message_metadata: dict[str, Any] = {}
+        # Called once when ``stream()`` ends (finished, failed or closed early) with the
+        # last message that carried token usage (or None) and the error (or None). Lets the
+        # caller attach usage that is only known once the stream has been read.
+        self.on_stream_end: Callable[[Any, BaseException | None], None] | None = None
 
         if isinstance(converter, str):
             if converter == "openai":
@@ -122,6 +126,15 @@ class ModelResponseConverter:
         if self.message_metadata and isinstance(message, Message):
             message.metadata = {**(message.metadata or {}), **self.message_metadata}
 
+    def _notify_stream_end(self, last_message: Any, error: BaseException | None) -> None:
+        hook, self.on_stream_end = self.on_stream_end, None
+        if hook is None:
+            return
+        try:
+            hook(last_message, error)
+        except Exception:
+            logger.debug("Stream end hook failed", exc_info=True)
+
     async def stream(
         self,
         config: dict,
@@ -145,7 +158,9 @@ class ModelResponseConverter:
         """
         if not config:
             logger.error("Config must be provided for streaming conversion")
-            raise ValueError("Config must be provided for streaming conversion")
+            err = ValueError("Config must be provided for streaming conversion")
+            self._notify_stream_end(None, err)
+            raise err
 
         if callable(self.response):
             if inspect.iscoroutinefunction(self.response):
@@ -157,13 +172,23 @@ class ModelResponseConverter:
             response = self.response
 
         self._warn_if_empty_response(response, context="starting streaming conversion")
-        async for item in self.converter.convert_streaming_response(  # type: ignore
-            config,
-            node_name=node_name,
-            response=response,
-            meta=meta,
-        ):
-            self._apply_metadata(item)
-            yield item
+        last_message: Any = None
+        error: BaseException | None = None
+        try:
+            async for item in self.converter.convert_streaming_response(  # type: ignore
+                config,
+                node_name=node_name,
+                response=response,
+                meta=meta,
+            ):
+                self._apply_metadata(item)
+                if getattr(item, "usages", None) is not None:
+                    last_message = item
+                yield item
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._notify_stream_end(last_message, error)
 
         logger.debug("Completed streaming conversion")

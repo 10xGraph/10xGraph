@@ -12,6 +12,10 @@ from .client_factory import (
     set_default_llm_timeout,
 )
 from .openai_batch import OpenAIBatch
+from .stream_idle import (
+    get_default_stream_idle_timeout,
+    set_default_stream_idle_timeout,
+)
 
 
 __all__ = [
@@ -22,7 +26,9 @@ __all__ = [
     "call_llm",
     "create_llm_client",
     "detect_provider",
+    "get_default_stream_idle_timeout",
     "get_default_llm_timeout",
     "resolve_provider_and_model",
     "set_default_llm_timeout",
+    "set_default_stream_idle_timeout",
 ]

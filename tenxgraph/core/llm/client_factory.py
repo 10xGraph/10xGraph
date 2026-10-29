@@ -330,7 +330,9 @@ def _create_openai_client(
     # Bound the request unless the caller opted into their own timeout.
     client_kwargs.setdefault("timeout", get_default_llm_timeout())
     if base_url:
-        logger.info("Creating OpenAI client with custom base_url: %s", base_url)
+        from tenxgraph.storage.media.url_policy import redact_url
+
+        logger.info("Creating OpenAI client with custom base_url: %s", redact_url(base_url))
         return AsyncOpenAI(api_key=resolved_key, base_url=base_url, **client_kwargs)
 
     return AsyncOpenAI(api_key=resolved_key, **client_kwargs)
@@ -430,7 +432,9 @@ def _create_anthropic_client(
     if resolved_key:
         client_kwargs["api_key"] = resolved_key
     if base_url:
-        logger.info("Creating Anthropic client with custom base_url: %s", base_url)
+        from tenxgraph.storage.media.url_policy import redact_url
+
+        logger.info("Creating Anthropic client with custom base_url: %s", redact_url(base_url))
         client_kwargs["base_url"] = base_url
 
     return AsyncAnthropic(**client_kwargs)

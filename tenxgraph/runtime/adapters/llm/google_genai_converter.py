@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, cast
 
+from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
@@ -438,7 +439,7 @@ class GoogleGenAIConverter(BaseConverter):
         # Try async iteration
         if stream is not None:
             try:
-                async for chunk in stream:  # type: ignore
+                async for chunk in iter_with_idle_timeout(stream):
                     reason = self._chunk_finish_reason(chunk)
                     if reason is not None:
                         finish_reason = reason

@@ -274,17 +274,21 @@ def record_resume(state: AgentState, value: Any, interrupt_id: str | None = None
             must equal the pending interrupt's id.
 
     Raises:
-        ValueError: The thread is not paused at an :func:`interrupt`.
+        NothingToResumeError: The thread is not paused at an :func:`interrupt` (a ``ValueError``).
         InterruptMismatchError: ``interrupt_id`` is not the pending interrupt's id.
         ResumeValidationError: ``value`` does not satisfy the interrupt's ``response_schema``.
 
     Nothing is recorded when an error is raised.
     """
-    from tenxgraph.core.exceptions import InterruptMismatchError, ResumeValidationError
+    from tenxgraph.core.exceptions import (
+        InterruptMismatchError,
+        NothingToResumeError,
+        ResumeValidationError,
+    )
 
     pending = pending_interrupt(state)
     if pending is None:
-        raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
+        raise NothingToResumeError()
     if interrupt_id is not None and interrupt_id != pending.id:
         raise InterruptMismatchError(
             f"Resume answers interrupt '{interrupt_id}' but the thread is paused at "

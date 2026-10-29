@@ -548,3 +548,9 @@ class TestSupervisorIntegration:
         assert _SUPERVISOR_NODE in sta._graph.nodes
         assert "RESEARCHER" in sta._graph.nodes
         assert "CODER" in sta._graph.nodes
+
+
+def test_finish_matched_as_whole_word_only():
+    """A worker named FINISHER must not end the team (G-82)."""
+    assert _resolve_decision("FINISHER", ["FINISHER"], 0) == "FINISHER"
+    assert _resolve_decision("FINISH", ["FINISHER"], 0) == END

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,19 @@ class RetryConfig:
         max_concurrent_calls: Opt-in cap on in-flight LLM requests per provider
             for one Agent instance (default ``None``, no cap). For streaming calls the
             cap covers opening the stream, not reading it.
+        distributed_max_concurrent_calls: Opt-in cap on in-flight LLM requests per
+            (provider, model) shared by every process that uses the same Redis
+            (default ``None``, off). Needs ``distributed_redis`` or
+            ``distributed_redis_url``. Applies on top of ``max_concurrent_calls``. Fails
+            open with a WARNING when Redis is unreachable.
+        distributed_redis: An async Redis client for the shared cap.
+        distributed_redis_url: Redis URL used to build a client when none is passed.
+        distributed_lease_seconds: How long a slot is held before it counts as abandoned
+            (default ``300``). A running call renews its lease every third of this time, so it
+            only has to outlast a crashed process; that process frees its slots after this
+            long.
+        distributed_key_prefix: Prefix for the Redis key, like the checkpointer's
+            ``redis_key_prefix`` (default ``""``).
 
     A ``Retry-After`` header on a retryable error is honoured when it is longer than
     the computed delay. When it is longer than ``max_delay`` the model is not retried
@@ -48,6 +62,11 @@ class RetryConfig:
     circuit_breaker_reset_timeout: float = 30.0
     jitter: float = 0.25
     max_concurrent_calls: int | None = None
+    distributed_max_concurrent_calls: int | None = None
+    distributed_redis: Any = None
+    distributed_redis_url: str | None = None
+    distributed_lease_seconds: float = 300.0
+    distributed_key_prefix: str = ""
 
 
 DEFAULT_RETRY_CONFIG = RetryConfig()

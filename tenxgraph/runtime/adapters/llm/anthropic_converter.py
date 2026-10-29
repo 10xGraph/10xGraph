@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
 
+from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
@@ -102,7 +103,7 @@ def _drop_truncated_tool_calls(
 class AnthropicConverter(BaseConverter):
     """Convert Anthropic responses and stream events into agentflow messages."""
 
-    async def convert_response(self, response: Any) -> Message:
+    async def convert_response(self, response: Any) -> Message:  # noqa: PLR0912
         """Convert a non-streaming Anthropic Message into an agentflow Message.
 
         ``stop_reason`` is checked before ``content`` is read: on a refusal the
@@ -136,9 +137,17 @@ class AnthropicConverter(BaseConverter):
 
             elif btype == "thinking":
                 thinking = getattr(block, "thinking", "") or ""
-                if thinking:
-                    reasoning_text += thinking
-                    blocks.append(ReasoningBlock(summary=thinking))
+                signature = getattr(block, "signature", None) or None
+                reasoning_text += thinking
+                # A signed block is kept even when its text is empty: Anthropic needs it
+                # back unchanged on the next turn.
+                if thinking or signature:
+                    blocks.append(ReasoningBlock(summary=thinking, signature=signature))
+
+            elif btype == "redacted_thinking":
+                data = getattr(block, "data", None)
+                if data:
+                    blocks.append(ReasoningBlock(summary="", redacted_data=data))
 
             elif btype == "tool_use":
                 args = getattr(block, "input", None) or {}
@@ -292,6 +301,8 @@ class AnthropicConverter(BaseConverter):
         # block index -> {"id", "name", "json"}
         tool_blocks: dict[int, dict[str, Any]] = {}
         tool_calls: list[dict[str, Any]] = []
+        # block index -> {"thinking", "signature"} or {"redacted"}
+        thinking_blocks: dict[int, dict[str, Any]] = {}
         stop_reason: str | None = None
         refusal_details: Any = None
         model = ""
@@ -310,7 +321,7 @@ class AnthropicConverter(BaseConverter):
             stream = await stream.__aenter__()
 
         try:
-            async for event in stream:
+            async for event in iter_with_idle_timeout(stream):
                 etype = getattr(event, "type", None)
 
                 if etype == "message_start":
@@ -321,7 +332,17 @@ class AnthropicConverter(BaseConverter):
 
                 elif etype == "content_block_start":
                     block = getattr(event, "content_block", None)
-                    if getattr(block, "type", None) == "tool_use":
+                    btype = getattr(block, "type", None)
+                    if btype == "thinking":
+                        thinking_blocks[getattr(event, "index", 0)] = {
+                            "thinking": getattr(block, "thinking", "") or "",
+                            "signature": getattr(block, "signature", "") or "",
+                        }
+                    elif btype == "redacted_thinking":
+                        thinking_blocks[getattr(event, "index", 0)] = {
+                            "redacted": getattr(block, "data", "") or "",
+                        }
+                    if btype == "tool_use":
                         tool_blocks[getattr(event, "index", 0)] = {
                             "id": getattr(block, "id", ""),
                             "name": getattr(block, "name", ""),
@@ -343,10 +364,18 @@ class AnthropicConverter(BaseConverter):
                     elif dtype == "thinking_delta":
                         piece = getattr(delta, "thinking", "") or ""
                         accumulated_reasoning += piece
+                        open_block = thinking_blocks.get(getattr(event, "index", 0))
+                        if open_block is not None and "thinking" in open_block:
+                            open_block["thinking"] += piece
                         if piece:
                             yield self._chunk_message(
                                 [ReasoningBlock(summary=piece)], metadata, response_id
                             )
+
+                    elif dtype == "signature_delta":
+                        open_block = thinking_blocks.get(getattr(event, "index", 0))
+                        if open_block is not None and "thinking" in open_block:
+                            open_block["signature"] += getattr(delta, "signature", "") or ""
 
                     elif dtype == "input_json_delta":
                         index = getattr(event, "index", 0)
@@ -387,10 +416,21 @@ class AnthropicConverter(BaseConverter):
         mark_stop_issue(metadata, stop_reason, "Anthropic")
 
         blocks: list[Any] = []
+        # Thinking comes first, in the order the model produced it, as Anthropic requires.
+        for index in sorted(thinking_blocks):
+            entry = thinking_blocks[index]
+            if "redacted" in entry:
+                if entry["redacted"]:
+                    blocks.append(ReasoningBlock(summary="", redacted_data=entry["redacted"]))
+            elif entry["thinking"] or entry["signature"]:
+                blocks.append(
+                    ReasoningBlock(summary=entry["thinking"], signature=entry["signature"] or None)
+                )
+        if accumulated_reasoning and not any(isinstance(b, ReasoningBlock) for b in blocks):
+            # Thinking text with no start event seen: keep it, unsigned.
+            blocks.append(ReasoningBlock(summary=accumulated_reasoning))
         if accumulated_text:
             blocks.append(TextBlock(text=accumulated_text))
-        if accumulated_reasoning:
-            blocks.append(ReasoningBlock(summary=accumulated_reasoning))
         for call in tool_calls:
             function = call["function"]
             args, _ = parse_tool_arguments(function["arguments"], tool_name=function["name"])

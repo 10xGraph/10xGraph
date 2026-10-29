@@ -148,7 +148,8 @@ def _make_member_route(
     2. Regular tool call → route to *tool_node_name* for execution.
     3. No tool calls → ``END``.
     """
-    allowed_set = set(allowed_targets)
+    # Member names are matched case-insensitively and returned as registered.
+    allowed_by_upper = {t.upper(): t for t in allowed_targets}
 
     def _route(state: AgentState) -> str:
         if not state.context:
@@ -163,9 +164,10 @@ def _make_member_route(
         # the ToolNode — the graph routing IS the handoff.
         for tc in last.tools_calls:
             is_handoff, target = is_handoff_tool(tool_call_name(tc))
-            if is_handoff and target and target.upper() in allowed_set:
-                logger.debug("Member %s handing off to %s.", name, target.upper())
-                return target.upper()
+            real = allowed_by_upper.get(target.upper()) if is_handoff and target else None
+            if real is not None:
+                logger.debug("Member %s handing off to %s.", name, real)
+                return real
 
         # Regular tool calls need ToolNode execution.
         if tool_node_name is not None:
@@ -249,6 +251,10 @@ class SwarmAgent[StateT: AgentState]:
         if entry not in members:
             raise ValueError(f"entry={entry!r} is not in members. Available: {list(members)}")
 
+        upper_names = [n.upper() for n in members]
+        if len(set(upper_names)) != len(upper_names):
+            raise ValueError("SwarmAgent member names must be unique ignoring case.")
+
         self._members = members
         self._entry = entry
 
@@ -275,11 +281,12 @@ class SwarmAgent[StateT: AgentState]:
         )
 
     def _resolve_targets(self, name: str) -> list[str]:
-        """Return the uppercase list of allowed handoff targets for *name*."""
+        """Return the allowed handoff targets for *name*, as registered member names."""
         cfg = self._members[name]
         if cfg.can_handoff_to is None:
             return [n for n in self._members if n != name]
-        return [t.upper() for t in cfg.can_handoff_to]
+        by_upper = {n.upper(): n for n in self._members}
+        return [by_upper.get(t.upper(), t) for t in cfg.can_handoff_to]
 
     def _build_handoff_tools(self, name: str) -> list[Callable]:
         """Generate ``create_handoff_tool`` callables for each allowed target."""
