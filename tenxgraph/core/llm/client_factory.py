@@ -91,6 +91,9 @@ _PROVIDER_PREFIXES = {
 }
 
 # Keys allowed in the AsyncOpenAI constructor but NOT in per-request calls.
+# ``http_client`` passes straight through to the SDK. It must match the installed
+# openai major: an ``httpx2.AsyncClient`` for openai 3.x, an ``httpx.AsyncClient``
+# for openai 1.x/2.x. See https://github.com/openai/openai-python/blob/main/httpx2.md
 _CLIENT_CONSTRUCTOR_KWARGS = frozenset(
     {
         "organization",
@@ -105,8 +108,8 @@ _CLIENT_CONSTRUCTOR_KWARGS = frozenset(
 
 # Anthropic's constructors do not accept ``organization`` / ``project``, so the
 # OpenAI-shaped allowlist above cannot be reused. ``http_client`` here must be an
-# httpx2 client: the anthropic SDK moved to httpx2 in 1.0, while the OpenAI SDK
-# still uses httpx. Passing the wrong one fails at request time.
+# httpx2 client: the anthropic SDK moved to httpx2 in 1.0. Passing the wrong one
+# fails at request time.
 _ANTHROPIC_CONSTRUCTOR_KWARGS = frozenset(
     {
         "timeout",
@@ -230,7 +233,10 @@ def create_llm_client(
         anthropic_backend: Backend selector for the Anthropic provider.
             ``None`` (direct Claude API), ``"vertex"``, or ``"bedrock"``.
         **extra_kwargs: Forwarded to the AsyncOpenAI constructor
-            (only recognised constructor keys are passed through).
+            (only recognised constructor keys are passed through). An
+            ``http_client`` must be an ``httpx2.AsyncClient`` with openai 3.x
+            (an ``httpx.AsyncClient`` with openai 1.x/2.x); the SDK does not
+            convert between them.
 
     Returns:
         An async-capable SDK client instance.

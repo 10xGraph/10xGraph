@@ -103,7 +103,10 @@ build-backend = "setuptools.build_meta"
 [project.optional-dependencies]
 google-genai = ["google-genai>=1.56.0"]
 realtime = ["google-genai>=1.56.0"]
-openai = ["openai>=1.77.0"]
+# Floor 1.93.1: chat.completions.parse left beta in 1.92.0 and responses.parse gained its
+# full argument list (reasoning, instructions, tools) in 1.93.1. Capped at <4 so a future
+# major (3.0 swapped httpx for httpx2) is not pulled in automatically.
+openai = ["openai>=1.93.1,<4"]
 # Capped at <2: the SDK went 0.x -> 1.0.0 (httpx2, awaited async raw responses),
 # so an uncapped lower bound would pull a future major automatically.
 anthropic = ["anthropic>=1.0.0,<2"]

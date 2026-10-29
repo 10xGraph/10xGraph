@@ -28,7 +28,7 @@ def get_weather(location: str) -> str:
 # Anything else is an ordinary keyword argument for ReactAgent / Agent.
 CONFIGS: dict[str, dict] = {
     # --- OpenAI: pip install "10xgraph[openai]", OPENAI_API_KEY ---
-    "openai": {"model": "gpt-5-mini"},  # Chat Completions
+    "openai": {"model": "gpt-5-mini"},  # Responses API (the default)
     "openai-responses": {"model": "gpt-5-mini", "api_style": "responses"},  # Responses API
     # --- Google: pip install "10xgraph[google-genai]", GEMINI_API_KEY ---
     "gemini": {"model": "gemini-2.5-flash"},

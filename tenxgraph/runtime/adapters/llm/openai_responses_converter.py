@@ -17,9 +17,11 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
 from typing import Any
+
+from pydantic import BaseModel
 
 from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
@@ -154,6 +156,7 @@ class OpenAIResponsesConverter(BaseConverter):
             message_id=generate_id(resp_id),
             role="assistant",
             content=order_blocks(blocks),
+            parsed_content=self._extract_parsed_output(response),
             timestamp=created,
             metadata={
                 "provider": "openai",
@@ -164,6 +167,20 @@ class OpenAIResponsesConverter(BaseConverter):
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
             tools_calls=tool_calls_raw if tool_calls_raw else None,
         )
+
+    @staticmethod
+    def _extract_parsed_output(response: Any) -> dict | BaseModel | None:
+        """Return the structured result of ``responses.parse()``, or None.
+
+        ``ParsedResponse.output_parsed`` holds the ``text_format`` instance; a plain
+        ``Response`` from ``responses.create()`` has no such attribute.
+        """
+        parsed = getattr(response, "output_parsed", None)
+        if isinstance(parsed, BaseModel | dict):
+            return parsed
+        if is_dataclass(parsed) and not isinstance(parsed, type):
+            return asdict(parsed)
+        return None
 
     # ---- streaming ------------------------------------------------------
 
@@ -179,12 +196,14 @@ class OpenAIResponsesConverter(BaseConverter):
         Yields intermediate ``Message(delta=True)`` per event and a final
         ``Message(delta=False)`` when the stream completes.
         """
-        # If it's not iterable at all, try the non-streaming path
-        if not hasattr(response, "__aiter__") and not hasattr(response, "__iter__"):
+        # A whole Response (for example from responses.parse) is a pydantic model, which
+        # defines __iter__, so check for it before treating the object as an event stream.
+        if not hasattr(response, "__aiter__"):
             if is_responses_api_response(response):
                 yield await self.convert_response(response)
                 return
-            raise TypeError("Unsupported response type for OpenAIResponsesConverter")
+            if not hasattr(response, "__iter__"):
+                raise TypeError("Unsupported response type for OpenAIResponsesConverter")
 
         async for msg in self._handle_stream(config, node_name, response, meta):
             yield msg

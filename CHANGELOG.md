@@ -44,6 +44,27 @@ breaking list further down applies to you as well.
 
 ### Breaking
 
+- **Behaviour change: `Agent` uses the OpenAI Responses API by default.** `api_style` now
+  defaults to `"responses"` (it was `"chat"`), except when `base_url` is set and `api_style` is
+  not passed: then it stays `"chat"`, because most OpenAI-compatible servers only speak Chat
+  Completions. An explicit `api_style` always wins. Pass `api_style="chat"` to keep the old
+  behaviour. This fixes `Agent(model="gpt-6-luna", tools=...)` failing with "Function tools with
+  reasoning_effort are not supported ... in /v1/chat/completions". Related changes:
+  - With `api_style="responses"` and a `base_url`, a server that rejects the Responses API is
+    probed once; the agent then stays on Chat Completions and logs one warning (it used to retry
+    Responses and fall back on every call).
+  - `output_schema` now uses `responses.parse(text_format=...)` on the Responses style instead
+    of switching to Chat Completions. The result is in `Message.parsed_content` as before. Streaming
+    is still turned off for these calls.
+  - On Chat Completions, `reasoning_effort` (and the `extra_body` reasoning for a `base_url`) is
+    sent only when you pass `reasoning_config` yourself, not for the implicit
+    `{"effort": "medium"}` default.
+  - The chat structured-output path calls `client.chat.completions.parse`; the
+    `client.beta.chat.completions.parse` it used does not exist in openai 3.x.
+  - `output_type="image"` and `"audio"` always use the images and audio endpoints, whatever
+    `api_style` is.
+  - The `openai` extra is now `openai>=1.93.1,<4`. openai 3.x uses httpx2, so an `http_client`
+    passed through `llm_kwargs` must be an `httpx2.AsyncClient` on 3.x.
 - **Tool and node timeouts are off by default.** `DEFAULT_TOOL_TIMEOUT_SECONDS` and
   `DEFAULT_NODE_TIMEOUT_SECONDS` in `tenxgraph.utils.constants` are now `None` (they were 300 s
   and 900 s). A slow tool or node runs until it finishes. Set `tool_timeout` or `node_timeout`
@@ -227,6 +248,21 @@ Related notes:
   runs. A slot is released on cancel and expires with its lease after a crash.
 
 ### Changed
+
+- **The HTML eval report is redesigned as a scorecard.** `HTMLReporter` (and
+  `ReporterConfig(html=True)`) now writes one self-contained file that opens offline: a verdict
+  against the pass-rate gate, headline numbers (pass rate, average score, latency, tokens) with
+  deltas against the previous run, a regression line, a cases-by-criteria matrix with pass, near
+  and fail marks and changed-cell markers, filters, search and sort, a detail drawer per case
+  (previous and next, keyboard, `#eval_id` deep link), run-over-run bars, a cost and latency strip,
+  collapsed run details, light and dark themes, a phone layout and print styles. The previous run
+  is the most recent earlier JSON report of the same `eval_set_id` in the same folder (excluding
+  the current run's file); without one the page says so. The gate is read from
+  `report.metadata["pass_rate_threshold"]` (set by `10xgraph eval`) and is 100% ("all cases must
+  pass") when absent. Report data is embedded as JSON and rendered with text escaping, and a
+  Content-Security-Policy meta tag blocks network requests and any script injected through
+  report content. `HTMLReporter.to_html` takes optional `baseline_dir` and `exclude`; the private
+  `_render_case` helper and the `_html_render` module are removed.
 
 - **Every converter orders blocks the same way.** A message from the OpenAI chat, OpenAI
   Responses, Google GenAI and Anthropic converters has its blocks in the order reasoning, text,

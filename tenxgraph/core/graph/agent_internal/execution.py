@@ -765,7 +765,66 @@ class AgentExecutionMixin:
         self._effective_api_style = style
         _api_style_var.set(style)
 
-    async def _call_llm(  # noqa: PLR0911
+    def _apply_chat_reasoning(self, kwargs: dict[str, Any]) -> None:
+        """Add reasoning parameters to a Chat Completions request, in place.
+
+        Only an explicit ``reasoning_config`` is sent. The implicit default
+        (``{"effort": "medium"}``) is skipped because many models reject
+        ``reasoning_effort`` on chat, notably together with function tools.
+        """
+        config = self.reasoning_config
+        if not config or not getattr(self, "_reasoning_explicit", True):
+            return
+        if config.get("effort"):
+            kwargs.setdefault("reasoning_effort", config["effort"])
+        if self.base_url:
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), "reasoning": config}
+
+    async def _route_openai(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list | None,
+        stream: bool,
+        **kwargs: Any,
+    ) -> Any:
+        """Pick the OpenAI endpoint: Responses API, or Chat Completions as the fallback.
+
+        Responses is used for text/json output when ``api_style == "responses"``. Media
+        output types always go through ``_call_openai`` (images and audio endpoints). A
+        ``base_url`` server that rejects Responses is remembered, so later calls skip the probe.
+        """
+        use_responses = self.api_style == "responses" and self.output_type in ("text", "json")
+        unsupported: set[str] = self.__dict__.setdefault("_responses_unsupported_urls", set())
+
+        if use_responses and self.base_url and self.base_url in unsupported:
+            use_responses = False
+
+        if use_responses:
+            if not self.base_url:
+                self._set_api_style("responses")
+                return await self._call_openai_responses(messages, tools, stream, **kwargs)
+            try:
+                result = await self._call_openai_responses(messages, tools, stream, **kwargs)
+            except Exception as exc:
+                if self.base_url not in unsupported:
+                    from tenxgraph.storage.media.url_policy import redact_url
+
+                    unsupported.add(self.base_url)
+                    logger.warning(
+                        "Responses API not supported at %s (%s). "
+                        "Using chat.completions for this agent from now on.",
+                        redact_url(self.base_url),
+                        exc,
+                    )
+            else:
+                self._set_api_style("responses")
+                return result
+
+        self._set_api_style("chat")
+        self._apply_chat_reasoning(kwargs)
+        return await self._call_openai(messages, tools, stream, **kwargs)
+
+    async def _call_llm(
         self,
         messages: list[dict[str, Any]],
         tools: list | None = None,
@@ -784,51 +843,7 @@ class AgentExecutionMixin:
         )
 
         if self.provider == "openai":
-            if self.api_style == "responses":
-                if getattr(self, "output_schema", None):
-                    logger.debug(
-                        "output_schema is set; using chat completions parse path "
-                        "instead of Responses API"
-                    )
-                    self._set_api_style("chat")
-                    if self.reasoning_config and self.reasoning_config.get("effort"):
-                        kwargs.setdefault("reasoning_effort", self.reasoning_config["effort"])
-                    if self.base_url and self.reasoning_config:
-                        existing_extra = kwargs.get("extra_body", {})
-                        existing_extra["reasoning"] = self.reasoning_config
-                        kwargs["extra_body"] = existing_extra
-                    return await self._call_openai(messages, tools, stream, **kwargs)
-
-                if self.base_url:
-                    try:
-                        result = await self._call_openai_responses(
-                            messages, tools, stream, **kwargs
-                        )
-                        self._set_api_style("responses")
-                        return result
-                    except Exception as exc:
-                        logger.warning(
-                            "Responses API not supported at %s (%s). "
-                            "Falling back to chat.completions.create().",
-                            self.base_url,
-                            exc,
-                        )
-                        self._set_api_style("chat")
-                        if self.reasoning_config and self.reasoning_config.get("effort"):
-                            kwargs.setdefault("reasoning_effort", self.reasoning_config["effort"])
-                        return await self._call_openai(messages, tools, stream, **kwargs)
-
-                self._set_api_style("responses")
-                return await self._call_openai_responses(messages, tools, stream, **kwargs)
-
-            self._set_api_style("chat")
-            if self.reasoning_config and self.reasoning_config.get("effort"):
-                kwargs.setdefault("reasoning_effort", self.reasoning_config["effort"])
-            if self.base_url and self.reasoning_config:
-                existing_extra = kwargs.get("extra_body", {})
-                existing_extra["reasoning"] = self.reasoning_config
-                kwargs["extra_body"] = existing_extra
-            return await self._call_openai(messages, tools, stream, **kwargs)
+            return await self._route_openai(messages, tools, stream, **kwargs)
 
         if self.provider == "google":
             return await self._call_google(messages, tools, stream, **kwargs)

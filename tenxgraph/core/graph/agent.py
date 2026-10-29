@@ -150,7 +150,12 @@ class Agent(
                 (ollama, vllm, openrouter, deepseek, etc.). Default: ``None``.
             api_style: API style for OpenAI provider. ``"chat"`` uses
                 Chat Completions, ``"responses"`` uses the Responses API.
-                Default: ``"chat"``.
+                Default: ``"responses"``, except when ``base_url`` is set, where
+                it is ``"chat"`` because most OpenAI-compatible servers only
+                implement Chat Completions. An explicit value always wins. With
+                ``"responses"`` and a ``base_url``, the first call probes the
+                server; if it rejects the Responses API the agent logs one
+                warning and uses Chat Completions for the rest of its lifetime.
             memory: Optional ``MemoryConfig`` enabling agent-level long-term
                 memory tools and system prompts.
             reasoning_config: Unified reasoning control for all providers. Default
@@ -242,8 +247,10 @@ class Agent(
         # Pop kwargs-only params before passing to parent
         base_url: str | None = kwargs.pop("base_url", None)
         provider: str | None = kwargs.pop("provider", None)
-        # this is mainly for OpenAI-compatible APIs but can be used as a hint for provider detection
-        api_style: str = kwargs.pop("api_style", "chat")
+        # Default is "responses" for OpenAI, but "chat" behind a custom base_url (most
+        # OpenAI-compatible servers only speak Chat Completions). An explicit value wins.
+        api_style_arg: str | None = kwargs.pop("api_style", None)
+        api_style: str = api_style_arg or ("chat" if base_url else "responses")
 
         # check user using vertex ai for google or other model
         use_vertex_ai: bool = kwargs.pop(
@@ -300,9 +307,15 @@ class Agent(
         if api_style not in ("chat", "responses"):
             raise ValueError(f"Invalid api_style '{api_style}'. Supported: 'chat', 'responses'")
         self.api_style = api_style
+        # base_url values whose server rejected the Responses API. Mutable and shared with the
+        # per-attempt copies of this Agent, so one failed probe sticks for the Agent's lifetime.
+        self._responses_unsupported_urls: set[str] = set()
 
         # Apply default (medium effort) when not explicitly provided;
         # True or sentinel = enable with defaults; False or None = disabled.
+        # Remember whether the user chose a value: the chat path only sends reasoning
+        # parameters for an explicit choice, never for the implicit default.
+        self._reasoning_explicit = reasoning_config is not REASONING_DEFAULT
         if reasoning_config is REASONING_DEFAULT or reasoning_config is True:
             reasoning_config = {"effort": "medium"}
         self.reasoning_config: dict[str, Any] | None = (

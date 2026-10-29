@@ -1,41 +1,46 @@
 """
 HTML reporter for evaluation results.
 
-Generates interactive, self-contained HTML reports for evaluation results.
-The report includes summary stat cards, SVG bar charts (criterion breakdown
-and per-case scores), dark mode, and expandable case detail panes with
-criterion score bars.
+Generates a self-contained HTML scorecard for an evaluation run: a verdict
+against the pass-rate gate, headline numbers with deltas against the previous
+report in the same folder, a cases-by-criteria matrix, and a detail drawer per
+case. The file opens offline from ``file://`` and makes no network requests.
 
 Implementation is split across:
-    _html_css.py      — stylesheet (light/dark themes, score bars)
-    _html_js.py       — interactivity + SVG chart renderer (no CDN)
-    _html_template.py — page structure (``build_html``)
-    _html_render.py   — case / criterion HTML rendering
+    _html_payload.py  - JSON payload, gate, average score, baseline lookup
+    _html_template.py - page structure (``build_html``), CSP
+    _html_css.py      - stylesheet (light/dark, phone, print)
+    _html_js.py       - rendering and interaction (reads the embedded payload)
 """
 
 from __future__ import annotations
 
-import html as _html_lib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tenxgraph.qa.evaluation.reporters._html_css import CSS_CONTENT
 from tenxgraph.qa.evaluation.reporters._html_js import JS_CONTENT
-from tenxgraph.qa.evaluation.reporters._html_render import render_case
+from tenxgraph.qa.evaluation.reporters._html_payload import (
+    build_payload,
+    dumps_for_script,
+    find_baseline,
+)
 from tenxgraph.qa.evaluation.reporters._html_template import build_html
-from tenxgraph.qa.evaluation.reporters._utils import format_timestamp
 from tenxgraph.qa.evaluation.reporters.base import BaseReporter
+from tenxgraph.qa.evaluation.reporters.json import JSONReporter
 
 
 if TYPE_CHECKING:
-    from tenxgraph.qa.evaluation.eval_result import EvalCaseResult, EvalReport
+    from tenxgraph.qa.evaluation.eval_result import EvalReport
 
 
 class HTMLReporter(BaseReporter):
-    """Generate interactive HTML reports for evaluation results.
+    """Generate the HTML scorecard report for evaluation results.
 
-    Creates a self-contained HTML file (dark mode, SVG charts, criterion score
-    bars, case search/filter) with no external CDN dependencies.
+    The previous run is found automatically: the most recent JSON report of the
+    same ``eval_set_id`` in the output folder whose timestamp is earlier than the
+    current report's. ``save`` and ``generate`` look in the folder they write to;
+    ``to_html`` accepts ``baseline_dir`` for the same lookup.
 
     Example::
 
@@ -57,7 +62,7 @@ class HTMLReporter(BaseReporter):
         self.include_node_responses = include_node_responses
         self.include_trajectory = include_trajectory
 
-    # ── BaseReporter interface ───────────────────────────────────────────────
+    # -- BaseReporter interface ----------------------------------------------
 
     def generate(self, report: EvalReport, output_dir: str | None = None) -> str | None:
         """Generate an HTML report.
@@ -71,61 +76,53 @@ class HTMLReporter(BaseReporter):
         self.save(report, path)
         return path
 
-    # ── Public API ───────────────────────────────────────────────────────────
+    # -- Public API ----------------------------------------------------------
 
-    def to_html(self, report: EvalReport) -> str:
-        """Return the complete HTML report as a string."""
-        title = report.eval_set_name or report.eval_set_id
-        case_items = "\n".join(self._render_case(r) for r in report.results)
+    def to_html(
+        self,
+        report: EvalReport,
+        baseline_dir: str | None = None,
+        exclude: list[str] | None = None,
+    ) -> str:
+        """Return the complete HTML report as a string.
 
-        tok = report.summary.total_token_usage
-        if tok.total_tokens:
-            cache_part = (
-                f"&nbsp;&nbsp;cache_read: <strong>{tok.cache_read_tokens:,}</strong>"
-                if tok.cache_read_tokens
-                else ""
-            )
-            token_summary = (
-                f"&#x1F4B0; Tokens &mdash; "
-                f"input: <strong>{tok.input_tokens:,}</strong>&nbsp;&nbsp;"
-                f"output: <strong>{tok.output_tokens:,}</strong>"
-                f"{cache_part}&nbsp;&nbsp;"
-                f"total: <strong>{tok.total_tokens:,}</strong>&nbsp;&nbsp;"
-                f"avg/case: <strong>{report.summary.avg_tokens_per_case:.0f}</strong>"
-            )
-        else:
-            token_summary = ""  # nosec B105
-
-        return build_html(
-            title=_html_lib.escape(title),
-            timestamp=format_timestamp(report.timestamp),
-            total_cases=report.summary.total_cases,
-            passed_cases=report.summary.passed_cases,
-            failed_cases=report.summary.failed_cases,
-            error_cases=report.summary.error_cases,
-            pass_rate_pct=f"{report.summary.pass_rate * 100:.0f}",
-            duration=f"{report.summary.total_duration_seconds:.2f}",
-            case_items=case_items,
-            css=CSS_CONTENT,
-            js=JS_CONTENT,
-            token_summary=token_summary,
-        )
-
-    def _render_case(self, result: EvalCaseResult) -> str:
-        return render_case(
-            result,
+        Args:
+            report: The evaluation report.
+            baseline_dir: Folder to search for the previous JSON report. Without
+                it the page shows its "no previous run" state.
+            exclude: JSON files to ignore as baseline (the current run's file).
+        """
+        baseline = find_baseline(report, baseline_dir, exclude) if baseline_dir else None
+        current = JSONReporter(
             include_details=self.include_details,
+            include_trajectory=self.include_trajectory,
+            include_node_responses=self.include_node_responses,
             include_actual_response=self.include_actual_response,
             include_tool_call_details=self.include_tool_call_details,
-            include_node_responses=self.include_node_responses,
-            include_trajectory=self.include_trajectory,
+        ).to_dict(report)
+        payload = build_payload(current, report, baseline)
+        title = f"{report.eval_set_name or report.eval_set_id} | 10xGraph eval report"
+        return build_html(
+            title=title,
+            css=CSS_CONTENT,
+            js=JS_CONTENT,
+            data_json=dumps_for_script(payload),
         )
 
     def save(self, report: EvalReport, path: str) -> None:
-        """Write the report to *path*, creating parent directories as needed."""
+        """Write the report to *path*, creating parent directories as needed.
+
+        The previous run is looked up in the same folder; the sibling ``.json``
+        file with the same name (written by the current run) is never used.
+        """
         file_path = Path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(self.to_html(report), encoding="utf-8")
+        html = self.to_html(
+            report,
+            baseline_dir=str(file_path.parent),
+            exclude=[str(file_path.with_suffix(".json"))],
+        )
+        file_path.write_bytes(html.encode("utf-8"))
 
     @classmethod
     def quick_save(cls, report: EvalReport, path: str) -> None:

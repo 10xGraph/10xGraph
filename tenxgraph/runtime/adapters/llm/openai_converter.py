@@ -653,8 +653,12 @@ class OpenAIConverter(BaseConverter):
                 yield msg
             return
 
+        # A whole ChatCompletion (for example from chat.completions.parse) is a pydantic
+        # model, which defines __iter__, so it must be tested before the stream check.
+        if isinstance(response, ChatCompletion):  # type: ignore
+            yield await self.convert_response(cast(ChatCompletion, response))  # type: ignore
         # Check if it's a streaming response (async generator or iterator)
-        if hasattr(response, "__aiter__") or hasattr(response, "__iter__"):
+        elif hasattr(response, "__aiter__") or hasattr(response, "__iter__"):
             async for event in self._handle_stream(
                 config or {},
                 node_name or "",
@@ -662,8 +666,5 @@ class OpenAIConverter(BaseConverter):
                 meta,
             ):
                 yield event
-        elif isinstance(response, ChatCompletion):  # type: ignore
-            message = await self.convert_response(cast(ChatCompletion, response))  # type: ignore
-            yield message
         else:
             raise Exception("Unsupported response type for OpenAIConverter")

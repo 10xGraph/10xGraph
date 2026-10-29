@@ -100,8 +100,8 @@ class AgentOpenAIMixin:
             if tools:
                 call_kwargs["tools"] = tools
 
-            logger.debug("Calling OpenAI beta.chat.completions.parse with model=%s", self.model)
-            response = await self.client.beta.chat.completions.parse(
+            logger.debug("Calling OpenAI chat.completions.parse with model=%s", self.model)
+            response = await self.client.chat.completions.parse(
                 model=self.model,
                 messages=messages,
                 response_format=output_schema,
@@ -242,16 +242,36 @@ class AgentOpenAIMixin:
 
         call_kwargs.pop("reasoning_effort", None)
 
-        logger.debug("Calling OpenAI responses.create with model=%s", self.model)
-        response = await self.client.responses.create(
-            model=self.model,
-            input=input_items,
-            stream=stream,
-            **call_kwargs,
-        )
+        response = await self._send_responses_request(input_items, stream, call_kwargs)
+        if getattr(self, "output_schema", None):
+            stream = False
         if not stream:
             details = getattr(getattr(response, "usage", None), "input_tokens_details", None)
             cached = getattr(details, "cached_tokens", 0) or 0
             if cached:
                 logger.debug("Cache hit: %d cached tokens (OpenAI responses API)", cached)
         return response
+
+    async def _send_responses_request(
+        self, input_items: list[dict[str, Any]], stream: bool, call_kwargs: dict[str, Any]
+    ) -> Any:
+        """Send the request: ``responses.parse`` with an output schema, else ``create``."""
+        output_schema = getattr(self, "output_schema", None)
+        if output_schema:
+            # responses.parse validates the reply into ``output_schema``. It returns the whole
+            # response at once, so streaming is turned off, as on the chat parse path.
+            logger.debug("Calling OpenAI responses.parse with model=%s", self.model)
+            return await self.client.responses.parse(
+                model=self.model,
+                input=input_items,
+                text_format=output_schema,
+                stream=False,
+                **call_kwargs,
+            )
+        logger.debug("Calling OpenAI responses.create with model=%s", self.model)
+        return await self.client.responses.create(
+            model=self.model,
+            input=input_items,
+            stream=stream,
+            **call_kwargs,
+        )

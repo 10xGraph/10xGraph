@@ -152,7 +152,7 @@ dropped because prefill 400s on current models. `output_type` is limited to `tex
 
 Note the SDK is capped at `anthropic>=1.0.0,<2`. The 1.0 release moved to **httpx2**, so an
 `http_client` passed through `llm_kwargs` on the Anthropic path must be an httpx2 client,
-while the OpenAI path still takes httpx.
+while the OpenAI path takes httpx2 on openai 3.x (httpx on 1.x/2.x).
 
 **ToolNode.** `ToolNode(tools, client=None, pass_user_info_to_mcp=False)`. First positional arg
 is `tools` (an iterable of callables). `client` is an MCP client (fastmcp/mcp). Tools run in

@@ -1315,13 +1315,15 @@ class TestCallLLM:
         assert agent._effective_api_style == "responses"
         agent._call_openai_responses.assert_awaited_once()
 
-    async def test_openai_responses_with_output_schema_falls_back_to_chat(self):
+    async def test_openai_responses_with_output_schema_stays_on_responses(self):
         agent = _make_openai_agent(api_style="responses", model="o4-mini", output_schema={"type": "object", "properties": {"answer": {"type": "string"}}})
+        agent._call_openai_responses = AsyncMock(return_value="resp_response")
         agent._call_openai = AsyncMock(return_value="chat_response")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
-        assert result == "chat_response"
-        assert agent._effective_api_style == "chat"
-        agent._call_openai.assert_awaited_once()
+        assert result == "resp_response"
+        assert agent._effective_api_style == "responses"
+        agent._call_openai_responses.assert_awaited_once()
+        agent._call_openai.assert_not_awaited()
 
     async def test_openai_responses_with_base_url_succeeds(self):
         agent = _make_openai_agent(api_style="responses", model="o4-mini", base_url="http://localhost:8000/v1")
