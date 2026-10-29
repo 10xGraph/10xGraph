@@ -142,7 +142,7 @@ def _make_route_fn(
 
         # Validate the final assistant response.
         attempts = state.execution_meta.internal_data.get(_ATTEMPTS_KEY, 0)
-        is_valid, _ = _validate_message(last, adapter)
+        is_valid, error = _validate_message(last, adapter)
 
         if is_valid:
             logger.debug("Structured output validated successfully after %d attempt(s).", attempts)
@@ -153,6 +153,9 @@ def _make_route_fn(
                 "Max structured output repair attempts (%d) reached; returning best response.",
                 max_attempts,
             )
+            # Mark the reply so callers can tell it does not match the schema.
+            last.metadata["structured_output_valid"] = False
+            last.metadata["structured_output_error"] = error
             return END
 
         return "REPAIR"
@@ -244,7 +247,9 @@ class StructuredOutputAgent[StateT: AgentState]:
         system_prompt: System prompt for the generation agent.
         max_attempts: Maximum number of repair+retry cycles per turn before
             accepting the best available response (default ``2``).  The count
-            resets on each new turn of a thread.
+            resets on each new turn of a thread.  A reply that still fails
+            validation carries ``metadata["structured_output_valid"] = False`` and
+            ``metadata["structured_output_error"]``.
         repair_system_prompt: System prompt for the repair agent.  When
             ``None`` (default) the repair node is a lightweight context-
             injection function rather than a full LLM call, which keeps

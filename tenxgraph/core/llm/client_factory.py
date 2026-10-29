@@ -17,8 +17,9 @@ logger = logging.getLogger("tenxgraph.llm")
 # Default timeout (in seconds) applied to LLM client construction when the
 # caller does not pass an explicit ``timeout``. Bounds every request so a stalled
 # provider connection cannot hang a graph run indefinitely. Override globally via
-# the ``AGENTFLOW_LLM_TIMEOUT`` environment variable (seconds) or programmatically
-# via :func:`set_default_llm_timeout`.
+# the ``TENXGRAPH_LLM_TIMEOUT`` environment variable (seconds; the old
+# ``AGENTFLOW_LLM_TIMEOUT`` still works), programmatically via
+# :func:`set_default_llm_timeout`, or per agent with ``timeout=`` in ``llm_kwargs``.
 DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
 
 # Single-element holder so the override can be mutated without a ``global``
@@ -27,22 +28,21 @@ _default_timeout_override: dict[str, float | None] = {"value": None}
 
 
 def _env_timeout() -> float | None:
-    """Read ``AGENTFLOW_LLM_TIMEOUT`` (seconds), or None if unset/invalid."""
-    raw = os.getenv("AGENTFLOW_LLM_TIMEOUT")
-    if raw is None or not raw.strip():
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid AGENTFLOW_LLM_TIMEOUT=%r; expected a number of seconds. Ignoring.",
-            raw,
-        )
-        return None
-    if value <= 0:
-        logger.warning("AGENTFLOW_LLM_TIMEOUT=%s must be positive. Ignoring.", value)
-        return None
-    return value
+    """Read ``TENXGRAPH_LLM_TIMEOUT`` (then ``AGENTFLOW_LLM_TIMEOUT``), or None if unset/invalid."""
+    for name in ("TENXGRAPH_LLM_TIMEOUT", "AGENTFLOW_LLM_TIMEOUT"):
+        raw = os.getenv(name)
+        if raw is None or not raw.strip():
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r; expected a number of seconds. Ignoring.", name, raw)
+            return None
+        if value <= 0:
+            logger.warning("%s=%s must be positive. Ignoring.", name, value)
+            return None
+        return value
+    return None
 
 
 def get_default_llm_timeout() -> float:
@@ -51,7 +51,8 @@ def get_default_llm_timeout() -> float:
     Resolution order (first match wins):
 
     1. A programmatic override set via :func:`set_default_llm_timeout`.
-    2. The ``AGENTFLOW_LLM_TIMEOUT`` environment variable (seconds).
+    2. The ``TENXGRAPH_LLM_TIMEOUT`` environment variable (seconds), or the
+       deprecated ``AGENTFLOW_LLM_TIMEOUT``.
     3. :data:`DEFAULT_LLM_TIMEOUT_SECONDS`.
     """
     override = _default_timeout_override["value"]
@@ -67,7 +68,7 @@ def set_default_llm_timeout(seconds: float | None) -> None:
     """Globally override the default LLM request timeout, in seconds.
 
     Pass ``None`` to clear the override and fall back to the
-    ``AGENTFLOW_LLM_TIMEOUT`` environment variable / built-in default.
+    ``TENXGRAPH_LLM_TIMEOUT`` environment variable / built-in default.
 
     Raises:
         ValueError: If ``seconds`` is not a positive number.
@@ -239,7 +240,9 @@ def create_llm_client(
         ValueError: If required configuration (project, api_key) is missing.
     """
     if provider == "google":
-        return _create_google_client(use_vertex_ai=use_vertex_ai)
+        return _create_google_client(
+            use_vertex_ai=use_vertex_ai, timeout=extra_kwargs.get("timeout")
+        )
 
     if provider == "openai":
         return _create_openai_client(
@@ -261,7 +264,7 @@ def create_llm_client(
     )
 
 
-def _create_google_client(*, use_vertex_ai: bool) -> Any:
+def _create_google_client(*, use_vertex_ai: bool, timeout: float | None = None) -> Any:
     try:
         from google import genai
         from google.genai.types import HttpOptions
@@ -272,7 +275,7 @@ def _create_google_client(*, use_vertex_ai: bool) -> Any:
         ) from exc
 
     # google-genai expresses the request timeout in milliseconds.
-    http_options = HttpOptions(timeout=int(get_default_llm_timeout() * 1000))
+    http_options = HttpOptions(timeout=int((timeout or get_default_llm_timeout()) * 1000))
 
     if use_vertex_ai:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")

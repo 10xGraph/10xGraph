@@ -1,6 +1,8 @@
 from __future__ import annotations  # isort: skip_file
 
+import asyncio
 import logging
+from functools import partial
 from typing import Any, TypeVar
 
 from collections.abc import Callable
@@ -30,9 +32,9 @@ from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.utils import END, ResponseGranularity, metrics
+from tenxgraph.utils import END, START, ResponseGranularity, metrics
 from tenxgraph.utils.command import Command
-from tenxgraph.utils.logging import bind_log_context_from_config, set_log_context
+from tenxgraph.utils.logging import log_context_scope, set_log_context
 from tenxgraph.core.state.reducers import add_messages
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 
@@ -40,9 +42,13 @@ from .handler_utils import (
     check_and_handle_interrupt,
     check_interrupted,
     check_stop_requested,
+    close_unanswered_tool_calls,
+    finalize_cancelled_run,
     RESUME_AFTER_NODE_KEY,
     interrupt_graph,
+    node_after,
     pause_for_interrupt,
+    skip_answered_tool_node,
     split_remote_calls,
 )
 
@@ -153,6 +159,7 @@ class InvokeHandler[StateT: AgentState](
         self,
         state: StateT,
         config: dict[str, Any],
+        input_data: dict[str, Any] | None = None,
     ) -> tuple[StateT, list[Message]]:
         """Execute the entire graph with support for interrupts and resuming."""
         logger.info(
@@ -170,11 +177,14 @@ class InvokeHandler[StateT: AgentState](
         max_steps = config.get("recursion_limit", 25)
         logger.debug("Max steps limit set to %d", max_steps)
 
-        # get the last message from state as that is human message
-        last_human_message = state.context[-1] if state.context else None
-        if last_human_message and last_human_message.role != "user":
-            msg = [msg for msg in reversed(state.context) if msg.role == "user"]
-            last_human_message = msg[0] if msg else None
+        # The user's message belongs to the run's messages only when this call brought it.
+        # A resume with no new input must not send the last one again.
+        last_human_message = None
+        if input_data is None or input_data.get("messages"):
+            last_human_message = state.context[-1] if state.context else None
+            if last_human_message and last_human_message.role != "user":
+                msg = [msg for msg in reversed(state.context) if msg.role == "user"]
+                last_human_message = msg[0] if msg else None
 
         if last_human_message:
             logger.debug("Last human message: %s", last_human_message.content)
@@ -187,6 +197,13 @@ class InvokeHandler[StateT: AgentState](
         # that node (the next node can depend on those results).
         if config.pop(RESUME_AFTER_NODE_KEY, None) == current_node:
             current_node = get_next_node(current_node, state, self.edges)
+        if current_node != END:
+            current_node = skip_answered_tool_node(
+                self._get_node(current_node),
+                current_node,
+                state,
+                lambda n: get_next_node(n, state, self.edges),
+            )
 
         # Build lifecycle context (shared across all hooks in this execution)
         lifecycle_context = GraphLifecycleContext(config=config)
@@ -237,6 +254,7 @@ class InvokeHandler[StateT: AgentState](
                     config,
                     interrupt_before=self.interrupt_before,
                     interrupt_after=self.interrupt_after,
+                    messages=messages[persisted_upto:],
                 ):
                     logger.info("Graph execution interrupted before node '%s'", current_node)
                     event.event_type = EventType.INTERRUPTED
@@ -276,7 +294,13 @@ class InvokeHandler[StateT: AgentState](
                 except GraphInterrupt as paused:
                     # interrupt() inside the node: save the pause and end the run. Resuming
                     # with {"resume": value} re-runs this node.
-                    await pause_for_interrupt(current_node, state, config, paused.interrupt)
+                    await pause_for_interrupt(
+                        current_node,
+                        state,
+                        config,
+                        paused.interrupt,
+                        messages=messages[persisted_upto:],
+                    )
                     event.event_type = EventType.INTERRUPTED
                     event.metadata["interrupted"] = "Interrupt"
                     event.metadata["status"] = "Graph execution paused by interrupt()"
@@ -326,6 +350,8 @@ class InvokeHandler[StateT: AgentState](
                     next_node = result.get("next_node")
                     new_messages = result.get("messages", [])
                     if new_messages:
+                        # Make them visible to the next node, as the list branch does.
+                        state.context = add_messages(state.context, new_messages)
                         messages.extend(new_messages)
                         logger.debug(
                             "Node '%s' returned %d messages, total messages now %d",
@@ -360,17 +386,21 @@ class InvokeHandler[StateT: AgentState](
                 if remote_calls:
                     # The run resumes after this node once the client sends the results. The
                     # placeholders are returned (clients read them) but kept out of the context.
-                    await interrupt_graph(current_node, state, config)
+                    await interrupt_graph(
+                        current_node, state, config, messages=messages[persisted_upto:]
+                    )
                     messages.extend(remote_calls)
                     return state, messages
 
-                # Check stop again after node execution
+                # Check stop again after node execution. The node finished, so the stop is
+                # saved at the node that follows it.
                 res = await check_stop_requested(
                     state,
                     current_node,
                     event,
                     messages,
                     config,
+                    resume_after=partial(node_after, current_node, next_node, state, self.edges),
                 )
                 if res:
                     return state, messages
@@ -408,6 +438,7 @@ class InvokeHandler[StateT: AgentState](
                     config,
                     interrupt_before=self.interrupt_before,
                     interrupt_after=self.interrupt_after,
+                    messages=messages[persisted_upto:],
                 ):
                     logger.info("Graph execution interrupted after node '%s'", current_node)
                     # For interrupt_after, advance to next node before pausing
@@ -470,10 +501,14 @@ class InvokeHandler[StateT: AgentState](
                 if is_interrupted_requested:
                     return state, messages
 
-                if step >= max_steps:
+                if step >= max_steps and current_node != END:
                     error_msg = "Graph execution exceeded maximum steps"
                     logger.error(error_msg)
                     state.error(error_msg)
+                    # The limit is spent for this turn. Park the state at the entry so the
+                    # next message starts a new turn instead of stopping at once.
+                    state.set_current_node(START)
+                    state.execution_meta.step = 0
                     await call_realtime_sync(state, config)
                     event.event_type = EventType.ERROR
                     event.data["state"] = state.model_dump()
@@ -533,10 +568,17 @@ class InvokeHandler[StateT: AgentState](
 
             return state, messages
 
+        except asyncio.CancelledError:
+            # Cancelled mid-run (client gone, shutdown, timeout around the run): save the
+            # thread as INTERRUPTED so the next run can use it, then let the cancel go on.
+            await finalize_cancelled_run(state, config, messages, event, current_node)
+            raise
         except Exception as e:
             # Handle execution errors
             logger.exception("Graph execution failed: %s", e)
             state.error(str(e))
+            # Close tool calls the failed node never answered, so the saved history is valid.
+            await close_unanswered_tool_calls(state, config, messages)
 
             # Publish error event
             event.event_type = EventType.ERROR
@@ -571,16 +613,25 @@ class InvokeHandler[StateT: AgentState](
         response_granularity: ResponseGranularity = ResponseGranularity.LOW,
     ):
         """Execute the graph asynchronously with event publishing."""
+        # Bind run correlation for every log line emitted underneath this run, so a
+        # single run can actually be grepped out of a busy multi-tenant server. The ids
+        # are put back when the run ends.
+        with log_context_scope(config):
+            return await self._invoke(input_data, config, default_state, response_granularity)
+
+    async def _invoke(
+        self,
+        input_data: dict[str, Any],
+        config: dict[str, Any],
+        default_state: StateT,
+        response_granularity: ResponseGranularity = ResponseGranularity.LOW,
+    ):
         logger.info(
             "Starting asynchronous graph execution with %d input keys, granularity=%s",
             len(input_data) if input_data else 0,
             response_granularity,
         )
         input_data = input_data or {}
-
-        # Bind run correlation for every log line emitted underneath this run, so a
-        # single run can actually be grepped out of a busy multi-tenant server.
-        bind_log_context_from_config(config)
 
         # Load or initialize state
         logger.debug("Loading or creating state from input data")
@@ -630,7 +681,7 @@ class InvokeHandler[StateT: AgentState](
             event.metadata["status"] = "Graph execution started"
             publish_event(event)
 
-            final_state, messages = await self._execute_graph(state, config)
+            final_state, messages = await self._execute_graph(state, config, input_data)
             logger.info("Graph execution completed with %d final messages", len(messages))
 
             # Calculate token usage

@@ -20,7 +20,7 @@ This repository is the core engine (PyPI `10xgraph`, import `tenxgraph`). The do
 
 - **Replay-safe tools.** The run loop persists the current node before running it, so a process killed mid-node re-runs that node on resume. Before calling a tool, 10xGraph checks the checkpointer's tool ledger and records each completed call as soon as it returns. A tool that already ran is not executed again: no double charge, no duplicate email. Requires a checkpointer.
 - **Versioned state writes.** Durable writes use optimistic compare-and-swap, so two runs on one thread cannot overwrite each other. The Redis cache write is version-guarded too.
-- **Real node and tool timeouts.** Set `node_timeout` and `tool_timeout` in the run config (defaults 900 s and 300 s), so a hung tool cannot hold a worker forever.
+- **Real node and tool timeouts.** Set `node_timeout` and `tool_timeout` in the run config (no limit unless you set them), applied on both invoke and stream.
 - **Human approval inside a tool.** `interrupt()` pauses the run and saves the thread; resume with the decision.
 
 **2. The production server ships in the box (`10xgraph-api`, MIT)**

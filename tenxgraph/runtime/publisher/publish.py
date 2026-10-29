@@ -4,7 +4,7 @@ from injectq import Inject
 
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.runtime.publisher.events import EventModel
-from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.injection import fresh
 
 
@@ -36,13 +36,17 @@ def publish_event(
 ) -> None:
     """Publish an event asynchronously using the background task manager.
 
+    Delivery is best-effort: events run as background tasks, and when more than the
+    manager's cap (1000 by default) are pending, new events are shed and a warning is
+    logged. ``CompiledGraph.aclose()`` and sync ``invoke()`` wait for pending events.
+
     Args:
         event: The event to publish.
         publisher: The publisher instance (injected).
         task_manager: The background task manager (injected).
     """
     publisher = fresh(publisher)
-    task_manager = fresh(task_manager)
+    task_manager = resolve_task_manager(fresh(task_manager))
     # No sink bound -> nothing to publish. Spawning a task per event just to
     # discover there is nowhere to send it cost a task and kept the event alive
     # for no reason, on the hot path of every node in every run.

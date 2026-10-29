@@ -6,6 +6,7 @@ asyncio background tasks, ensuring proper cleanup and error logging.
 """
 
 import asyncio
+import contextvars
 import logging
 import time
 from collections.abc import Coroutine
@@ -27,6 +28,23 @@ DEFAULT_MAX_PENDING_TASKS = 1000
 
 # Don't log a warning on every dropped task; that would itself become the flood.
 DROP_WARNING_INTERVAL_SECONDS = 5.0
+
+# After the shutdown timeout, how long to wait for cancelled tasks to unwind.
+CANCEL_GRACE_SECONDS = 0.5
+
+
+# The manager of the graph whose run is executing in this context. Set by CompiledGraph
+# for the duration of a run so that code resolving a manager from a possibly shared
+# container (publish_event, memory tools) queues work on the run's own graph, whose
+# aclose() then drains it.
+current_task_manager: contextvars.ContextVar["BackgroundTaskManager | None"] = (
+    contextvars.ContextVar("tenxgraph_current_task_manager", default=None)
+)
+
+
+def resolve_task_manager(injected: "BackgroundTaskManager") -> "BackgroundTaskManager":
+    """Return the running graph's own manager, falling back to the injected one."""
+    return current_task_manager.get() or injected
 
 
 @dataclass
@@ -305,7 +323,7 @@ class BackgroundTaskManager:
         """
         Gracefully shutdown the task manager.
 
-        This method cancels all tasks and waits for them to complete with a timeout.
+        This method waits up to the timeout for tasks to complete, then cancels the rest.
         It ensures proper cleanup and prevents memory leaks.
 
         Args:
@@ -331,15 +349,16 @@ class BackgroundTaskManager:
                 shutdown_timeout,
             )
 
-            # Cancel all tasks
-            await self.cancel_all()
-
-            # Wait for tasks to complete with timeout
+            # Drain first: let in-flight tasks (publisher events, memory writes, thread
+            # naming) finish on their own within the timeout, and cancel only what is left.
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*list(self._tasks), return_exceptions=True),
-                    timeout=shutdown_timeout,
-                )
+                pending = list(self._tasks)
+                if pending:
+                    _, still_running = await asyncio.wait(pending, timeout=shutdown_timeout)
+                    if still_running:
+                        raise TimeoutError
+                # Let done-callbacks run so _tasks reflects the finished work.
+                await asyncio.sleep(0)
                 completed_count = initial_count - len(self._tasks)
                 duration = time.time() - start_time
 
@@ -369,10 +388,12 @@ class BackgroundTaskManager:
                 )
                 metrics.counter("background_task_manager.shutdown_timeout").inc()
 
-                # Force cancel remaining tasks
-                for task in list(self._tasks):
-                    if not task.done():
-                        task.cancel()
+                # Cancel what is left, and give the cancellations a moment to land.
+                leftover = [t for t in self._tasks if not t.done()]
+                for task in leftover:
+                    task.cancel()
+                if leftover:
+                    await asyncio.wait(leftover, timeout=CANCEL_GRACE_SECONDS)
 
                 return {
                     "status": "timeout",

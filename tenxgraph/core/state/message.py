@@ -20,7 +20,6 @@ Functions:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Sequence
@@ -42,6 +41,7 @@ from tenxgraph.core.state.message_block import (
     ToolResultBlock,
     VideoBlock,
 )
+from tenxgraph.utils.callable_utils import resolve_awaitable_id
 
 
 logger = logging.getLogger("tenxgraph.state")
@@ -71,11 +71,7 @@ def generate_id(default_id: str | int | None) -> str | int:
 
     # if user provided an awaitable, resolve it
     if isinstance(generated_id, Awaitable):
-
-        async def wait_for_id():
-            return await generated_id
-
-        generated_id = asyncio.run(wait_for_id())
+        generated_id = resolve_awaitable_id(generated_id)
 
     if generated_id:
         return generated_id

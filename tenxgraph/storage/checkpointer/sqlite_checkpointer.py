@@ -117,6 +117,16 @@ DDL_STATEMENTS: tuple[str, ...] = (
         owner_id  TEXT NOT NULL
     )
     """,
+    # Tool execution ledger: a completed tool call is recorded against its id so a node
+    # replayed after a crash does not fire it again.
+    """
+    CREATE TABLE IF NOT EXISTS af_tool_executions (
+        thread_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        result TEXT NOT NULL,
+        PRIMARY KEY (thread_id, tool_call_id)
+    )
+    """,
 )
 
 
@@ -363,6 +373,15 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         if row is None:
             return None
         return self._deserialize_state(row["state_data"])
+
+    async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
+        await self._ensure_setup()
+        if await self._owner_denied(config):
+            return True  # no-op, do not reveal existence
+        key = self._get_config_key(config)
+        async with self._write() as conn:
+            await conn.execute("DELETE FROM af_state_cache WHERE thread_id = ?", (key,))
+        return True
 
     # ------------------------------------------------------------------
     # Generic cache — async (TTL, lazy prune on read)
@@ -682,7 +701,46 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             await conn.execute("DELETE FROM af_messages WHERE thread_id = ?", (key,))
             await conn.execute("DELETE FROM af_states WHERE thread_id = ?", (key,))
             await conn.execute("DELETE FROM af_state_cache WHERE thread_id = ?", (key,))
+            await conn.execute("DELETE FROM af_tool_executions WHERE thread_id = ?", (key,))
             await conn.execute("DELETE FROM af_thread_owner WHERE thread_id = ?", (key,))
+        return True
+
+    # ------------------------------------------------------------------
+    # Tool execution ledger
+    # ------------------------------------------------------------------
+
+    async def aget_tool_result(
+        self,
+        config: dict[str, Any],
+        tool_call_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the recorded result of a completed tool call, if there is one."""
+        await self._ensure_setup()
+        if await self._owner_denied(config):
+            return None  # not the owner -> no record, do not reveal existence
+        conn = await self._get_conn()
+        async with conn.execute(
+            "SELECT result FROM af_tool_executions WHERE thread_id = ? AND tool_call_id = ?",
+            (self._get_config_key(config), str(tool_call_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        return json.loads(row["result"]) if row else None
+
+    async def aput_tool_result(
+        self,
+        config: dict[str, Any],
+        tool_call_id: str,
+        result: dict[str, Any],
+    ) -> Any | None:
+        """Durably record that a tool call completed; the first recorded result wins."""
+        await self._ensure_setup()
+        async with self._write() as conn:
+            await self._record_owner(conn, config)
+            await conn.execute(
+                "INSERT OR IGNORE INTO af_tool_executions (thread_id, tool_call_id, result) "
+                "VALUES (?, ?, ?)",
+                (self._get_config_key(config), str(tool_call_id), _dumps(result)),
+            )
         return True
 
     # ------------------------------------------------------------------

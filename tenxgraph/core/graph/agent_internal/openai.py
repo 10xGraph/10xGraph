@@ -117,6 +117,9 @@ class AgentOpenAIMixin:
         if self.output_type in ("text", "json"):
             if tools:
                 call_kwargs["tools"] = tools
+            if stream:
+                # Without this OpenAI sends no usage chunk and streamed runs report 0 tokens.
+                call_kwargs.setdefault("stream_options", {"include_usage": True})
 
             logger.debug("Calling OpenAI chat.completions.create with model=%s", self.model)
             response = await self.client.chat.completions.create(

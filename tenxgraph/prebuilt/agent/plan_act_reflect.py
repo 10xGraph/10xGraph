@@ -107,7 +107,18 @@ def _make_reflect_node(reflect_agent: Agent) -> Callable:
 
     async def _reflect(state: AgentState, config: dict) -> object:
         original_context = state.context
-        state.context = [m for m in (original_context or []) if m.role != "tool"]
+        # Hide tool results, and the tool calls they answer: a provider rejects an
+        # assistant tool call that has no matching result.
+        visible: list[Message] = []
+        for msg in original_context or []:
+            if msg.role == "tool":
+                continue
+            if msg.role == "assistant" and msg.tools_calls:
+                if not msg.text().strip():
+                    continue
+                msg = msg.model_copy(update={"tools_calls": None})  # noqa: PLW2901
+            visible.append(msg)
+        state.context = visible
         try:
             return await reflect_agent.execute(state, config)
         finally:

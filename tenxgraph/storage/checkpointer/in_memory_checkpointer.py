@@ -227,6 +227,15 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             logger.debug(f"Retrieved state cache for key: {key}, found: {cache is not None}")
             return copy.deepcopy(cache)
 
+    async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
+        """Drop the cached state for a thread; the durable state is untouched."""
+        if self._owner_denied(config):
+            return True  # not the owner -> no-op, do not reveal existence
+        key = self._get_config_key(config)
+        async with self._state_lock:
+            self._state_cache.pop(key, None)
+        return True
+
     async def aput_cache_value(
         self,
         namespace: str,
@@ -348,7 +357,18 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._messages_lock:
             self._record_owner(config)
-            self._messages[key].extend(messages)
+            # Upsert by message id, as the SQL backends do: a run that re-sends messages it
+            # already stored (a resume, the final save after a step checkpoint) must not
+            # duplicate them.
+            stored = self._messages[key]
+            index = {str(m.message_id): i for i, m in enumerate(stored)}
+            for msg in messages:
+                at = index.get(str(msg.message_id))
+                if at is None:
+                    index[str(msg.message_id)] = len(stored)
+                    stored.append(msg)
+                else:
+                    stored[at] = msg
             if metadata:
                 self._message_metadata[key] = metadata
             logger.debug(f"Stored {len(messages)} messages for key: {key}")

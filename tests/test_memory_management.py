@@ -106,9 +106,9 @@ class TestBackgroundTaskManagerMemory:
         stats = await task_manager.shutdown(timeout=0.5)
         duration = time.time() - start
 
-        # Task should be cancelled and complete quickly
-        assert stats["status"] == "completed"
-        assert duration < 1.0  # Should complete quickly due to cancellation
+        # The task outlives the timeout, so it is cancelled after waiting for it
+        assert stats["status"] == "timeout"
+        assert 0.4 <= duration < 1.5
         assert task_manager.get_task_count() == 0
 
     @pytest.mark.asyncio
@@ -149,7 +149,7 @@ class TestBackgroundTaskManagerMemory:
             assert task_started
             assert manager.get_task_count() == 1
 
-        # After exiting context, tasks should be cleaned up
+        # After exiting context (timeout reached), the leftover task is cancelled
         assert task_cancelled
 
     @pytest.mark.asyncio
@@ -521,7 +521,7 @@ class TestStressConcurrentOperations:
         except ValueError:
             pass
 
-        # Despite exception, cleanup should have happened
+        # Despite exception, cleanup should have happened (cancelled after the timeout)
         assert task_cancelled
 
 
@@ -552,7 +552,7 @@ class TestResourceLimits:
 
     @pytest.mark.asyncio
     async def test_shutdown_respects_timeout(self):
-        """Test that shutdown timeout is enforced for tasks that complete."""
+        """Shutdown waits up to the timeout, then cancels tasks still running."""
 
         async def quick_task():
             # Task that responds to cancellation
@@ -568,9 +568,9 @@ class TestResourceLimits:
         stats = await manager.shutdown(timeout=0.3)
         duration = time.time() - start
 
-        # Task should be cancelled quickly
-        assert stats["status"] == "completed"
-        assert duration < 0.6  # Should complete quickly due to cancellation
+        # Task outlives the timeout: waited the timeout, then cancelled
+        assert stats["status"] == "timeout"
+        assert 0.25 <= duration < 1.2
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ import contextvars
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 
 # Create the main agentflow logger
@@ -227,6 +227,27 @@ def bind_log_context_from_config(config: dict) -> None:
     )
 
 
+@contextlib.contextmanager
+def log_context_scope(config: dict) -> Iterator[None]:
+    """Bind the run's correlation fields for the block, then put the earlier ones back.
+
+    Without the restore, the ids of the last run stayed on every later log line of the
+    same task.
+    """
+    previous = {
+        _run_id_var: _run_id_var.get(),
+        _thread_id_var: _thread_id_var.get(),
+        _user_id_var: _user_id_var.get(),
+        _node_var: _node_var.get(),
+    }
+    bind_log_context_from_config(config)
+    try:
+        yield
+    finally:
+        for var, value in previous.items():
+            var.set(value)
+
+
 class CorrelationFilter(logging.Filter):
     """Attach the current run's correlation fields to every log record.
 
@@ -347,6 +368,7 @@ __all__ = [
     "bind_log_context_from_config",
     "get_log_context",
     "install_secret_redaction",
+    "log_context_scope",
     "logger",
     "mask_secrets",
     "set_log_context",

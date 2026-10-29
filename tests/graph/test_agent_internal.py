@@ -1272,10 +1272,14 @@ class TestCallGoogle:
         await self._call(agent, output_type="video")
         agent.client.aio.models.generate_videos.assert_called_once()
 
-    async def test_audio_calls_generate_audio(self):
+    async def test_audio_uses_generate_content_with_audio_modality(self):
+        # google-genai has no generate_audio; audio is generate_content with AUDIO.
         agent = self._agent()
+        del agent.client.aio.models.generate_audio
         await self._call(agent, output_type="audio")
-        agent.client.aio.models.generate_audio.assert_called_once()
+        agent.client.aio.models.generate_content.assert_called_once()
+        config = agent.client.aio.models.generate_content.call_args.kwargs["config"]
+        assert list(config.response_modalities) == ["AUDIO"]
 
     async def test_unsupported_output_type_raises(self):
         agent = self._agent()

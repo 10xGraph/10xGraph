@@ -1551,6 +1551,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         except Exception as e:  # invalidation is best-effort
             logger.warning("Failed to invalidate state cache for thread_id=%s: %s", thread_id, e)
 
+    async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
+        """Drop the cached state for a thread; the Postgres state is untouched.
+
+        The cache key includes the caller's user id, so one user cannot clear another's.
+        """
+        thread_id, user_id = self._validate_config(config)
+        await self._invalidate_state_cache(thread_id, user_id)
+        return True
+
     async def aget_state_cache(self, config: dict[str, Any]) -> StateT | None:
         """
         Get state from Redis cache, fallback to PostgreSQL if miss.

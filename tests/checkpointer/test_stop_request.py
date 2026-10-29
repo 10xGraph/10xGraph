@@ -119,7 +119,9 @@ class TestStopRequestConsumption:
         )
 
         assert stopped is True
-        assert state.execution_meta.stop_current_execution == StopRequestStatus.STOP_REQUESTED
+        # The request is consumed: saved as STOPPED, so the next run on the thread does not
+        # read it back from the cache and stop at once (G-03).
+        assert state.execution_meta.stop_current_execution == StopRequestStatus.STOPPED
         assert state.is_interrupted()
         # Consumed, so it cannot leak into the next run on this thread.
         assert await cp.ais_stop_requested(CONFIG) is False

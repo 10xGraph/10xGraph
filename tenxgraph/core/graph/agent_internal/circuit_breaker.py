@@ -58,6 +58,7 @@ class CircuitBreaker:
         self._failures = 0
         self._state = CircuitState.closed
         self._opened_at = 0.0
+        self._trial_started_at = 0.0
 
     @property
     def state(self) -> CircuitState:
@@ -68,10 +69,21 @@ class CircuitBreaker:
         return self._failures
 
     def allow(self) -> bool:
-        """Return True if a call may proceed, transitioning open -> half-open if due."""
+        """Return True if a call may proceed, transitioning open -> half-open if due.
+
+        Half-open admits one trial at a time. If that trial never reports (the call
+        was cancelled), another is admitted after ``reset_timeout``.
+        """
+        now = self._time()
         if self._state is CircuitState.open:
-            if self._time() - self._opened_at >= self.reset_timeout:
+            if now - self._opened_at >= self.reset_timeout:
                 self._state = CircuitState.half_open
+                self._trial_started_at = now
+                return True
+            return False
+        if self._state is CircuitState.half_open:
+            if now - self._trial_started_at >= self.reset_timeout:
+                self._trial_started_at = now
                 return True
             return False
         return True

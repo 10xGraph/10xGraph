@@ -156,8 +156,9 @@ class OpenAIBatch:
         """Download and parse a finished batch's output, keyed by ``custom_id``."""
         batch = await self.client.batches.retrieve(batch_id)
         output_file_id = getattr(batch, "output_file_id", None)
+        error_file_id = getattr(batch, "error_file_id", None)
 
-        if not output_file_id:
+        if not output_file_id and not error_file_id:
             status = getattr(batch, "status", "unknown")
             logger.warning(
                 "OpenAI batch %s has no output file (status=%s); nothing to collect.",
@@ -166,22 +167,28 @@ class OpenAIBatch:
             )
             return {}
 
-        content = await self.client.files.content(output_file_id)
+        collected: dict[str, BatchResult] = {}
+        # Failed requests are written to the error file, not the output file; reading
+        # only the output file would make them vanish from the results.
+        for file_id in (output_file_id, error_file_id):
+            if not file_id:
+                continue
+            for line in (await self._read_file(file_id)).splitlines():
+                if not line.strip():
+                    continue
+                result = _parse_line(json.loads(line))
+                collected.setdefault(result.custom_id, result)
+
+        logger.info("Collected %d results for batch %s", len(collected), batch_id)
+        return collected
+
+    async def _read_file(self, file_id: str) -> str:
+        content = await self.client.files.content(file_id)
         raw = getattr(content, "text", None)
         if raw is None:
             body = await content.aread() if hasattr(content, "aread") else content.read()
             raw = body.decode("utf-8") if isinstance(body, bytes) else str(body)
-
-        collected: dict[str, BatchResult] = {}
-        for line in raw.splitlines():
-            if not line.strip():
-                continue
-            entry = json.loads(line)
-            result = _parse_line(entry)
-            collected[result.custom_id] = result
-
-        logger.info("Collected %d results for batch %s", len(collected), batch_id)
-        return collected
+        return raw
 
 
 def _parse_line(entry: dict[str, Any]) -> BatchResult:

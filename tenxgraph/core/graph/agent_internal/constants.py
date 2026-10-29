@@ -23,6 +23,17 @@ class RetryConfig:
             (default ``5``).
         circuit_breaker_reset_timeout: Seconds a circuit stays open before a
             single half-open trial is allowed (default ``30.0``).
+        jitter: Fraction of each back-off delay that is randomised, so parallel
+            runs do not retry in lock-step: the sleep is
+            ``delay * (1 - jitter * random())`` (default ``0.25``; ``0`` disables).
+        max_concurrent_calls: Opt-in cap on in-flight LLM requests per provider
+            for one Agent instance (default ``None``, no cap). For streaming calls the
+            cap covers opening the stream, not reading it.
+
+    A ``Retry-After`` header on a retryable error is honoured when it is longer than
+    the computed delay. When it is longer than ``max_delay`` the model is not retried
+    and the next fallback is tried. A 429 that reports a permanent quota or spend cap
+    is never retried.
     """
 
     max_retries: int = 3
@@ -35,6 +46,8 @@ class RetryConfig:
     circuit_breaker_enabled: bool = False
     circuit_breaker_threshold: int = 5
     circuit_breaker_reset_timeout: float = 30.0
+    jitter: float = 0.25
+    max_concurrent_calls: int | None = None
 
 
 DEFAULT_RETRY_CONFIG = RetryConfig()

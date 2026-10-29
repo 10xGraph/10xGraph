@@ -334,8 +334,11 @@ async def shutdown_with_timeout(
         # Cancel if it's a task
         if isinstance(coro_or_task, asyncio.Task):
             coro_or_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await coro_or_task
+            # Not ``suppress(CancelledError)`` around ``await``: that would also absorb a
+            # cancel aimed at the caller while it waits here.
+            await asyncio.wait({coro_or_task})
+            if not coro_or_task.cancelled():
+                coro_or_task.exception()  # mark any error as retrieved
 
         return {"status": "timeout", "duration": duration}
     except Exception as e:

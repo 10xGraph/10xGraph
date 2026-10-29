@@ -8,8 +8,10 @@ for agent workflows that require real-time or chunked responses.
 
 from __future__ import annotations  # isort: skip_file
 
+import asyncio
 import logging
 import time
+from functools import partial
 from collections.abc import AsyncGenerator, AsyncIterable
 from typing import Any, TypeVar
 
@@ -17,24 +19,32 @@ from collections.abc import Callable
 
 from injectq import inject, Inject
 
-from tenxgraph.core.exceptions import GraphRecursionError
+from tenxgraph.core.exceptions import GraphRecursionError, GraphStopRequested, NodeTimeoutError
 from tenxgraph.core.graph.edge import Edge
 from tenxgraph.core.graph.node import Node
+from tenxgraph.core.graph.utils.guards import resolve_timeout, stream_with_guards
 from tenxgraph.core.graph.utils.tool_dispatch import validate_goto
+from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
+from tenxgraph.utils.logging import log_context_scope, set_log_context
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
-from tenxgraph.core.state import AgentState, Message, ErrorBlock
+from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
-from tenxgraph.utils import END, ResponseGranularity, add_messages
+from tenxgraph.utils import END, START, ResponseGranularity, add_messages, metrics
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from .handler_utils import (
     check_and_handle_interrupt,
     check_interrupted,
     check_stop_requested,
+    close_unanswered_tool_calls,
+    finalize_cancelled_run,
     RESUME_AFTER_NODE_KEY,
     interrupt_graph,
     is_remote_tool_marker,
+    node_after,
     pause_for_interrupt,
+    skip_answered_tool_node,
 )
 
 from .handler_mixins import (
@@ -130,7 +140,60 @@ class StreamHandler[StateT: AgentState](
         self._set_interrupts(interrupt_before, interrupt_after)
         self.callback_mgr = callback_mgr
 
-    async def _execute_graph(  # noqa: PLR0912, PLR0915
+    async def _execute_node_stream(
+        self,
+        node: Node,
+        node_name: str,
+        config: dict[str, Any],
+        state: StateT,
+        checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
+    ) -> AsyncGenerator[Any]:
+        """Stream a node under a deadline, cancellable by an out-of-band stop.
+
+        The node's generator is driven by a task core owns (see ``stream_with_guards``), so
+        a node that hangs can be stopped or timed out mid-flight, as on the invoke path. The
+        deadline is the developer's ``node_timeout``; with none set the node has no limit.
+        """
+        checkpointer = fresh(checkpointer)
+        timeout = resolve_timeout(config, "node_timeout", DEFAULT_NODE_TIMEOUT_SECONDS)
+
+        stop_check = None
+        if checkpointer:
+
+            async def stop_check() -> bool:
+                return await checkpointer.ais_stop_requested(config)
+
+        attrs = {"node": node_name}
+        metrics.counter("tenxgraph.node.executions").inc(attributes=attrs)
+
+        try:
+            with metrics.timer("tenxgraph.node.duration", attributes=attrs):
+                async for item in stream_with_guards(
+                    node.stream(config, state),  # type: ignore[arg-type]
+                    timeout=timeout,
+                    stop_check=stop_check,
+                    on_timeout=lambda: NodeTimeoutError(
+                        message=(
+                            f"Node '{node_name}' exceeded its timeout of {timeout}s "
+                            f"and was cancelled"
+                        ),
+                        error_code="NODE_TIMEOUT_001",
+                        context={"node_name": node_name, "timeout": timeout},
+                    ),
+                    on_stop=lambda: GraphStopRequested(node_name),
+                ):
+                    yield item
+        except NodeTimeoutError:
+            metrics.counter("tenxgraph.node.timeouts").inc(attributes=attrs)
+            raise
+        except GraphStopRequested:
+            metrics.counter("tenxgraph.node.stopped").inc(attributes=attrs)
+            raise
+        except Exception:
+            metrics.counter("tenxgraph.node.errors").inc(attributes=attrs)
+            raise
+
+    async def _execute_graph(  # noqa: PLR0911, PLR0912, PLR0915
         self,
         state: StateT,
         input_data: dict[str, Any],
@@ -150,6 +213,8 @@ class StreamHandler[StateT: AgentState](
         )
         messages: list[Message] = []
         messages_ids = set()
+        # How many of `messages` a per-step checkpoint has already saved.
+        persisted_upto = 0
         max_steps = config.get("recursion_limit", 25)
         logger.debug("Max steps limit set to %d", max_steps)
 
@@ -178,6 +243,13 @@ class StreamHandler[StateT: AgentState](
         # that node (the next node can depend on those results).
         if config.pop(RESUME_AFTER_NODE_KEY, None) == current_node:
             current_node = get_next_node(current_node, state, self.edges)
+        if current_node != END:
+            current_node = skip_answered_tool_node(
+                self._get_node(current_node),
+                current_node,
+                state,
+                lambda n: get_next_node(n, state, self.edges),
+            )
 
         # Build lifecycle context (shared across all hooks in this execution)
         lifecycle_context = GraphLifecycleContext(config=config)
@@ -244,6 +316,9 @@ class StreamHandler[StateT: AgentState](
                 # Update event with current step info
                 event.data["step"] = step
                 event.data["current_node"] = current_node
+                event.data["state"] = state.model_dump()
+                event.metadata["step"] = step
+                event.metadata["current_node"] = current_node
                 event.event_type = EventType.PROGRESS
                 event.metadata["status"] = f"Executing step {step} at node '{current_node}'"
                 publish_event(event)
@@ -256,6 +331,7 @@ class StreamHandler[StateT: AgentState](
                     config,
                     interrupt_before=self.interrupt_before,
                     interrupt_after=self.interrupt_after,
+                    messages=messages[persisted_upto:],
                 ):
                     logger.info("Graph execution interrupted before node '%s'", current_node)
                     event.event_type = EventType.INTERRUPTED
@@ -287,7 +363,7 @@ class StreamHandler[StateT: AgentState](
 
                 node_event = EventModel.default(
                     config,
-                    data={"step": step},
+                    data={"step": step, "state": state.model_dump()},
                     event=Event.NODE_EXECUTION,
                     event_type=EventType.START,
                     content_type=[ContentType.STATE],
@@ -299,37 +375,12 @@ class StreamHandler[StateT: AgentState](
                 ############ Execute Node ##########################
                 ####################################################
                 config["_node_name"] = current_node
-                result = node.stream(config, state)  # type: ignore
-                logger.debug("Node '%s' execution completed", current_node)
+                # Narrow the correlation context to the node now executing.
+                set_log_context(node=current_node)
+                logger.debug("Node '%s' execution started", current_node)
                 ####################################################
                 ############ Execute Node ##########################
                 ####################################################
-
-                res = await check_stop_requested(
-                    state,
-                    current_node,
-                    event,
-                    messages,
-                    config,
-                )
-                if res:
-                    event.event_type = EventType.INTERRUPTED
-                    event.metadata["status"] = "Graph execution stopped by request"
-                    event.data["state"] = state.model_dump()
-                    publish_event(event)
-                    yield StreamChunk(
-                        event=StreamEvent.UPDATES,
-                        data={
-                            "status": "invoking_node",
-                            "node": current_node,
-                            "step": step,
-                            "max_steps": max_steps,
-                            "reason": "Graph execution stopped by request",
-                        },
-                        thread_id=config.get("thread_id"),
-                        run_id=config.get("run_id"),
-                    )
-                    return
 
                 # Process result and get next node
                 yield StreamChunk(
@@ -350,7 +401,9 @@ class StreamHandler[StateT: AgentState](
                 remote_pending = False
                 try:
                     with node_scope(config, current_node, resume_values(state)):
-                        async for rs in result:
+                        async for rs in self._execute_node_stream(
+                            node, current_node, config, state
+                        ):
                             # Allow stop to break inner result loop as well
                             if isinstance(rs, StreamChunk):
                                 yield rs
@@ -419,7 +472,13 @@ class StreamHandler[StateT: AgentState](
                 except GraphInterrupt as paused:
                     # interrupt() inside the node: save the pause and end the run. Resuming with
                     # {"resume": value} re-runs this node.
-                    await pause_for_interrupt(current_node, state, config, paused.interrupt)
+                    await pause_for_interrupt(
+                        current_node,
+                        state,
+                        config,
+                        paused.interrupt,
+                        messages=messages[persisted_upto:],
+                    )
                     event.event_type = EventType.INTERRUPTED
                     event.metadata["interrupted"] = "Interrupt"
                     event.metadata["status"] = "Graph execution paused by interrupt()"
@@ -436,6 +495,24 @@ class StreamHandler[StateT: AgentState](
                             "pause": "interrupt",
                             "reason": "Graph execution paused by interrupt()",
                             "interrupt": paused.interrupt.model_dump(mode="json"),
+                        },
+                        thread_id=config.get("thread_id"),
+                        run_id=config.get("run_id"),
+                    )
+                    return
+                except GraphStopRequested:
+                    # The node was cancelled mid-flight because a stop arrived. Hand off to
+                    # the normal stop path: control flow, not a failure.
+                    logger.info("Node '%s' cancelled by stop request; finalizing run", current_node)
+                    await check_stop_requested(state, current_node, event, messages, config)
+                    yield StreamChunk(
+                        event=StreamEvent.UPDATES,
+                        data={
+                            "status": "invoking_node",
+                            "node": current_node,
+                            "step": step,
+                            "max_steps": max_steps,
+                            "reason": "Graph execution stopped by request",
                         },
                         thread_id=config.get("thread_id"),
                         run_id=config.get("run_id"),
@@ -497,7 +574,9 @@ class StreamHandler[StateT: AgentState](
                 if remote_pending:
                     # The client runs this node's remaining tool calls. Pause; the run
                     # resumes after this node once their results arrive.
-                    await interrupt_graph(current_node, state, config)
+                    await interrupt_graph(
+                        current_node, state, config, messages=messages[persisted_upto:]
+                    )
                     yield StreamChunk(
                         event=StreamEvent.UPDATES,
                         data={
@@ -507,6 +586,30 @@ class StreamHandler[StateT: AgentState](
                             "max_steps": max_steps,
                             "reason": "Remote tool call - graph interrupted",
                             "pause": "remote_tool",
+                        },
+                        thread_id=config.get("thread_id"),
+                        run_id=config.get("run_id"),
+                    )
+                    return
+
+                # Check stop again after node execution. The node finished, so the stop is
+                # saved at the node that follows it.
+                if await check_stop_requested(
+                    state,
+                    current_node,
+                    event,
+                    messages,
+                    config,
+                    resume_after=partial(node_after, current_node, next_node, state, self.edges),
+                ):
+                    yield StreamChunk(
+                        event=StreamEvent.UPDATES,
+                        data={
+                            "status": "node_invoked",
+                            "node": current_node,
+                            "step": step,
+                            "max_steps": max_steps,
+                            "reason": "Graph execution stopped by request",
                         },
                         thread_id=config.get("thread_id"),
                         run_id=config.get("run_id"),
@@ -523,6 +626,7 @@ class StreamHandler[StateT: AgentState](
                     config,
                     interrupt_before=self.interrupt_before,
                     interrupt_after=self.interrupt_after,
+                    messages=messages[persisted_upto:],
                 ):
                     logger.info("Graph execution interrupted after node '%s'", current_node)
                     # For interrupt_after, advance to next node before pausing
@@ -565,7 +669,19 @@ class StreamHandler[StateT: AgentState](
                 clear_resume_values(state)
                 step += 1
                 state.advance_step()
-                await call_realtime_sync(state, config)
+
+                # Durable per-step checkpoint, as on the invoke path: only the messages not
+                # saved yet are written, so a crash replays at most one node.
+                if config.get("durable_checkpoint_every_step", True):
+                    await sync_data(
+                        state=state,
+                        config=config,
+                        messages=messages[persisted_upto:],
+                        trim=False,
+                    )
+                    persisted_upto = len(messages)
+                else:
+                    await call_realtime_sync(state, config)
 
                 event.event_type = EventType.UPDATE
                 event.metadata["State_Updated"] = "State Updated"
@@ -588,10 +704,14 @@ class StreamHandler[StateT: AgentState](
                 if is_interrupted_requested:
                     return
 
-                if step >= max_steps:
+                if step >= max_steps and current_node != END:
                     error_msg = "Graph execution exceeded maximum steps"
                     logger.error(error_msg)
                     state.error(error_msg)
+                    # The limit is spent for this turn. Park the state at the entry so the
+                    # next message starts a new turn instead of stopping at once.
+                    state.set_current_node(START)
+                    state.execution_meta.step = 0
                     await call_realtime_sync(state, config)
 
                     event.event_type = EventType.ERROR
@@ -600,11 +720,6 @@ class StreamHandler[StateT: AgentState](
                     event.metadata["step"] = step
                     event.metadata["current_node"] = current_node
                     publish_event(event)
-
-                    yield Message(
-                        role="assistant",
-                        content=[ErrorBlock(text=error_msg)],  # type: ignore
-                    )
 
                     yield StreamChunk(
                         event=StreamEvent.ERROR,
@@ -688,10 +803,17 @@ class StreamHandler[StateT: AgentState](
                 run_id=config.get("run_id"),
             )
 
+        except asyncio.CancelledError:
+            # Cancelled mid-run (client gone, shutdown, timeout around the run): save the
+            # thread as INTERRUPTED so the next run can use it, then let the cancel go on.
+            await finalize_cancelled_run(state, config, messages, event, current_node)
+            raise
         except Exception as e:
             # Handle execution errors
             logger.exception("Graph execution failed: %s", e)
             state.error(str(e))
+            # Close tool calls the failed node never answered, so the saved history is valid.
+            await close_unanswered_tool_calls(state, config, messages)
 
             # Publish error event
             event.event_type = EventType.ERROR
@@ -771,6 +893,22 @@ class StreamHandler[StateT: AgentState](
                 print(chunk)
             ```
         """
+        config = config or {}
+        # Bind run correlation for every log line emitted underneath this run, and put the
+        # earlier ids back when the stream ends.
+        with log_context_scope(config):
+            async for chunk in self._stream(
+                input_data, config, default_state, response_granularity
+            ):
+                yield chunk
+
+    async def _stream(
+        self,
+        input_data: dict[str, Any],
+        config: dict[str, Any],
+        default_state: StateT,
+        response_granularity: ResponseGranularity = ResponseGranularity.LOW,
+    ) -> AsyncGenerator[StreamChunk]:
         logger.info(
             "Starting asynchronous graph execution with %d input keys, granularity=%s",
             len(input_data) if input_data else 0,

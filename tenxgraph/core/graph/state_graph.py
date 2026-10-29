@@ -429,6 +429,7 @@ class StateGraph[StateT: AgentState]:
         callback_manager: CallbackManager = CallbackManager(),
         shutdown_timeout: float = 30.0,
         media_policy: "MediaFetchPolicy | None" = None,
+        owns_resources: bool = True,
     ) -> "CompiledGraph[StateT]":
         """Compile the graph for execution.
 
@@ -443,6 +444,10 @@ class StateGraph[StateT: AgentState]:
             shutdown_timeout: Timeout in seconds for graceful shutdown (default: 30.0)
             media_policy: Which external media URLs the server may download (hosts, content
                 types, size, timeout). Defaults to ``MediaFetchPolicy()``.
+            owns_resources: Whether ``aclose()`` may close the checkpointer, store and
+                publisher. A resource shared by several live graphs is closed only when the
+                last of them closes. Pass ``False`` when you manage the resource (for
+                example your own connection pool): this graph then never closes it.
         """
         logger.info(
             "Compiling graph with %d nodes, %d edges, entry_point='%s'",
@@ -566,6 +571,7 @@ class StateGraph[StateT: AgentState]:
             task_manager=self._task_manager,
             shutdown_timeout=shutdown_timeout,
             media_policy=media_policy,
+            owns_resources=owns_resources,
         )
 
         self._container.bind(CompiledGraph, app)

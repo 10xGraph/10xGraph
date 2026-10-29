@@ -4,6 +4,7 @@ Custom exception classes for graph operations in agentflowntflow.
 This package provides:
         - GraphError: Base exception for graph-related errors.
         - NodeError: Exception for node-specific errors.
+        - GraphClosedError: A run was started on a graph that is closing or closed.
         - GraphRecursionError: Exception for recursion limit errors in graphs.
         - InterruptMismatchError: A resume names an interrupt the thread is not paused at.
         - ResumeValidationError: A resume value does not match the interrupt's response schema.
@@ -14,6 +15,7 @@ This package provides:
         - MetricsError: Exception for metrics emission errors.
 """
 
+from .closed_error import GraphClosedError
 from .graph_error import GraphError
 from .interrupt_error import InterruptMismatchError, ResumeValidationError
 from .node_error import NodeError
@@ -31,6 +33,7 @@ from .timeout_error import GraphStopRequested, NodeTimeoutError
 
 
 __all__ = [
+    "GraphClosedError",
     "GraphError",
     "GraphRecursionError",
     "GraphStopRequested",

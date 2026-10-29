@@ -20,7 +20,7 @@ from tenxgraph.core.state.message_block import (
     ToolCallBlock,
 )
 
-from .base_converter import BaseConverter
+from .base_converter import BaseConverter, mark_stop_issue
 from .openai_responses_converter import OpenAIResponsesConverter, is_responses_api_response
 from .reasoning_utils import parse_think_tags, parse_thought_tags
 from .tool_arguments import parse_tool_arguments
@@ -91,6 +91,15 @@ class OpenAIConverter(BaseConverter):
 
         logger.debug("Creating message from OpenAI response with id: %s", response.id)
 
+        metadata = {
+            "provider": "openai",
+            "model": response.model,
+            "finish_reason": choice.finish_reason or "UNKNOWN",
+            "system_fingerprint": getattr(response, "system_fingerprint", None),
+            "service_tier": getattr(response, "service_tier", None),
+        }
+        mark_stop_issue(metadata, choice.finish_reason, "OpenAI")
+
         return Message(
             message_id=generate_id(response.id),
             role=message.role,
@@ -98,13 +107,7 @@ class OpenAIConverter(BaseConverter):
             reasoning=reasoning_content,
             parsed_content=parsed,
             timestamp=getattr(response, "created", datetime.now().timestamp()),
-            metadata={
-                "provider": "openai",
-                "model": response.model,
-                "finish_reason": choice.finish_reason or "UNKNOWN",
-                "system_fingerprint": getattr(response, "system_fingerprint", None),
-                "service_tier": getattr(response, "service_tier", None),
-            },
+            metadata=metadata,
             usages=usages,
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
             tools_calls=final_tool_calls if final_tool_calls else None,
@@ -451,19 +454,40 @@ class OpenAIConverter(BaseConverter):
         return accumulated_content, accumulated_reasoning_content, output_message
 
     async def _iterate_stream_chunks(self, stream: Any) -> AsyncGenerator[Any]:
-        """Yield chunks from either async or sync OpenAI streams."""
-        try:
+        """Yield chunks from either async or sync OpenAI streams.
+
+        Errors raised by the stream (dropped connection, rate limit) propagate:
+        swallowing them would save a truncated answer as a complete one.
+        """
+        if hasattr(stream, "__aiter__"):
             async for chunk in stream:  # type: ignore
                 yield chunk
-            return
-        except Exception:  # noqa: S110 # nosec B110
-            pass
-
-        try:
+        else:
             for chunk in stream:
                 yield chunk
-        except Exception:  # noqa: S110 # nosec B110
-            pass
+
+    @staticmethod
+    def _stream_usage(usage: Any) -> TokenUsages | None:
+        """Build TokenUsages from a chunk's ``usage`` (sent last with include_usage)."""
+        if usage is None:
+            return None
+        prompt = getattr(usage, "prompt_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+        if not isinstance(prompt, int) or not isinstance(completion, int):
+            return None
+        total = getattr(usage, "total_tokens", None)
+        reasoning = getattr(
+            getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0
+        )
+        cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0)
+        return TokenUsages(
+            completion_tokens=completion,
+            prompt_tokens=prompt,
+            total_tokens=total if isinstance(total, int) else prompt + completion,
+            reasoning_tokens=reasoning if isinstance(reasoning, int) else 0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=cached if isinstance(cached, int) else 0,
+        )
 
     @staticmethod
     def _extract_stream_reasoning(
@@ -527,6 +551,9 @@ class OpenAIConverter(BaseConverter):
         tool_calls = []
         tool_ids = set()
         accumulated_reasoning_content = ""
+        finish_reason: str | None = None
+        stream_usage: TokenUsages | None = None
+        stream_model: str | None = None
 
         is_awaitable = inspect.isawaitable(stream)
 
@@ -535,6 +562,16 @@ class OpenAIConverter(BaseConverter):
             stream = await stream
 
         async for chunk in self._iterate_stream_chunks(stream):
+            usage = self._stream_usage(getattr(chunk, "usage", None))
+            if usage is not None:
+                stream_usage = usage
+            if isinstance(getattr(chunk, "model", None), str):
+                stream_model = chunk.model
+            choices = getattr(chunk, "choices", None)
+            if isinstance(choices, list) and choices:
+                reason = getattr(choices[0], "finish_reason", None)
+                if isinstance(reason, str) and reason:
+                    finish_reason = reason
             accumulated_content, accumulated_reasoning_content, message = self._process_chunk(
                 chunk,
                 accumulated_content,
@@ -550,6 +587,11 @@ class OpenAIConverter(BaseConverter):
         metadata["provider"] = "openai"
         metadata["node_name"] = node_name
         metadata["thread_id"] = config.get("thread_id")
+        if stream_model:
+            metadata["model"] = stream_model
+        if finish_reason:
+            metadata["finish_reason"] = finish_reason
+            mark_stop_issue(metadata, finish_reason, "OpenAI")
 
         accumulated_content, accumulated_reasoning_content = self._extract_stream_reasoning(
             accumulated_content,
@@ -576,6 +618,7 @@ class OpenAIConverter(BaseConverter):
             reasoning=accumulated_reasoning_content,
             tools_calls=tool_calls,
             metadata=metadata,
+            **({"usages": stream_usage} if stream_usage is not None else {}),
         )
         yield message
 

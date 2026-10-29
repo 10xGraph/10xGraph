@@ -19,11 +19,13 @@ from tenxgraph.core.state.message_block import (
     ToolCallBlock,
 )
 
-from .base_converter import BaseConverter
+from .base_converter import BaseConverter, mark_stop_issue
 from .tool_arguments import parse_tool_arguments
 
 
 logger = logging.getLogger("tenxgraph.adapters.anthropic")
+
+_MAX_TOKENS = "max_tokens"
 
 # A refusal is a successful HTTP 200 whose content may be empty or partial.
 _REFUSAL = "refusal"
@@ -72,6 +74,29 @@ def _server_result_payload(block: Any) -> dict[str, Any]:
             )
 
     return payload
+
+
+def _drop_truncated_tool_calls(
+    blocks: list[Any], tool_calls: list[dict[str, Any]], metadata: dict[str, Any]
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Remove client tool calls from a turn cut off at ``max_tokens``.
+
+    A truncated turn may hold a tool call whose input is incomplete or whose
+    siblings never arrived; running it would act on a partial request. The model
+    is not told about a call that was never dispatched, so both the block and the
+    ``tools_calls`` entry go. The dropped names are kept in metadata.
+    """
+    if not tool_calls:
+        return blocks, tool_calls
+    dropped = [call["function"]["name"] for call in tool_calls]
+    metadata["dropped_tool_calls"] = dropped
+    logger.warning(
+        "Anthropic stopped at max_tokens; not dispatching tool call(s): %s", ", ".join(dropped)
+    )
+    kept = [
+        b for b in blocks if not (isinstance(b, ToolCallBlock) and b.tool_type != "server_tool")
+    ]
+    return kept, []
 
 
 class AnthropicConverter(BaseConverter):
@@ -149,6 +174,10 @@ class AnthropicConverter(BaseConverter):
 
         if server_results:
             metadata["server_tool_results"] = server_results
+
+        mark_stop_issue(metadata, stop_reason, "Anthropic")
+        if stop_reason == _MAX_TOKENS:
+            blocks, tool_calls = _drop_truncated_tool_calls(blocks, tool_calls, metadata)
 
         if stop_reason == "pause_turn":
             # Server-tool iteration limit. The turn is resumable by re-sending
@@ -355,6 +384,8 @@ class AnthropicConverter(BaseConverter):
                 metadata["refusal_category"],
             )
 
+        mark_stop_issue(metadata, stop_reason, "Anthropic")
+
         blocks: list[Any] = []
         if accumulated_text:
             blocks.append(TextBlock(text=accumulated_text))
@@ -364,6 +395,8 @@ class AnthropicConverter(BaseConverter):
             function = call["function"]
             args, _ = parse_tool_arguments(function["arguments"], tool_name=function["name"])
             blocks.append(ToolCallBlock(id=call["id"], name=function["name"], args=args))
+        if stop_reason == _MAX_TOKENS:
+            blocks, tool_calls = _drop_truncated_tool_calls(blocks, tool_calls, metadata)
 
         logger.debug(
             "Stream complete - text=%d chars, reasoning=%d chars, tool_calls=%d",

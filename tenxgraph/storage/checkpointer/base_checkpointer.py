@@ -9,6 +9,9 @@ from tenxgraph.utils.thread_info import ThreadInfo
 
 logger = logging.getLogger("tenxgraph.checkpointer")
 
+# Checkpointer classes already warned about a missing tool ledger (warn once per class).
+_LEDGER_WARNED: set[str] = set()
+
 if TYPE_CHECKING:
     from tenxgraph.core.state import AgentState, Message
 
@@ -52,6 +55,12 @@ STOP_REQUEST_TTL_SECONDS = 3600
 # is still going. Like the stop flag it lives in the generic cache, so it works on every
 # backend (memory, SQLite, Redis) without a schema change, and it expires with the same bound.
 ACTIVE_RUN_NAMESPACE = "active_run"
+
+# The marker is a heartbeat: it lives this long and a live run refreshes it every
+# ``ACTIVE_RUN_HEARTBEAT_SECONDS``. A run that dies without cleanup (SIGKILL, OOM) therefore
+# leaves a marker that expires within a minute, not after the hour a stop flag may linger.
+ACTIVE_RUN_TTL_SECONDS = 60
+ACTIVE_RUN_HEARTBEAT_SECONDS = 20
 
 # Key holding the storage header inside a persisted state row. ``format`` versions
 # the row layout itself; ``class`` is the state class name, kept only for
@@ -278,6 +287,21 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         raise NotImplementedError
 
+    async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
+        """
+        Drop the cached state for a thread, leaving the durable state untouched.
+
+        The next load then reads the durable store. Use it to repair a thread whose cache
+        cannot be used. Backends with a state cache override this.
+
+        Args:
+            config (dict): Configuration dictionary.
+
+        Returns:
+            bool: True once the cache entry is gone (also when there was none).
+        """
+        raise NotImplementedError
+
     # -------------------------
     # State methods Sync
     # -------------------------
@@ -342,6 +366,18 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             StateT | None: Cached state or None.
         """
         return run_coroutine(self.aget_state_cache(config))
+
+    def clear_state_cache(self, config: dict[str, Any]) -> bool:
+        """
+        Drop the cached state for a thread synchronously.
+
+        Args:
+            config (dict): Configuration dictionary.
+
+        Returns:
+            bool: True once the cache entry is gone.
+        """
+        return run_coroutine(self.aclear_state_cache(config))
 
     # -------------------------
     # Generic cache methods
@@ -438,7 +474,24 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         run_id = config.get("run_id")
         if run_id:
             await self.aput_cache_value(
-                ACTIVE_RUN_NAMESPACE, key, str(run_id), STOP_REQUEST_TTL_SECONDS
+                ACTIVE_RUN_NAMESPACE, key, str(run_id), ACTIVE_RUN_TTL_SECONDS
+            )
+
+    async def arefresh_run(self, config: dict[str, Any]) -> None:
+        """Extend the active-run marker's life if it is still ``config["run_id"]``'s.
+
+        Called every ``ACTIVE_RUN_HEARTBEAT_SECONDS`` while a run is alive. A marker that now
+        belongs to another run, or is gone, is left alone.
+        """
+        run_id = config.get("run_id")
+        if not run_id:
+            return
+        if await self.aget_active_run(config) == str(run_id):
+            await self.aput_cache_value(
+                ACTIVE_RUN_NAMESPACE,
+                self._stop_request_key(config),
+                str(run_id),
+                ACTIVE_RUN_TTL_SECONDS,
             )
 
     async def aend_run(self, config: dict[str, Any]) -> None:
@@ -524,6 +577,20 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     # -------------------------
     # Tool execution ledger (idempotency)
     # -------------------------
+    def _warn_ledger_unsupported(self) -> None:
+        """Log once per checkpointer class that tool calls are not de-duplicated."""
+        name = type(self).__name__
+        if name in _LEDGER_WARNED:
+            return
+        _LEDGER_WARNED.add(name)
+        logger.warning(
+            "%s does not implement the tool execution ledger. A run killed in the middle "
+            "of a node will fire that node's tools again on resume. Use a checkpointer "
+            "with ledger support (InMemoryCheckpointer, SqliteCheckpointer, "
+            "PgCheckpointer) or implement aget_tool_result/aput_tool_result.",
+            name,
+        )
+
     async def aget_tool_result(
         self,
         config: dict[str, Any],
@@ -544,8 +611,9 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         Returning None means "no record" -- the tool should run. Backends that do
         not implement the ledger inherit this default, which simply disables
         idempotency rather than breaking (behaviour matches the old at-least-once
-        semantics).
+        semantics), and a warning is logged once per checkpointer class.
         """
+        self._warn_ledger_unsupported()
         return None
 
     async def aput_tool_result(
@@ -559,6 +627,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         Written immediately after the tool returns, so a crash later in the same
         node cannot cause the tool to be re-fired on resume.
         """
+        self._warn_ledger_unsupported()
         return None
 
     # -------------------------
