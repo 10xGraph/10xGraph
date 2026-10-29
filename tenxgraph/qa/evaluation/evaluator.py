@@ -339,6 +339,7 @@ class AgentEvaluator:
                         eval_id=cases[i].eval_id,
                         error=str(item),
                         name=cases[i].name,
+                        expected=cases[i].expected_summary(),
                     )
                 )
             else:
@@ -442,6 +443,7 @@ class AgentEvaluator:
                     error=f"Graph execution error on turn {turn_idx}: {exc}",
                     name=case.name,
                     duration_seconds=time.time() - case_start_time,
+                    expected=case.expected_summary(),
                 )
 
             turn_response = collector.final_response or ""
@@ -574,6 +576,7 @@ class AgentEvaluator:
                 turn_results=turn_results,
                 token_usage=agent_token_usage + criteria_token_usage,
                 agent_token_usage=agent_token_usage,
+                expected=case.expected_summary(),
             )
 
         except Exception as exc:
@@ -583,6 +586,7 @@ class AgentEvaluator:
                 error=str(exc),
                 name=case.name,
                 duration_seconds=time.time() - start_time,
+                expected=case.expected_summary(),
             )
 
     # ------------------------------------------------------------------

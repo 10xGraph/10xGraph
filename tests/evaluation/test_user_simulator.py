@@ -86,6 +86,7 @@ async def test_user_simulator_run_success():
         assert "Say hello back" in result.goals_achieved
         assert result.turns == 1
         assert result.criterion_scores["test_criterion"] == 0.9
+        assert result.duration_seconds > 0
 
 @pytest.mark.asyncio
 async def test_user_simulator_run_no_starting_prompt():

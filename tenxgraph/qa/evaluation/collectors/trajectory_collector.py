@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from dataclasses import field as datafield
 from typing import Any
 
+from tenxgraph.core.graph.tool_node.constants import INJECTABLE_PARAMS
 from tenxgraph.qa.evaluation.collectors.publisher_callback import PublisherCallback
 from tenxgraph.qa.evaluation.dataset.eval_set import StepType, ToolCall, TrajectoryStep
 from tenxgraph.qa.evaluation.token_usage import TokenUsage
@@ -189,9 +190,7 @@ class TrajectoryCollector(BasePublisher):
         """
         function_name = event.data.get("function_name", event.node_name or "")
         args = {
-            k: v
-            for k, v in (event.data.get("args", {})).items()
-            if k not in ("tool_call_id", "state")
+            k: v for k, v in (event.data.get("args") or {}).items() if k not in INJECTABLE_PARAMS
         }
         tool_call_id = event.data.get("tool_call_id", "")
         result = event.data.get("result", "")

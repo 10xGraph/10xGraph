@@ -131,6 +131,9 @@ class EvalCaseResult(BaseModel):
         duration_seconds: Time taken to run this case.
         error: Error message if case evaluation failed.
         metadata: Additional result metadata.
+        expected: What the case expected, for reports. Keys ``response`` (str | None),
+            ``tool_calls`` (list of ``{"name", "args"}`` | None), ``node_order``
+            (list[str] | None) and ``input`` (str | None). None on older reports.
     """
 
     eval_id: str
@@ -150,6 +153,7 @@ class EvalCaseResult(BaseModel):
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     agent_token_usage: TokenUsage = Field(default_factory=TokenUsage)
     node_details: list[NodeDetail] = Field(default_factory=list)
+    expected: dict[str, Any] | None = None
 
     @field_serializer("token_usage")
     def _ser_token_usage(self, v: TokenUsage) -> dict[str, int]:
@@ -177,6 +181,7 @@ class EvalCaseResult(BaseModel):
         token_usage: TokenUsage | None = None,
         agent_token_usage: TokenUsage | None = None,
         node_details: list[NodeDetail] | None = None,
+        expected: dict[str, Any] | None = None,
     ) -> EvalCaseResult:
         """Create a successful case result."""
         all_passed = all(r.passed for r in criterion_results)
@@ -197,6 +202,7 @@ class EvalCaseResult(BaseModel):
             token_usage=token_usage or TokenUsage(),
             agent_token_usage=agent_token_usage or TokenUsage(),
             node_details=node_details or [],
+            expected=expected,
         )
 
     @classmethod
@@ -206,6 +212,7 @@ class EvalCaseResult(BaseModel):
         error: str,
         name: str = "",
         duration_seconds: float = 0.0,
+        expected: dict[str, Any] | None = None,
     ) -> EvalCaseResult:
         """Create a failed case result due to error."""
         return cls(
@@ -214,6 +221,7 @@ class EvalCaseResult(BaseModel):
             passed=False,
             error=error,
             duration_seconds=duration_seconds,
+            expected=expected,
         )
 
     @property

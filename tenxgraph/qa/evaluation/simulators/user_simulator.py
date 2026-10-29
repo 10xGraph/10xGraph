@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -114,6 +115,7 @@ class SimulationResult(BaseModel):
         criterion_details: Detailed output from each criterion (name -> details dict).
         simulator_token_usage: Tokens consumed by simulator LLM calls (user-turn generation).
         criterion_results: Full CriterionResult objects with per-criterion token usage.
+        duration_seconds: Wall-clock time of the whole simulation, criteria included.
     """
 
     scenario_id: str = ""
@@ -126,6 +128,7 @@ class SimulationResult(BaseModel):
     criterion_details: dict[str, Any] = Field(default_factory=dict)
     simulator_token_usage: TokenUsage = Field(default_factory=TokenUsage)
     criterion_results: list[Any] = Field(default_factory=list)  # list[CriterionResult]
+    duration_seconds: float = 0.0
 
 
 class UserSimulator:
@@ -204,6 +207,24 @@ class UserSimulator:
         self.criteria: list[BaseCriterion] = criteria or []
 
     async def run(
+        self,
+        graph: CompiledGraph,
+        scenario: ConversationScenario,
+        config: dict[str, Any] | None = None,
+        *,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> SimulationResult:
+        """Run a user simulation against an agent and time it.
+
+        See ``_run`` for the arguments; ``duration_seconds`` on the result is the
+        wall-clock time of the whole run.
+        """
+        started = time.perf_counter()
+        result = await self._run(graph, scenario, config, on_event=on_event)
+        result.duration_seconds = time.perf_counter() - started
+        return result
+
+    async def _run(
         self,
         graph: CompiledGraph,
         scenario: ConversationScenario,

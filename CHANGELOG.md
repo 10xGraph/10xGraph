@@ -325,6 +325,15 @@ Related notes:
 
 ### Fixed
 
+- **Evals: tool arguments in a trajectory are the ones the model sent.** The recorded args used
+  to include injected parameters (`emit`, `config`, `store`, an `Inject[...]` service, ...), so
+  an exact `check_args=True` trajectory failed for any tool that declared one. The collector now
+  records the call's own arguments and drops every name in `INJECTABLE_PARAMS`.
+- **Evals: `EvalCaseResult.expected`.** Each case result now carries what the case expected
+  (`response`, `tool_calls`, `node_order`, `input`), so a JSON report shows the expectations next
+  to the outcome, failures included. Older reports without the field still load.
+- **Evals: `SimulationResult.duration_seconds`.** `UserSimulator.run` now times the whole
+  simulation, so callers that build case results from simulations no longer report `0.0s`.
 - The user simulator no longer duplicates history on a graph with a checkpointer. It sent the
   whole conversation every turn, and each resend got new message ids, so the thread grew by
   1, 1+2, 1+2+3 messages. With a checkpointer only the new user message is sent; without one

@@ -177,6 +177,31 @@ class EvalCase(BaseModel):
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    def expected_summary(self) -> dict[str, Any]:
+        """Summarise what this case expects, for reports.
+
+        Returns a dict with ``response`` (last turn's expected final response),
+        ``tool_calls`` (every turn's expected calls in order, as ``{"name", "args"}``),
+        ``node_order`` (every turn's expected node order, concatenated) and ``input``
+        (the first turn's user text). Absent expectations are ``None``.
+        """
+        turns = self.conversation
+        response: str | None = None
+        if turns and turns[-1].expected_final_response is not None:
+            response = turns[-1].expected_final_response.get_text() or None
+        tool_calls = [
+            {"name": tc.name, "args": dict(tc.args)}
+            for turn in turns
+            for tc in turn.expected_tool_trajectory
+        ]
+        node_order = [n for turn in turns for n in turn.expected_node_order]
+        return {
+            "response": response,
+            "tool_calls": tool_calls or None,
+            "node_order": node_order or None,
+            "input": (turns[0].user_content.get_text() or None) if turns else None,
+        }
+
     @classmethod
     def single_turn(
         cls,
