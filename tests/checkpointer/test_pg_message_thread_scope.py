@@ -60,9 +60,8 @@ def test_new_schema_keys_messages_per_thread(id_type):
 
 
 def test_migration_v4_swaps_the_message_key(checkpointer):
-    assert CURRENT_SCHEMA_VERSION == 4
     migrations = checkpointer._build_migrations()
-    assert set(migrations) == {2, 3, 4}
+    assert {2, 3, 4} <= set(migrations)
     (statement,) = migrations[4]
     assert "DROP CONSTRAINT" in statement
     assert "ADD PRIMARY KEY (thread_id, message_id)" in statement
@@ -110,3 +109,39 @@ async def test_upgrade_from_v3_runs_the_message_key_migration(checkpointer):
     executed = [call.args[0] for call in conn.execute.await_args_list]
     assert any("ADD PRIMARY KEY (thread_id, message_id)" in sql for sql in executed)
     assert not any("uq_states_thread_version" in sql for sql in executed)
+
+
+def test_migration_v5_drops_the_reasoning_column(checkpointer):
+    assert CURRENT_SCHEMA_VERSION == 5
+    migrations = checkpointer._build_migrations()
+    assert set(migrations) == {2, 3, 4, 5}
+    (statement,) = migrations[5]
+    assert "DROP COLUMN IF EXISTS reasoning" in statement
+    assert '"messages"' in statement
+
+
+def test_new_schema_has_no_reasoning_column(checkpointer):
+    messages_sql = next(
+        s
+        for s in checkpointer._build_create_tables_sql()
+        if "TABLE IF NOT EXISTS" in s and '"messages"' in s
+    )
+    assert "reasoning" not in messages_sql
+
+
+@pytest.mark.asyncio
+async def test_upgrade_from_v4_runs_the_reasoning_drop(checkpointer):
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"version": 4})
+    await checkpointer._check_and_apply_schema_version(conn)
+    executed = [call.args[0] for call in conn.execute.await_args_list]
+    assert any("DROP COLUMN IF EXISTS reasoning" in sql for sql in executed)
+    assert not any("ADD PRIMARY KEY (thread_id, message_id)" in sql for sql in executed)
+
+
+@pytest.mark.asyncio
+async def test_message_insert_does_not_write_reasoning(checkpointer):
+    conn = AsyncMock()
+    await checkpointer._insert_messages(conn, "t1", [Message.text_message("hi", message_id="m1")])
+    sql = conn.execute.call_args.args[0]
+    assert "reasoning" not in sql

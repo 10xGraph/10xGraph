@@ -75,6 +75,13 @@ breaking list further down applies to you as well.
   `stop()`, and sync checkpointer methods such as `get_state()`, now raise `RuntimeError` naming
   the async method to use (`ainvoke`, `astream`, `astop`, `aget_state`) when called from a
   running loop. Before, they hung the loop. Call the async method from async code.
+- **Removed: `Message.reasoning`.** Reasoning lives only as `ReasoningBlock`s in
+  `Message.content`; read `block.summary` (plus `signature` / `redacted_data` for Anthropic) from
+  the blocks with `type == "reasoning"`. A saved state that still holds a top-level `reasoning`
+  string on a message loads without error, and the string is ignored (it is not turned into a
+  block). The Postgres `messages.reasoning` column is dropped (see Upgrade notes), and the
+  store's `has_reasoning` metadata is now true when a message has a reasoning block with text,
+  details or redacted data.
 
 ### Upgrade notes
 
@@ -95,6 +102,14 @@ Do not roll the upgrade pod by pod. Instead:
 A rollback to 0.10.x needs a restore of the database from before the migration; the migration
 is not reversible.
 
+#### Postgres schema version 5 (drops `messages.reasoning`)
+
+Schema version 5 drops the unused `reasoning` column from the `messages` table. The migration
+runs automatically at startup (`ALTER TABLE ... DROP COLUMN IF EXISTS reasoning`). A rolling
+deploy that mixes old and new versions on one database is not supported across this migration:
+old pods still write the column, so once it is dropped their message inserts fail. Use the same
+stop-migrate-start steps as above.
+
 #### Dependency minimums
 
 The extras raise these floors. A fresh install resolves them; an existing environment must be
@@ -114,6 +129,10 @@ Related notes:
 
 ### Added
 
+- **User simulator progress events.** `UserSimulator.run(..., on_event=callback)` and
+  `BatchSimulator.run_batch(..., on_event=callback)` call `callback(event, data)` with
+  `turn_started`, `agent_replied`, `goals_checked`, `evaluating` and `agent_error`. A callback
+  that raises is logged at debug and ignored.
 - **Graceful shutdown.** `await graph.aclose(grace=None, stop_timeout=None, timeout=None)` ends
   active runs in phases: new runs are refused, runs get `grace` seconds to finish, the rest
   get a stop request and save their thread as INTERRUPTED, then anything still running is
@@ -209,6 +228,13 @@ Related notes:
 
 ### Changed
 
+- **Every converter orders blocks the same way.** A message from the OpenAI chat, OpenAI
+  Responses, Google GenAI and Anthropic converters has its blocks in the order reasoning, text,
+  media (image, audio, video), tool calls. This holds for a non-stream response, each streaming
+  delta and the final streamed message. Before, some stream finals and OpenAI deltas put text
+  ahead of reasoning. Each delta carries only its new reasoning piece as a `ReasoningBlock`, and
+  the OpenAI Responses stream now emits reasoning deltas too (it used to hold them back until
+  the final message).
 - **A cancelled, crashed or shut-down run leaves a usable thread.** On cancel or shutdown the
   run closes unanswered tool calls (the recorded result if there is one, else a failed result
   saying the run was interrupted), marks the thread INTERRUPTED (reason `cancelled`,
@@ -299,6 +325,12 @@ Related notes:
 
 ### Fixed
 
+- The user simulator no longer duplicates history on a graph with a checkpointer. It sent the
+  whole conversation every turn, and each resend got new message ids, so the thread grew by
+  1, 1+2, 1+2+3 messages. With a checkpointer only the new user message is sent; without one
+  the full history is still sent.
+- The Gemini call used by evaluation (`tenxgraph.core.llm.caller`) joins the text parts itself
+  instead of reading `response.text`, so the "non-text parts in the response" warning is gone.
 - Async id factories (`AsyncIDGenerator`) work for `Message()` and for run and thread ids.
 - Sync `invoke()` and `stream()` wait up to `shutdown_timeout` (default 30 s) for background
   events, such as publisher events, before they return. Before, that work was dropped.

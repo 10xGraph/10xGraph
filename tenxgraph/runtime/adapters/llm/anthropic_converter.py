@@ -127,7 +127,6 @@ class AnthropicConverter(BaseConverter):
         blocks: list[Any] = []
         tool_calls: list[dict[str, Any]] = []
         server_results: list[dict[str, Any]] = []
-        reasoning_text = ""
 
         for block in getattr(response, "content", None) or []:
             btype = getattr(block, "type", None)
@@ -138,7 +137,6 @@ class AnthropicConverter(BaseConverter):
             elif btype == "thinking":
                 thinking = getattr(block, "thinking", "") or ""
                 signature = getattr(block, "signature", None) or None
-                reasoning_text += thinking
                 # A signed block is kept even when its text is empty: Anthropic needs it
                 # back unchanged on the next turn.
                 if thinking or signature:
@@ -203,7 +201,6 @@ class AnthropicConverter(BaseConverter):
             message_id=generate_id(response_id),
             role=getattr(response, "role", "assistant") or "assistant",
             content=blocks,
-            reasoning=reasoning_text or None,
             timestamp=datetime.now().timestamp(),
             metadata=metadata,
             usages=usages,
@@ -450,7 +447,6 @@ class AnthropicConverter(BaseConverter):
             role="assistant",
             content=blocks,
             delta=False,
-            reasoning=accumulated_reasoning or None,
             timestamp=datetime.now().timestamp(),
             metadata=metadata,
             usages=self._usage_from_obj(usage_obj),

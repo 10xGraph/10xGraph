@@ -96,7 +96,7 @@ class TestOpenAIResponsesConverter:
         )
         assert len(msg.content) == 1
         assert isinstance(msg.content[0], ReasoningBlock)
-        assert msg.reasoning == "Deep thought"
+        assert msg.content[0].summary == "Deep thought"
 
     async def test_mixed_reasoning_and_text(self):
         msg = await OpenAIResponsesConverter().convert_response(
@@ -124,7 +124,6 @@ class TestOpenAIResponsesConverter:
             _make_response(output=[])
         )
         assert msg.content == []
-        assert msg.reasoning == ""
 
     async def test_token_usage_mapping(self):
         usage = _make_usage(100, 200, 300, reasoning_tokens=50, cached_tokens=10)
@@ -201,8 +200,13 @@ class TestResponsesConverterStreaming:
             messages.append(msg)
 
         final = messages[-1]
-        assert any(isinstance(b, ReasoningBlock) for b in final.content)
-        assert final.reasoning == "Think step 1"
+        assert [type(b) for b in final.content] == [ReasoningBlock, TextBlock]
+        assert final.content[0].summary == "Think step 1"
+        deltas = [m for m in messages if m.delta]
+        assert [b.summary for m in deltas for b in m.content if isinstance(b, ReasoningBlock)] == [
+            "Think ",
+            "step 1",
+        ]
 
 
 # ---------------------------------------------------------------------------

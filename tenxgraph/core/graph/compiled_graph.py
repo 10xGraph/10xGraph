@@ -34,6 +34,7 @@ from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
+from .utils.handler_utils import detach_task
 from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
@@ -472,15 +473,27 @@ class CompiledGraph[StateT: AgentState]:
         """Tell the checkpointer this run is over so its stop scope is released."""
         if heartbeat is not None:
             heartbeat.cancel()
-            # Wait for it to unwind. asyncio.wait never raises the task's own cancel, and an
-            # outer cancel of this coroutine still propagates.
-            await asyncio.wait({heartbeat})
-        if not self._checkpointer:
+        checkpointer = self._checkpointer
+        if heartbeat is None and not checkpointer:
             return
-        try:
-            await self._checkpointer.aend_run(cfg)
-        except Exception:
-            logger.warning("Failed to release run scope for thread_id: %s", cfg.get("thread_id"))
+
+        async def release() -> None:
+            if heartbeat is not None:
+                # Wait for it to unwind; asyncio.wait never raises the task's own cancel.
+                await asyncio.wait({heartbeat})
+            if not checkpointer:
+                return
+            try:
+                await checkpointer.aend_run(cfg)
+            except Exception:
+                logger.warning(
+                    "Failed to release run scope for thread_id: %s", cfg.get("thread_id")
+                )
+
+        # The release is its own task: a cancel scope that stays cancelled (anyio) re-raises at
+        # every await here and would skip it. An outer cancel still propagates, and the release
+        # finishes in the background.
+        await asyncio.shield(detach_task(release()))
 
     def stop(self, config: dict[str, Any]) -> dict[str, Any]:
         """Request the current graph execution to stop (sync helper).

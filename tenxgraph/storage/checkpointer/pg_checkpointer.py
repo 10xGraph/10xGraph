@@ -53,7 +53,7 @@ DEFAULT_CACHE_TTL = 86400
 
 # Current durable schema version. Bump when schema changes and add a matching
 # entry to ``PgCheckpointer._migrations``.
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # Advisory-lock key used to serialize schema creation/migration across processes.
 # Any stable arbitrary 64-bit constant works; it only has to be the same in every
@@ -514,7 +514,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 content TEXT NOT NULL,
                 tool_calls JSONB,
                 tool_call_id VARCHAR(255),
-                reasoning TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
                 total_tokens INT DEFAULT 0,
@@ -613,6 +612,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     END IF;
                 END$$;
                 """,  # noqa: S608
+            ],
+            # v5: reasoning lives only in the ReasoningBlocks inside ``content``, so
+            # the separate text column is gone. A fresh schema never has it.
+            5: [
+                f"ALTER TABLE {messages} DROP COLUMN IF EXISTS reasoning",
             ],
         }
 
@@ -1953,15 +1957,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 f"""
                     INSERT INTO {messages_table} (
                         message_id, thread_id, role, content, tool_calls,
-                        tool_call_id, reasoning, total_tokens, usages, meta
+                        tool_call_id, total_tokens, usages, meta
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     ON CONFLICT (thread_id, message_id) DO UPDATE SET
                         role = EXCLUDED.role,
                         content = EXCLUDED.content,
                         tool_calls = EXCLUDED.tool_calls,
                         tool_call_id = EXCLUDED.tool_call_id,
-                        reasoning = EXCLUDED.reasoning,
                         total_tokens = EXCLUDED.total_tokens,
                         usages = EXCLUDED.usages,
                         meta = EXCLUDED.meta,
@@ -1973,7 +1976,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 json.dumps([block.model_dump(mode="json") for block in message.content]),
                 json.dumps(message.tools_calls) if message.tools_calls else None,
                 getattr(message, "tool_call_id", None),
-                message.reasoning,
                 message.usages.total_tokens if message.usages else 0,
                 json.dumps(message.usages.model_dump()) if message.usages else None,
                 json.dumps({**(metadata or {}), **(message.metadata or {})}),
@@ -2049,7 +2051,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             query = f"""
                 SELECT message_id, thread_id, role, content, tool_calls,
-                       tool_call_id, reasoning, created_at, total_tokens,
+                       tool_call_id, created_at, total_tokens,
                        usages, meta
                 FROM {self._get_table_name("messages")}
                 WHERE message_id = $1 AND thread_id = $2
@@ -2105,7 +2107,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # Build query with optional search
             query = f"""
                 SELECT message_id, thread_id, role, content, tool_calls,
-                       tool_call_id, reasoning, created_at, total_tokens,
+                       tool_call_id, created_at, total_tokens,
                        usages, meta
                 FROM {self._get_table_name("messages")}
                 WHERE thread_id = $1
@@ -2254,7 +2256,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             query = self._append_owner_scope(query, params, user_id, config)
             query += """
                 RETURNING message_id, thread_id, role, content, tool_calls,
-                          tool_call_id, reasoning, created_at, total_tokens,
+                          tool_call_id, created_at, total_tokens,
                           usages, meta
             """
 
@@ -2343,7 +2345,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             role=row["role"],
             content=content_value,
             tools_calls=tool_calls,
-            reasoning=row["reasoning"],
             timestamp=row["created_at"].timestamp() if row["created_at"] else 0,
             metadata=metadata,
             usages=usages,

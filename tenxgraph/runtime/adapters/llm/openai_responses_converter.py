@@ -38,6 +38,7 @@ from tenxgraph.core.state.message_block import (
 
 from .base_converter import BaseConverter
 from .reasoning_utils import (
+    order_blocks,
     parse_think_tags,  # noqa: F401
 )
 from .tool_arguments import parse_tool_arguments
@@ -107,7 +108,6 @@ class OpenAIResponsesConverter(BaseConverter):
 
         # --- iterate output items -----------------------------------------
         blocks: list = []
-        reasoning_text = ""
         tool_calls_raw: list[dict] = []
         output_items = getattr(response, "output", [])
 
@@ -124,7 +124,6 @@ class OpenAIResponsesConverter(BaseConverter):
                 # signals that reasoning occurred.
                 summary = r if r else "(reasoning performed - enable summary to see details)"
                 blocks.append(ReasoningBlock(summary=summary))
-                reasoning_text += ("\n" + summary) if reasoning_text else summary
 
             elif item_type == "message":
                 t = self._extract_text_from_message_item(item)
@@ -154,8 +153,7 @@ class OpenAIResponsesConverter(BaseConverter):
         return Message(
             message_id=generate_id(resp_id),
             role="assistant",
-            content=blocks,
-            reasoning=reasoning_text,
+            content=order_blocks(blocks),
             timestamp=created,
             metadata={
                 "provider": "openai",
@@ -223,7 +221,6 @@ class OpenAIResponsesConverter(BaseConverter):
             message_id=generate_id(None),
             role="assistant",
             content=final_blocks,
-            reasoning=state.accumulated_reasoning,
             delta=False,
             tools_calls=state.tool_calls if state.tool_calls else None,
             metadata=metadata,
@@ -273,9 +270,12 @@ class OpenAIResponsesConverter(BaseConverter):
         return [self._build_delta_message([TextBlock(text=delta_text)] if delta_text else [])]
 
     def _handle_reasoning_delta(self, state: _ResponseStreamState, event: Any) -> list[Message]:
-        """Accumulate streaming reasoning text."""
-        state.accumulated_reasoning += getattr(event, "delta", "")
-        return []
+        """Accumulate streaming reasoning text and emit it as a reasoning delta."""
+        delta_text = getattr(event, "delta", "")
+        state.accumulated_reasoning += delta_text
+        return (
+            [self._build_delta_message([ReasoningBlock(summary=delta_text)])] if delta_text else []
+        )
 
     def _handle_function_call_argument_delta(
         self,
@@ -391,10 +391,10 @@ class OpenAIResponsesConverter(BaseConverter):
     def _build_final_blocks(self, state: _ResponseStreamState) -> list:
         """Build the final content blocks after a Responses API stream ends."""
         final_blocks: list = []
-        if state.accumulated_text:
-            final_blocks.append(TextBlock(text=state.accumulated_text))
         if state.accumulated_reasoning:
             final_blocks.append(ReasoningBlock(summary=state.accumulated_reasoning))
+        if state.accumulated_text:
+            final_blocks.append(TextBlock(text=state.accumulated_text))
         for tool_call in state.tool_calls:
             function_data = tool_call.get("function", {})
             final_blocks.append(

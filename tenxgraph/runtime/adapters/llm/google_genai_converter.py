@@ -32,6 +32,7 @@ from tenxgraph.core.state.message_block import (
 )
 
 from .base_converter import BaseConverter, mark_stop_issue
+from .reasoning_utils import order_blocks
 from .tool_arguments import parse_tool_arguments
 
 
@@ -90,7 +91,7 @@ class GoogleGenAIConverter(BaseConverter):
         if parts is None:
             logger.warning("Google GenAI response content has no parts: %s", response)
 
-        blocks, tools_calls, reasoning_content = self._process_parts(parts)
+        blocks, tools_calls, _ = self._process_parts(parts)
 
         # Get model version and other metadata
         model_version = response.model_version or ""
@@ -112,8 +113,7 @@ class GoogleGenAIConverter(BaseConverter):
         return Message(
             message_id=generate_id(getattr(response, "response_id", None)),
             role="assistant",
-            content=blocks,
-            reasoning=reasoning_content,
+            content=order_blocks(blocks),
             timestamp=created_date,
             metadata=metadata,
             usages=usages,
@@ -370,8 +370,7 @@ class GoogleGenAIConverter(BaseConverter):
         output_message = Message(
             message_id=generate_id(None),
             role="assistant",
-            content=content_blocks,
-            reasoning=accumulated_reasoning_content,
+            content=order_blocks(content_blocks),
             tools_calls=tool_calls if tool_calls else None,
             delta=True,
         )
@@ -473,10 +472,10 @@ class GoogleGenAIConverter(BaseConverter):
             mark_stop_issue(metadata, finish_reason, "Google GenAI")
 
         blocks = []
-        if accumulated_content:
-            blocks.append(TextBlock(text=accumulated_content))
         if accumulated_reasoning_content:
             blocks.append(ReasoningBlock(summary=accumulated_reasoning_content))
+        if accumulated_content:
+            blocks.append(TextBlock(text=accumulated_content))
         if tool_calls:
             for tc in tool_calls:
                 func_data = tc.get("function", {})
@@ -501,7 +500,6 @@ class GoogleGenAIConverter(BaseConverter):
             message_id=generate_id(None),
             content=blocks,
             delta=False,
-            reasoning=accumulated_reasoning_content,
             tools_calls=tool_calls if tool_calls else None,
             metadata=metadata,
             **({"usages": stream_usage} if stream_usage is not None else {}),

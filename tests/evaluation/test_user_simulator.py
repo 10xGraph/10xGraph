@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
+import asyncio
 import json
 import uuid
 
@@ -233,3 +234,168 @@ async def test_batch_simulator():
         assert summary["completed"] == 2
         assert summary["completion_rate"] == 1.0
         assert summary["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Progress events, concurrency and history
+# ---------------------------------------------------------------------------
+
+
+def _llm_patch(goal_answers):
+    """call_llm stub: goal checks answer by goal text, anything else is a user message."""
+
+    async def fake(model, prompt, **kwargs):
+        if "evaluating whether a conversation goal" in prompt:
+            for goal, achieved in goal_answers.items():
+                if f'GOAL: "{goal}"' in prompt:
+                    return json.dumps({"achieved": achieved}), 1, 1, 0
+        return "next user message", 1, 1, 0
+
+    return patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm", side_effect=fake)
+
+
+@pytest.mark.asyncio
+async def test_on_event_order_and_payloads():
+    scenario = ConversationScenario(
+        scenario_id="ev", description="d", starting_prompt="Hi", goals=["a", "b"], max_turns=3
+    )
+    graph = MagicMock(spec=CompiledGraph)
+    graph.ainvoke = AsyncMock(
+        return_value={"messages": [Message.text_message("reply", role="assistant")]}
+    )
+    events = []
+    sim = UserSimulator(criteria=[MockCriterion("c1"), MockCriterion("c2")])
+    with _llm_patch({"a": True, "b": False}):
+        await sim.run(graph, scenario, on_event=lambda e, d: events.append((e, d)))
+
+    names = [e for e, _ in events]
+    turn_block = ["turn_started", "agent_replied", "goals_checked"]
+    assert names == [*turn_block, *turn_block, *turn_block, "evaluating"]
+    assert events[0][1] == {"turn": 1, "max_turns": 3, "user_message": "Hi"}
+    assert events[1][1] == {"turn": 1, "response": "reply"}
+    assert events[2][1] == {"turn": 1, "newly_achieved": ["a"], "achieved": 1, "total": 2}
+    assert events[3][1]["user_message"] == "next user message"
+    assert events[-1][1] == {"criteria": ["c1", "c2"]}
+
+
+@pytest.mark.asyncio
+async def test_on_event_agent_error():
+    scenario = ConversationScenario(scenario_id="e", starting_prompt="Hi", goals=["a"])
+    graph = MagicMock(spec=CompiledGraph)
+    graph.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+    events = []
+    sim = UserSimulator()
+    result = await sim.run(graph, scenario, on_event=lambda e, d: events.append((e, d)))
+    assert result.error == "Agent error: boom"
+    assert [e for e, _ in events] == ["turn_started", "agent_error"]
+    assert events[1][1] == {"turn": 1, "error": "boom"}
+
+
+@pytest.mark.asyncio
+async def test_raising_callback_does_not_break_run():
+    scenario = ConversationScenario(
+        scenario_id="r", starting_prompt="Hi", goals=["a"], max_turns=2
+    )
+    graph = MagicMock(spec=CompiledGraph)
+    graph.ainvoke = AsyncMock(
+        return_value={"messages": [Message.text_message("ok", role="assistant")]}
+    )
+    calls = []
+
+    def bad(event, data):
+        calls.append(event)
+        raise ValueError("callback bug")
+
+    sim = UserSimulator(criteria=[MockCriterion("c")])
+    with _llm_patch({"a": True}):
+        result = await sim.run(graph, scenario, on_event=bad)
+    assert result.completed is True
+    assert result.criterion_scores == {"c": 0.9}
+    assert calls == ["turn_started", "agent_replied", "goals_checked", "evaluating"]
+
+
+@pytest.mark.asyncio
+async def test_check_goals_concurrent_keeps_order_and_fallback():
+    sim = UserSimulator()
+    conversation = [{"role": "user", "content": "weather"}, {"role": "assistant", "content": "sunny"}]
+
+    async def fake(model, prompt, **kwargs):
+        if 'GOAL: "first"' in prompt:
+            await asyncio.sleep(0.05)  # finishes last, must still be listed first
+            return json.dumps({"achieved": True}), 3, 4, 0
+        if 'GOAL: "second"' in prompt:
+            return json.dumps({"achieved": False}), 3, 4, 0
+        if 'GOAL: "third"' in prompt:
+            return json.dumps({"achieved": True}), 3, 4, 0
+        raise RuntimeError("llm down")  # "weather sunny" falls back to keyword match
+
+    goals = ["first", "second", "third", "weather sunny"]
+    with patch("tenxgraph.qa.evaluation.simulators.user_simulator.call_llm", side_effect=fake):
+        achieved, usage = await sim._check_goals(goals, [], conversation)
+    assert achieved == ["first", "third", "weather sunny"]
+    assert usage.input_tokens == 9  # the failed call adds no usage
+
+
+@pytest.mark.asyncio
+async def test_criteria_concurrent_order_and_error_handling():
+    class Slow(MockCriterion):
+        async def evaluate(self, execution_result, eval_case):
+            await asyncio.sleep(0.05)
+            return await super().evaluate(execution_result, eval_case)
+
+    class Broken(MockCriterion):
+        async def evaluate(self, execution_result, eval_case):
+            raise RuntimeError("bad criterion")
+
+    sim = UserSimulator(criteria=[Slow("one"), Broken("two"), MockCriterion("three")])
+    scenario = ConversationScenario(scenario_id="s", description="d", goals=["g"])
+    scores, details, results = await sim._evaluate_simulation(
+        scenario, [{"role": "user", "content": "hi"}]
+    )
+    assert list(scores) == ["one", "two", "three"]
+    assert scores == {"one": 0.9, "two": 0.0, "three": 0.9}
+    assert details["two"] == {"error": "bad criterion"}
+    assert [r.criterion for r in results] == ["one", "three"]
+
+
+def _recording_graph(checkpointer):
+    """Graph stub that keeps state like a checkpointer would, or not."""
+    from tenxgraph.core.state.reducers import add_messages
+
+    graph = MagicMock(spec=CompiledGraph)
+    graph._checkpointer = checkpointer
+    state: list = []
+    seen_user_texts: list[list[str]] = []
+
+    async def ainvoke(input_data, config=None):
+        incoming = input_data["messages"]
+        if checkpointer is not None:
+            state[:] = add_messages(state, incoming)
+            context = list(state)
+        else:
+            context = list(incoming)
+        seen_user_texts.append([m.text() for m in context if m.role == "user"])
+        reply = Message.text_message(f"answer {len(seen_user_texts)}", role="assistant")
+        if checkpointer is not None:
+            state.append(reply)
+        return {"messages": [reply]}
+
+    graph.ainvoke = ainvoke
+    return graph, seen_user_texts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checkpointer", [object(), None])
+async def test_agent_sees_each_user_message_once(checkpointer):
+    scenario = ConversationScenario(
+        scenario_id="h", starting_prompt="m1", goals=["never"], max_turns=3
+    )
+    graph, seen = _recording_graph(checkpointer)
+    sim = UserSimulator()
+    with _llm_patch({"never": False}):
+        await sim.run(graph, scenario)
+    assert seen == [
+        ["m1"],
+        ["m1", "next user message"],
+        ["m1", "next user message", "next user message"],
+    ]

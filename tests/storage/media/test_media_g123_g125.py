@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -261,3 +263,57 @@ async def test_cloud_download_clients_have_timeouts(monkeypatch):
     with pytest.raises(RuntimeError, match="stop"):
         CloudMediaStore._download_from_url_blocking("https://x.example.com/a")
     assert got["timeout"] == 60.0
+
+
+# ---------------------------------------------------------------------------
+# The base folder is created on first write, never at construction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_store_creates_nothing_until_first_write(tmp_path):
+    base = tmp_path / "uploads"
+    store = LocalFileMediaStore(str(base))
+    assert not base.exists()
+
+    key = "a" * 32
+    assert await store.exists(key) is False
+    assert await store.get_metadata(key) is None
+    assert await store.delete(key) is False
+    assert await store.list_keys() == []
+    assert await store.sweep_orphans(min_age_seconds=0) == 0
+    assert await store.modify_metadata(key, _appender("t")) is False
+    assert await store.update_metadata(key, {"x": 1}) is False
+    with pytest.raises(KeyError):
+        await store.retrieve(key)
+    with pytest.raises(KeyError):
+        async for _ in store.iter_bytes(key):
+            pass
+    assert not base.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+async def test_local_store_first_write_creates_private_base(tmp_path):
+    base = tmp_path / "uploads"
+    store = LocalFileMediaStore(str(base))
+    old = os.umask(0o022)
+    try:
+        key = await store.store(b"x", "text/plain", {})
+    finally:
+        os.umask(old)
+    assert base.is_dir()
+    assert (base.stat().st_mode & 0o777) == 0o700
+    assert await store.list_keys() == [key]
+    assert (await store.retrieve(key))[0] == b"x"
+
+
+@pytest.mark.asyncio
+async def test_local_store_metadata_lock_creates_base_on_demand(tmp_path):
+    base = tmp_path / "uploads"
+    store = LocalFileMediaStore(str(base))
+    with store._file_lock():
+        pass
+    assert (base / ".meta.lock").exists()
+    if sys.platform != "win32":
+        assert (base.stat().st_mode & 0o777) == 0o700

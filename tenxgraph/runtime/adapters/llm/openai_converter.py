@@ -23,7 +23,7 @@ from tenxgraph.core.state.message_block import (
 
 from .base_converter import BaseConverter, mark_stop_issue
 from .openai_responses_converter import OpenAIResponsesConverter, is_responses_api_response
-from .reasoning_utils import parse_think_tags, parse_thought_tags
+from .reasoning_utils import order_blocks, parse_think_tags, parse_thought_tags
 from .tool_arguments import parse_tool_arguments
 
 
@@ -104,8 +104,7 @@ class OpenAIConverter(BaseConverter):
         return Message(
             message_id=generate_id(response.id),
             role=message.role,
-            content=blocks,
-            reasoning=reasoning_content,
+            content=order_blocks(blocks),
             parsed_content=parsed,
             timestamp=getattr(response, "created", datetime.now().timestamp()),
             metadata=metadata,
@@ -314,8 +313,6 @@ class OpenAIConverter(BaseConverter):
         """
         text_part = delta.content or "" if hasattr(delta, "content") else ""
         content_blocks = []
-        if text_part:
-            content_blocks.append(TextBlock(text=text_part))
 
         reasoning_part = (
             getattr(delta, "reasoning_content", "") or ""
@@ -327,6 +324,8 @@ class OpenAIConverter(BaseConverter):
             reasoning_part = getattr(delta, "reasoning", "") or ""
         if reasoning_part:
             content_blocks.append(ReasoningBlock(summary=reasoning_part))
+        if text_part:
+            content_blocks.append(TextBlock(text=text_part))
 
         # Extract audio if present in delta
         audio_data = getattr(delta, "audio", None) if hasattr(delta, "audio") else None
@@ -446,8 +445,7 @@ class OpenAIConverter(BaseConverter):
         output_message = Message(
             message_id=generate_id(chunk.id),
             role="assistant",
-            content=content_blocks,
-            reasoning=accumulated_reasoning_content,
+            content=order_blocks(content_blocks),
             tools_calls=tool_calls,
             delta=True,
         )
@@ -512,10 +510,10 @@ class OpenAIConverter(BaseConverter):
     ) -> list:
         """Build the final block list for a streaming response."""
         blocks = []
-        if accumulated_content:
-            blocks.append(TextBlock(text=accumulated_content))
         if accumulated_reasoning_content:
             blocks.append(ReasoningBlock(summary=accumulated_reasoning_content))
+        if accumulated_content:
+            blocks.append(TextBlock(text=accumulated_content))
         for tc in tool_calls:
             func_data = tc.get("function", {})
             blocks.append(
@@ -616,7 +614,6 @@ class OpenAIConverter(BaseConverter):
             message_id=generate_id(None),
             content=blocks,
             delta=False,
-            reasoning=accumulated_reasoning_content,
             tools_calls=tool_calls,
             metadata=metadata,
             **({"usages": stream_usage} if stream_usage is not None else {}),

@@ -53,7 +53,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 # In production the local in-memory telemetry store stays disabled
 # (use OTEL / a publisher for observability instead).
 ENV MODE=production
-ENV IS_DEBUG=false
 # Gunicorn worker count. Gunicorn reads WEB_CONCURRENCY natively; a sane default
 # here beats gunicorn's built-in default of 1 worker. Tune to your CPU/memory
 # at deploy time, e.g. `docker run -e WEB_CONCURRENCY=8 ...`.

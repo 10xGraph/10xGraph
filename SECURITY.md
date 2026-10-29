@@ -58,7 +58,7 @@ projects, though we are happy to help route a report.
 
 ## Good practice for deployers
 
-- Keep `IS_DEBUG=false` and `MODE=production` in production.
+- Keep `MODE=production` in production (it turns debug off).
 - Never set `ORIGINS=*` in production.
 - Use a secrets manager rather than committing `.env` files.
 - Constrain which tools and MCP servers an agent can reach.

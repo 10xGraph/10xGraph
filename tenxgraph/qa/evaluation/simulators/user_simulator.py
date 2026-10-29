@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -207,6 +208,8 @@ class UserSimulator:
         graph: CompiledGraph,
         scenario: ConversationScenario,
         config: dict[str, Any] | None = None,
+        *,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> SimulationResult:
         """Run a user simulation against an agent.
 
@@ -214,6 +217,9 @@ class UserSimulator:
             graph: The compiled agent graph to test.
             scenario: The conversation scenario to simulate.
             config: Optional config to pass to graph execution.
+            on_event: Optional progress callback ``(event, data)``. Events:
+                ``turn_started``, ``agent_replied``, ``goals_checked``, ``evaluating``
+                and ``agent_error``. A callback that raises is ignored.
 
         Returns:
             SimulationResult with conversation history, outcomes, and criterion scores.
@@ -240,22 +246,36 @@ class UserSimulator:
             for turn in range(max_turns):
                 # Add user message to conversation
                 conversation.append({"role": "user", "content": user_message})
+                self._emit(
+                    on_event,
+                    "turn_started",
+                    {"turn": turn + 1, "max_turns": max_turns, "user_message": user_message},
+                )
 
-                # Build full conversation history for the graph (not just current message)
-                all_messages = [
-                    Message.text_message(msg["content"], role=msg["role"]) for msg in conversation
-                ]
-                input_data = {"messages": all_messages}
+                # With a checkpointer the thread already holds the earlier turns (user and
+                # agent messages), so only the new user message is sent. Resending the whole
+                # history would add every earlier message again under a fresh message_id.
+                # Without a checkpointer nothing is kept between calls, so send it all.
+                if getattr(graph, "_checkpointer", None) is not None:
+                    to_send = [conversation[-1]]
+                else:
+                    to_send = conversation
+                input_data = {
+                    "messages": [
+                        Message.text_message(msg["content"], role=msg["role"]) for msg in to_send
+                    ]
+                }
 
                 try:
                     result = await graph.ainvoke(input_data, config=run_config)
                 except Exception as e:
                     logger.error("Agent execution failed: %s", e)
+                    self._emit(on_event, "agent_error", {"turn": turn + 1, "error": str(e)})
                     (
                         criterion_scores,
                         criterion_details,
                         criterion_results,
-                    ) = await self._evaluate_simulation(scenario, conversation)
+                    ) = await self._evaluate_simulation(scenario, conversation, on_event)
                     return SimulationResult(
                         scenario_id=scenario.scenario_id,
                         turns=turn + 1,
@@ -272,6 +292,9 @@ class UserSimulator:
                 # Extract agent response
                 agent_response = self._extract_response(result)
                 conversation.append({"role": "assistant", "content": agent_response})
+                self._emit(
+                    on_event, "agent_replied", {"turn": turn + 1, "response": agent_response}
+                )
 
                 # Check for goal completion using LLM
                 achieved, check_usage = await self._check_goals(
@@ -281,6 +304,16 @@ class UserSimulator:
                 )
                 sim_tokens = sim_tokens + check_usage
                 goals_achieved.extend(achieved)
+                self._emit(
+                    on_event,
+                    "goals_checked",
+                    {
+                        "turn": turn + 1,
+                        "newly_achieved": list(achieved),
+                        "achieved": len(goals_achieved),
+                        "total": len(scenario.goals),
+                    },
+                )
 
                 # Check if we're done
                 if len(goals_achieved) >= len(scenario.goals):
@@ -288,7 +321,7 @@ class UserSimulator:
                         criterion_scores,
                         criterion_details,
                         criterion_results,
-                    ) = await self._evaluate_simulation(scenario, conversation)
+                    ) = await self._evaluate_simulation(scenario, conversation, on_event)
                     return SimulationResult(
                         scenario_id=scenario.scenario_id,
                         turns=turn + 1,
@@ -315,7 +348,7 @@ class UserSimulator:
                 criterion_scores,
                 criterion_details,
                 criterion_results,
-            ) = await self._evaluate_simulation(scenario, conversation)
+            ) = await self._evaluate_simulation(scenario, conversation, on_event)
             return SimulationResult(
                 scenario_id=scenario.scenario_id,
                 turns=max_turns,
@@ -339,7 +372,7 @@ class UserSimulator:
                     criterion_scores,
                     criterion_details,
                     criterion_results,
-                ) = await self._evaluate_simulation(scenario, conversation)
+                ) = await self._evaluate_simulation(scenario, conversation, on_event)
             except Exception as eval_err:
                 logger.warning("Criterion evaluation also failed: %s", eval_err)
             return SimulationResult(
@@ -354,6 +387,20 @@ class UserSimulator:
                 simulator_token_usage=sim_tokens,
                 criterion_results=criterion_results,
             )
+
+    @staticmethod
+    def _emit(
+        on_event: Callable[[str, dict[str, Any]], None] | None,
+        event: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Call the progress callback; a failing callback never breaks the run."""
+        if on_event is None:
+            return
+        try:
+            on_event(event, data)
+        except Exception as exc:
+            logger.debug("on_event callback failed for %s: %s", event, exc)
 
     async def _generate_initial_message(
         self,
@@ -406,11 +453,10 @@ class UserSimulator:
 
         conv_text = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in conversation)
 
-        for goal in remaining:
+        async def _check_one(goal: str) -> tuple[bool, TokenUsage]:
             prompt = GOAL_CHECK_PROMPT.format(conversation=conv_text, goal=goal)
             try:
                 raw, usage = await self._call_llm(prompt)
-                total_usage = total_usage + usage
                 # Strip markdown code fences that some LLMs wrap JSON in
                 clean = raw.strip()
                 if clean.startswith("```"):
@@ -418,15 +464,19 @@ class UserSimulator:
                     _min_fenced_lines = 2
                     clean = "\n".join(lines[1:-1]) if len(lines) > _min_fenced_lines else clean
                 data = json.loads(clean)
-                if data.get("achieved"):
-                    newly_achieved.append(goal)
+                return bool(data.get("achieved")), usage
             except Exception:
                 # Fallback to keyword matching if LLM call or JSON parse fails
                 _min_word_len = 3
                 words = [w for w in goal.lower().split() if len(w) > _min_word_len]
                 text = " ".join(m["content"].lower() for m in conversation)
-                if words and all(w in text for w in words):
-                    newly_achieved.append(goal)
+                return bool(words and all(w in text for w in words)), TokenUsage()
+
+        outcomes = await asyncio.gather(*[_check_one(g) for g in remaining])
+        for goal, (hit, usage) in zip(remaining, outcomes, strict=True):
+            total_usage = total_usage + usage
+            if hit:
+                newly_achieved.append(goal)
 
         return newly_achieved, total_usage
 
@@ -434,6 +484,7 @@ class UserSimulator:
         self,
         scenario: ConversationScenario,
         conversation: list[dict[str, str]],
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> tuple[dict[str, float], dict[str, Any], list[Any]]:
         """Run configured criteria against the completed simulation.
 
@@ -491,16 +542,24 @@ class UserSimulator:
         details: dict[str, Any] = {}
         results: list[Any] = []
 
-        for criterion in self.criteria:
+        self._emit(on_event, "evaluating", {"criteria": [c.name for c in self.criteria]})
+
+        async def _run_one(criterion: BaseCriterion) -> Any:
             try:
-                cr_result = await criterion.evaluate(execution, case)
-                scores[criterion.name] = cr_result.score
-                details[criterion.name] = cr_result.details or {}
-                results.append(cr_result)
+                return await criterion.evaluate(execution, case)
             except Exception as e:
                 logger.warning("Criterion %s failed: %s", criterion.name, e)
+                return e
+
+        outcomes = await asyncio.gather(*[_run_one(c) for c in self.criteria])
+        for criterion, outcome in zip(self.criteria, outcomes, strict=True):
+            if isinstance(outcome, Exception):
                 scores[criterion.name] = 0.0
-                details[criterion.name] = {"error": str(e)}
+                details[criterion.name] = {"error": str(outcome)}
+            else:
+                scores[criterion.name] = outcome.score
+                details[criterion.name] = outcome.details or {}
+                results.append(outcome)
 
         return scores, details, results
 
@@ -586,6 +645,8 @@ class BatchSimulator:
         graph: CompiledGraph,
         scenarios: list[ConversationScenario],
         config: dict[str, Any] | None = None,
+        *,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> list[SimulationResult]:
         """Run multiple scenarios concurrently.
 
@@ -593,6 +654,8 @@ class BatchSimulator:
             graph: The compiled agent graph to test.
             scenarios: List of scenarios to run.
             config: Optional base config passed to each graph execution.
+            on_event: Optional progress callback shared by all scenarios (see
+                ``UserSimulator.run``). Events are not tagged with a scenario id.
 
         Returns:
             List of simulation results in the same order as scenarios.
@@ -602,7 +665,7 @@ class BatchSimulator:
         async def _run_one(scenario: ConversationScenario) -> SimulationResult:
             async with semaphore:
                 logger.info("Running scenario: %s", scenario.scenario_id)
-                result = await self.simulator.run(graph, scenario, config)
+                result = await self.simulator.run(graph, scenario, config, on_event=on_event)
                 status = "completed" if result.completed else "incomplete"
                 logger.info(
                     "Scenario %s %s after %d turns (%d/%d goals)",

@@ -55,7 +55,8 @@ class LocalFileMediaStore(BaseMediaStore):
     ) -> None:
         self._max_size_bytes = max_size_bytes
         self._base = Path(base_dir).resolve()
-        mkdir_private(self._base)
+        # The folder is created on first write (or first metadata lock), not here, so merely
+        # building the store leaves nothing on disk
         # One lock for sidecar read-modify-writes in this process, so they do not each park a
         # worker thread on the file lock below
         self._meta_lock = asyncio.Lock()
@@ -197,6 +198,8 @@ class LocalFileMediaStore(BaseMediaStore):
         self, storage_key: str, fn: Callable[[dict[str, Any]], dict[str, Any] | None]
     ) -> bool:
         meta_path = self._meta_path(storage_key)
+        if not self._base.is_dir():
+            return False  # nothing was ever stored; do not create the folder just to say so
         with self._file_lock():
             if not meta_path.exists():
                 return False
@@ -213,6 +216,7 @@ class LocalFileMediaStore(BaseMediaStore):
         if fcntl is None:  # pragma: no cover
             yield
             return
+        mkdir_private(self._base)
         lock_path = self._base / ".meta.lock"
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:

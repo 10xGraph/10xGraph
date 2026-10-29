@@ -136,7 +136,6 @@ class Message(BaseModel):
         content (Sequence[ContentBlock]): The message content blocks.
         delta (bool): Indicates if this is a delta/partial message.
         tools_calls (list[dict[str, Any]] | None): Tool call information, if any.
-        reasoning (str | None): Reasoning or explanation, if any.
         timestamp (datetime | None): Timestamp of the message.
         metadata (dict[str, Any]): Additional metadata.
         usages (TokenUsages | None): Token usage statistics.
@@ -152,7 +151,6 @@ class Message(BaseModel):
     content: Sequence[ContentBlock]
     delta: bool = False  # Indicates if this is a delta/partial message
     tools_calls: list[dict[str, Any]] | None = None
-    reasoning: str | None = None  # Remove it
     timestamp: float | None = Field(default_factory=lambda: datetime.now().timestamp())
     metadata: dict[str, Any] = Field(default_factory=dict)
     usages: TokenUsages | None = None

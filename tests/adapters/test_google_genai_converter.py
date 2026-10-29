@@ -160,10 +160,9 @@ class TestGoogleGenAIConverter:
 
         # Assertions
         assert len(message.content) == 2
-        assert isinstance(message.content[0], TextBlock)
-        assert isinstance(message.content[1], ReasoningBlock)
-        assert message.content[1].summary == "I need to think deeply about this question"
-        assert message.reasoning == "I need to think deeply about this question"
+        assert isinstance(message.content[0], ReasoningBlock)
+        assert isinstance(message.content[1], TextBlock)
+        assert message.content[0].summary == "I need to think deeply about this question"
         # Verify token usage including reasoning tokens
         assert message.usages.completion_tokens == 5
         assert message.usages.prompt_tokens == 3
@@ -329,8 +328,8 @@ class TestGoogleGenAIConverter:
 
         # Assertions
         assert len(message.content) == 3
-        assert isinstance(message.content[0], TextBlock)
-        assert isinstance(message.content[1], ReasoningBlock)
+        assert isinstance(message.content[0], ReasoningBlock)
+        assert isinstance(message.content[1], TextBlock)
         assert isinstance(message.content[2], ToolCallBlock)
         assert message.usages.total_tokens == 30
 

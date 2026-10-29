@@ -173,7 +173,10 @@ def test_extract_returns_empty_when_no_text():
 async def test_call_google_implementation():
     mock_client = MagicMock()
     mock_response = MagicMock()
-    mock_response.text = "  hello google  "
+    part = MagicMock()
+    part.text = "  hello google  "
+    part.thought = False
+    mock_response.candidates = [MagicMock(content=MagicMock(parts=[part]))]
     mock_response.usage_metadata.prompt_token_count = 10
     mock_response.usage_metadata.candidates_token_count = 5
     mock_response.usage_metadata.cached_content_token_count = 3
@@ -395,3 +398,29 @@ async def test_anthropic_returns_text_and_usage():
     assert text == "answer"
     assert (inp, out, cache) == (42, 7, 30)
     assert client.messages.create.call_args.kwargs["system"] == "be terse"
+
+
+def test_google_text_joins_text_parts_without_response_text():
+    from types import SimpleNamespace as NS
+
+    from tenxgraph.core.llm.caller import _google_text
+
+    class Resp:
+        candidates = [
+            NS(
+                content=NS(
+                    parts=[
+                        NS(text="Hello ", thought=False),
+                        NS(text=None, function_call=NS(name="f")),
+                        NS(text="world", thought=False),
+                    ]
+                )
+            )
+        ]
+
+        @property
+        def text(self):
+            raise AssertionError("response.text must not be read")
+
+    assert _google_text(Resp()) == "Hello world"
+    assert _google_text(NS(candidates=None)) == ""

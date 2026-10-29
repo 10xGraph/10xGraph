@@ -312,7 +312,6 @@ class TestOpenAIReasoningExtraction:
         assert len(text_blocks) == 1
         assert len(reasoning_blocks) == 1
         assert "power rule" in reasoning_blocks[0].summary
-        assert msg.reasoning != ""
 
     @patch("tenxgraph.runtime.adapters.llm.openai_converter.HAS_OPENAI", True)
     async def test_think_tag_extraction(self):
@@ -371,7 +370,6 @@ class TestOpenAIReasoningExtraction:
         msg = await converter.convert_response(response)
 
         assert not any(isinstance(b, ReasoningBlock) for b in msg.content)
-        assert msg.reasoning == ""
 
 
 # ---------------------------------------------------------------------------
@@ -518,16 +516,15 @@ async def test_streaming_conversion(converter):
         messages.append(msg)
 
     assert len(messages) == 5
-    assert messages[0].reasoning == "Thinking..."
+    assert messages[0].content[0].summary == "Thinking..."
     assert messages[1].content[0].text == "Hello "
     assert messages[2].content[0].text == "world!"
     assert messages[3].tools_calls[0]["id"] == "tc-123"
     
     final_msg = messages[-1]
     assert final_msg.delta is False
-    assert final_msg.reasoning == "Thinking..."
-    assert final_msg.content[0].text == "Hello world!"
-    assert final_msg.content[1].summary == "Thinking..."
+    assert final_msg.content[0].summary == "Thinking..."
+    assert final_msg.content[1].text == "Hello world!"
     assert final_msg.content[2].name == "calc"
 
 
@@ -553,8 +550,8 @@ async def test_streaming_inline_think_thought(converter):
         messages.append(msg)
 
     final_msg = messages[-1]
-    assert final_msg.reasoning == "Inline thoughts"
-    assert final_msg.content[0].text == "Actual content"
+    assert final_msg.content[0].summary == "Inline thoughts"
+    assert final_msg.content[1].text == "Actual content"
 
 
 @pytest.mark.asyncio

@@ -577,6 +577,17 @@ async def close_unanswered_tool_calls(
     return closing
 
 
+_detached_tasks: set[asyncio.Task] = set()
+
+
+def detach_task(coro: Any) -> asyncio.Task:
+    """Start ``coro`` as a task that outlives a cancelled waiter, holding a strong reference."""
+    task = asyncio.ensure_future(coro)
+    _detached_tasks.add(task)
+    task.add_done_callback(_detached_tasks.discard)
+    return task
+
+
 async def finalize_cancelled_run(
     state: AgentState,
     config: dict[str, Any],
@@ -588,9 +599,11 @@ async def finalize_cancelled_run(
     """Save a cancelled run as INTERRUPTED so the thread stays usable.
 
     Closes unanswered tool calls, marks the state INTERRUPTED with ``reason``, and syncs it to
-    the durable store inside ``asyncio.shield``, bounded by ``FINALIZE_TIMEOUT_SECONDS``. If
-    the save fails or times out the state cache is left as it is: it holds the newest state,
-    including the user's message. This never raises; the caller re-raises the cancel.
+    the durable store in one detached task that finishes even if this coroutine keeps being
+    cancelled (a level-triggered anyio cancel scope). The wait is bounded by
+    ``FINALIZE_TIMEOUT_SECONDS``. If the save fails or times out the state cache is left as it
+    is: it holds the newest state, including the user's message. This never raises; the caller
+    re-raises the cancel.
 
     The saved position stays at ``current_node``. What the next call does with it is decided on
     load (decision D1): a new user message starts a new turn, a call with no new input resumes
@@ -600,7 +613,9 @@ async def finalize_cancelled_run(
     run = current_run.get()
     if run is not None and run.cancel_reason and reason == CANCELLED_REASON:
         reason = run.cancel_reason
-    try:
+    thread_id = config.get("thread_id")
+
+    async def _finalize() -> None:
         await close_unanswered_tool_calls(state, config, messages)
         state.set_interrupt(
             current_node,
@@ -608,16 +623,35 @@ async def finalize_cancelled_run(
             ExecutionStatus.INTERRUPTED_AFTER,
             data={"source": "cancel", "info": "run was cancelled"},
         )
-        save = asyncio.ensure_future(
-            sync_data(state=state, config=config, messages=messages, trim=True)
-        )
-        await asyncio.wait_for(asyncio.shield(save), FINALIZE_TIMEOUT_SECONDS)
-    except (Exception, asyncio.CancelledError) as e:
+        await sync_data(state=state, config=config, messages=messages, trim=True)
+
+    # All the work runs in one task of its own. A cancel scope that stays cancelled (anyio,
+    # as used by Starlette on a client disconnect) re-raises CancelledError at every await of
+    # this coroutine, so nothing that must finish can be awaited here directly.
+    task = detach_task(_finalize())
+
+    def _log_failure(done: asyncio.Future) -> None:
+        if not done.cancelled() and done.exception() is not None:
+            logger.error(
+                "Could not save cancelled run for thread '%s' (%r); the state cache is kept",
+                thread_id,
+                done.exception(),
+            )
+
+    task.add_done_callback(_log_failure)
+    try:
+        await asyncio.wait_for(asyncio.shield(task), FINALIZE_TIMEOUT_SECONDS)
+    except TimeoutError:
         logger.error(
-            "Could not save cancelled run for thread '%s' (%r); the state cache is kept",
-            config.get("thread_id"),
-            e,
+            "Could not save cancelled run for thread '%s' within %ss; the state cache is kept",
+            thread_id,
+            FINALIZE_TIMEOUT_SECONDS,
         )
+    except asyncio.CancelledError:
+        # The waiter was cancelled again; the task is not, and carries on in the background.
+        logger.info("Saving cancelled run for thread '%s' continues in the background", thread_id)
+    except Exception as e:  # the task's own failure, already logged by the done-callback
+        logger.debug("Cancel save task failed (%r)", e)
     try:
         event.event_type = EventType.INTERRUPTED
         event.metadata["interrupted"] = "Cancelled"

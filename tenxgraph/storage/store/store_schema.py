@@ -28,6 +28,14 @@ def _generate_memory_id() -> str:
     return secrets.token_hex(16)
 
 
+def _has_reasoning(message: Message) -> bool:
+    """True when the message holds a reasoning block with text, details or redacted data."""
+    return any(
+        block.type == "reasoning" and bool(block.summary or block.details or block.redacted_data)
+        for block in message.content
+    )
+
+
 class RetrievalStrategy(StrEnum):
     """Memory retrieval strategies."""
 
@@ -126,7 +134,7 @@ class MemoryRecord(BaseModel):
             "message_id": str(message.message_id),
             "timestamp": timestamp_str,
             "has_tool_calls": bool(message.tools_calls),
-            "has_reasoning": bool(message.reasoning),
+            "has_reasoning": _has_reasoning(message),
             "token_usage": message.usages.model_dump() if message.usages else None,
             **(additional_metadata or {}),
         }
