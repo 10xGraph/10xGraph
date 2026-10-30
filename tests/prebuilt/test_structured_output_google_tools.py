@@ -29,6 +29,7 @@ from tests.adapters.test_google_genai_converter import (
     MockGenerateContentResponse,
     MockPart,
 )
+from tests.helpers.provider_request_rules import assert_valid_provider_request
 
 
 MODES = ["ainvoke", "astream"]
@@ -114,6 +115,9 @@ async def run(script, mode, *, text="HI", thread="t", **kw):
             await app.ainvoke(data, config, response_granularity=FULL)
         else:
             _ = [c async for c in app.astream(data, config, response_granularity=FULL)]
+        # Every request handed to Gemini answers its tool calls and ends on a user turn.
+        for request in script.requests:
+            assert_valid_provider_request(request["messages"])
         return await cp.aget_state(config)
 
 

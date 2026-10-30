@@ -15,7 +15,7 @@ from tenxgraph.core.graph.tool_node._helpers import generic_tool_failure
 from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     handoff_target,
-    hidden_tool_message,
+    handoff_tool_messages,
 )
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
@@ -36,8 +36,8 @@ class ToolRuntimeMixin:
 
         Returns ``(target_agent, tool_messages)`` or ``None`` when there is no handoff.
         Providers reject a history in which an assistant tool call has no tool result, so
-        the target agent must not inherit one: the handoff call gets "Transferred to
-        <agent>", and every other call of the same message gets a result saying it was not
+        the target agent must not inherit one: the handoff call gets
+        ``handoff_result_text(agent)``, and every other call of the same message gets a result saying it was not
         run (the first handoff wins). Results come in call order.
         """
         calls = last_message.tools_calls or []
@@ -60,27 +60,7 @@ class ToolRuntimeMixin:
             calls[winner].get("function", {}).get("name", ""),
             target,
         )
-        messages: list[Message] = []
-        for index, call in enumerate(calls):
-            name = call.get("function", {}).get("name", "")
-            if allowed is not None and name not in allowed:
-                messages.append(hidden_tool_message(call))
-                continue
-            output = (
-                f"Transferred to {target}."
-                if index == winner
-                else f"Not run: control was transferred to {target}."
-            )
-            messages.append(
-                Message.tool_message(
-                    content=[
-                        ToolResultBlock(
-                            call_id=call.get("id", ""), output=output, status="completed"
-                        )
-                    ],
-                )
-            )
-        return target, messages
+        return target, handoff_tool_messages(last_message, winner, target)
 
     @staticmethod
     def _ledger_key(origin_message_id: str | None, tool_call_id: str) -> str | None:

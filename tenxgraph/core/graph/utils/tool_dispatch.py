@@ -117,6 +117,49 @@ def hidden_tool_message(tool_call: dict[str, Any]) -> Message:
     )
 
 
+def handoff_result_text(target: str) -> str:
+    """The tool result of the call that handed off to ``target``.
+
+    It tells the receiving agent it is now in charge, so it answers instead of
+    describing a transfer that looks unfinished.
+    """
+    return (
+        f"Transferred to {target}. You are now {target}: answer the user's latest "
+        "request yourself, and call your tools if you need them."
+    )
+
+
+def handoff_tool_messages(message: Message, winner: int, target: str) -> list[Message]:
+    """Answer every tool call of ``message``, whose call at ``winner`` hands off to ``target``.
+
+    Providers reject a history in which an assistant tool call has no tool result, so the
+    target agent must not inherit one. The handoff call gets ``handoff_result_text(target)``,
+    every other call of the same message gets a result saying it was not run, and a call
+    to a tool the model was not offered gets the usual not-found error. Results come in
+    call order. Shared by the ToolNode handoff and the SwarmAgent handoff nodes.
+    """
+    calls = message.tools_calls or []
+    allowed = allowed_tool_names(message)
+    answers: list[Message] = []
+    for index, call in enumerate(calls):
+        if allowed is not None and tool_call_name(call) not in allowed:
+            answers.append(hidden_tool_message(call))
+            continue
+        output = (
+            handoff_result_text(target)
+            if index == winner
+            else f"Not run: control was transferred to {target}."
+        )
+        answers.append(
+            Message.tool_message(
+                content=[
+                    ToolResultBlock(call_id=call.get("id", ""), output=output, status="completed")
+                ],
+            )
+        )
+    return answers
+
+
 def parse_call_arguments(tool_call: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     """Parse a provider-shaped tool call's arguments with the converters' parser.
 

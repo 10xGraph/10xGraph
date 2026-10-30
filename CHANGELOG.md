@@ -106,6 +106,17 @@ breaking list further down applies to you as well.
 
 ### Fixed
 
+- **A handoff no longer reads as an unfinished transfer.** The result of the handoff call now
+  tells the receiving agent it is in charge: "Transferred to WEATHER. You are now WEATHER:
+  answer the user's latest request yourself, and call your tools if you need them." Before, the
+  bare "Transferred to WEATHER." made Gemini reply that it would transfer the user to its tool
+  and stop without calling it. Applies to the ToolNode handoff and the `SwarmAgent` handoff nodes.
+- **`PlanActReflectAgent`: the user sees the planner's reply, not the reflector's review.** Every
+  reflector message now carries `metadata["internal"] = True` (a step message clients may show
+  collapsed; the turn's answer is the last assistant message without it). The reflector prompt
+  asks for a one-line verdict ending in `[DONE]` instead of a second answer. If the planner's last
+  reply has no text (tool calls only), the done verdict is not marked internal because it is the
+  only text answer. Routing is unchanged.
 - **Streaming: clients saw the final message instead of the deltas.** The agent, function-node
   and converter paths reused one `StreamChunk` for every item and only changed its `message`.
   Because the stream is queued before it is read, every queued chunk pointed at the last item:
@@ -368,6 +379,30 @@ Related notes:
   a call with no provider id cannot replay.
 
 ### Fixed
+
+- **Multi-agent handoffs no longer leave an unanswered tool call.** `SwarmAgent` routed a
+  `transfer_to_<name>` call straight to the target without a tool result, so the target's
+  request ended on the caller's assistant tool call: Gemini answered with an empty reply
+  (`NODE_004`), OpenAI and Anthropic reject it. Each member with handoff targets now has a
+  `<NAME>_HANDOFF` node (`TRIAGE -> TRIAGE_HANDOFF -> PLANNER` in the graph) that answers every
+  tool call of the handoff message before the target runs: "Transferred to <target>." for the
+  handoff and "Not run: control was transferred to <target>." for other calls in the same
+  message (they are not run, as with a ToolNode handoff). The results are saved to state and the
+  messages table like any node output. A handoff now takes one more graph step, which counts
+  toward `recursion_limit`. `SupervisorTeamAgent` requests no longer end on an assistant turn:
+  the supervisor's request (after a worker's reply) and a later worker's request (after the
+  previous worker's reply) get one transient user message that is never saved. Worker nodes now
+  wrap the agent you pass in (`graph.nodes[name].func.agent`).
+
+- **`SupervisorTeamAgent` no longer re-dispatches workers that already answered.** The
+  supervisor's request held the workers' replies as unlabelled assistant turns, followed by its
+  past decisions replayed as bare `WEATHER` / `PLANNER` assistant turns; it could not tell who
+  said what or that the user was answered (a live Gemini run ran WEATHER, PLANNER, WEATHER,
+  PLANNER, PLANNER). Its own call now sees earlier turns as plain text and one user message
+  naming each worker's reply in order ("WEATHER replied: ...") and the workers already run.
+  Naming the worker that just ran again counts as `FINISH`. When the supervisor finishes before
+  any worker ran (a greeting), a new `RESPOND` node answers the user, so the turn is never
+  blank. `RESPOND` and `PRE_SUPERVISOR` are now reserved worker names.
 
 - **`StructuredOutputAgent` with tools now works on Google.** Gemini cannot combine function
   calling with a JSON output schema in one request, so the prebuilt agent failed on the first

@@ -2,9 +2,9 @@
 
 Pattern::
 
-    TRIAGE --[transfer_to_researcher]--> RESEARCHER
-    TRIAGE --[transfer_to_writer]-----> WRITER
-    RESEARCHER --[transfer_to_writer]--> WRITER
+    TRIAGE --[transfer_to_researcher]--> TRIAGE_HANDOFF --> RESEARCHER
+    TRIAGE --[transfer_to_writer]-----> TRIAGE_HANDOFF --> WRITER
+    RESEARCHER --[transfer_to_writer]--> RESEARCHER_HANDOFF --> WRITER
     RESEARCHER --[no handoff]---------> END
     WRITER --[no handoff]-------------> END
 
@@ -16,8 +16,12 @@ independently by the caller.  ``SwarmAgent`` auto-generates
 
 After each member runs, a per-member routing function inspects
 ``state.context[-1].tools_calls`` via :func:`is_handoff_tool`.  If a handoff
-tool call is found the graph routes to that target; otherwise control goes to
-``END``.
+tool call is found the graph routes to the member's ``<NAME>_HANDOFF`` node,
+which answers every tool call of that message with a tool result ("Transferred
+to <target>." for the handoff, "Not run: ..." for the others) and then routes to
+the target.  The target therefore never inherits an unanswered tool call, which
+providers reject.  Without a handoff, regular tool calls go to ``<NAME>_TOOL``
+and a plain reply goes to ``END``.
 
 Example::
 
@@ -72,7 +76,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from injectq import InjectQ
 
@@ -80,9 +84,15 @@ from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.graph.tool_node import ToolNode
-from tenxgraph.core.graph.utils.tool_dispatch import tool_call_name
+from tenxgraph.core.graph.utils.tool_dispatch import (
+    allowed_tool_names,
+    handoff_tool_messages,
+    tool_call_name,
+)
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.core.state.message import Message
+from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool, is_handoff_tool
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
@@ -136,15 +146,107 @@ class SwarmMemberConfig:
 # ---------------------------------------------------------------------------
 
 
+HANDOFF_NODE_SUFFIX = "_HANDOFF"
+
+
+def _find_member_handoff(
+    message: Message, allowed_by_upper: dict[str, str]
+) -> tuple[int, str] | None:
+    """Return ``(call index, target member)`` of the first allowed handoff call, or None.
+
+    Member names are matched case-insensitively and returned as registered. A call to a
+    tool the model was not offered (``Agent.tools_tags``) does not count, as in the ToolNode.
+    """
+    if message.role != "assistant" or not message.tools_calls:
+        return None
+    offered = allowed_tool_names(message)
+    for index, tc in enumerate(message.tools_calls):
+        tool_name = tool_call_name(tc)
+        if offered is not None and tool_name not in offered:
+            continue
+        is_handoff, target = is_handoff_tool(tool_name)
+        real = allowed_by_upper.get(target.upper()) if is_handoff and target else None
+        if real is not None:
+            return index, real
+    return None
+
+
+def _last_assistant_index(state: AgentState) -> int | None:
+    for index in range(len(state.context) - 1, -1, -1):
+        if state.context[index].role == "assistant":
+            return index
+    return None
+
+
+def _make_handoff_node(
+    node_name: str,
+    allowed_targets: list[str],
+) -> Callable[[AgentState], Any]:
+    """Return the ``<NAME>_HANDOFF`` node: answer the handoff message's tool calls.
+
+    The member's last assistant message holds the handoff call. Every tool call of it gets
+    a tool result (the shared ToolNode wording), so the target agent's request never ends
+    on an unanswered call. The results are returned as the node's messages, so they are
+    saved to state and to the messages table like any other node output. Calls that are
+    already answered (a node re-run after a resume) are skipped.
+    """
+    allowed_by_upper = {t.upper(): t for t in allowed_targets}
+
+    async def _handoff(state: AgentState) -> list[Message]:
+        index = _last_assistant_index(state)
+        if index is None:
+            return []
+        message = state.context[index]
+        found = _find_member_handoff(message, allowed_by_upper)
+        if found is None:
+            return []
+        winner, target = found
+        answered = {
+            block.call_id
+            for later in state.context[index + 1 :]
+            for block in later.content or []
+            if isinstance(block, ToolResultBlock)
+        }
+        answers = []
+        for answer in handoff_tool_messages(message, winner, target):
+            call_ids = {b.call_id for b in answer.content if isinstance(b, ToolResultBlock)}
+            if call_ids & answered:
+                continue
+            answer.metadata.setdefault("node_name", node_name)
+            answers.append(answer)
+        logger.info("Swarm handoff: %s -> %s", node_name, target)
+        return answers
+
+    _handoff.__name__ = "handoff"
+    return _handoff
+
+
+def _make_handoff_route(allowed_targets: list[str]) -> Callable[[AgentState], str]:
+    """Route a ``<NAME>_HANDOFF`` node to the target its member's handoff call named."""
+    allowed_by_upper = {t.upper(): t for t in allowed_targets}
+
+    def _route(state: AgentState) -> str:
+        index = _last_assistant_index(state)
+        if index is None:
+            return END
+        found = _find_member_handoff(state.context[index], allowed_by_upper)
+        return found[1] if found else END
+
+    return _route
+
+
 def _make_member_route(
     name: str,
     allowed_targets: list[str],
     tool_node_name: str | None,
+    handoff_node_name: str | None = None,
 ) -> Callable[[AgentState], str]:
     """Return a routing function for the given member node.
 
     Priority:
-    1. Handoff tool call (``transfer_to_<target>``) → route to target member.
+    1. Handoff tool call (``transfer_to_<target>``) → *handoff_node_name*, which answers
+       the calls and then routes to the target (or straight to the target when
+       *handoff_node_name* is None).
     2. Regular tool call → route to *tool_node_name* for execution.
     3. No tool calls → ``END``.
     """
@@ -160,14 +262,12 @@ def _make_member_route(
         if last.role != "assistant" or not last.tools_calls:
             return END
 
-        # Handoff tool calls are intercepted here; they are never executed by
-        # the ToolNode — the graph routing IS the handoff.
-        for tc in last.tools_calls:
-            is_handoff, target = is_handoff_tool(tool_call_name(tc))
-            real = allowed_by_upper.get(target.upper()) if is_handoff and target else None
-            if real is not None:
-                logger.debug("Member %s handing off to %s.", name, real)
-                return real
+        # Handoff tool calls are never executed by the ToolNode: the handoff node
+        # answers them and routes to the target.
+        found = _find_member_handoff(last, allowed_by_upper)
+        if found is not None:
+            logger.debug("Member %s handing off to %s.", name, found[1])
+            return handoff_node_name or found[1]
 
         # Regular tool calls need ToolNode execution.
         if tool_node_name is not None:
@@ -196,7 +296,9 @@ class SwarmAgent[StateT: AgentState]:
       allowed targets and injects them into the member's
       :class:`~tenxgraph.core.graph.tool_node.ToolNode`;
     * wires per-member conditional edges that inspect the last assistant
-      message for a handoff tool call and route accordingly.
+      message for a handoff tool call and route accordingly;
+    * adds a ``<NAME>_HANDOFF`` node per member with handoff targets, which
+      answers the handoff message's tool calls before the target runs.
 
     Usage::
 
@@ -254,6 +356,15 @@ class SwarmAgent[StateT: AgentState]:
         upper_names = [n.upper() for n in members]
         if len(set(upper_names)) != len(upper_names):
             raise ValueError("SwarmAgent member names must be unique ignoring case.")
+        generated = {
+            f"{n}{suffix}".upper() for n in members for suffix in ("_TOOL", HANDOFF_NODE_SUFFIX)
+        }
+        clashes = [n for n in members if n.upper() in generated]
+        if clashes:
+            raise ValueError(
+                f"SwarmAgent member names {clashes} clash with the generated "
+                f"<NAME>_TOOL / <NAME>{HANDOFF_NODE_SUFFIX} nodes; rename them."
+            )
 
         self._members = members
         self._entry = entry
@@ -299,7 +410,11 @@ class SwarmAgent[StateT: AgentState]:
                 if target_cfg and target_cfg.description
                 else f"Transfer control to {target}."
             )
-            tools.append(create_handoff_tool(agent_name=target.lower(), description=description))
+            tool = create_handoff_tool(agent_name=target.lower(), description=description)
+            # The tool name stays transfer_to_<lower>; the target is the registered node
+            # name, so a ToolNode that ever runs it routes to a node that exists.
+            tool.__target_agent__ = target  # type: ignore[attr-defined]
+            tools.append(tool)
         return tools
 
     def _inject_handoff_tools(self, name: str) -> None:
@@ -373,13 +488,26 @@ class SwarmAgent[StateT: AgentState]:
                 self._graph.add_edge(name, END)
                 continue
 
-            route_fn = _make_member_route(name, allowed_targets, tool_node_name)
+            handoff_node_name: str | None = None
             path_map: dict[str, str] = {END: END}
-            for target in allowed_targets:
-                path_map[target] = target
+            if allowed_targets:
+                # MEMBER -> MEMBER_HANDOFF -> target: the handoff node answers the
+                # handoff message's tool calls before the target runs.
+                handoff_node_name = f"{name}{HANDOFF_NODE_SUFFIX}"
+                self._graph.add_node(
+                    handoff_node_name, _make_handoff_node(handoff_node_name, allowed_targets)
+                )
+                handoff_map: dict[str, str] = {END: END}
+                for target in allowed_targets:
+                    handoff_map[target] = target
+                self._graph.add_conditional_edges(
+                    handoff_node_name, _make_handoff_route(allowed_targets), handoff_map
+                )
+                path_map[handoff_node_name] = handoff_node_name
             if tool_node_name is not None:
                 path_map[tool_node_name] = tool_node_name
 
+            route_fn = _make_member_route(name, allowed_targets, tool_node_name, handoff_node_name)
             self._graph.add_conditional_edges(name, route_fn, path_map)
 
         self._graph.set_entry_point(self._entry)

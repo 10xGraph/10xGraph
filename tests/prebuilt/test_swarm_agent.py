@@ -8,12 +8,16 @@ import pytest
 
 from tenxgraph.core.graph import CompiledGraph, ToolNode
 from tenxgraph.core.graph.base_agent import BaseAgent
+from tenxgraph.core.graph.utils.tool_dispatch import handoff_result_text
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import END
 from tenxgraph.utils.callbacks import CallbackManager
+from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.prebuilt.agent.swarm import (
     SwarmAgent,
     SwarmMemberConfig,
+    _make_handoff_node,
+    _make_handoff_route,
     _make_member_route,
 )
 
@@ -701,6 +705,90 @@ class TestMixedCaseMembers:
                 members={
                     "A": SwarmMemberConfig(agent=_fake_agent()),
                     "a": SwarmMemberConfig(agent=_fake_agent()),
+                },
+                entry="A",
+            )
+
+
+# ===========================================================================
+# G-04: the handoff node answers the handoff message's tool calls
+# ===========================================================================
+
+
+def _answer(call_id: str, text: str) -> Message:
+    return Message.tool_message(
+        content=[ToolResultBlock(call_id=call_id, output=text, status="completed")]
+    )
+
+
+class TestHandoffNode:
+    def test_member_route_goes_to_handoff_node(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL", "TRIAGE_HANDOFF")
+        state = _state_with(_msg("", tool_calls=[_tc("search", "c1"), _tc("transfer_to_writer")]))
+        assert fn(state) == "TRIAGE_HANDOFF"
+
+    @pytest.mark.asyncio
+    async def test_answers_every_call_in_order(self):
+        node = _make_handoff_node("TRIAGE_HANDOFF", ["Writer"])
+        state = _state_with(
+            _msg("", tool_calls=[_tc("search", "c1"), _tc("transfer_to_writer", "c2")])
+        )
+        answers = await node(state)
+        outputs = [(b.call_id, b.output) for m in answers for b in m.content]
+        assert outputs == [
+            ("c1", "Not run: control was transferred to Writer."),
+            ("c2", handoff_result_text("Writer")),
+        ]
+        assert all(m.metadata["node_name"] == "TRIAGE_HANDOFF" for m in answers)
+
+    @pytest.mark.asyncio
+    async def test_rerun_after_resume_does_not_answer_twice(self):
+        node = _make_handoff_node("TRIAGE_HANDOFF", ["WRITER"])
+        state = _state_with(
+            _msg("", tool_calls=[_tc("transfer_to_writer", "c1")]),
+            _answer("c1", "Transferred to WRITER."),
+        )
+        assert await node(state) == []
+
+    def test_handoff_route_reads_target_behind_tool_results(self):
+        route = _make_handoff_route(["WRITER"])
+        state = _state_with(
+            _msg("", tool_calls=[_tc("transfer_to_writer", "c1")]),
+            _answer("c1", "Transferred to WRITER."),
+        )
+        assert route(state) == "WRITER"
+        assert route(_state_with(_msg("plain reply"))) == END
+
+    def test_hidden_handoff_tool_does_not_count(self):
+        """A handoff tool the model was not offered (tools_tags) is not a handoff."""
+        fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL", "TRIAGE_HANDOFF")
+        msg = _msg("", tool_calls=[_tc("transfer_to_writer")])
+        msg.metadata["allowed_tools"] = ["search"]
+        assert fn(_state_with(msg)) == "TRIAGE_TOOL"
+
+    def test_handoff_tool_targets_registered_member_name(self):
+        swarm = SwarmAgent(members=_three_members(), entry="TRIAGE")
+        tools = {t.__name__: t for t in swarm._build_handoff_tools("TRIAGE")}
+        assert tools["transfer_to_writer"].__target_agent__ == "WRITER"
+
+    def test_member_without_targets_gets_no_handoff_node(self):
+        swarm = SwarmAgent(
+            members={
+                "A": SwarmMemberConfig(agent=_fake_agent(), can_handoff_to=["B"]),
+                "B": SwarmMemberConfig(agent=_fake_agent(), can_handoff_to=[]),
+            },
+            entry="A",
+        )
+        swarm.compile()
+        assert "A_HANDOFF" in swarm._graph.nodes
+        assert "B_HANDOFF" not in swarm._graph.nodes
+
+    def test_member_name_clashing_with_generated_node_rejected(self):
+        with pytest.raises(ValueError, match="clash"):
+            SwarmAgent(
+                members={
+                    "A": SwarmMemberConfig(agent=_fake_agent()),
+                    "A_HANDOFF": SwarmMemberConfig(agent=_fake_agent()),
                 },
                 entry="A",
             )

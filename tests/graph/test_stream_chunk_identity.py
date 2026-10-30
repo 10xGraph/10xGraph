@@ -26,6 +26,7 @@ from tests.adapters.test_google_genai_converter import (
     MockPart,
     MockUsageMetadata,
 )
+from tests.helpers.provider_request_rules import assert_valid_provider_request
 
 
 pytestmark = pytest.mark.asyncio
@@ -61,6 +62,7 @@ async def _stream(agent, replies: list):
     queue = list(replies)
 
     async def fake(self, messages, tools=None, stream=False, **kwargs):
+        assert_valid_provider_request(messages)
         items = queue.pop(0)
 
         async def gen():

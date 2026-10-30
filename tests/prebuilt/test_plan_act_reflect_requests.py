@@ -34,6 +34,7 @@ from tenxgraph.prebuilt.agent.plan_act_reflect import (
 )
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.utils import END, ResponseGranularity
+from tests.helpers.provider_request_rules import assert_valid_provider_request
 
 
 _ids = itertools.count()
@@ -140,6 +141,10 @@ async def run(script, mode, *, tools=None, max_iterations=3, text="HI", thread="
             await app.ainvoke(data, config, response_granularity=FULL)
         else:
             _ = [c async for c in app.astream(data, config, response_granularity=FULL)]
+        # Every request handed to the provider answers its tool calls and ends on a
+        # user or tool turn.
+        for _, request in script.requests:
+            assert_valid_provider_request(request)
         return await cp.aget_state(config)
 
 
@@ -307,3 +312,92 @@ async def test_assistant_messages_carry_node_name(mode):
     state = await run(script, mode)
     names = [m.metadata.get("node_name") for m in state.context if m.role == "assistant"]
     assert names == ["PLAN", "REFLECT"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_reflector_messages_are_internal_planner_reply_is_not(mode):
+    script = Script(
+        plan=["first try", "second try"],
+        reflect=["missing the second step", "all good [DONE]"],
+    )
+    state = await run(script, mode)
+
+    by_node = [(m.metadata.get("node_name"), m.metadata.get("internal")) for m in state.context]
+    assert by_node[1:] == [
+        ("PLAN", None),
+        ("REFLECT", True),
+        ("PLAN", None),
+        ("REFLECT", True),
+    ]
+    answers = [m for m in state.context if m.role == "assistant" and not m.metadata.get("internal")]
+    assert answers[-1].text() == "second try"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_done_verdict_after_tool_call_only_plan_is_the_answer(mode):
+    script = Script(
+        plan=[("tool", "get_weather", {"city": "Paris"})],
+        reflect=["It is sunny in Paris. [DONE]"],
+    )
+    state = await run(script, mode, tools=[get_weather])
+
+    verdict = state.context[-1]
+    assert verdict.metadata["node_name"] == "REFLECT"
+    assert verdict.text() == "It is sunny in Paris."
+    assert not verdict.metadata.get("internal")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_not_done_verdict_after_tool_call_only_plan_is_internal(mode):
+    script = Script(
+        plan=[("tool", "get_weather", {"city": "Paris"}), "Sunny in Paris."],
+        reflect=["Answer the user with the result.", "good [DONE]"],
+    )
+    state = await run(script, mode, tools=[get_weather])
+
+    reflects = [m for m in state.context if m.metadata.get("node_name") == "REFLECT"]
+    assert [m.metadata.get("internal") for m in reflects] == [True, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_reflect_prompt_asks_for_a_verdict_only(mode):
+    script = Script(plan=["plan answer"], reflect=["fine [DONE]"])
+    await run(script, mode)
+
+    request = script.of("REFLECT")[0]
+    assert "one-line verdict" in request[0]["content"]
+    assert "do not repeat the answer" in request[-1]["content"]
+    assert "one-line verdict ending in [DONE]" in request[-1]["content"]
+    assert "—" not in request[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_streamed_reflector_message_carries_internal_flag():
+    script = Script(plan=["Which city?"], reflect=["handled [DONE]"])
+    with (
+        patch.object(Agent, "_create_client", return_value=MagicMock()),
+        patch.object(Agent, "_call_llm", lambda self, *a, **k: script(self, *a, **k)),
+    ):
+        app = PlanActReflectAgent(model="gpt-4o", provider="openai", api_style="chat").compile(
+            checkpointer=InMemoryCheckpointer()
+        )
+        chunks = [
+            c
+            async for c in app.astream(
+                {"messages": [Message.text_message("HI")]},
+                {"thread_id": "s", "user_id": "u"},
+                response_granularity=FULL,
+            )
+        ]
+    complete = [
+        c.message
+        for c in chunks
+        if c.message and c.message.role == "assistant" and not c.message.delta
+    ]
+    flags = {m.metadata.get("node_name"): m.metadata.get("internal") for m in complete}
+    assert flags.get("REFLECT") is True
+    assert not flags.get("PLAN")

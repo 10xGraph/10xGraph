@@ -67,8 +67,9 @@ _DONE_PATTERN = re.compile(r"\s*\[done\]\s*", re.IGNORECASE)
 REFLECT_REQUEST_NOTE = (
     "Review the work above against my latest request. If it is complete, or the reply asks "
     "me for information that is needed, or my message needs no further work (a greeting or "
-    "small talk), write the final reply to me and end it with [DONE]. Otherwise list what is "
-    "missing and what the next planning step should do, without [DONE]."
+    "small talk), reply with a one-line verdict ending in [DONE]; do not repeat the answer, "
+    "the reply above is already my answer. Otherwise list what is missing and what the next "
+    "planning step should do, without [DONE]."
 )
 PLAN_CONTINUE_NOTE = "Continue the task using the review above."
 
@@ -99,11 +100,12 @@ DEFAULT_REFLECT_SYSTEM_PROMPT: list[dict[str, str]] = [
             "plan, the actions taken, and any results obtained — and decide "
             "whether the original task is fully complete.\n\n"
             "If the task IS complete:\n"
-            "  • Provide a concise final summary of what was accomplished.\n"
+            "  • Write a one-line verdict only. Do not repeat or rewrite the answer: the "
+            "planner's reply is the user's answer.\n"
             "  • End your response with the exact token: [DONE]\n\n"
             "Treat the task as complete when the reply asks the user for information that "
             "is needed to go on, or when the user's message is a greeting or small talk that "
-            "needs no further work. In those cases write the reply to the user and end it "
+            "needs no further work. In those cases write a one-line verdict and end it "
             "with [DONE].\n\n"
             "If the task is NOT complete:\n"
             "  • Identify the specific gaps or unresolved sub-tasks.\n"
@@ -147,6 +149,16 @@ def _is_empty_reply(message: Message) -> bool:
     return all(isinstance(b, TextBlock | ReasoningBlock) for b in blocks)
 
 
+def _planner_left_text(context: list[Message]) -> bool:
+    """True when the planner's last reply of the turn has text (not only tool calls)."""
+    for msg in reversed(context):
+        if msg.role == "user":
+            return False
+        if msg.role == "assistant" and msg.metadata.get("node_name") != "REFLECT":
+            return bool(msg.text().strip())
+    return False
+
+
 def _make_reflect_node(reflect_agent: Agent) -> Callable:
     """Wrap *reflect_agent* so it only sees non-tool messages.
 
@@ -157,10 +169,14 @@ def _make_reflect_node(reflect_agent: Agent) -> Callable:
     The view ends with one transient user message (``REFLECT_REQUEST_NOTE``) so the
     request never ends on an assistant turn. When the reflector's reply carries
     ``[DONE]``, the token is removed from the saved message and a per-turn flag is set.
+    Every reflector message is marked ``metadata["internal"] = True`` (a review step, not
+    the answer), except a done verdict when the planner's last reply has no text: then the
+    verdict is the turn's only text answer.
     """
 
     async def _reflect(state: AgentState, config: dict) -> object:
         original_context = state.context
+        planner_has_text = _planner_left_text(list(original_context or []))
         # Hide tool results, and the tool calls they answer: a provider rejects an
         # assistant tool call that has no matching result.
         visible: list[Message] = []
@@ -182,9 +198,14 @@ def _make_reflect_node(reflect_agent: Agent) -> Callable:
         if isinstance(result, ModelResponseConverter):
 
             def _on_reply(message: Message) -> None:
-                if message.role == "assistant" and _has_done_token(message.text()):
+                if message.role != "assistant":
+                    return
+                done = _has_done_token(message.text())
+                if done:
                     state.execution_meta.internal_data[_DONE_KEY] = True
                     _strip_done_token(message)
+                if not done or planner_has_text:
+                    message.metadata["internal"] = True
 
             result.message_hooks.append(_on_reply)
         return result
@@ -352,6 +373,12 @@ class PlanActReflectAgent[StateT: AgentState]:
         PLAN --[tool calls?]--> ACT --> REFLECT --[done or max_iters?]--> END
             \\                                  \\
              +--> (no tools) --> REFLECT         +--> PLAN (iterate)
+
+    Message metadata: reflector messages carry ``metadata["internal"] = True``, a step
+    message clients may show collapsed; the turn's answer is the last assistant message
+    without it (the planner's reply). The one exception is a done verdict after a planner
+    reply that has no text (tool calls only): that verdict is the only text answer and is
+    not marked.
 
     Args:
         model: LLM model identifier (e.g. ``"gpt-4o-mini"``, ``"gemini-2.0-flash"``).
