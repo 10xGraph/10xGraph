@@ -376,8 +376,15 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             # Every tool call of the message is answered before control moves on.
             handoff = self._find_handoff(last_message)
             if handoff:
-                target_agent, answers = handoff
-                for answer in answers:
+                target_agent, winner, regular = handoff
+                if regular:
+                    # The message's other tool calls run first, so the target sees their
+                    # results.
+                    async for item in self._call_tools(
+                        self._regular_calls_message(last_message, regular), state, config
+                    ):
+                        yield item
+                for answer in self._handoff_answers(last_message, winner, target_agent, regular):
                     yield answer
                 yield Command(  # type: ignore
                     update=None,

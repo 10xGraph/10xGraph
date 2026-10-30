@@ -171,6 +171,18 @@ def _find_member_handoff(
     return None
 
 
+def _has_regular_calls(message: Message) -> bool:
+    """True when ``message`` has an offered tool call that is not a handoff."""
+    offered = allowed_tool_names(message)
+    for tc in message.tools_calls or []:
+        tool_name = tool_call_name(tc)
+        if offered is not None and tool_name not in offered:
+            continue
+        if not is_handoff_tool(tool_name)[0]:
+            return True
+    return False
+
+
 def _last_assistant_index(state: AgentState) -> int | None:
     for index in range(len(state.context) - 1, -1, -1):
         if state.context[index].role == "assistant":
@@ -267,6 +279,11 @@ def _make_member_route(
         found = _find_member_handoff(last, allowed_by_upper)
         if found is not None:
             logger.debug("Member %s handing off to %s.", name, found[1])
+            if tool_node_name is not None and _has_regular_calls(last):
+                # Other tool calls in the same message (get_weather + transfer_to_planner)
+                # run first: the member's ToolNode runs them, answers the handoff and jumps
+                # to the target, so the target sees their results.
+                return tool_node_name
             return handoff_node_name or found[1]
 
         # Regular tool calls need ToolNode execution.

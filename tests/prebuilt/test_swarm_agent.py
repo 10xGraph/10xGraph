@@ -179,8 +179,16 @@ class TestRouteToolCallShapes:
         state = _state_with(_msg("", tool_calls=[_tc("transfer_to_researcher")]))
         assert fn(state) == "WRITER_TOOL"
 
-    def test_handoff_plus_regular_tool_prefers_handoff(self):
+    def test_handoff_plus_regular_tool_runs_the_tool_first(self):
+        # The ToolNode runs web_search, answers the handoff and jumps to WRITER.
         fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL")
+        state = _state_with(
+            _msg("", tool_calls=[_tc("web_search", "c1"), _tc("transfer_to_writer", "c2")])
+        )
+        assert fn(state) == "TRIAGE_TOOL"
+
+    def test_handoff_plus_regular_tool_without_tool_node_hands_off(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], None)
         state = _state_with(
             _msg("", tool_calls=[_tc("web_search", "c1"), _tc("transfer_to_writer", "c2")])
         )
@@ -724,8 +732,13 @@ def _answer(call_id: str, text: str) -> Message:
 class TestHandoffNode:
     def test_member_route_goes_to_handoff_node(self):
         fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL", "TRIAGE_HANDOFF")
-        state = _state_with(_msg("", tool_calls=[_tc("search", "c1"), _tc("transfer_to_writer")]))
+        state = _state_with(_msg("", tool_calls=[_tc("transfer_to_writer")]))
         assert fn(state) == "TRIAGE_HANDOFF"
+
+    def test_member_route_sends_a_mixed_message_to_the_tool_node(self):
+        fn = _make_member_route("TRIAGE", ["WRITER"], "TRIAGE_TOOL", "TRIAGE_HANDOFF")
+        state = _state_with(_msg("", tool_calls=[_tc("search", "c1"), _tc("transfer_to_writer")]))
+        assert fn(state) == "TRIAGE_TOOL"
 
     @pytest.mark.asyncio
     async def test_answers_every_call_in_order(self):
@@ -740,6 +753,7 @@ class TestHandoffNode:
             ("c2", handoff_result_text("Writer")),
         ]
         assert all(m.metadata["node_name"] == "TRIAGE_HANDOFF" for m in answers)
+        assert [m.metadata.get("not_run", False) for m in answers] == [True, False]
 
     @pytest.mark.asyncio
     async def test_rerun_after_resume_does_not_answer_twice(self):

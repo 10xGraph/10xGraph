@@ -63,6 +63,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tenxgraph.graph")
 
 
+def _tool_messages(result: Any) -> list[Message]:
+    """The messages of a normalized ToolNode result (state updates are already merged)."""
+    if isinstance(result, dict):
+        items = result.get("messages", [])
+    elif isinstance(result, Command):
+        items = result.update if isinstance(result.update, list) else [result.update]
+    elif isinstance(result, list):
+        items = result
+    else:
+        items = [result]
+    return [item for item in items if isinstance(item, Message)]
+
+
 class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
     """
     Handles invocation of node functions, tool nodes, and agent instances in the agent graph.
@@ -259,9 +272,18 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             # Every tool call of the message is answered before control moves on.
             handoff = self._find_handoff(last_message)
             if handoff:
-                target_agent, answers = handoff
+                target_agent, winner, regular = handoff
+                ran: list[Message] = []
+                if regular:
+                    # The message's other tool calls run first, so the target sees their
+                    # results (state changes from them are merged into ``state`` here).
+                    result = await self._call_tools(
+                        self._regular_calls_message(last_message, regular), state, config
+                    )
+                    ran = _tool_messages(self._merge_tool_results(result, state))
+                answers = self._handoff_answers(last_message, winner, target_agent, regular)
                 return Command(  # type: ignore
-                    update=answers,
+                    update=[*ran, *answers],
                     goto=target_agent,
                 )
 
@@ -424,7 +446,9 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             config,
         )
         normalized_result = self._merge_tool_results(tool_result, state)
-        if not isinstance(normalized_result, Command):
+        if isinstance(normalized_result, Command):
+            self._stamp_node_name(normalized_result.update)
+        else:
             self._stamp_node_name(normalized_result)
 
         if isinstance(normalized_result, Command):

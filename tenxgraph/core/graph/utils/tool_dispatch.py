@@ -129,34 +129,45 @@ def handoff_result_text(target: str) -> str:
     )
 
 
-def handoff_tool_messages(message: Message, winner: int, target: str) -> list[Message]:
-    """Answer every tool call of ``message``, whose call at ``winner`` hands off to ``target``.
+def handoff_tool_messages(
+    message: Message,
+    winner: int,
+    target: str,
+    ran: frozenset[str] | set[str] = frozenset(),
+) -> list[Message]:
+    """Answer the tool calls of ``message`` not in ``ran``; the call at ``winner`` hands off.
 
     Providers reject a history in which an assistant tool call has no tool result, so the
     target agent must not inherit one. The handoff call gets ``handoff_result_text(target)``,
-    every other call of the same message gets a result saying it was not run, and a call
-    to a tool the model was not offered gets the usual not-found error. Results come in
-    call order. Shared by the ToolNode handoff and the SwarmAgent handoff nodes.
+    a call to a tool the model was not offered gets the usual not-found error, and any other
+    call not in ``ran`` (the ids of calls already run before the handoff, such as a
+    ``get_weather`` in the same message) gets a result saying it was not run; that tool
+    message carries ``metadata["not_run"] = True``. Results come in call order. Shared by the
+    ToolNode handoff and the SwarmAgent handoff nodes.
     """
     calls = message.tools_calls or []
     allowed = allowed_tool_names(message)
     answers: list[Message] = []
     for index, call in enumerate(calls):
+        if call.get("id", "") in ran and index != winner:
+            continue
         if allowed is not None and tool_call_name(call) not in allowed:
             answers.append(hidden_tool_message(call))
             continue
+        not_run = index != winner
         output = (
-            handoff_result_text(target)
-            if index == winner
-            else f"Not run: control was transferred to {target}."
+            f"Not run: control was transferred to {target}."
+            if not_run
+            else handoff_result_text(target)
         )
-        answers.append(
-            Message.tool_message(
-                content=[
-                    ToolResultBlock(call_id=call.get("id", ""), output=output, status="completed")
-                ],
-            )
+        answer = Message.tool_message(
+            content=[
+                ToolResultBlock(call_id=call.get("id", ""), output=output, status="completed")
+            ],
         )
+        if not_run:
+            answer.metadata["not_run"] = True
+        answers.append(answer)
     return answers
 
 

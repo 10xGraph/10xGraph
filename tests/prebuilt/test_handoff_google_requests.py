@@ -233,7 +233,7 @@ async def test_swarm_member_without_tools_hands_back(mode):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", MODES)
 async def test_swarm_handoff_mixed_with_regular_tool_call(mode):
-    """A handoff next to a regular call: the handoff wins, the regular call is not run."""
+    """A handoff next to a regular call: the regular call runs first, then the handoff."""
     script = Script(
         {
             "TRIAGE": [call("transfer_to_weather")],
@@ -243,19 +243,58 @@ async def test_swarm_handoff_mixed_with_regular_tool_call(mode):
                     ("tool", "transfer_to_planner", {}),
                 ]
             ],
-            "PLANNER": ["I need the weather first."],
+            "PLANNER": ["Paris is sunny: wear light clothes."],
         }
     )
     state, saved = await run(script, build_swarm, mode, "swarm-4")
 
     assert script.nodes() == ["TRIAGE", "WEATHER", "PLANNER"]
     check_all(script, state, saved)
-    assert WEATHER_RUNS == []
+    assert WEATHER_RUNS == ["Paris"]
     assert tool_outputs(state.context) == [
         handoff_result_text("WEATHER"),
-        "Not run: control was transferred to PLANNER.",
+        "sunny in Paris",
         handoff_result_text("PLANNER"),
     ]
+    # The target sees the weather result in its own request.
+    planner_request = script.of("PLANNER")[0]
+    assert any("sunny in Paris" in str(m.get("content")) for m in planner_request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_swarm_parallel_calls_like_openai_take_one_pass(mode):
+    """The live gpt-6-luna run: parallel calls in one message must not bounce the swarm.
+
+    TRIAGE called two handoffs at once and WEATHER called get_weather and the handoff to
+    PLANNER together. The weather call used to be skipped, so PLANNER sent the user back
+    to WEATHER. Now the weather runs once, PLANNER answers, and the losing second handoff
+    of TRIAGE is answered "not run" (marked ``metadata["not_run"]``).
+    """
+    script = Script(
+        {
+            "TRIAGE": [
+                [("tool", "transfer_to_weather", {}), ("tool", "transfer_to_planner", {})]
+            ],
+            "WEATHER": [
+                [
+                    ("tool", "get_weather", {"city": "Khulna"}),
+                    ("tool", "transfer_to_planner", {}),
+                ]
+            ],
+            "PLANNER": ["Khulna is sunny: wear light clothes."],
+        }
+    )
+    state, saved = await run(script, build_swarm, mode, "swarm-5")
+
+    assert script.nodes() == ["TRIAGE", "WEATHER", "PLANNER"]
+    check_all(script, state, saved)
+    assert WEATHER_RUNS == ["Khulna"]
+    not_run = [m for m in state.context if m.metadata.get("not_run")]
+    assert [str(m.content[0].output) for m in not_run] == [
+        "Not run: control was transferred to WEATHER."
+    ]
+    assert state.context[-1].text() == "Khulna is sunny: wear light clothes."
 
 
 def test_handoff_result_tells_the_target_it_is_in_charge():
@@ -408,7 +447,8 @@ async def test_hand_built_handoff_tool_requests_are_valid(mode, calls):
 
     assert script.nodes() == ["MAIN", "worker"]
     check_all(script, state, saved)
-    assert WEATHER_RUNS == []
+    # A regular call next to the handoff runs first (lookup records its topic).
+    assert WEATHER_RUNS == (["x"] if len(calls) > 1 else [])
     outputs = tool_outputs(state.context)
     assert outputs[-1] == handoff_result_text("worker")
     assert outputs.count(handoff_result_text("worker")) == 1

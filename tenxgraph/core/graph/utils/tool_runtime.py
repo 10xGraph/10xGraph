@@ -31,27 +31,30 @@ class ToolRuntimeMixin:
     name: str
     func: Any
 
-    def _find_handoff(self, last_message: Message) -> tuple[str, list[Message]] | None:
-        """Detect a handoff in ``last_message`` and answer every tool call of it.
+    def _find_handoff(self, last_message: Message) -> tuple[str, int, list[dict]] | None:
+        """Detect a handoff in ``last_message``.
 
-        Returns ``(target_agent, tool_messages)`` or ``None`` when there is no handoff.
-        Providers reject a history in which an assistant tool call has no tool result, so
-        the target agent must not inherit one: the handoff call gets
-        ``handoff_result_text(agent)``, and every other call of the same message gets a result saying it was not
-        run (the first handoff wins). Results come in call order.
+        Returns ``(target_agent, winner, regular_calls)`` or ``None`` when there is no
+        handoff. ``winner`` is the index of the first registered handoff call (the first
+        handoff wins); ``regular_calls`` are the other offered calls that are not handoffs,
+        which run before control moves on (a model that asks for ``get_weather`` and
+        ``transfer_to_planner`` together wants both). Answer the rest with
+        :meth:`_handoff_answers`.
         """
         calls = last_message.tools_calls or []
         allowed = allowed_tool_names(last_message)
         target: str | None = None
         winner = -1
+        regular: list[dict] = []
         for index, call in enumerate(calls):
             name = call.get("function", {}).get("name", "")
             if allowed is not None and name not in allowed:
                 continue
-            target = handoff_target(self.func, name)
-            if target:
-                winner = index
-                break
+            call_target = handoff_target(self.func, name)
+            if call_target and target is None:
+                target, winner = call_target, index
+            elif not call_target:
+                regular.append(call)
         if not target:
             return None
         logger.info(
@@ -60,7 +63,27 @@ class ToolRuntimeMixin:
             calls[winner].get("function", {}).get("name", ""),
             target,
         )
-        return target, handoff_tool_messages(last_message, winner, target)
+        return target, winner, regular
+
+    @staticmethod
+    def _handoff_answers(
+        last_message: Message, winner: int, target: str, regular: list[dict]
+    ) -> list[Message]:
+        """Tool results for the calls of a handoff message that did not run as tools.
+
+        The handoff call gets ``handoff_result_text(target)``, a second handoff call gets a
+        "not run" result, and the regular calls are skipped: they ran before the handoff.
+        """
+        ran = {call.get("id", "") for call in regular}
+        return handoff_tool_messages(last_message, winner, target, ran=ran)
+
+    @staticmethod
+    def _regular_calls_message(last_message: Message, regular: list[dict]) -> Message:
+        """``last_message`` with only ``regular`` calls, to run them before the handoff.
+
+        Same message id, so the idempotency ledger keys stay those of the real message.
+        """
+        return last_message.model_copy(update={"tools_calls": regular})
 
     @staticmethod
     def _ledger_key(origin_message_id: str | None, tool_call_id: str) -> str | None:

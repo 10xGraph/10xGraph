@@ -91,7 +91,8 @@ async def test_handoff_answers_every_tool_call(names, mode):
         if isinstance(b, ToolResultBlock) and b.call_id == f"call_{len(names) - 1}"
     )
     assert "Transferred to worker" in handoff_result
-    assert runs == []  # a handoff turn does not run the sibling tools
+    # The message's other calls run first, then control moves on.
+    assert runs == [n for n in names if not n.startswith("transfer_to")]
 
     saved = await cp.aget_state(config)
     assert _unanswered(saved.context) == []
