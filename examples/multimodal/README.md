@@ -69,7 +69,7 @@ MediaRef(kind="url", url=IMAGE_URL, mime_type="image/png")
 MediaRef(kind="data", data_base64=b64(make_png()), mime_type="image/png")
 ```
 
-A PDF is a `DocumentBlock`. Chat Completions has no PDF input, so that agent uses the Responses API:
+A PDF is a `DocumentBlock`. Chat Completions has no PDF input; the Responses API (the OpenAI default) takes one. The agent sets `api_style="responses"` so it stays there even behind a `base_url`:
 
 ```python
 document_agent = ReactAgent(model="gpt-5-mini", api_style="responses", ...)

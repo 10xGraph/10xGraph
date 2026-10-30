@@ -38,7 +38,7 @@ pip install 10xgraph-api                  # API server example only
 export GEMINI_API_KEY=...
 ```
 
-To use Vertex AI instead, set `GOOGLE_GENAI_USE_VERTEXAI=true` (the microphone script reads it). The model string is `gemini-2.5-flash-live`, the name used in the library's tests. Google changes Live model names often, so check the Live API docs for what your key can use and edit `MODEL` in the file.
+To use Vertex AI instead, set `GOOGLE_GENAI_USE_VERTEXAI=true` (the microphone script reads it). The model string is `gemini-3.8-live`, the name used in the library's tests. Google changes Live model names often, so check the Live API docs for what your key can use and edit `MODEL` in the file.
 
 ## Run it
 

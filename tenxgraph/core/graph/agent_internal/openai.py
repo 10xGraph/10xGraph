@@ -5,10 +5,38 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .constants import CALL_EXCLUDED_KWARGS
+from .constants import CALL_EXCLUDED_KWARGS, resolve_reasoning_config
 
 
 logger = logging.getLogger("tenxgraph.agent")
+
+# Models that answered the default reasoning parameter with a 400 (non-reasoning models such as
+# gpt-4o). Process-local: later calls with the default config skip reasoning for them. An
+# explicit reasoning_config is never affected.
+_REASONING_REJECTED_MODELS: set[str] = set()
+
+# Status codes meaning the endpoint does not exist or is not implemented on the server. Only
+# these switch a custom base_url from the Responses API to Chat Completions.
+_ENDPOINT_UNSUPPORTED_STATUS = frozenset({404, 405, 501})
+
+
+def is_endpoint_unsupported(exc: BaseException) -> bool:
+    """True when ``exc`` says the endpoint is missing or unsupported (404, 405, 501)."""
+    return getattr(exc, "status_code", None) in _ENDPOINT_UNSUPPORTED_STATUS
+
+
+def is_reasoning_rejected(exc: BaseException) -> bool:
+    """True when ``exc`` is a 400 that names the reasoning parameter.
+
+    The error's ``param`` decides when the server sets one, so a 400 about reasoning items in
+    the input (``param="input"``) does not count; the message is checked only without it.
+    """
+    if getattr(exc, "status_code", None) != 400:  # noqa: PLR2004
+        return False
+    param = getattr(exc, "param", None)
+    if param:
+        return "reasoning" in str(param).lower()
+    return "reasoning" in str(exc).lower()
 
 
 def _to_responses_content(content: Any) -> Any:
@@ -80,6 +108,17 @@ def _to_responses_content(content: Any) -> Any:
 
 class AgentOpenAIMixin:
     """OpenAI and OpenAI-compatible API request helpers."""
+
+    def _openai_reasoning_config(self) -> dict[str, Any] | None:
+        """Reasoning config for this OpenAI request, or None.
+
+        The default config is dropped for a model in ``_REASONING_REJECTED_MODELS``.
+        """
+        if getattr(self, "_reasoning_default", False) and (
+            getattr(self, "model", None) in _REASONING_REJECTED_MODELS
+        ):
+            return None
+        return resolve_reasoning_config(self)
 
     async def _call_openai(
         self,
@@ -237,8 +276,13 @@ class AgentOpenAIMixin:
             call_kwargs["instructions"] = instructions
         if responses_tools:
             call_kwargs["tools"] = responses_tools
-        if self.reasoning_config:  # type: ignore
-            call_kwargs["reasoning"] = self.reasoning_config
+        reasoning = self._openai_reasoning_config()
+        if reasoning:
+            # Without a summary the Responses API returns no reasoning text at all.
+            reasoning = dict(reasoning)
+            if "summary" not in reasoning and "generate_summary" not in reasoning:
+                reasoning["summary"] = "auto"
+            call_kwargs["reasoning"] = reasoning
 
         call_kwargs.pop("reasoning_effort", None)
 

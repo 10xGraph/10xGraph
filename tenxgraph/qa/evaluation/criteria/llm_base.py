@@ -105,6 +105,7 @@ class TemplatedLLMCriterion(LLMCallerMixin, BaseCriterion):
         reasonings: list[str] = []
         extras: list[dict[str, Any]] = []
         total_usage = TokenUsage()
+        last_error: Exception | None = None
 
         for _ in range(self.config.num_samples):
             try:
@@ -115,7 +116,11 @@ class TemplatedLLMCriterion(LLMCallerMixin, BaseCriterion):
                 total_usage = total_usage + usage
             except Exception as e:
                 logger.warning("%s sample failed: %s", self.name, e)
+                last_error = e
 
+        if not scores and last_error is not None:
+            # Surface the real LLM error; evaluate() turns it into an errored result.
+            raise last_error
         return scores, reasonings, extras, total_usage
 
     # ------------------------------------------------------------------

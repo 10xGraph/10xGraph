@@ -214,8 +214,8 @@ from tenxgraph.prebuilt.agent import AudioAgent
 from tenxgraph.core.realtime import LiveInputQueue, RealtimeConfig
 
 app = AudioAgent(
-    "gemini-live-2.5-flash-preview",
-    realtime_config=RealtimeConfig(model="gemini-live-2.5-flash-preview", voice="Puck"),
+    "gemini-3.8-live",
+    realtime_config=RealtimeConfig(model="gemini-3.8-live", voice="Puck"),
     tools=[lookup_order],
 ).compile()
 

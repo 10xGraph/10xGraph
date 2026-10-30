@@ -24,7 +24,7 @@ The same weather-tool ReactAgent running on nine provider setups, chosen by a co
 ## Key concepts
 
 - Model string: `gpt-5-mini`, `gemini-2.5-flash`, `claude-sonnet-5-5`. The provider is detected from it; do not pass `provider=`.
-- `api_style="responses"`: use the OpenAI Responses API instead of Chat Completions.
+- `api_style`: `"responses"` (the OpenAI Responses API, the default) or `"chat"` (Chat Completions, the default when `base_url` is set).
 - `use_vertex_ai=True`: Gemini on Vertex AI.
 - `anthropic_backend="vertex"` or `"bedrock"`: Claude on Vertex AI or Amazon Bedrock.
 - `base_url` and `api_key`: any OpenAI-compatible server, such as DeepSeek or Ollama.

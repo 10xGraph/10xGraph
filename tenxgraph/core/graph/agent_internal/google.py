@@ -14,7 +14,7 @@ from tenxgraph.storage.media.url_policy import (
     resolve_media_policy,
 )
 
-from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT
+from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT, resolve_reasoning_config
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -438,16 +438,12 @@ class AgentGoogleMixin:
             if function_declarations:
                 config_kwargs["tools"] = [types.Tool(function_declarations=function_declarations)]
 
-        if (
-            self.reasoning_config
-            and isinstance(self.reasoning_config, dict)
-            and text_like_output
-            and not structured_output
-        ):
+        reasoning = resolve_reasoning_config(self)
+        if reasoning and isinstance(reasoning, dict) and text_like_output and not structured_output:
             thinking_kwargs: dict[str, Any] = {"include_thoughts": True}
-            budget = self.reasoning_config.get("thinking_budget")
-            effort = self.reasoning_config.get("effort")
-            thinking_level = self.reasoning_config.get("thinking_level")
+            budget = reasoning.get("thinking_budget")
+            effort = reasoning.get("effort")
+            thinking_level = reasoning.get("thinking_level")
             if thinking_level is not None:
                 # Explicit thinking_level — preferred for Gemini 3 models.
                 # Accepts the string form ("low"/"medium"/"high"/"minimal") or

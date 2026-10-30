@@ -124,5 +124,39 @@ GOOGLE_THINKING_BUDGET_BY_EFFORT = {
     "high": 24576,
 }
 
+# What ``reasoning_config=True`` (and the default) means on each provider: reasoning on at
+# the lowest effort that still reasons. Resolved per request from the attempt's provider, so a
+# cross-provider fallback gets its own provider's value. Allowed values, from the SDK types:
+# - openai: ``ReasoningEffort`` in openai/types/shared/reasoning_effort.py
+#   ("none" turns reasoning off, so "minimal" is the lowest that reasons).
+# - anthropic: ``OutputConfigParam.effort`` in anthropic/types/output_config_param.py.
+# - google: the effort path sends ``thinking_budget``; "low" maps to 512 tokens below, the
+#   lowest budget every Gemini 2.5 family accepts (Gemini 3 also takes a budget).
+DEFAULT_REASONING_EFFORT_BY_PROVIDER: dict[str, str] = {
+    "openai": "minimal",
+    "anthropic": "low",
+    "google": "low",
+}
+
 # Sentinel that distinguishes the default reasoning config from an explicit None.
 REASONING_DEFAULT: object = object()
+
+
+def default_reasoning_config(provider: str) -> dict[str, Any]:
+    """Return the request config ``reasoning_config=True`` stands for on ``provider``."""
+    return {"effort": DEFAULT_REASONING_EFFORT_BY_PROVIDER.get(provider, "low")}
+
+
+def resolve_reasoning_config(agent: Any) -> dict[str, Any] | None:
+    """Return the reasoning config to send for ``agent``'s current provider, or None.
+
+    An explicit dict is returned as given. The default (``True`` or unset) is resolved from
+    the attempt's ``provider`` here rather than at construction, so a fallback model on
+    another provider gets that provider's lowest effort.
+    """
+    config = getattr(agent, "reasoning_config", None)
+    if not config:
+        return None
+    if getattr(agent, "_reasoning_default", False):
+        return default_reasoning_config(getattr(agent, "provider", ""))
+    return config

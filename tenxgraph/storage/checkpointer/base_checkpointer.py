@@ -456,6 +456,23 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         await self.aclear_cache_value(namespace, key)
         return True
 
+    async def aput_cache_value_if_absent(
+        self,
+        namespace: str,
+        key: str,
+        value: Any,
+        ttl_seconds: int | None = None,
+    ) -> bool:
+        """Store ``value`` only if no live value is cached under ``key``; True when stored.
+
+        The default reads, then writes, in two steps; a value written in between is
+        overwritten. Backends with a shared cache override this with one atomic step.
+        """
+        if await self.aget_cache_value(namespace, key) is not None:
+            return False
+        await self.aput_cache_value(namespace, key, value, ttl_seconds)
+        return True
+
     async def alist_cache_keys(
         self,
         namespace: str,
@@ -534,17 +551,20 @@ class BaseCheckpointer[StateT: AgentState](ABC):
 
         Called every ``ACTIVE_RUN_HEARTBEAT_SECONDS`` while a run is alive. A marker that is
         gone (expired, or cleared by mistake) is written again, since this run is alive; one
-        that belongs to another run is left alone.
+        that belongs to another run is left alone. The re-write is put-if-absent, so a new
+        run that writes its marker meanwhile keeps it.
         """
         run_id = config.get("run_id")
         if not run_id:
             return
-        if await self.aget_active_run(config) in (str(run_id), None):
+        key = self._stop_request_key(config)
+        if await self.aput_cache_value_if_absent(
+            ACTIVE_RUN_NAMESPACE, key, str(run_id), ACTIVE_RUN_TTL_SECONDS
+        ):
+            return
+        if await self.aget_active_run(config) == str(run_id):
             await self.aput_cache_value(
-                ACTIVE_RUN_NAMESPACE,
-                self._stop_request_key(config),
-                str(run_id),
-                ACTIVE_RUN_TTL_SECONDS,
+                ACTIVE_RUN_NAMESPACE, key, str(run_id), ACTIVE_RUN_TTL_SECONDS
             )
 
     async def aend_run(self, config: dict[str, Any]) -> None:

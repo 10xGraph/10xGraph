@@ -40,7 +40,7 @@ load_dotenv()
 # use a Gemini API key. Live model names can differ between the two, so check Google's
 # Live API docs for what your project can use.
 USE_VERTEX = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in ("1", "true", "yes")
-MODEL = "gemini-2.5-flash-live"
+MODEL = "gemini-3.8-live"
 MIC_BLOCK = INPUT_SAMPLE_RATE // 10  # 100 ms frames
 # Full duplex (no mic muting) -- only sensible with headphones, enables barge-in.
 FULL_DUPLEX = os.getenv("MIC_FULL_DUPLEX", "").strip().lower() in ("1", "true", "yes")

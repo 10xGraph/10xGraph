@@ -5,6 +5,7 @@ cancel save shows up as a marker cleared, or a scope exited, before the save fin
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -333,3 +334,102 @@ async def test_slow_cancel_save_logs_still_running_and_is_capped(monkeypatch, ca
     assert any("Cleanup task still running" in m for m in messages)
     assert not graph_utils._detached_tasks - before
     await app.aclose()
+
+
+class SlowStopSave(InMemoryCheckpointer):
+    """Only the stop save is slow; records each save's interrupt reason as it starts and ends."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self.delay = delay
+        self.log: list[tuple[str, str | None]] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.stop_save_started = asyncio.Event()
+
+    async def aput_checkpoint(self, config, state, messages=None, metadata=None):
+        reason = state.execution_meta.interrupt_reason
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        self.log.append(("start", reason))
+        try:
+            if reason == graph_utils.STOP_REASON:
+                self.stop_save_started.set()
+                await asyncio.sleep(self.delay)
+            return await super().aput_checkpoint(config, state, messages, metadata)
+        finally:
+            self.in_flight -= 1
+            self.log.append(("done", reason))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ainvoke", "astream"])
+async def test_late_stop_save_cannot_overwrite_the_cancel_save(mode, monkeypatch):
+    # The stop save outlives the cancel wait; the cancel save must still land after it.
+    monkeypatch.setattr(graph_utils, "FINALIZE_TIMEOUT_SECONDS", 0.1)
+    cp = SlowStopSave(delay=0.15)
+    holder: dict = {}
+
+    async def first(state: AgentState, config: dict):
+        await holder["app"].astop(config)
+        return [Message.text_message("first", role="assistant")]
+
+    async def second(state: AgentState, config: dict):
+        return [Message.text_message("second", role="assistant")]
+
+    graph = StateGraph()
+    graph.add_node("A", first)
+    graph.add_node("B", second)
+    graph.set_entry_point("A")
+    graph.add_edge("A", "B")
+    graph.add_edge("B", END)
+    app = holder["app"] = graph.compile(checkpointer=cp)
+
+    task = asyncio.ensure_future(consume(app, mode, cfg()))
+    await asyncio.wait_for(cp.stop_save_started.wait(), 5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.25)  # past the stop save, wherever it ends
+
+    reasons = [r for kind, r in cp.log if kind == "done" and r is not None]
+    assert reasons[-1] == graph_utils.CANCELLED_REASON
+    assert cp.max_in_flight == 1
+    state = await cp.aget_state(cfg())
+    assert state.execution_meta.interrupt_reason == graph_utils.CANCELLED_REASON
+    await app.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aclose_waits_for_a_cancel_save_that_outlived_its_run(monkeypatch):
+    monkeypatch.setattr(graph_utils, "FINALIZE_TIMEOUT_SECONDS", 0.1)
+    cp = SlowCheckpointer(delay=0.16)  # past the run's own wait, inside the task's lifetime
+    app, started = build_one_node(cp, hold=True)
+
+    task = asyncio.ensure_future(consume(app, "ainvoke", cfg()))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert ("save done", "interrupted_after") not in cp.log  # still running
+
+    stats = await app.aclose(grace=0, stop_timeout=0, timeout=2)
+
+    assert ("save done", "interrupted_after") in cp.log
+    assert stats["cleanup_tasks"] == {"pending": 1, "unfinished": 0}
+
+
+@pytest.mark.asyncio
+async def test_aclose_waits_for_cleanup_only_within_its_timeout():
+    cp = InMemoryCheckpointer()
+    app, _ = build_one_node(cp, hold=False)
+    stuck = graph_utils.detach_task(asyncio.sleep(5), lifetime=10)
+    try:
+        began = time.monotonic()
+        stats = await app.aclose(grace=0, stop_timeout=0, timeout=0.1)
+        assert time.monotonic() - began < 1
+        assert stats["cleanup_tasks"] == {"pending": 1, "unfinished": 1}
+        assert not stuck.done()  # its own lifetime cap ends it, not aclose
+    finally:
+        stuck.cancel()
+        await asyncio.wait({stuck})

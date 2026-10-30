@@ -29,8 +29,7 @@ def _resolve_use_vertex_ai(config: object) -> bool:
     otherwise falls back to the ``GOOGLE_GENAI_USE_VERTEXAI`` environment
     variable — the same signal the agent runtime uses. Without this, the judge
     always defaulted to the Gemini Developer API even when the project is only
-    reachable via Vertex, producing 401/403 auth failures and a silent 0.5
-    "No LLM provider available" score.
+    reachable via Vertex, producing 401/403 auth failures.
     """
     explicit = getattr(config, "use_vertex_ai", None)
     if explicit is not None:
@@ -51,45 +50,45 @@ class LLMCallerMixin:
     Reads ``self.config.judge_model`` to determine provider and model.
     """
 
-    async def _call_google_json(self, prompt: str) -> tuple[dict, TokenUsage] | None:
-        """Call Google LLM and return (parsed JSON dict, token usage), or None if unavailable."""
+    async def _call_google_json(self, prompt: str) -> tuple[dict, TokenUsage]:
+        """Call Google LLM and return (parsed JSON dict, token usage).
+
+        Raises the underlying exception on failure so the criterion reports a real error.
+        """
         judge_model: str = self.config.judge_model  # type: ignore[attr-defined]
         use_vertex_ai: bool = _resolve_use_vertex_ai(self.config)
-        try:
-            text, inp, out, cache = await call_llm(
-                judge_model,
-                prompt,
-                temperature=0.3,
-                json_mode=True,
-                use_vertex_ai=use_vertex_ai,
-            )
-            if not text:
-                return None
-            data = json.loads(text)
-            usage = TokenUsage(input_tokens=inp, output_tokens=out, cache_read_tokens=cache)
-            return data, usage
-        except (ImportError, ValueError, Exception):
-            return None
+        text, inp, out, cache = await call_llm(
+            judge_model,
+            prompt,
+            temperature=0.3,
+            json_mode=True,
+            use_vertex_ai=use_vertex_ai,
+        )
+        if not text:
+            raise RuntimeError(f"Judge model {judge_model} returned an empty response")
+        data = json.loads(text)
+        usage = TokenUsage(input_tokens=inp, output_tokens=out, cache_read_tokens=cache)
+        return data, usage
 
-    async def _call_openai_json(self, prompt: str) -> tuple[dict, TokenUsage] | None:
-        """Call OpenAI LLM and return (parsed JSON dict, token usage), or None if unavailable."""
+    async def _call_openai_json(self, prompt: str) -> tuple[dict, TokenUsage]:
+        """Call OpenAI LLM and return (parsed JSON dict, token usage).
+
+        Raises the underlying exception on failure so the criterion reports a real error.
+        """
         judge_model: str = self.config.judge_model  # type: ignore[attr-defined]
         api_style: str = getattr(self.config, "api_style", "responses")  # type: ignore[attr-defined]
-        try:
-            text, inp, out, cache = await call_llm(
-                judge_model,
-                prompt,
-                temperature=0.3,
-                json_mode=True,
-                api_style=api_style,  # type: ignore[arg-type]
-            )
-            if not text:
-                return None
-            data = json.loads(text)
-            usage = TokenUsage(input_tokens=inp, output_tokens=out, cache_read_tokens=cache)
-            return data, usage
-        except (ImportError, ValueError, Exception):
-            return None
+        text, inp, out, cache = await call_llm(
+            judge_model,
+            prompt,
+            temperature=0.3,
+            json_mode=True,
+            api_style=api_style,  # type: ignore[arg-type]
+        )
+        if not text:
+            raise RuntimeError(f"Judge model {judge_model} returned an empty response")
+        data = json.loads(text)
+        usage = TokenUsage(input_tokens=inp, output_tokens=out, cache_read_tokens=cache)
+        return data, usage
 
     async def _call_llm_json(self, prompt: str) -> tuple[dict, TokenUsage]:
         """Call the judge LLM and return (parsed JSON dict, token usage)."""
@@ -97,19 +96,13 @@ class LLMCallerMixin:
         use_vertex_ai: bool = _resolve_use_vertex_ai(self.config)
         provider, _ = _parse_model_provider(judge_model, use_vertex_ai=use_vertex_ai)
 
-        # Try provider-specific methods first
-        result = None
+        # LLM failures propagate so the criterion is reported as errored, never scored.
         if provider == "google":
-            result = await self._call_google_json(prompt)
-        elif provider == "openai":
-            result = await self._call_openai_json(prompt)
+            return await self._call_google_json(prompt)
+        if provider == "openai":
+            return await self._call_openai_json(prompt)
 
-        if result is not None:
-            return result
-
-        # If provider-specific method failed or is not available, return default
-        logger.warning("No LLM provider available for model: %s", judge_model)
-        return {"score": 0.5, "reasoning": "No LLM provider available"}, TokenUsage()
+        raise RuntimeError(f"No LLM provider available for model: {judge_model}")
 
     async def _call_llm_score(self, prompt: str) -> tuple[float, str, TokenUsage]:
         """Call the judge LLM and return (score, reasoning, token_usage)."""

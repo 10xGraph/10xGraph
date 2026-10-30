@@ -38,6 +38,12 @@ class _FakeRedis:
     async def setex(self, key, ttl, value):
         self.data[key] = value
 
+    async def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.data:
+            return None
+        self.data[key] = value
+        return True
+
     async def get(self, key):
         return self.data.get(key)
 
@@ -178,3 +184,70 @@ async def test_pg_clear_if_is_one_redis_script():
     assert await cp.aclear_cache_value_if(ACTIVE_RUN_NAMESPACE, _key(cp), "r1") is True
     assert len(cp.redis.scripts) == 1
     assert "DEL" in cp.redis.scripts[0]
+
+
+@pytest.mark.asyncio
+async def test_put_if_absent_writes_only_a_missing_value(cp):
+    assert await cp.aput_cache_value_if_absent(ACTIVE_RUN_NAMESPACE, _key(cp), "r1", 60) is True
+    assert await cp.aput_cache_value_if_absent(ACTIVE_RUN_NAMESPACE, _key(cp), "r2", 60) is False
+    assert await cp.aget_active_run(_cfg()) == "r1"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_keeps_a_marker_written_after_its_check(cp, monkeypatch):
+    await cp.abegin_run(_cfg("r1"))
+    await cp.aclear_cache_value(ACTIVE_RUN_NAMESPACE, _key(cp))  # r1's marker expired
+    original_get = cp.aget_cache_value
+    original_put_if_absent = cp.aput_cache_value_if_absent
+    fired = []
+
+    async def r2_starts(key):
+        # r2 takes the thread at the first point r1's heartbeat touches the marker.
+        if not fired:
+            fired.append(True)
+            await cp.aput_cache_value(ACTIVE_RUN_NAMESPACE, key, "r2", 60)
+
+    async def read_then_r2_starts(namespace, key):
+        value = await original_get(namespace, key)
+        if namespace == ACTIVE_RUN_NAMESPACE:
+            await r2_starts(key)
+        return value
+
+    async def r2_starts_then_put_if_absent(namespace, key, value, ttl_seconds=None):
+        if namespace == ACTIVE_RUN_NAMESPACE:
+            await r2_starts(key)
+        return await original_put_if_absent(namespace, key, value, ttl_seconds)
+
+    monkeypatch.setattr(cp, "aget_cache_value", read_then_r2_starts)
+    monkeypatch.setattr(cp, "aput_cache_value_if_absent", r2_starts_then_put_if_absent)
+    await cp.arefresh_run(_cfg("r1"))
+    monkeypatch.undo()
+
+    assert fired
+    assert await cp.aget_active_run(_cfg()) == "r2"
+
+
+@pytest.mark.asyncio
+async def test_put_if_absent_replaces_an_expired_value(cp, monkeypatch):
+    if isinstance(cp, PgCheckpointer):
+        pytest.skip("Redis expires keys itself")
+    await cp.aput_cache_value(ACTIVE_RUN_NAMESPACE, _key(cp), "r1", 60)
+    import time
+
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now + 120)
+
+    assert await cp.aput_cache_value_if_absent(ACTIVE_RUN_NAMESPACE, _key(cp), "r2", 60) is True
+    assert await cp.aget_active_run(_cfg()) == "r2"
+
+
+@pytest.mark.asyncio
+async def test_base_put_if_absent_default_uses_get_and_put():
+    """A third-party checkpointer without its own put-if-absent still gets a working one."""
+    from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+
+    cp = InMemoryCheckpointer()
+    put = BaseCheckpointer.aput_cache_value_if_absent
+    assert await put(cp, ACTIVE_RUN_NAMESPACE, _key(cp), "r1", 60) is True
+    assert await put(cp, ACTIVE_RUN_NAMESPACE, _key(cp), "r2", 60) is False
+    assert await cp.aget_active_run(_cfg()) == "r1"

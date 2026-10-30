@@ -37,7 +37,7 @@ from .remote_tool import RemoteToolConfig
 from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
-from .utils.utils import FINALIZE_TIMEOUT_SECONDS, detach_task, wait_detached
+from .utils.utils import FINALIZE_TIMEOUT_SECONDS, _detached_tasks, detach_task, wait_detached
 
 
 if TYPE_CHECKING:
@@ -723,6 +723,9 @@ class CompiledGraph[StateT: AgentState]:
                 response_granularity,
             ):
                 yield chunk
+                # A consumer may drive each step from a new task (the API's stream wrapper
+                # does); a hard cancel must reach the task running the run now.
+                handle.task = asyncio.current_task()
         finally:
             await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
 
@@ -1015,6 +1018,25 @@ class CompiledGraph[StateT: AgentState]:
             logger.error("%d run(s) did not end after the cancel", len(stuck))
         return counts, spent
 
+    async def _drain_detached(self, seconds: float) -> dict[str, int]:
+        """Wait up to ``seconds`` for the detached cleanup tasks on this loop to finish.
+
+        These are cancel saves and run-marker releases that outlived their run's own wait.
+        They must finish before the checkpointer is released under them. They are not
+        cancelled here: each one has its own lifetime cap (see ``track_detached``).
+        """
+        loop = asyncio.get_running_loop()
+        pending = {t for t in _detached_tasks if not t.done() and t.get_loop() is loop}
+        if not pending:
+            return {"pending": 0, "unfinished": 0}
+        logger.info("Waiting up to %.1fs for %d cleanup task(s)", seconds, len(pending))
+        if seconds > 0:
+            await asyncio.wait(pending, timeout=seconds)
+        unfinished = sum(1 for t in pending if not t.done())
+        if unfinished:
+            logger.warning("%d cleanup task(s) still running at close", unfinished)
+        return {"pending": len(pending), "unfinished": unfinished}
+
     async def aclose(  # noqa: PLR0912, PLR0915
         self,
         grace: float | None = None,
@@ -1031,8 +1053,9 @@ class CompiledGraph[StateT: AgentState]:
            ``stop_requested``). Wait up to ``stop_timeout`` seconds.
         4. Hard-cancel what still runs; the cancel saves the thread INTERRUPTED (reason
            ``shutdown``). Wait up to half of ``timeout`` seconds.
-        5. Drain background tasks (publisher events, memory writes) for the rest of ``timeout``,
-           then cancel what is left.
+        5. Wait for detached cleanup (cancel saves, run-marker releases), then drain background
+           tasks (publisher events, memory writes), both within the rest of ``timeout``; cancel
+           the background tasks that are left.
         6. Release the checkpointer, publisher and store, by the resource ownership rules.
 
         Args:
@@ -1043,8 +1066,8 @@ class CompiledGraph[StateT: AgentState]:
 
         Returns:
             Dictionary with shutdown statistics: ``runs`` (``active``, ``finished``,
-            ``stopped``, ``cancelled``), ``background_tasks`` (drained or dropped), and one
-            entry per released component.
+            ``stopped``, ``cancelled``), ``cleanup_tasks`` (``pending``, ``unfinished``),
+            ``background_tasks`` (drained or dropped), and one entry per released component.
 
         Calling this more than once is a no-op; the second call returns
         ``{"status": "already_closed"}``. Prefer the async-context-manager form,
@@ -1094,6 +1117,14 @@ class CompiledGraph[StateT: AgentState]:
         drain_budget = max(0.0, cancel_s - cancel_spent)
         if timeout is None:
             drain_budget = max(drain_budget, self._shutdown_timeout - (loop.time() - start_time))
+        # 5a. Cleanup that outlived its run must finish before the checkpointer is released.
+        drain_started = loop.time()
+        try:
+            stats["cleanup_tasks"] = await self._drain_detached(drain_budget)
+        except Exception as e:
+            stats["cleanup_tasks"] = {"status": "error", "error": str(e)}
+            logger.exception("Error waiting for cleanup tasks: %s", e)
+        drain_budget = max(0.0, drain_budget - (loop.time() - drain_started))
         try:
             logger.debug("Shutting down background task manager...")
             shutdown_stats = await self._task_manager.shutdown(timeout=drain_budget)

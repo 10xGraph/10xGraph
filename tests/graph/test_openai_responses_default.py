@@ -7,6 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.agent_internal.openai import _REASONING_REJECTED_MODELS
 from tenxgraph.core.state.message import Message
 from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
 from tenxgraph.runtime.adapters.llm.openai_responses_converter import OpenAIResponsesConverter
@@ -77,6 +78,29 @@ def _client():
     return client
 
 
+def _api_error(status, message, param=None):
+    """A real OpenAI SDK status error, as the client raises it."""
+    import httpx2
+    import openai
+
+    request = httpx2.Request("POST", "http://localhost:8000/v1/responses")
+    response = httpx2.Response(status, request=request)
+    cls = {
+        400: openai.BadRequestError,
+        404: openai.NotFoundError,
+        429: openai.RateLimitError,
+    }.get(status, openai.APIStatusError)
+    body = {"message": message, "param": param, "type": "invalid_request_error"}
+    return cls(message, response=response, body=body)
+
+
+@pytest.fixture(autouse=True)
+def _clear_reasoning_cache():
+    _REASONING_REJECTED_MODELS.clear()
+    yield
+    _REASONING_REJECTED_MODELS.clear()
+
+
 def _agent(client=None, model="gpt-6-luna", **kwargs):
     client = client or _client()
     with patch.object(Agent, "_create_client", return_value=client):
@@ -109,7 +133,7 @@ class TestMaintainerCase:
 
         client.chat.completions.create.assert_not_called()
         kwargs = client.responses.create.call_args.kwargs
-        assert kwargs["reasoning"] == {"effort": "medium"}
+        assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
         assert "reasoning_effort" not in kwargs
         assert kwargs["tools"][0]["name"] == "get_weather"
 
@@ -150,14 +174,14 @@ class TestChatReasoning:
         client = _client()
         agent = _agent(client, api_style="chat", reasoning_config=True)
         await agent._call_llm(MESSAGES, tools=None, stream=False)
-        assert client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "medium"
+        assert client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "minimal"
 
 
 @pytest.mark.asyncio
 class TestStickyFallback:
     async def test_probe_once_then_chat(self, caplog):
         client = _client()
-        client.responses.create = AsyncMock(side_effect=Exception("404 Not Found"))
+        client.responses.create = AsyncMock(side_effect=_api_error(404, "Not Found"))
         agent = _agent(client, api_style="responses", base_url="http://localhost:8000/v1")
 
         with caplog.at_level("WARNING", logger="tenxgraph.agent"):
@@ -172,7 +196,7 @@ class TestStickyFallback:
 
     async def test_sticky_state_shared_with_attempt_copies(self):
         client = _client()
-        client.responses.create = AsyncMock(side_effect=Exception("404"))
+        client.responses.create = AsyncMock(side_effect=_api_error(404, "Not Found"))
         agent = _agent(client, api_style="responses", base_url="http://localhost:8000/v1")
         bound = agent._bind_attempt(agent.model, "openai", client, agent.base_url)
 
@@ -193,6 +217,172 @@ class TestStickyFallback:
 
 
 @pytest.mark.asyncio
+class TestFallbackOnlyOnUnsupported:
+    """Only 404/405/501 switch a base_url to chat; transient errors raise and do not stick."""
+
+    @pytest.mark.parametrize("status", [404, 405, 501])
+    async def test_unsupported_status_switches_to_chat(self, status):
+        client = _client()
+        client.responses.create = AsyncMock(side_effect=_api_error(status, "unsupported"))
+        agent = _agent(client, api_style="responses", base_url="http://localhost:8000/v1")
+
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+
+        assert agent.base_url in agent._responses_unsupported_urls
+        client.chat.completions.create.assert_awaited_once()
+
+    async def test_rate_limit_raises_and_does_not_switch(self):
+        client = _client()
+        client.responses.create = AsyncMock(
+            side_effect=[_api_error(429, "Rate limit reached"), _responses_obj()]
+        )
+        agent = _agent(client, api_style="responses", base_url="http://localhost:8000/v1")
+
+        with pytest.raises(Exception, match="Rate limit"):
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+
+        assert agent._responses_unsupported_urls == set()
+        assert client.responses.create.await_count == 2
+        client.chat.completions.create.assert_not_called()
+        assert agent._effective_api_style == "responses"
+
+    async def test_timeout_raises_and_does_not_switch(self):
+        import httpx2
+        import openai
+
+        timeout = openai.APITimeoutError(request=httpx2.Request("POST", "http://x/v1/responses"))
+        client = _client()
+        client.responses.create = AsyncMock(side_effect=timeout)
+        agent = _agent(client, api_style="responses", base_url="http://localhost:8000/v1")
+
+        with pytest.raises(openai.APITimeoutError):
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+
+        assert agent._responses_unsupported_urls == set()
+        client.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestReasoningSummaryDefault:
+    async def test_explicit_effort_gets_auto_summary(self):
+        client = _client()
+        config = {"effort": "high"}
+        agent = _agent(client, reasoning_config=config)
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+
+        assert client.responses.create.call_args.kwargs["reasoning"] == {
+            "effort": "high",
+            "summary": "auto",
+        }
+        assert config == {"effort": "high"}  # the user's dict is not mutated
+
+    async def test_explicit_summary_is_kept(self):
+        client = _client()
+        agent = _agent(client, reasoning_config={"effort": "low", "summary": "concise"})
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert client.responses.create.call_args.kwargs["reasoning"]["summary"] == "concise"
+
+    async def test_reasoning_off_sends_no_reasoning(self):
+        client = _client()
+        agent = _agent(client, reasoning_config=None)
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert "reasoning" not in client.responses.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+class TestDefaultReasoningRejected:
+    """Non-reasoning models 400 on the default reasoning; retry once and remember the model."""
+
+    async def test_default_retries_without_reasoning_and_remembers(self, caplog):
+        client = _client()
+        rejected = _api_error(
+            400, "Unsupported parameter: 'reasoning.effort'", param="reasoning.effort"
+        )
+        client.responses.create = AsyncMock(
+            side_effect=[rejected, _responses_obj(), _responses_obj()]
+        )
+        agent = _agent(client, model="gpt-4o")
+
+        with caplog.at_level("WARNING", logger="tenxgraph.agent"):
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+
+        calls = client.responses.create.call_args_list
+        assert len(calls) == 3
+        assert "reasoning" in calls[0].kwargs
+        assert "reasoning" not in calls[1].kwargs
+        assert "reasoning" not in calls[2].kwargs  # remembered: no second failed probe
+        assert "gpt-4o" in _REASONING_REJECTED_MODELS
+        assert sum("rejected the default reasoning" in r.getMessage() for r in caplog.records) == 1
+
+    async def test_true_counts_as_default(self):
+        client = _client()
+        rejected = _api_error(400, "reasoning is not supported", param="reasoning")
+        client.responses.create = AsyncMock(side_effect=[rejected, _responses_obj()])
+        agent = _agent(client, model="gpt-4o", reasoning_config=True)
+
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert "reasoning" not in client.responses.create.call_args.kwargs
+
+    async def test_explicit_dict_still_raises(self):
+        import openai
+
+        client = _client()
+        rejected = _api_error(400, "Unsupported parameter: 'reasoning.effort'", "reasoning.effort")
+        client.responses.create = AsyncMock(side_effect=rejected)
+        agent = _agent(client, model="gpt-4o", reasoning_config={"effort": "high"})
+
+        with pytest.raises(openai.BadRequestError):
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert client.responses.create.await_count == 1
+        assert _REASONING_REJECTED_MODELS == set()
+
+    async def test_unrelated_400_still_raises(self):
+        import openai
+
+        client = _client()
+        client.responses.create = AsyncMock(side_effect=_api_error(400, "Invalid input", "input"))
+        agent = _agent(client, model="gpt-4o")
+
+        with pytest.raises(openai.BadRequestError):
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert client.responses.create.await_count == 1
+
+    async def test_400_about_reasoning_items_in_input_still_raises(self):
+        import openai
+
+        client = _client()
+        message = "Item of type 'reasoning' was provided without its required following item."
+        rejected = _api_error(400, message, param="input")
+        client.responses.create = AsyncMock(side_effect=rejected)
+        agent = _agent(client, model="gpt-6-luna")
+
+        with pytest.raises(openai.BadRequestError):
+            await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert _REASONING_REJECTED_MODELS == set()
+
+    async def test_cache_is_per_model(self):
+        _REASONING_REJECTED_MODELS.add("gpt-4o")
+        client = _client()
+        agent = _agent(client, model="gpt-6-luna")
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+        assert client.responses.create.call_args.kwargs["reasoning"]["effort"] == "minimal"
+
+    async def test_chat_path_retries_without_reasoning_effort(self):
+        client = _client()
+        rejected = _api_error(400, "Unrecognized request argument: reasoning_effort")
+        client.chat.completions.create = AsyncMock(side_effect=[rejected, _chat_obj()])
+        agent = _agent(client, model="gpt-4o", api_style="chat", reasoning_config=True)
+
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+
+        calls = client.chat.completions.create.call_args_list
+        assert calls[0].kwargs["reasoning_effort"] == "minimal"
+        assert "reasoning_effort" not in calls[1].kwargs
+
+
+@pytest.mark.asyncio
 class TestStructuredOutput:
     async def test_responses_uses_parse_with_text_format(self):
         client = _client()
@@ -204,7 +394,7 @@ class TestStructuredOutput:
         kwargs = client.responses.parse.call_args.kwargs
         assert kwargs["text_format"] is Answer
         assert kwargs["stream"] is False
-        assert kwargs["reasoning"] == {"effort": "medium"}
+        assert kwargs["reasoning"] == {"effort": "minimal", "summary": "auto"}
         assert agent._effective_api_style == "responses"
 
         message = await OpenAIResponsesConverter().convert_response(result)

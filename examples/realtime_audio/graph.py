@@ -18,7 +18,7 @@ load_dotenv()
 
 # Gemini Live is the only realtime provider today. Model names change often, so check
 # Google's Live API docs for what your key can use.
-MODEL = "gemini-2.5-flash-live"
+MODEL = "gemini-3.8-live"
 
 
 def get_weather(location: str) -> str:

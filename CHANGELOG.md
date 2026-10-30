@@ -44,6 +44,23 @@ breaking list further down applies to you as well.
 
 ### Breaking
 
+- **Behaviour change: default reasoning is the provider's lowest effort.** `reasoning_config`
+  left unset or set to `True` (the `ReactAgent` default) used to mean `{"effort": "medium"}`
+  everywhere (Google `thinking_budget=8192`). It now means reasoning on at each provider's lowest
+  effort that still reasons, resolved per request so a fallback model on another provider gets
+  its own value: OpenAI `"minimal"`, Anthropic `"low"`, Google `"low"` (`thinking_budget=512`).
+  The values live in `DEFAULT_REASONING_EFFORT_BY_PROVIDER`
+  (`tenxgraph/core/graph/agent_internal/constants.py`). Pass a dict such as
+  `{"effort": "medium"}` to keep the old depth; `None` or `False` still turns reasoning off.
+- **OpenAI: reasoning text comes back by default, and models without reasoning still work.** On
+  the Responses API, when reasoning is on and no `summary` is set, the request now asks for
+  `reasoning.summary: "auto"` (before, no reasoning text came back). When the reasoning came from
+  the default and the model answers with a 400 that names the reasoning parameter (for example
+  gpt-4o), the call is retried once without it and the model is remembered for the process, so
+  later calls skip it. An explicit `reasoning_config` dict is never dropped and still raises.
+- **OpenAI: a custom `base_url` switches to Chat Completions only when Responses is missing.**
+  The switch used to happen after any error, so one 429 or timeout moved the agent to Chat
+  Completions for good. Now only 404, 405 and 501 switch it; other errors are raised.
 - **Behaviour change: `Agent` uses the OpenAI Responses API by default.** `api_style` now
   defaults to `"responses"` (it was `"chat"`), except when `base_url` is set and `api_style` is
   not passed: then it stays `"chat"`, because most OpenAI-compatible servers only speak Chat
@@ -122,6 +139,31 @@ breaking list further down applies to you as well.
   Because the stream is queued before it is read, every queued chunk pointed at the last item:
   readers got the complete message once per converter item (duplicate reasoning rows, usage
   counted per copy). Each item now gets its own chunk with its own metadata dict.
+- **Cancel and shutdown cleanup edge cases.** `aclose()` now waits (within its drain budget,
+  reported as `cleanup_tasks` in its stats) for cancel saves and run-marker releases that
+  outlived their run, so the checkpointer is not released under them. The run-marker heartbeat
+  re-creates a missing marker with the new `aput_cache_value_if_absent` (Redis `SET NX`, one
+  SQLite statement, in-memory under its lock; the base class falls back to get-then-put), so it
+  cannot overwrite a newer run's marker. The stop, interrupt and pause saves go through the same
+  ordering as the final save, so a late one cannot overwrite it. `astream` keeps the run handle
+  pointed at the task of the current step, so a hard cancel reaches the step that is running.
+- **Eval: a failing judge model is an error, not a 0.5 score.** The LLM judge and
+  `SimulationGoalsCriterion` turned any LLM failure (bad key, unsupported provider, empty or
+  invalid JSON reply) into a believable score of 0.5 with the reason "No LLM provider
+  available". The criterion now reports an error with the real exception message (when every
+  sample of a multi-sample judge failed; a sample that succeeds still counts).
+- **Gemini memory search ranks better.** `GoogleEmbedding` now sends the Gemini task type
+  `RETRIEVAL_DOCUMENT` when embedding text to store and `RETRIEVAL_QUERY` when embedding a search
+  query (new `BaseEmbedding.aembed_query`, which defaults to `aembed` for other providers;
+  `QdrantStore.asearch` uses it). Set `GoogleEmbedding(document_task_type=...,
+  query_task_type=...)` to other Gemini task types, or `None` to send none (the old behaviour).
+  Vectors stored before this change stay searchable.
+- **A Redis outage no longer slows every run step.** `PgCheckpointer` skips Redis for a short
+  cool-down after a connection failure and takes its usual fallback (Postgres, or no cache) at
+  once, so a run no longer waits for the connect timeout on each of its Redis calls. New kwarg
+  `redis_breaker_cooldown` (seconds, default 5.0; 0 disables). A cache entry whose invalidation
+  was skipped is deleted when Redis is reachable again, and a cached state with no version is
+  no longer served once Postgres holds a newer state.
 
 ### Upgrade notes
 

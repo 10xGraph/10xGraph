@@ -482,6 +482,31 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             )
             return cursor.rowcount > 0
 
+    async def aput_cache_value_if_absent(
+        self,
+        namespace: str,
+        key: str,
+        value: Any,
+        ttl_seconds: int | None = None,
+    ) -> bool:
+        """Insert unless a live value exists, in one statement; an expired row is replaced."""
+        await self._ensure_setup()
+        now = time.time()
+        expires_at = now + ttl_seconds if ttl_seconds else None
+        async with self._write() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO af_cache (namespace, key, value, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, key) DO UPDATE SET
+                    value = excluded.value,
+                    expires_at = excluded.expires_at
+                WHERE af_cache.expires_at IS NOT NULL AND af_cache.expires_at <= ?
+                """,
+                (namespace, key, _dumps(value), expires_at, now),
+            )
+            return cursor.rowcount > 0
+
     async def alist_cache_keys(
         self,
         namespace: str,

@@ -302,6 +302,7 @@ class StreamHandler[StateT: AgentState](
                     event,
                     messages,
                     config,
+                    last_save=last_save,
                 )
                 if res:
                     event.event_type = EventType.INTERRUPTED
@@ -347,6 +348,7 @@ class StreamHandler[StateT: AgentState](
                     interrupt_before=self.interrupt_before,
                     interrupt_after=self.interrupt_after,
                     messages=messages[persisted_upto:],
+                    last_save=last_save,
                 ):
                     logger.info("Graph execution interrupted before node '%s'", current_node)
                     event.event_type = EventType.INTERRUPTED
@@ -493,6 +495,7 @@ class StreamHandler[StateT: AgentState](
                         config,
                         paused.interrupt,
                         messages=messages[persisted_upto:],
+                        last_save=last_save,
                     )
                     event.event_type = EventType.INTERRUPTED
                     event.metadata["interrupted"] = "Interrupt"
@@ -519,7 +522,14 @@ class StreamHandler[StateT: AgentState](
                     # The node was cancelled mid-flight because a stop arrived. Hand off to
                     # the normal stop path: control flow, not a failure.
                     logger.info("Node '%s' cancelled by stop request; finalizing run", current_node)
-                    await check_stop_requested(state, current_node, event, messages, config)
+                    await check_stop_requested(
+                        state,
+                        current_node,
+                        event,
+                        messages,
+                        config,
+                        last_save=last_save,
+                    )
                     yield StreamChunk(
                         event=StreamEvent.UPDATES,
                         data={
@@ -590,7 +600,11 @@ class StreamHandler[StateT: AgentState](
                     # The client runs this node's remaining tool calls. Pause; the run
                     # resumes after this node once their results arrive.
                     await interrupt_graph(
-                        current_node, state, config, messages=messages[persisted_upto:]
+                        current_node,
+                        state,
+                        config,
+                        messages=messages[persisted_upto:],
+                        last_save=last_save,
                     )
                     yield StreamChunk(
                         event=StreamEvent.UPDATES,
@@ -616,6 +630,7 @@ class StreamHandler[StateT: AgentState](
                     messages,
                     config,
                     resume_after=partial(node_after, current_node, next_node, state, self.edges),
+                    last_save=last_save,
                 ):
                     yield StreamChunk(
                         event=StreamEvent.UPDATES,
@@ -642,6 +657,7 @@ class StreamHandler[StateT: AgentState](
                     interrupt_before=self.interrupt_before,
                     interrupt_after=self.interrupt_after,
                     messages=messages[persisted_upto:],
+                    last_save=last_save,
                 ):
                     logger.info("Graph execution interrupted after node '%s'", current_node)
                     # For interrupt_after, advance to next node before pausing

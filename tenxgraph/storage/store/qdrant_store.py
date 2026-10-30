@@ -500,7 +500,9 @@ class QdrantStore(BaseStore):
         await self._ensure_collection_exists(collection)
 
         # Generate query embedding
-        query_vector = await self.embedding.aembed(query)
+        # Duck-typed embedding services may not define aembed_query.
+        embed_query = getattr(self.embedding, "aembed_query", None) or self.embedding.aembed
+        query_vector = await embed_query(query)
         if not query_vector or len(query_vector) != self.embedding.dimension:
             raise ValueError("Embedding service returned invalid vector")
 

@@ -170,10 +170,12 @@ async def check_and_handle_interrupt[StateT: AgentState](
     interrupt_after: list[str] | None = None,
     callback_mgr: CallbackManager = Inject[CallbackManager],
     messages: list[Message] | None = None,
+    last_save: LastSave | None = None,
 ) -> bool:
     """Check for interrupts and save state if needed. Returns True if interrupted.
 
     ``messages`` are the run's messages not yet saved; the pause saves them with the state.
+    ``last_save`` records the save, so a cancel cleanup waits for it instead of racing it.
     """
     callback_mgr = fresh(callback_mgr)
     interrupt_nodes: list[str] = (
@@ -226,6 +228,7 @@ async def check_and_handle_interrupt[StateT: AgentState](
             config=config,
             messages=messages or [],
             trim=True,
+            last_save=last_save,
         )
         logger.debug("Node '%s' interrupted", current_node)
         return True
@@ -339,11 +342,13 @@ async def interrupt_graph[StateT: AgentState](
     config: dict[str, Any],
     callback_mgr: CallbackManager = Inject[CallbackManager],
     messages: list[Message] | None = None,
+    last_save: LastSave | None = None,
 ) -> bool:
     """Pause after ``current_node`` until the client sends the results of its tool calls.
 
     ``current_node`` stays put: which node comes next can depend on those results, so the
     resumed run works it out once they are in the context (see ``RESUME_AFTER_NODE_KEY``).
+    ``last_save`` records the save (see :func:`check_and_handle_interrupt`).
     """
     callback_mgr = fresh(callback_mgr)
     status = ExecutionStatus.INTERRUPTED_AFTER
@@ -369,6 +374,7 @@ async def interrupt_graph[StateT: AgentState](
         config=config,
         messages=messages or [],
         trim=False,
+        last_save=last_save,
     )
     logger.debug("Node '%s' interrupted", current_node)
     return True
@@ -381,10 +387,12 @@ async def pause_for_interrupt[StateT: AgentState](
     request: Interrupt,
     callback_mgr: CallbackManager = Inject[CallbackManager],
     messages: list[Message] | None = None,
+    last_save: LastSave | None = None,
 ) -> None:
     """Save ``state`` paused before ``current_node`` because it called ``interrupt()``.
 
     Resuming re-runs the node, and ``interrupt()`` then returns the resume value.
+    ``last_save`` records the save (see :func:`check_and_handle_interrupt`).
     """
     callback_mgr = fresh(callback_mgr)
     pause_at(state, request)
@@ -403,6 +411,7 @@ async def pause_for_interrupt[StateT: AgentState](
         config=config,
         messages=messages or [],
         trim=False,
+        last_save=last_save,
     )
     logger.info("Node '%s' paused at interrupt '%s'", current_node, request.id)
 
@@ -416,6 +425,7 @@ async def check_stop_requested[StateT: AgentState](
     callback_mgr: CallbackManager = Inject[CallbackManager],
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
     resume_after: Callable[[], str] | None = None,
+    last_save: LastSave | None = None,
 ) -> bool:
     """Check if a stop has been requested externally.
 
@@ -423,6 +433,8 @@ async def check_stop_requested[StateT: AgentState](
     that follows it. The stop is then saved at that node, so a call with no new input
     continues there and does not run the finished node again. If nothing follows (the graph
     is done) there is nothing left to stop: the request is dropped and the run completes.
+
+    ``last_save`` records the stop save (see :func:`check_and_handle_interrupt`).
     """
     callback_mgr = fresh(callback_mgr)
     checkpointer = fresh(checkpointer)
@@ -489,7 +501,9 @@ async def check_stop_requested[StateT: AgentState](
                 state=state,
             )
 
-        await sync_data(state=state, config=config, messages=messages, trim=True)
+        await sync_data(
+            state=state, config=config, messages=messages, trim=True, last_save=last_save
+        )
         event.event_type = EventType.INTERRUPTED
         event.metadata["interrupted"] = "Stop"
         event.metadata["status"] = "Graph execution stopped by request"

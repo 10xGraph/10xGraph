@@ -103,6 +103,14 @@ def _mock_openai_client() -> MagicMock:
     return client
 
 
+class _StatusError(Exception):
+    """An SDK-style error carrying an HTTP ``status_code``."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _make_openai_agent(model: str = "gpt-4o", provider: str = "openai", **kwargs) -> Agent:
     """Create an Agent with the OpenAI client fully mocked out."""
     mock_client = _mock_openai_client()
@@ -784,7 +792,7 @@ class TestCallOpenAIResponses:
             [{"role": "user", "content": "hi"}], tools=None, stream=False
         )
         call_kwargs = agent.client.responses.create.call_args[1]
-        assert call_kwargs.get("reasoning") == {"effort": "high"}
+        assert call_kwargs.get("reasoning") == {"effort": "high", "summary": "auto"}
 
     async def test_reasoning_effort_kwarg_stripped_before_create(self):
         """reasoning_effort must not be forwarded to the Responses API."""
@@ -1335,7 +1343,7 @@ class TestCallLLM:
 
     async def test_openai_responses_with_base_url_fallback_on_error(self):
         agent = _make_openai_agent(api_style="responses", model="o4-mini", base_url="http://localhost:8000/v1")
-        agent._call_openai_responses = AsyncMock(side_effect=Exception("not supported"))
+        agent._call_openai_responses = AsyncMock(side_effect=_StatusError(404, "not supported"))
         agent._call_openai = AsyncMock(return_value="fallback_chat")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
         assert result == "fallback_chat"
@@ -1381,6 +1389,7 @@ class TestCallLLM:
             reasoning_config={"effort": "high"},
             base_url="http://localhost:8000/v1",
         )
+        agent._call_openai_responses = AsyncMock(side_effect=_StatusError(405, "not allowed"))
         agent._call_openai = AsyncMock(return_value="chat_result")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
         assert result == "chat_result"
@@ -1398,7 +1407,7 @@ class TestCallLLM:
             reasoning_config={"effort": "low"},
             base_url="http://localhost:8000/v1",
         )
-        agent._call_openai_responses = AsyncMock(side_effect=Exception("fail"))
+        agent._call_openai_responses = AsyncMock(side_effect=_StatusError(501, "fail"))
         agent._call_openai = AsyncMock(return_value="fallback")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
         assert result == "fallback"
@@ -2122,10 +2131,54 @@ class TestAgentInit:
 
     # ── reasoning config normalization ────────────────────────────────────
 
-    def test_default_sentinel_produces_medium_effort(self):
+    def test_default_sentinel_produces_lowest_openai_effort(self):
         with patch.object(Agent, "_create_client", return_value=MagicMock()):
             agent = Agent(model="gpt-4o", provider="openai")
-        assert agent.reasoning_config == {"effort": "medium"}
+        assert agent.reasoning_config == {"effort": "minimal"}
+
+    def test_true_produces_lowest_effort_per_provider(self):
+        expected = {"openai": "minimal", "anthropic": "low", "google": "low"}
+        models = {"openai": "gpt-4o", "anthropic": "claude-opus-5", "google": "gemini-2.5-flash"}
+        for provider, effort in expected.items():
+            with patch.object(Agent, "_create_client", return_value=MagicMock()):
+                agent = Agent(model=models[provider], provider=provider, reasoning_config=True)
+            assert agent.reasoning_config == {"effort": effort}, provider
+
+    def test_default_google_request_uses_lowest_budget(self):
+        with patch.object(Agent, "_create_client", return_value=_make_google_client_mock()):
+            agent = Agent(model="gemini-2.5-flash", provider="google", reasoning_config=True)
+
+        thinking_kwargs: dict = {}
+        types_mock = _build_google_types_mock()
+        types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
+        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        with _google_types_patch(types_mock):
+            agent._build_google_config("system", None, {})
+        assert thinking_kwargs.get("thinking_budget") == 512
+        assert thinking_kwargs.get("include_thoughts") is True
+
+    def test_default_anthropic_request_uses_low_effort(self):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(model="claude-opus-5", provider="anthropic")
+        _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_default_resolved_for_cross_provider_fallback(self):
+        """A fallback on another provider gets that provider's lowest effort."""
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(model="gpt-4o", provider="openai")
+        bound = agent._bind_attempt("claude-opus-5", "anthropic", MagicMock(), None)
+        _, kwargs = bound._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_explicit_dict_overrides_default_on_anthropic(self):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(
+                model="claude-opus-5", provider="anthropic", reasoning_config={"effort": "high"}
+            )
+        _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["output_config"] == {"effort": "high"}
 
     def test_reasoning_config_none_stored_as_none(self):
         agent = _make_openai_agent(reasoning_config=None)

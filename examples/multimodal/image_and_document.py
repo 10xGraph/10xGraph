@@ -2,7 +2,8 @@
 
 Shows the same image sent as an external URL and as inline base64, then a PDF sent by
 URL. OpenAI fetches URLs itself, so the server downloads nothing. PDFs need the Responses
-API, which is why the second agent sets api_style="responses".
+API. It is the OpenAI default; the second agent sets api_style="responses" so it stays
+there even if a base_url is added.
 
 Run:  python examples/multimodal/image_and_document.py
 """
@@ -37,7 +38,8 @@ vision_agent = ReactAgent(
     multimodal_config=multimodal,
 )
 
-# Chat Completions has no PDF input. The Responses API takes a PDF as input_file.
+# Chat Completions has no PDF input. The Responses API (the default) takes a PDF as
+# input_file; the explicit api_style keeps it there even behind a base_url.
 document_agent = ReactAgent(
     model="gpt-5-mini",
     api_style="responses",

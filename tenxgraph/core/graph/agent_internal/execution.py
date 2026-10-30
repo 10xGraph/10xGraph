@@ -37,6 +37,7 @@ from tenxgraph.utils.injection import fresh
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
+from .openai import _REASONING_REJECTED_MODELS, is_endpoint_unsupported, is_reasoning_rejected
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -814,10 +815,10 @@ class AgentExecutionMixin:
         """Add reasoning parameters to a Chat Completions request, in place.
 
         Only an explicit ``reasoning_config`` is sent. The implicit default
-        (``{"effort": "medium"}``) is skipped because many models reject
+        (the provider's lowest effort) is skipped because many models reject
         ``reasoning_effort`` on chat, notably together with function tools.
         """
-        config = self.reasoning_config
+        config = self._openai_reasoning_config()
         if not config or not getattr(self, "_reasoning_explicit", True):
             return
         if config.get("effort"):
@@ -847,10 +848,20 @@ class AgentExecutionMixin:
         if use_responses:
             if not self.base_url:
                 self._set_api_style("responses")
-                return await self._call_openai_responses(messages, tools, stream, **kwargs)
+                return await self._openai_with_reasoning_retry(
+                    lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
+                    sent=bool(self._openai_reasoning_config()),
+                )
             try:
-                result = await self._call_openai_responses(messages, tools, stream, **kwargs)
+                result = await self._openai_with_reasoning_retry(
+                    lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
+                    sent=bool(self._openai_reasoning_config()),
+                )
             except Exception as exc:
+                # Only "endpoint not found / not implemented" means the server lacks the
+                # Responses API. A 429, timeout or 5xx is transient and must not flip it.
+                if not is_endpoint_unsupported(exc):
+                    raise
                 if self.base_url not in unsupported:
                     from tenxgraph.storage.media.url_policy import redact_url
 
@@ -866,8 +877,37 @@ class AgentExecutionMixin:
                 return result
 
         self._set_api_style("chat")
-        self._apply_chat_reasoning(kwargs)
-        return await self._call_openai(messages, tools, stream, **kwargs)
+
+        async def call_chat() -> Any:
+            chat_kwargs = dict(kwargs)
+            self._apply_chat_reasoning(chat_kwargs)
+            return await self._call_openai(messages, tools, stream, **chat_kwargs)
+
+        sent = bool(self._openai_reasoning_config()) and getattr(self, "_reasoning_explicit", True)
+        return await self._openai_with_reasoning_retry(call_chat, sent=sent)
+
+    async def _openai_with_reasoning_retry(self, call: Any, sent: bool) -> Any:
+        """Run ``call``; retry once without reasoning when a model rejects the default.
+
+        Applies only when reasoning came from the default (``True`` or unset) and a 400 names
+        the reasoning parameter. The model is remembered so later calls skip reasoning. An
+        explicit ``reasoning_config`` dict always raises.
+        """
+        try:
+            return await call()
+        except Exception as exc:
+            if not (
+                sent and getattr(self, "_reasoning_default", False) and is_reasoning_rejected(exc)
+            ):
+                raise
+            _REASONING_REJECTED_MODELS.add(self.model)
+            logger.warning(
+                "Model %s rejected the default reasoning parameter (%s). "
+                "Retrying without reasoning; later calls skip it for this model.",
+                self.model,
+                exc,
+            )
+            return await call()
 
     async def _call_llm(
         self,

@@ -309,6 +309,23 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             del self._generic_cache[cache_key]
             return True
 
+    async def aput_cache_value_if_absent(
+        self,
+        namespace: str,
+        key: str,
+        value: Any,
+        ttl_seconds: int | None = None,
+    ) -> bool:
+        """Check and store under the cache lock, in one step; an expired value counts as absent."""
+        cache_key = f"{namespace}:{key}"
+        now = time.time()
+        async with self._cache_lock:
+            cached = self._generic_cache.get(cache_key)
+            if cached is not None and (cached[1] is None or cached[1] > now):
+                return False
+            self._generic_cache[cache_key] = (value, now + ttl_seconds if ttl_seconds else None)
+            return True
+
     async def alist_cache_keys(
         self,
         namespace: str,
