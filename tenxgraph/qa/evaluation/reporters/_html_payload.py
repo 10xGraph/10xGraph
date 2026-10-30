@@ -15,12 +15,14 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from tenxgraph.qa.evaluation.reporters._utils import safe_stem
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from tenxgraph.qa.evaluation.eval_result import EvalReport
 
 
@@ -108,7 +110,7 @@ def resolve_gate(report: EvalReport) -> dict[str, Any]:
 def find_baseline(
     report: EvalReport,
     directory: str | Path,
-    exclude: list[str | Path] | None = None,
+    exclude: Sequence[str | Path] | None = None,
 ) -> dict[str, Any] | None:
     """Find and trim the most recent earlier JSON report of the same eval set.
 
@@ -241,6 +243,14 @@ def build_payload(
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
+@overload
+def _num(value: Any, default: float) -> float: ...
+
+
+@overload
+def _num(value: Any, default: None) -> float | None: ...
+
+
 def _num(value: Any, default: float | None) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return default
@@ -253,7 +263,7 @@ def _s(value: Any) -> str:
 
 def _tokens(value: Any) -> dict[str, float]:
     src = value if isinstance(value, dict) else {}
-    return {k: _num(src.get(k), 0.0) or 0.0 for k in _TOKEN_KEYS}
+    return {k: _num(src.get(k), 0.0) for k in _TOKEN_KEYS}
 
 
 def _resolve(path: str | Path) -> Path:

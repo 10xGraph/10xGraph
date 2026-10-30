@@ -35,10 +35,10 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
-## [1.0.0] - Unreleased
+## [1.0.0rc2] - 2026-10-30
 
-The stable 1.0 release of `10xgraph`, aligned with `10xgraph-api` 1.0 and `10xgraph-client` 1.0.
-It is the `1.0.0rc1` code plus the changes below. If you upgrade from 0.10.x, the `1.0.0rc1`
+The second release candidate of `10xgraph` 1.0, aligned with `10xgraph-api` 1.0.0rc2 and `10xgraph-client`
+1.0.0-rc.2. It is the `1.0.0rc1` code plus the changes below. If you upgrade from 0.10.x, the `1.0.0rc1`
 breaking list further down applies to you as well.
 
 
