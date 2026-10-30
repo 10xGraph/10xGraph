@@ -313,7 +313,7 @@ class InMemoryStore(BaseStore):
 
     async def aping(self) -> None:
         """Nothing to reach: the store lives in this process."""
-        return None
+        return
 
     async def arelease(self) -> None:
         """Clean up resources (clears all data)."""
