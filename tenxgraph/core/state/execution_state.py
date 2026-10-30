@@ -71,6 +71,11 @@ class ExecutionState(BaseModel):
     # Thread/session identification
     thread_id: str | None = None
 
+    # Id of the run that last wrote this state. Crash recovery compares it with the thread's
+    # active-run marker: a RUNNING state whose run has no live marker belongs to a dead run.
+    # A state saved before this field existed reads as None.
+    run_id: str | None = None
+
     # Stop Current Execution Flag
     stop_current_execution: StopRequestStatus = StopRequestStatus.NONE
 
@@ -97,6 +102,7 @@ class ExecutionState(BaseModel):
                 "interrupt_reason": data.get("interrupt_reason"),
                 "interrupt_data": data.get("interrupt_data"),
                 "thread_id": data.get("thread_id"),
+                "run_id": data.get("run_id"),
                 "internal_data": data.get("_internal_data", {}),
             }
         )

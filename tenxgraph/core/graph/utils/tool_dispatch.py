@@ -117,6 +117,60 @@ def hidden_tool_message(tool_call: dict[str, Any]) -> Message:
     )
 
 
+def handoff_result_text(target: str) -> str:
+    """The tool result of the call that handed off to ``target``.
+
+    It tells the receiving agent it is now in charge, so it answers instead of
+    describing a transfer that looks unfinished.
+    """
+    return (
+        f"Transferred to {target}. You are now {target}: answer the user's latest "
+        "request yourself, and call your tools if you need them."
+    )
+
+
+def handoff_tool_messages(
+    message: Message,
+    winner: int,
+    target: str,
+    ran: frozenset[str] | set[str] = frozenset(),
+) -> list[Message]:
+    """Answer the tool calls of ``message`` not in ``ran``; the call at ``winner`` hands off.
+
+    Providers reject a history in which an assistant tool call has no tool result, so the
+    target agent must not inherit one. The handoff call gets ``handoff_result_text(target)``,
+    a call to a tool the model was not offered gets the usual not-found error, and any other
+    call not in ``ran`` (the ids of calls already run before the handoff, such as a
+    ``get_weather`` in the same message) gets a result saying it was not run; that tool
+    message carries ``metadata["not_run"] = True``. Results come in call order. Shared by the
+    ToolNode handoff and the SwarmAgent handoff nodes.
+    """
+    calls = message.tools_calls or []
+    allowed = allowed_tool_names(message)
+    answers: list[Message] = []
+    for index, call in enumerate(calls):
+        if call.get("id", "") in ran and index != winner:
+            continue
+        if allowed is not None and tool_call_name(call) not in allowed:
+            answers.append(hidden_tool_message(call))
+            continue
+        not_run = index != winner
+        output = (
+            f"Not run: control was transferred to {target}."
+            if not_run
+            else handoff_result_text(target)
+        )
+        answer = Message.tool_message(
+            content=[
+                ToolResultBlock(call_id=call.get("id", ""), output=output, status="completed")
+            ],
+        )
+        if not_run:
+            answer.metadata["not_run"] = True
+        answers.append(answer)
+    return answers
+
+
 def parse_call_arguments(tool_call: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     """Parse a provider-shaped tool call's arguments with the converters' parser.
 

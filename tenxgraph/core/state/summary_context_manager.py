@@ -17,9 +17,8 @@ Any model string supported by ``detect_provider`` works here.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from tenxgraph.core.llm.caller import call_llm
 from tenxgraph.core.llm.client_factory import detect_provider
@@ -27,11 +26,16 @@ from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.reducers import remove_tool_messages
+from tenxgraph.utils.callable_utils import run_coroutine
 
 
 S = TypeVar("S", bound=AgentState)
 
 logger = logging.getLogger("tenxgraph.state.summary")
+
+# A rolling summary longer than this many characters per ``max_summary_tokens`` is
+# folded into a fresh short one, so it cannot grow without bound.
+_SUMMARY_GROWTH_CHARS_PER_TOKEN = 12
 
 _DEFAULT_SUMMARY_PROMPT = (
     "You are a conversation summarizer. "
@@ -42,14 +46,33 @@ _DEFAULT_SUMMARY_PROMPT = (
 )
 
 
+# Characters standing in for one non-text block (image, audio, video, document).
+_MEDIA_BLOCK_CHARS = 4000
+_BLOCK_TYPES_WITH_MEDIA = ("image", "audio", "video", "document")
+
+
+def _block_text(block: Any) -> str:
+    """Text a block contributes: its text, or a tool result's output."""
+    text = getattr(block, "text", None)
+    if text:
+        return str(text)
+    if getattr(block, "type", None) == "tool_result":
+        output = getattr(block, "output", None)
+        return "" if output is None else str(output)
+    return ""
+
+
 def _estimate_tokens(messages: list[Message]) -> int:
-    """Rough token estimate: 1 token ≈ 4 characters."""
+    """Rough token estimate: 1 token ≈ 4 characters.
+
+    Counts text, tool calls, tool results and a flat allowance per media block.
+    """
     total_chars = 0
     for msg in messages:
         for block in msg.content:
-            text = getattr(block, "text", None)
-            if text:
-                total_chars += len(text)
+            total_chars += len(_block_text(block))
+            if getattr(block, "type", None) in _BLOCK_TYPES_WITH_MEDIA:
+                total_chars += _MEDIA_BLOCK_CHARS
         if msg.tools_calls:
             total_chars += len(str(msg.tools_calls))
     return max(1, total_chars // 4)
@@ -62,7 +85,7 @@ def _messages_to_text(messages: list[Message]) -> str:
         role = msg.role.upper()
         text_parts: list[str] = []
         for block in msg.content:
-            t = getattr(block, "text", None)
+            t = _block_text(block)
             if t:
                 text_parts.append(t.strip())
         if msg.tools_calls:
@@ -187,6 +210,12 @@ class SummaryContextManager(BaseContextManager[S]):
             return [], messages
 
         split_at = len(non_system) - self.keep_recent
+        # A tool result must stay with the assistant message that made the call: step back
+        # until the kept part does not start with a result, or a provider rejects it.
+        while 0 < split_at < len(non_system) and non_system[split_at].role == "tool":
+            split_at -= 1
+        if split_at == 0:
+            return [], messages
         to_summarize = non_system[:split_at]
         to_keep = non_system[split_at:]
         return to_summarize, system_msgs + to_keep
@@ -196,7 +225,9 @@ class SummaryContextManager(BaseContextManager[S]):
     # ------------------------------------------------------------------
 
     async def _summarize(self, messages: list[Message]) -> str:
-        text = _messages_to_text(messages)
+        return await self._summarize_text(_messages_to_text(messages))
+
+    async def _summarize_text(self, text: str) -> str:
         if not text.strip():
             return ""
         summary, *_ = await call_llm(
@@ -207,6 +238,15 @@ class SummaryContextManager(BaseContextManager[S]):
             api_style=self.api_style,
         )
         return summary
+
+    async def _compact(self, summary: str) -> str:
+        """Fold a summary that has grown past its bound into one short summary."""
+        try:
+            compacted = await self._summarize_text(summary)
+        except Exception:
+            logger.exception("Summary compaction failed; keeping the long summary")
+            return summary
+        return compacted or summary
 
     # ------------------------------------------------------------------
     # BaseContextManager interface
@@ -250,7 +290,10 @@ class SummaryContextManager(BaseContextManager[S]):
 
         # Rolling summary: append to any previously stored summary
         if state.context_summary:
-            state.context_summary = state.context_summary + "\n\n" + new_summary
+            combined = state.context_summary + "\n\n" + new_summary
+            if len(combined) > self.max_summary_tokens * _SUMMARY_GROWTH_CHARS_PER_TOKEN:
+                combined = await self._compact(combined)
+            state.context_summary = combined
         else:
             state.context_summary = new_summary
 
@@ -263,4 +306,4 @@ class SummaryContextManager(BaseContextManager[S]):
         return state
 
     def trim_context(self, state: S) -> S:
-        return asyncio.run(self.atrim_context(state))
+        return run_coroutine(self.atrim_context(state))

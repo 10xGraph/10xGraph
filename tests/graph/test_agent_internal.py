@@ -103,6 +103,14 @@ def _mock_openai_client() -> MagicMock:
     return client
 
 
+class _StatusError(Exception):
+    """An SDK-style error carrying an HTTP ``status_code``."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _make_openai_agent(model: str = "gpt-4o", provider: str = "openai", **kwargs) -> Agent:
     """Create an Agent with the OpenAI client fully mocked out."""
     mock_client = _mock_openai_client()
@@ -784,7 +792,7 @@ class TestCallOpenAIResponses:
             [{"role": "user", "content": "hi"}], tools=None, stream=False
         )
         call_kwargs = agent.client.responses.create.call_args[1]
-        assert call_kwargs.get("reasoning") == {"effort": "high"}
+        assert call_kwargs.get("reasoning") == {"effort": "high", "summary": "auto"}
 
     async def test_reasoning_effort_kwarg_stripped_before_create(self):
         """reasoning_effort must not be forwarded to the Responses API."""
@@ -1272,10 +1280,14 @@ class TestCallGoogle:
         await self._call(agent, output_type="video")
         agent.client.aio.models.generate_videos.assert_called_once()
 
-    async def test_audio_calls_generate_audio(self):
+    async def test_audio_uses_generate_content_with_audio_modality(self):
+        # google-genai has no generate_audio; audio is generate_content with AUDIO.
         agent = self._agent()
+        del agent.client.aio.models.generate_audio
         await self._call(agent, output_type="audio")
-        agent.client.aio.models.generate_audio.assert_called_once()
+        agent.client.aio.models.generate_content.assert_called_once()
+        config = agent.client.aio.models.generate_content.call_args.kwargs["config"]
+        assert list(config.response_modalities) == ["AUDIO"]
 
     async def test_unsupported_output_type_raises(self):
         agent = self._agent()
@@ -1311,13 +1323,15 @@ class TestCallLLM:
         assert agent._effective_api_style == "responses"
         agent._call_openai_responses.assert_awaited_once()
 
-    async def test_openai_responses_with_output_schema_falls_back_to_chat(self):
+    async def test_openai_responses_with_output_schema_stays_on_responses(self):
         agent = _make_openai_agent(api_style="responses", model="o4-mini", output_schema={"type": "object", "properties": {"answer": {"type": "string"}}})
+        agent._call_openai_responses = AsyncMock(return_value="resp_response")
         agent._call_openai = AsyncMock(return_value="chat_response")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
-        assert result == "chat_response"
-        assert agent._effective_api_style == "chat"
-        agent._call_openai.assert_awaited_once()
+        assert result == "resp_response"
+        assert agent._effective_api_style == "responses"
+        agent._call_openai_responses.assert_awaited_once()
+        agent._call_openai.assert_not_awaited()
 
     async def test_openai_responses_with_base_url_succeeds(self):
         agent = _make_openai_agent(api_style="responses", model="o4-mini", base_url="http://localhost:8000/v1")
@@ -1329,7 +1343,7 @@ class TestCallLLM:
 
     async def test_openai_responses_with_base_url_fallback_on_error(self):
         agent = _make_openai_agent(api_style="responses", model="o4-mini", base_url="http://localhost:8000/v1")
-        agent._call_openai_responses = AsyncMock(side_effect=Exception("not supported"))
+        agent._call_openai_responses = AsyncMock(side_effect=_StatusError(404, "not supported"))
         agent._call_openai = AsyncMock(return_value="fallback_chat")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
         assert result == "fallback_chat"
@@ -1375,6 +1389,7 @@ class TestCallLLM:
             reasoning_config={"effort": "high"},
             base_url="http://localhost:8000/v1",
         )
+        agent._call_openai_responses = AsyncMock(side_effect=_StatusError(405, "not allowed"))
         agent._call_openai = AsyncMock(return_value="chat_result")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
         assert result == "chat_result"
@@ -1392,7 +1407,7 @@ class TestCallLLM:
             reasoning_config={"effort": "low"},
             base_url="http://localhost:8000/v1",
         )
-        agent._call_openai_responses = AsyncMock(side_effect=Exception("fail"))
+        agent._call_openai_responses = AsyncMock(side_effect=_StatusError(501, "fail"))
         agent._call_openai = AsyncMock(return_value="fallback")
         result = await agent._call_llm([{"role": "user", "content": "hi"}])
         assert result == "fallback"
@@ -1917,7 +1932,7 @@ class TestExecute:
         assert [m["role"] for m in sent] == ["system", "system"]
         assert [m["content"] for m in sent] == ["Base {topic}", "skill " + hostile]
 
-    async def test_execute_stream_no_end_event(self):
+    async def test_execute_stream_ends_span_with_usage_when_stream_ends(self):
         agent = _make_openai_agent()
         state = AgentState()
         config = {"_node_name": "AGENT", "is_stream": True}
@@ -1936,9 +1951,42 @@ class TestExecute:
              patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter") as mock_converter:
 
             await agent.execute(state, config)
+            # START only: the span stays open until the stream has been read (G-47).
+            assert mock_publish.call_count == 1
+            hook = mock_converter.return_value.on_stream_end
+            final = SimpleNamespace(
+                usages=SimpleNamespace(
+                    prompt_tokens=11,
+                    completion_tokens=7,
+                    cache_read_input_tokens=3,
+                    cache_creation_input_tokens=2,
+                    reasoning_tokens=1,
+                ),
+                metadata={"finish_reason": "stop", "model": "m-1"},
+            )
+            hook(final, None)
 
-        # Only START event — no END event for streams
-        assert mock_publish.call_count == 1
+        assert mock_publish.call_count == 2
+        end = mock_publish.call_args.args[0]
+        assert end.event_type.value == "end"
+        assert end.data["input_tokens"] == 11
+        assert end.data["output_tokens"] == 7
+        assert end.data["cache_read_tokens"] == 3
+        assert end.data["cache_creation_tokens"] == 2
+        assert end.data["reasoning_tokens"] == 1
+        assert end.data["finish_reason"] == "stop"
+        assert end.data["response_model"] == "m-1"
+
+    async def test_execute_stream_hook_reports_stream_error(self):
+        from tenxgraph.core.graph.agent_internal.execution import _make_stream_end_hook
+        from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+
+        ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
+        with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
+            _make_stream_end_hook(ev)(None, RuntimeError("boom"))
+        sent = pub.call_args.args[0]
+        assert sent.event_type == EventType.ERROR
+        assert sent.data["error"] == "RuntimeError"
 
     async def test_execute_with_multimodal_config_skips_strip(self):
         agent = _make_openai_agent(multimodal_config=MagicMock())
@@ -2083,10 +2131,54 @@ class TestAgentInit:
 
     # ── reasoning config normalization ────────────────────────────────────
 
-    def test_default_sentinel_produces_medium_effort(self):
+    def test_default_sentinel_produces_lowest_openai_effort(self):
         with patch.object(Agent, "_create_client", return_value=MagicMock()):
             agent = Agent(model="gpt-4o", provider="openai")
-        assert agent.reasoning_config == {"effort": "medium"}
+        assert agent.reasoning_config == {"effort": "minimal"}
+
+    def test_true_produces_lowest_effort_per_provider(self):
+        expected = {"openai": "minimal", "anthropic": "low", "google": "low"}
+        models = {"openai": "gpt-4o", "anthropic": "claude-opus-5", "google": "gemini-2.5-flash"}
+        for provider, effort in expected.items():
+            with patch.object(Agent, "_create_client", return_value=MagicMock()):
+                agent = Agent(model=models[provider], provider=provider, reasoning_config=True)
+            assert agent.reasoning_config == {"effort": effort}, provider
+
+    def test_default_google_request_uses_lowest_budget(self):
+        with patch.object(Agent, "_create_client", return_value=_make_google_client_mock()):
+            agent = Agent(model="gemini-2.5-flash", provider="google", reasoning_config=True)
+
+        thinking_kwargs: dict = {}
+        types_mock = _build_google_types_mock()
+        types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
+        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        with _google_types_patch(types_mock):
+            agent._build_google_config("system", None, {})
+        assert thinking_kwargs.get("thinking_budget") == 512
+        assert thinking_kwargs.get("include_thoughts") is True
+
+    def test_default_anthropic_request_uses_low_effort(self):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(model="claude-opus-5", provider="anthropic")
+        _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_default_resolved_for_cross_provider_fallback(self):
+        """A fallback on another provider gets that provider's lowest effort."""
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(model="gpt-4o", provider="openai")
+        bound = agent._bind_attempt("claude-opus-5", "anthropic", MagicMock(), None)
+        _, kwargs = bound._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_explicit_dict_overrides_default_on_anthropic(self):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(
+                model="claude-opus-5", provider="anthropic", reasoning_config={"effort": "high"}
+            )
+        _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["output_config"] == {"effort": "high"}
 
     def test_reasoning_config_none_stored_as_none(self):
         agent = _make_openai_agent(reasoning_config=None)
@@ -2538,3 +2630,50 @@ class TestMemoryBlockPerRunCache:
             await agent._build_memory_block(state, {"run_id": f"r{i}"})
         assert len(agent._memory_block_cache) == memory_module._MEMORY_BLOCK_CACHE_SIZE
         assert ("r0", "hi") not in agent._memory_block_cache
+
+
+@pytest.mark.asyncio
+class TestLlmSpanClosed:
+    """G-47: every LLM START event is followed by an END or ERROR event."""
+
+    async def _run(self, *, stream: bool, response=None, error: Exception | None = None):
+        agent = _make_openai_agent()
+        state = AgentState()
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=response, side_effect=error)
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value=None)
+
+        seen = []
+
+        def record(event, *args, **kwargs):
+            if str(getattr(event.event, "value", event.event)) == "llm_call":
+                kind = getattr(event.event_type, "value", event.event_type)
+                seen.append((str(kind), dict(event.data)))
+
+        with patch(
+            "tenxgraph.core.graph.agent_internal.execution.convert_messages",
+            return_value=[{"role": "user", "content": "hi"}],
+        ), patch(
+            "tenxgraph.core.graph.agent_internal.execution.strip_media_blocks",
+            side_effect=lambda msgs: msgs,
+        ), patch(
+            "tenxgraph.runtime.publisher.publish.publish_event", side_effect=record
+        ), patch("tenxgraph.core.graph.agent_internal.execution.ModelResponseConverter"):
+            try:
+                await agent.execute(state, {"_node_name": "AGENT", "is_stream": stream})
+            except RuntimeError as exc:
+                assert error is not None and str(exc) == str(error)
+        return seen
+
+    async def test_failed_call_publishes_error_event_without_provider_text(self):
+        seen = await self._run(stream=False, error=RuntimeError("secret provider detail"))
+        assert [t for t, _ in seen] == ["start", "error"]
+        assert "secret provider detail" not in str(seen[-1][1])
+
+    async def test_streaming_call_ends_span_when_stream_ends_not_before(self):
+        seen = await self._run(stream=True, response=MagicMock())
+        # The END comes from the converter's on_stream_end hook, once the stream was read.
+        assert [t for t, _ in seen] == ["start"]

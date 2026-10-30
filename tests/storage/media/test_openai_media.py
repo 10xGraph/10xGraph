@@ -113,7 +113,7 @@ class TestImageBlockToOpenAI:
         assert result["image_url"]["url"] == "https://example.com/image.png"  # noqa: S101
 
     def test_file_id_block(self):
-        """ImageBlock with file_id passes through."""
+        """ImageBlock with file_id becomes a text placeholder."""
         from tenxgraph.utils.converter import _image_block_to_openai
 
         block = ImageBlock(
@@ -125,8 +125,8 @@ class TestImageBlockToOpenAI:
 
         result = _image_block_to_openai(block)
 
-        assert result["type"] == "image_url"  # noqa: S101
-        assert result["image_url"]["url"] == "file-abc123"  # noqa: S101
+        # Chat Completions image_url takes a URL or data URI, never a file id
+        assert result == {"type": "text", "text": "[Image file_id: file-abc123]"}  # noqa: S101
 
 
 class TestMediaResolverOpenAI:

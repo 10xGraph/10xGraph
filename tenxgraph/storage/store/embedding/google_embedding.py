@@ -17,13 +17,22 @@ except ImportError:
 
 
 class GoogleEmbedding(BaseEmbedding):
-    """Google embedding service using Gemini embedding models."""
+    """Google embedding service using Gemini embedding models.
+
+    ``document_task_type`` is sent when embedding text to store (``aembed``,
+    ``aembed_batch``) and ``query_task_type`` when embedding a search query
+    (``aembed_query``). Pass ``None`` to send no task type. Values are the Gemini
+    task type strings, e.g. ``RETRIEVAL_DOCUMENT``, ``RETRIEVAL_QUERY``,
+    ``SEMANTIC_SIMILARITY``.
+    """
 
     def __init__(
         self,
         model: str = "gemini-embedding-001",
         api_key: str | None = None,
         output_dimensionality: int | None = None,
+        document_task_type: str | None = "RETRIEVAL_DOCUMENT",
+        query_task_type: str | None = "RETRIEVAL_QUERY",
     ) -> None:
         if not HAS_GOOGLE:
             raise ImportError(
@@ -32,6 +41,8 @@ class GoogleEmbedding(BaseEmbedding):
             )
         self.model = model
         self._output_dimensionality = output_dimensionality
+        self._document_task_type = document_task_type
+        self._query_task_type = query_task_type
 
         if api_key:
             self.api_key = api_key
@@ -47,19 +58,22 @@ class GoogleEmbedding(BaseEmbedding):
         # Create client
         self.client = genai.Client(api_key=self.api_key)
 
-    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a list of texts."""
+    def _build_config(self, task_type: str | None):
         from google.genai import types
 
-        try:
-            config = None
-            if self._output_dimensionality:
-                config = types.EmbedContentConfig(output_dimensionality=self._output_dimensionality)
+        kwargs: dict = {}
+        if self._output_dimensionality:
+            kwargs["output_dimensionality"] = self._output_dimensionality
+        if task_type:
+            kwargs["task_type"] = task_type
+        return types.EmbedContentConfig(**kwargs) if kwargs else None
 
+    async def _embed(self, texts: list[str], task_type: str | None) -> list[list[float]]:
+        try:
             result = await self.client.aio.models.embed_content(
                 model=self.model,
                 contents=texts,
-                config=config,
+                config=self._build_config(task_type),
             )
 
             if not result.embeddings or len(result.embeddings) == 0:
@@ -69,27 +83,17 @@ class GoogleEmbedding(BaseEmbedding):
         except Exception as e:
             raise RuntimeError(f"Google API error: {e}") from e
 
+    async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Generate document embeddings for a list of texts."""
+        return await self._embed(texts, self._document_task_type)
+
     async def aembed(self, text: str) -> list[float]:
-        """Generate embedding for a single text."""
-        from google.genai import types
+        """Generate a document embedding for a single text (used when storing)."""
+        return (await self._embed([text], self._document_task_type))[0]
 
-        try:
-            config = None
-            if self._output_dimensionality:
-                config = types.EmbedContentConfig(output_dimensionality=self._output_dimensionality)
-
-            result = await self.client.aio.models.embed_content(
-                model=self.model,
-                contents=[text],
-                config=config,
-            )
-
-            if not result.embeddings or len(result.embeddings) == 0:
-                raise ValueError("No embeddings returned from Google API")
-
-            return result.embeddings[0].values
-        except Exception as e:
-            raise RuntimeError(f"Google API error: {e}") from e
+    async def aembed_query(self, text: str) -> list[float]:
+        """Generate a query embedding for a single text (used when searching)."""
+        return (await self._embed([text], self._query_task_type))[0]
 
     @property
     def dimension(self) -> int:

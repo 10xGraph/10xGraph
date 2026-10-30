@@ -95,6 +95,8 @@ class RedisPublisher(BasePublisher):
             raise RuntimeError("RedisPublisher is closed")
 
         async with self._connection_lock:
+            if self._is_closed:
+                raise RuntimeError("RedisPublisher is closed")
             if self._redis is not None:
                 return self._redis
 
@@ -118,10 +120,18 @@ class RedisPublisher(BasePublisher):
                     socket_keepalive=self.socket_keepalive,
                     health_check_interval=self.health_check_interval,
                 )
-                self._redis = redis_asyncio.Redis(connection_pool=pool)
+                client = redis_asyncio.Redis(connection_pool=pool)
 
-                # Test connection
-                await self._redis.ping()
+                # Test connection; only a client that answered is kept.
+                try:
+                    await client.ping()
+                except BaseException:
+                    try:
+                        await client.aclose()
+                    except Exception:
+                        logger.debug("RedisPublisher cleanup after failed ping", exc_info=True)
+                    raise
+                self._redis = client
                 logger.info(
                     "RedisPublisher connected successfully (max_connections=%d)",
                     self.max_connections,
@@ -171,6 +181,7 @@ class RedisPublisher(BasePublisher):
             return
 
         async with self._connection_lock:
+            self._is_closed = True
             if self._redis is not None:
                 try:
                     await self._redis.aclose()
@@ -179,7 +190,6 @@ class RedisPublisher(BasePublisher):
                     logger.debug("RedisPublisher close encountered an error", exc_info=True)
                 finally:
                     self._redis = None
-                    self._is_closed = True
 
     def sync_close(self):
         """Synchronously close the Redis client."""

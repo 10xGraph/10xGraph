@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from ._redact import redact_context
 from .graph_error import GraphError
 
 
@@ -41,7 +42,7 @@ class NodeError(GraphError):
             "NodeError [%s]: %s | Context: %s",
             error_code,
             message,
-            context or {},
+            redact_context(context or {}),
             exc_info=True,
         )
         super().__init__(message, error_code, context)

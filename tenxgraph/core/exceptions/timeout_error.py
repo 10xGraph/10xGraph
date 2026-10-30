@@ -44,6 +44,24 @@ class NodeTimeoutError(NodeError):
         super().__init__(message, error_code, context)
 
 
+class LLMStreamIdleTimeoutError(NodeTimeoutError):
+    """
+    Raised when an LLM stream sends no chunk within ``stream_idle_timeout`` seconds.
+
+    The stream is closed before this is raised. Opt-in: nothing raises it unless
+    ``stream_idle_timeout`` is set on the Agent (``llm_kwargs``), via
+    ``set_default_stream_idle_timeout`` or ``TENXGRAPH_LLM_STREAM_IDLE_TIMEOUT``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "LLM_STREAM_IDLE_TIMEOUT_000",
+        context: dict[str, Any] | None = None,
+    ):
+        super().__init__(message, error_code, context)
+
+
 class GraphStopRequested(Exception):
     """
     Signals that a stop was requested while a node was still running.

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tenxgraph.core.state.message_block import ReasoningBlock
 from tenxgraph.runtime.adapters.llm.anthropic_converter import AnthropicConverter
 
 
@@ -113,7 +114,7 @@ class TestConvertResponse:
             [SimpleNamespace(type="thinking", thinking="step one"), _text_block("answer")]
         )
         message = await AnthropicConverter().convert_response(response)
-        assert message.reasoning == "step one"
+        assert message.content[0].summary == "step one"
 
     @pytest.mark.asyncio
     async def test_refusal_with_empty_content_does_not_raise(self):
@@ -269,7 +270,8 @@ class TestStreaming:
             _delta(0, "thinking_delta", thinking="second"),
         ]
         final = (await _collect(events))[-1]
-        assert final.reasoning == "first second"
+        assert [type(b) for b in final.content] == [ReasoningBlock]
+        assert final.content[0].summary == "first second"
 
     @pytest.mark.asyncio
     async def test_message_delta_carries_stop_reason_and_usage(self):

@@ -51,15 +51,64 @@ async def call_sync_or_async(func: Callable[..., Any], *args, **kwargs) -> Any:
     return result
 
 
-def run_coroutine(func: Coroutine) -> Any:
-    """Run an async coroutine from a sync context safely."""
-    # Always try to get/create an event loop and use thread-safe execution
+def ensure_no_running_loop(sync_name: str, async_name: str) -> None:
+    """Raise a clear error when a sync API is called from inside a running event loop.
+
+    Sync wrappers drive their own loop or block on one, so inside a running loop they
+    would deadlock or fail with an obscure message.
+    """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(
+        f"{sync_name}() cannot be called from a running event loop (it would block or "
+        f"deadlock it). Use `await ...{async_name}(...)` instead."
+    )
+
+
+def run_coroutine(func: Coroutine) -> Any:
+    """Run an async coroutine from a sync context.
+
+    Raises:
+        RuntimeError: If called while an event loop is running in this thread. Blocking
+            on the loop from inside it deadlocks, so use the async method instead.
+    """
+    try:
+        asyncio.get_running_loop()
     except RuntimeError:
         # No loop running, create one
         return asyncio.run(func)
 
-    # Loop is running, use thread-safe execution
-    fut = asyncio.run_coroutine_threadsafe(func, loop)
-    return fut.result()
+    name = getattr(getattr(func, "cr_code", None), "co_name", None) or "the async variant"
+    if inspect.iscoroutine(func):
+        func.close()  # never awaited; avoid a "coroutine was never awaited" warning
+    sync_name = name[1:] if name.startswith("a") and len(name) > 1 else name
+    raise RuntimeError(
+        f"{sync_name}() cannot be called from a running event loop (it would deadlock "
+        f"the loop). Use `await ...{name}(...)` instead."
+    )
+
+
+def resolve_awaitable_id(value: Any) -> Any:
+    """Resolve a generated id that may be an awaitable (from an async id factory).
+
+    Works with or without a running loop: inside one, the awaitable is driven to
+    completion on a short-lived loop in a worker thread, because the running loop
+    cannot be blocked on from within itself.
+    """
+    if not inspect.isawaitable(value):
+        return value
+
+    async def _await() -> Any:
+        return await value
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_await())
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _await()).result()

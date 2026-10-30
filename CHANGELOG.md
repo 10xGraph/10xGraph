@@ -35,7 +35,565 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
-## [Unreleased]
+## [1.0.0rc2] - 2026-10-30
+
+The second release candidate of `10xgraph` 1.0, aligned with `10xgraph-api` 1.0.0rc2 and `10xgraph-client`
+1.0.0-rc.2. It is the `1.0.0rc1` code plus the changes below. If you upgrade from 0.10.x, the `1.0.0rc1`
+breaking list further down applies to you as well.
+
+
+### Breaking
+
+- **Behaviour change: default reasoning is the provider's lowest effort.** `reasoning_config`
+  left unset or set to `True` (the `ReactAgent` default) used to mean `{"effort": "medium"}`
+  everywhere (Google `thinking_budget=8192`). It now means reasoning on at each provider's lowest
+  effort that still reasons, resolved per request so a fallback model on another provider gets
+  its own value: OpenAI `"minimal"`, Anthropic `"low"`, Google `"low"` (`thinking_budget=512`).
+  The values live in `DEFAULT_REASONING_EFFORT_BY_PROVIDER`
+  (`tenxgraph/core/graph/agent_internal/constants.py`). Pass a dict such as
+  `{"effort": "medium"}` to keep the old depth; `None` or `False` still turns reasoning off.
+- **OpenAI: reasoning text comes back by default, and models without reasoning still work.** On
+  the Responses API, when reasoning is on and no `summary` is set, the request now asks for
+  `reasoning.summary: "auto"` (before, no reasoning text came back). When the reasoning came from
+  the default and the model answers with a 400 that names the reasoning parameter (for example
+  gpt-4o), the call is retried once without it and the model is remembered for the process, so
+  later calls skip it. An explicit `reasoning_config` dict is never dropped and still raises.
+- **OpenAI: a custom `base_url` switches to Chat Completions only when Responses is missing.**
+  The switch used to happen after any error, so one 429 or timeout moved the agent to Chat
+  Completions for good. Now only 404, 405 and 501 switch it; other errors are raised.
+- **Behaviour change: `Agent` uses the OpenAI Responses API by default.** `api_style` now
+  defaults to `"responses"` (it was `"chat"`), except when `base_url` is set and `api_style` is
+  not passed: then it stays `"chat"`, because most OpenAI-compatible servers only speak Chat
+  Completions. An explicit `api_style` always wins. Pass `api_style="chat"` to keep the old
+  behaviour. This fixes `Agent(model="gpt-6-luna", tools=...)` failing with "Function tools with
+  reasoning_effort are not supported ... in /v1/chat/completions". Related changes:
+  - With `api_style="responses"` and a `base_url`, a server that rejects the Responses API is
+    probed once; the agent then stays on Chat Completions and logs one warning (it used to retry
+    Responses and fall back on every call).
+  - `output_schema` now uses `responses.parse(text_format=...)` on the Responses style instead
+    of switching to Chat Completions. The result is in `Message.parsed_content` as before. Streaming
+    is still turned off for these calls.
+  - On Chat Completions, `reasoning_effort` (and the `extra_body` reasoning for a `base_url`) is
+    sent only when you pass `reasoning_config` yourself, not for the implicit
+    `{"effort": "medium"}` default.
+  - The chat structured-output path calls `client.chat.completions.parse`; the
+    `client.beta.chat.completions.parse` it used does not exist in openai 3.x.
+  - `output_type="image"` and `"audio"` always use the images and audio endpoints, whatever
+    `api_style` is.
+  - The `openai` extra is now `openai>=1.93.1,<4`. openai 3.x uses httpx2, so an `http_client`
+    passed through `llm_kwargs` must be an `httpx2.AsyncClient` on 3.x.
+- **Tool and node timeouts are off by default.** `DEFAULT_TOOL_TIMEOUT_SECONDS` and
+  `DEFAULT_NODE_TIMEOUT_SECONDS` in `tenxgraph.utils.constants` are now `None` (they were 300 s
+  and 900 s). A slow tool or node runs until it finishes. Set `tool_timeout` or `node_timeout`
+  in the run config to get a limit; a value you set now applies to both `invoke` and `stream`
+  (the stream path used to ignore it). A run timeout is a server setting: see `10xgraph-api`.
+- **Tool arguments are checked against the types the tool declares.** A value that converts
+  cleanly is converted (`"5"` for an `int`, a number for a `str` parameter); a value that cannot
+  convert (a list for an `int`) is refused and the model gets a failed tool result. Unknown
+  extra keys are still ignored. Before, `add(a: int)` ran with whatever the model sent.
+- **Published events are snapshots.** Each event is copied before it is queued, so a Kafka,
+  Redis, RabbitMQ or OTEL consumer sees the values at the moment of the event. Before, the run
+  loop edited the one event object after it was queued, and consumers saw the last values for
+  every event. Code that relied on seeing later edits no longer does.
+- **`pass_user_info_to_mcp=True` sends the user info as request metadata.** It arrives in the
+  MCP call's `meta` (`{"user": {...}}`), not as a `user` tool argument. A strict-schema MCP
+  server no longer rejects the call, and a server that read `user` from the arguments must
+  read it from the request meta. It needs a fastmcp client whose `call_tool` accepts `meta`;
+  otherwise the user info is not sent and a warning is logged.
+- **`LiveAgent.arun()` raises `RuntimeError` when the same instance is already running a
+  session.** `CompiledGraph.arealtime()` now runs each connection on its own copy
+  (`LiveAgent.new_session()`), so concurrent connections no longer cross-wire. If you call
+  `arun()` yourself, give each concurrent session its own `new_session()`.
+- **A stop request is saved as `StopRequestStatus.STOPPED`.** The state of a stopped thread
+  used to keep `STOP_REQUESTED`, which the next run read back from the cache and stopped at
+  once. Code that checks `execution_meta.stop_current_execution` for `STOP_REQUESTED` after a
+  stop must also accept `STOPPED`.
+- **`mem0ai` is bounded to `>=2.0,<3`.** mem0ai 1.x is no longer supported.
+- **Sync entry points raise inside a running event loop.** Sync `invoke()`, `stream()` and
+  `stop()`, and sync checkpointer methods such as `get_state()`, now raise `RuntimeError` naming
+  the async method to use (`ainvoke`, `astream`, `astop`, `aget_state`) when called from a
+  running loop. Before, they hung the loop. Call the async method from async code.
+- **Removed: `Message.reasoning`.** Reasoning lives only as `ReasoningBlock`s in
+  `Message.content`; read `block.summary` (plus `signature` / `redacted_data` for Anthropic) from
+  the blocks with `type == "reasoning"`. A saved state that still holds a top-level `reasoning`
+  string on a message loads without error, and the string is ignored (it is not turned into a
+  block). The Postgres `messages.reasoning` column is dropped (see Upgrade notes), and the
+  store's `has_reasoning` metadata is now true when a message has a reasoning block with text,
+  details or redacted data.
+
+### Fixed
+
+- **A handoff no longer reads as an unfinished transfer.** The result of the handoff call now
+  tells the receiving agent it is in charge: "Transferred to WEATHER. You are now WEATHER:
+  answer the user's latest request yourself, and call your tools if you need them." Before, the
+  bare "Transferred to WEATHER." made Gemini reply that it would transfer the user to its tool
+  and stop without calling it. Applies to the ToolNode handoff and the `SwarmAgent` handoff nodes.
+- **`PlanActReflectAgent`: the user sees the planner's reply, not the reflector's review.** Every
+  reflector message now carries `metadata["internal"] = True` (a step message clients may show
+  collapsed; the turn's answer is the last assistant message without it). The reflector prompt
+  asks for a one-line verdict ending in `[DONE]` instead of a second answer. If the planner's last
+  reply has no text (tool calls only), the done verdict is not marked internal because it is the
+  only text answer. Routing is unchanged.
+- **Streaming: clients saw the final message instead of the deltas.** The agent, function-node
+  and converter paths reused one `StreamChunk` for every item and only changed its `message`.
+  Because the stream is queued before it is read, every queued chunk pointed at the last item:
+  readers got the complete message once per converter item (duplicate reasoning rows, usage
+  counted per copy). Each item now gets its own chunk with its own metadata dict.
+- **Cancel and shutdown cleanup edge cases.** `aclose()` now waits (within its drain budget,
+  reported as `cleanup_tasks` in its stats) for cancel saves and run-marker releases that
+  outlived their run, so the checkpointer is not released under them. The run-marker heartbeat
+  re-creates a missing marker with the new `aput_cache_value_if_absent` (Redis `SET NX`, one
+  SQLite statement, in-memory under its lock; the base class falls back to get-then-put), so it
+  cannot overwrite a newer run's marker. The stop, interrupt and pause saves go through the same
+  ordering as the final save, so a late one cannot overwrite it. `astream` keeps the run handle
+  pointed at the task of the current step, so a hard cancel reaches the step that is running.
+- **Eval: a failing judge model is an error, not a 0.5 score.** The LLM judge and
+  `SimulationGoalsCriterion` turned any LLM failure (bad key, unsupported provider, empty or
+  invalid JSON reply) into a believable score of 0.5 with the reason "No LLM provider
+  available". The criterion now reports an error with the real exception message (when every
+  sample of a multi-sample judge failed; a sample that succeeds still counts).
+- **Gemini memory search ranks better.** `GoogleEmbedding` now sends the Gemini task type
+  `RETRIEVAL_DOCUMENT` when embedding text to store and `RETRIEVAL_QUERY` when embedding a search
+  query (new `BaseEmbedding.aembed_query`, which defaults to `aembed` for other providers;
+  `QdrantStore.asearch` uses it). Set `GoogleEmbedding(document_task_type=...,
+  query_task_type=...)` to other Gemini task types, or `None` to send none (the old behaviour).
+  Vectors stored before this change stay searchable.
+- **A Redis outage no longer slows every run step.** `PgCheckpointer` skips Redis for a short
+  cool-down after a connection failure and takes its usual fallback (Postgres, or no cache) at
+  once, so a run no longer waits for the connect timeout on each of its Redis calls. New kwarg
+  `redis_breaker_cooldown` (seconds, default 5.0; 0 disables). A cache entry whose invalidation
+  was skipped is deleted when Redis is reachable again, and a cached state with no version is
+  no longer served once Postgres holds a newer state.
+
+### Upgrade notes
+
+#### Postgres schema migration (read before the rollout)
+
+`PgCheckpointer` now creates and upgrades its schema on first use. The upgrade from 0.10.x
+includes migration v4, which changes the key of the `messages` table and builds its index
+under an `ACCESS EXCLUSIVE` lock. Old and new code cannot run against the same database at the
+same time: once v4 has run, every message insert from a 0.10.x pod fails.
+
+Do not roll the upgrade pod by pod. Instead:
+
+1. Stop all old (0.10.x) pods.
+2. Run the migration (start one new pod, or call `await checkpointer.asetup()`), and wait for
+   it to finish.
+3. Start the remaining new pods.
+
+A rollback to 0.10.x needs a restore of the database from before the migration; the migration
+is not reversible.
+
+#### Postgres schema version 5 (drops `messages.reasoning`)
+
+Schema version 5 drops the unused `reasoning` column from the `messages` table. The migration
+runs automatically at startup (`ALTER TABLE ... DROP COLUMN IF EXISTS reasoning`). A rolling
+deploy that mixes old and new versions on one database is not supported across this migration:
+old pods still write the column, so once it is dropped their message inserts fail. Use the same
+stop-migrate-start steps as above.
+
+#### Dependency minimums
+
+The extras raise these floors. A fresh install resolves them; an existing environment must be
+upgraded.
+
+- `images`: `Pillow>=13.0.0` (was 12.2.0).
+- `mcp`: `mcp>=1.30.0` (was 1.13.0).
+- `otel`, `langsmith`: `opentelemetry-api>=1.45.1` and `opentelemetry-sdk>=1.45.1` (were 1.20.0).
+- `mem0`: `mem0ai>=2.0,<3` (was `>=0.1.117`).
+
+Related notes:
+
+- `PgCheckpointer` creates its schema on first use, and `10xgraph-api` calls `asetup()` at
+  boot. No separate setup step is needed.
+- If you ran two graphs on one checkpointer, `compile()` now logs a WARNING for the second
+  one. Use one graph per container or give each graph its own checkpointer.
+
+### Added
+
+- **User simulator progress events.** `UserSimulator.run(..., on_event=callback)` and
+  `BatchSimulator.run_batch(..., on_event=callback)` call `callback(event, data)` with
+  `turn_started`, `agent_replied`, `goals_checked`, `evaluating` and `agent_error`. A callback
+  that raises is logged at debug and ignored.
+- **Graceful shutdown.** `await graph.aclose(grace=None, stop_timeout=None, timeout=None)` ends
+  active runs in phases: new runs are refused, runs get `grace` seconds to finish, the rest
+  get a stop request and save their thread as INTERRUPTED, then anything still running is
+  cancelled and background tasks are drained. Defaults come from `compile(shutdown_timeout=...)`
+  (50% grace, 25% stop, 25% cancel and drain). It returns the counts of runs finished, stopped
+  and cancelled, and of background tasks drained or dropped.
+- `GraphClosedError` (`GRAPH_CLOSED_001`): raised by `invoke`, `stream`, `ainvoke`, `astream`
+  and `arealtime` once the graph is closing or closed.
+- `install_shutdown_signals(graph, ...)` in `tenxgraph.utils.shutdown`: an opt-in helper that
+  connects SIGTERM and SIGINT to `graph.aclose()`. Nothing installs signal handlers unless you
+  call it.
+- `compile(..., owns_resources=True)`: the default is unchanged. Resources (checkpointer,
+  store, publisher) are now counted per holder, so `aclose()` releases one only when the last
+  graph using it closes. Pass `owns_resources=False` to keep `aclose()` from closing resources
+  you manage yourself.
+- `ExecutionState.run_id` records which run wrote the state. A state saved by an older version
+  loads with `run_id` as `None`.
+- `NothingToResumeError` (`INTERRUPT_003`, a resume sent to a thread that is not paused) and
+  `InterruptPendingError` (`INTERRUPT_004`, a plain new message sent to a thread paused at
+  `interrupt()`). Both are also `ValueError`, so existing handlers keep working.
+- `ToolNode(max_result_chars=...)`: cuts a local tool's text result and appends a marker.
+  Off by default.
+- `ToolNode(mcp_include=..., mcp_exclude=...)`: allow-list and deny-list of MCP tool names. A
+  tool that is hidden is also refused when called.
+- `create_fetch_url(allowed_hosts)`, `create_google_web_search(model)` and
+  `create_vertex_ai_search(datastore, model)`: tool factories that fix the host list, model or
+  datastore in code, so the model cannot choose them.
+- `RetryConfig.jitter` (default `0.25`) and `RetryConfig.max_concurrent_calls` (default `None`,
+  no cap): spread retries out, and optionally cap in-flight LLM requests per provider for one
+  Agent.
+- `TENXGRAPH_LLM_TIMEOUT` (seconds) sets the default LLM client timeout. The old
+  `AGENTFLOW_LLM_TIMEOUT` still works. A `timeout=` in an Agent's `llm_kwargs` sets it per
+  agent, and Google clients now honour it.
+- Message metadata `stop_issue` is set to `truncated`, `context_window_exceeded`,
+  `content_filter` or `malformed_tool_call` when a provider (Anthropic, Google, OpenAI) stopped
+  for one of those reasons, and a warning is logged.
+- `StructuredOutputAgent` marks a reply that still fails validation after the last attempt with
+  `metadata["structured_output_valid"] = False` and `metadata["structured_output_error"]`.
+- Opt-in publisher setting `publish_timeout` (seconds) bounds one send; a send that times out is
+  logged and dropped.
+- `redis_key_prefix` option on `PgCheckpointer`: a prefix for its Redis keys, so deployments
+  that share one Redis do not read each other's cache. Ids in keys are percent-encoded.
+- Safe default timeouts on `PgCheckpointer`: 30 s to get a pooled connection
+  (`pg_acquire_timeout`), 60 s per query, 30 s per new connection, and Redis socket timeouts
+  (5 s connect, 10 s read) with a 30 s health check. Override them key by key with
+  `pool_config` and `redis_pool_config`.
+- Public `aclear_state_cache(config)` (and sync `clear_state_cache`) on the checkpointers.
+- Storage limits: `MediaConfig.max_image_pixels` (default 50,000,000) refuses oversized images
+  before decoding, and the media stores accept an opt-in size cap (`MediaTooLargeError`).
+- The SQLite and in-memory checkpointers now keep the tool ledger, so a run killed mid-node does
+  not run finished tools again on resume. A custom checkpointer without ledger support logs one
+  warning per class.
+- `compile(node_aliases={old: new})`: an opt-in map for threads stored at a node that a deploy
+  renamed or removed. A thread stored at `old` resumes at `new`, in `invoke` and `stream`.
+- `StoredNodeMissingError` (`GRAPH_NODE_MISSING_001`): a thread stored at a node the graph no
+  longer has (and no alias covers) fails with this error, naming the node and the thread. Before,
+  every run on it raised a bare `KeyError`. `10xgraph-api` answers 409.
+- `StateFormatVersionError` (`STATE_FORMAT_001`): raised when stored state was written by a
+  newer version than the code reads, for example after a rollback. The state is left untouched.
+  `10xgraph-api` answers 500 with a message that says to upgrade.
+- `ReasoningBlock.signature` and `ReasoningBlock.redacted_data` (both optional): hold the
+  signature of an Anthropic `thinking` block and the payload of a `redacted_thinking` block.
+- `BaseMediaStore.modify_metadata(key, fn)`: reads the metadata, applies `fn` and writes the
+  result as one step. The local and in-memory stores make it atomic. The cloud stores re-read
+  just before the write and retry up to 5 times, which leaves a small window.
+  `BaseMediaStore.list_keys_for_owner(owner_id)` lists the keys one owner stored. A custom store
+  inherits a non-atomic `modify_metadata` and a `list_keys_for_owner` built on `list_keys`.
+- Opt-in `stream_idle_timeout` (per agent in `llm_kwargs`, `set_default_stream_idle_timeout()`
+  or `TENXGRAPH_LLM_STREAM_IDLE_TIMEOUT`; no default) and `LLMStreamIdleTimeoutError`. A stall
+  before the first chunk is retried by `RetryConfig`; a stall after any chunk is not retried.
+- Cloud signed-URL downloads in `CloudMediaStore` have a 10 s connect timeout and a 60 s idle
+  timeout.
+- More `ToolNode` MCP options, all off or unchanged by default: `mcp_prefix` (a string put in
+  front of every MCP tool name the model sees, removed again before the server call, so two
+  servers with the same tool name can share a graph), `mcp_max_result_chars` (cuts one MCP tool
+  result and appends a marker) and `mcp_max_description_chars` (cuts a tool description). Next to
+  `mcp_include` and `mcp_exclude`, which match the server's own names without the prefix.
+- `await tool_node.refresh_mcp_tools()` fetches the MCP tool list again (see `mcp_cache_tools`
+  under Changed).
+- Connect timeouts, each bounding only the connect and never a call: `ToolNode(mcp_connect_timeout=30.0)`
+  and `GeminiLiveClient(connect_timeout=30.0)`; pass `None` to wait without a limit. The
+  RabbitMQ publisher's `connection_timeout` (default 10 s) now also bounds opening the channel
+  and exchange, and a failed open closes the half-open connection, so the next publish retries
+  on a clean connection.
+- Publisher setting `state_snapshot_limit` (see Changed).
+- Opt-in cross-process LLM concurrency cap on `RetryConfig`: `distributed_max_concurrent_calls`
+  (default `None`, off) limits in-flight requests per provider and model across every process
+  that shares one Redis, on top of `max_concurrent_calls`. It needs `distributed_redis` (an async
+  client) or `distributed_redis_url`. Also `distributed_lease_seconds` (default `300.0`) and
+  `distributed_key_prefix` (default `""`). It fails open: when Redis cannot be reached a WARNING
+  is logged (at most every 30 s) and the call runs without a slot, so a Redis outage never blocks
+  runs. A slot is released on cancel and expires with its lease after a crash.
+
+### Changed
+
+- **The HTML eval report is redesigned as a scorecard.** `HTMLReporter` (and
+  `ReporterConfig(html=True)`) now writes one self-contained file that opens offline: a verdict
+  against the pass-rate gate, headline numbers (pass rate, average score, latency, tokens) with
+  deltas against the previous run, a regression line, a cases-by-criteria matrix with pass, near
+  and fail marks and changed-cell markers, filters, search and sort, a detail drawer per case
+  (previous and next, keyboard, `#eval_id` deep link), run-over-run bars, a cost and latency strip,
+  collapsed run details, light and dark themes, a phone layout and print styles. The previous run
+  is the most recent earlier JSON report of the same `eval_set_id` in the same folder (excluding
+  the current run's file); without one the page says so. The gate is read from
+  `report.metadata["pass_rate_threshold"]` (set by `10xgraph eval`) and is 100% ("all cases must
+  pass") when absent. Report data is embedded as JSON and rendered with text escaping, and a
+  Content-Security-Policy meta tag blocks network requests and any script injected through
+  report content. `HTMLReporter.to_html` takes optional `baseline_dir` and `exclude`; the private
+  `_render_case` helper and the `_html_render` module are removed.
+
+- **Every converter orders blocks the same way.** A message from the OpenAI chat, OpenAI
+  Responses, Google GenAI and Anthropic converters has its blocks in the order reasoning, text,
+  media (image, audio, video), tool calls. This holds for a non-stream response, each streaming
+  delta and the final streamed message. Before, some stream finals and OpenAI deltas put text
+  ahead of reasoning. Each delta carries only its new reasoning piece as a `ReasoningBlock`, and
+  the OpenAI Responses stream now emits reasoning deltas too (it used to hold them back until
+  the final message).
+- **A cancelled, crashed or shut-down run leaves a usable thread.** On cancel or shutdown the
+  run closes unanswered tool calls (the recorded result if there is one, else a failed result
+  saying the run was interrupted), marks the thread INTERRUPTED (reason `cancelled`,
+  `shutdown` or `crashed`), saves it, and re-raises the cancel. A new user message then starts
+  a new turn on the repaired history; a call with no new input resumes at the saved node.
+- **Crash recovery on load.** If the saved state says RUNNING but no live run owns it (the
+  active-run marker now expires within 60 s and is refreshed every 20 s), the next load repairs
+  the thread from the cached state, marks it INTERRUPTED with reason `crashed`, saves it, logs a
+  warning and counts `tenxgraph.run.recovered`.
+- The stream path (`astream`, the API path) now matches `invoke`: the tool ledger (a resumed
+  run does not run finished tools again), per-tool state isolation for parallel tools,
+  cancel and stop handling inside a node, before and after callbacks, node events and metrics,
+  and log context ids on every line. Parallel tool results are appended in call order on both
+  paths.
+- `stop` works without a checkpointer or Redis: the stop check also reads an in-process flag.
+- Background tasks wait up to the timeout first and are cancelled only for what is left.
+- A circuit breaker in the half-open state lets one trial call through at a time.
+- Retries honour `Retry-After` when it is longer than the computed delay (the next fallback is
+  tried if it is longer than `max_delay`), never retry a 429 that reports a spent quota or
+  spend cap, and the SDK's own retries no longer multiply the attempts.
+- OpenAI streaming asks for token usage (`stream_options.include_usage`), so streamed runs
+  report usage for OpenAI chat and Google.
+- A provider fallback uses the fallback provider's converter and credentials. It no longer
+  sends one provider's `api_key` or `base_url` to another, and it no longer rewrites the
+  shared Agent while other runs use it.
+- `SummaryContextManager` never starts the kept context with a tool result, counts tool
+  results and images in its token estimate, and bounds the summary size.
+- `PgCheckpointer` uses timezone-aware timestamps everywhere (local-time stamps are no longer
+  stored), and a message that is saved again updates its tool calls, role and metadata.
+- Thread delete is best effort on the cache: a Redis failure after the Postgres delete no
+  longer raises, the tool ledger and cache keys are removed, and a stale cache entry cannot
+  bring a deleted thread back.
+- Deleting a message rewrites the saved state versions and the cache too, so the message is
+  gone from the next run and from the state.
+- After a Redis restore from an older snapshot, the cached state is checked against Postgres
+  at run start and dropped if older. Before, every active thread failed its next turn once
+  with a state conflict.
+- `Mem0Store` applies the owner `user_id` last and drops the reserved filter keys `user_id`,
+  `agent_id`, `app_id` and `run_id` from caller `filters`, so a `filters` value cannot replace
+  the owner. `Mem0Store` works with mem0ai 2.x.
+- `max_tokens` for the memory preload is now applied by the Qdrant and Mem0 stores.
+- `compile()` logs a WARNING when it falls back to the in-memory checkpointer, and the shared
+  anonymous user (no `user_id`) is warned once per graph. Both were debug lines.
+- Importing `tenxgraph` no longer needs a home directory. The home path is resolved when first
+  used.
+- The module-level file tools (`file_read`, `file_write`, `file_search`) still work until 2.0
+  and now log a deprecation warning that names `create_file_tools`. File writes are atomic,
+  and `.git-credentials` and `terraform.tfstate` are on the default deny list.
+- A duplicate tool name on one `ToolNode` logs a warning when the earlier tool is replaced.
+- A tool that returns a `ToolResult` keeps its message on `invoke` as it does on `stream`.
+- The `message` stream chunk can carry `data` beside the message for tool results (`status`,
+  `tool_name`, `args`, `tool_call_id`), at every granularity. A consumer should not assume the
+  two are exclusive.
+- Pause chunks (`interrupt()`, `interrupt_before`, `interrupt_after`, client tool) are passed at
+  every stream granularity, and chunk timestamps are timezone-aware.
+- **Anthropic thinking is stored first in the message and replayed unchanged.** Signed
+  `thinking` blocks and `redacted_thinking` blocks are kept on `ReasoningBlock` (with
+  `signature` or `redacted_data`) and sent back, before the text and `tool_use` blocks, on the
+  next Anthropic call. Anthropic rejects a tool turn whose signed thinking was dropped or
+  edited. Other providers never receive these blocks. A message saved by an earlier version has
+  no signature, so its thinking is not replayed to Anthropic.
+- The core checkpointer's Redis pool is capped at 50 connections, and a caller past the cap
+  waits up to 5 s for a free one (`BlockingConnectionPool`, `max_connections` and `timeout` in
+  the default `redis_pool_config`). Override either key through `redis_pool_config`.
+- A media folder shared by several workers now contains a `.meta.lock` file, used to serialize
+  sidecar updates across processes (POSIX only).
+- `CloudMediaStore` keeps a per-owner index object (`{prefix}/owners/<hash>.index.json`), so
+  `list_keys_for_owner` works on S3 and GCS. Files stored before this release, or stored with no
+  owner, are not in the index. `10xgraph-api` uses it for `GET /v1/files`, the per-user
+  quotas and release on thread delete.
+- **MCP tool lists are cached per `ToolNode`** (`mcp_cache_tools=True`, the default). The
+  server's tool list is fetched once and reused, which saves a connect, ping and list round trip
+  on every model call. A tool added on the server later appears only after
+  `await tool_node.refresh_mcp_tools()`. A failed listing is never cached. Pass
+  `mcp_cache_tools=False` to list on every call as before.
+- **Large `data["state"]` in published events is replaced by a summary.** When it is over the
+  publisher's `state_snapshot_limit` (JSON characters, default `65536`; `0` or `None` disables),
+  `data["state"]` becomes `{truncated, bytes, fields, context_count, context, context_summary,
+  execution_meta}`: `context` lists the `message_id` and `role` of the last 50 messages (system
+  messages kept up to 8 KiB), `context_summary` is cut to 1000 characters and `execution_meta` is
+  kept if under 8 KiB. `data["messages"]` is not bounded. A queued event no longer holds the
+  full state during a broker stall.
+- **Realtime tool calls run once per thread.** A tool call from a live session is recorded in the
+  tool ledger under the thread id, a hash of the tool name and arguments, and the provider call
+  id. A new session on the same thread that re-sends an identical call gets the recorded result
+  instead of running the tool again. With no thread id the key falls back to the session id, and
+  a call with no provider id cannot replay.
+
+### Fixed
+
+- **Multi-agent handoffs no longer leave an unanswered tool call.** `SwarmAgent` routed a
+  `transfer_to_<name>` call straight to the target without a tool result, so the target's
+  request ended on the caller's assistant tool call: Gemini answered with an empty reply
+  (`NODE_004`), OpenAI and Anthropic reject it. Each member with handoff targets now has a
+  `<NAME>_HANDOFF` node (`TRIAGE -> TRIAGE_HANDOFF -> PLANNER` in the graph) that answers every
+  tool call of the handoff message before the target runs: "Transferred to <target>." for the
+  handoff and "Not run: control was transferred to <target>." for a second handoff call in
+  the same message. The results are saved to state and the
+  messages table like any node output. A handoff now takes one more graph step, which counts
+  toward `recursion_limit`. `SupervisorTeamAgent` requests no longer end on an assistant turn:
+  the supervisor's request (after a worker's reply) and a later worker's request (after the
+  previous worker's reply) get one transient user message that is never saved. Worker nodes now
+  wrap the agent you pass in (`graph.nodes[name].func.agent`).
+
+- **Realtime (AudioAgent) sessions now save their transcripts and state.** A live
+  `gemini-3.8-live` session left its thread with no messages and no state: transcripts were
+  saved only on a transcription chunk marked `finished`, which Gemini Live does not send (a
+  turn just ends with `turn_complete`), so the text stayed in a buffer and was dropped when the
+  session ended. Now the end of each turn saves the user's and the model's text (one message
+  each, plus one complete transcript event per side for the client), a barge-in keeps what the
+  user said and drops only the model's cut-off reply, and the end of a session (also a client
+  that disconnects mid-turn) saves what is left. The session also saves its state as the
+  thread's checkpoint after each turn. A session now starts from the thread's saved state (a
+  later session or text turn continues the conversation instead of overwriting it) or from a
+  deep copy of the graph's state: sessions used to append to one shared state object, so
+  concurrent users' transcripts could mix. Audio is still never stored.
+
+- **A handoff no longer drops the other tool calls of its message.** OpenAI often calls a tool
+  and a handoff together (`get_weather` + `transfer_to_planner`). The handoff used to answer
+  the tool call "Not run", so the target had no weather and handed back: a live `gpt-6-luna`
+  swarm bounced WEATHER, PLANNER, WEATHER, PLANNER. The other calls now run first (in the
+  ToolNode handoff path and, through the member's `<NAME>_TOOL` node, in `SwarmAgent`), then
+  control moves on and the target sees their results. A second handoff call in the same
+  message still gets "Not run: control was transferred to <target>.", and that tool message
+  carries `metadata["not_run"] = True` (the playground shows it as "Skipped").
+
+- **`SupervisorTeamAgent` no longer re-dispatches workers that already answered.** The
+  supervisor's request held the workers' replies as unlabelled assistant turns, followed by its
+  past decisions replayed as bare `WEATHER` / `PLANNER` assistant turns; it could not tell who
+  said what or that the user was answered (a live Gemini run ran WEATHER, PLANNER, WEATHER,
+  PLANNER, PLANNER). Its own call now sees earlier turns as plain text and one user message
+  naming each worker's reply in order ("WEATHER replied: ...") and the workers already run.
+  Naming the worker that just ran again counts as `FINISH`. When the supervisor finishes before
+  any worker ran (a greeting), a new `RESPOND` node answers the user, so the turn is never
+  blank. `RESPOND` and `PRE_SUPERVISOR` are now reserved worker names.
+
+- **`StructuredOutputAgent` with tools now works on Google.** Gemini cannot combine function
+  calling with a JSON output schema in one request, so the prebuilt agent failed on the first
+  message. On Google with tools it now runs GENERATE (tools, plain text) then a FORMAT step
+  (schema, no tools) that turns the conversation into the schema; validation and REPAIR loop
+  over FORMAT. OpenAI, Anthropic and Google without tools are unchanged. The `Agent` guard for
+  tools plus `output_schema` on Google is unchanged.
+
+- **`PlanActReflectAgent` no longer loops on empty replies.** The reflector's request used to end
+  with the planner's assistant message (and a later planner request with the reflector's), which
+  makes Gemini return an empty reply and Anthropic drop the turn. Both now get one transient user
+  message at the end of the request (never saved to state), so a greeting such as "HI" ends after
+  2 LLM calls. `[DONE]` is recorded in a per-turn flag and removed from the saved reply, and an
+  empty reflector reply ends the turn instead of looping to `max_iterations`.
+- **Empty model replies are retried once, then fail the node.** An `Agent` reply with no text, no
+  tool calls and no media (reasoning alone counts as empty) is no longer saved. The call is
+  repeated once, with a warning that names the node, the model and the tokens the empty call
+  used; a second empty reply raises a `NodeError` (`NODE_004`). Streaming holds back the empty
+  final message, so no half-built reply reaches state. Saved empty assistant replies in old
+  threads are skipped when the request is built (a reasoning block with an Anthropic signature is
+  kept).
+- **Tool result messages carry `metadata["node_name"]`**, and so do assistant replies on the
+  `ainvoke` path (they only had it when streamed), so clients can group a turn by node.
+- **A cancelled run releases its thread only after its cancel save.** Under a level-triggered
+  cancel (anyio, Starlette on a client disconnect) the INTERRUPTED save used to go on in the
+  background while the active-run marker was already released, so a quick next run on the
+  thread could race it. The waiter now waits for the save (up to 10 s) while cancelled, inside a
+  shielded anyio scope when anyio is loaded, then re-raises the cancel; the marker release is
+  waited for the same way. A cancel during the run's own save waits for that save instead of
+  starting a second one beside it, and a run whose COMPLETED state was saved stays completed.
+  The INTERRUPTED event is published after the save and carries the saved state. Detached
+  cleanup is cancelled (ERROR log) after 20 s. `aend_run` clears the marker and stop request
+  with a compare-and-delete in one step (new `BaseCheckpointer.aclear_cache_value_if`, atomic in
+  the in-memory, SQLite and Redis caches), and the run heartbeat restores its own missing marker.
+- **Evals: tool arguments in a trajectory are the ones the model sent.** The recorded args used
+  to include injected parameters (`emit`, `config`, `store`, an `Inject[...]` service, ...), so
+  an exact `check_args=True` trajectory failed for any tool that declared one. The collector now
+  records the call's own arguments and drops every name in `INJECTABLE_PARAMS`.
+- **Evals: `EvalCaseResult.expected`.** Each case result now carries what the case expected
+  (`response`, `tool_calls`, `node_order`, `input`), so a JSON report shows the expectations next
+  to the outcome, failures included. Older reports without the field still load.
+- **Evals: `SimulationResult.duration_seconds`.** `UserSimulator.run` now times the whole
+  simulation, so callers that build case results from simulations no longer report `0.0s`.
+- The user simulator no longer duplicates history on a graph with a checkpointer. It sent the
+  whole conversation every turn, and each resend got new message ids, so the thread grew by
+  1, 1+2, 1+2+3 messages. With a checkpointer only the new user message is sent; without one
+  the full history is still sent.
+- The Gemini call used by evaluation (`tenxgraph.core.llm.caller`) joins the text parts itself
+  instead of reading `response.text`, so the "non-text parts in the response" warning is gone.
+- Async id factories (`AsyncIDGenerator`) work for `Message()` and for run and thread ids.
+- Sync `invoke()` and `stream()` wait up to `shutdown_timeout` (default 30 s) for background
+  events, such as publisher events, before they return. Before, that work was dropped.
+- A stopped thread resumes, and later messages are no longer dropped. A stop no longer loses
+  the output of the node that was running.
+- Streamed runs that pause (`interrupt()`, `interrupt_before`, `interrupt_after`, client tool)
+  keep the run's messages in the messages table. Before, a pause saved none of them.
+- Resuming a thread paused at `interrupt()` works on `PgCheckpointer`. It failed with
+  `user_id must be provided in config` on the HTTP and WebSocket routes.
+- A handoff gives the target agent a tool result for the handoff call. Before, the context ended
+  with an unanswered tool call, which OpenAI and Anthropic reject.
+- `PlanActReflectAgent` with tools no longer sends an unanswered tool call to the reflector.
+- The recursion limit is exact (it was off by one), the turn after a recursion error is no
+  longer swallowed, and `astream` raises `GraphRecursionError` instead of a pydantic
+  `ValidationError`.
+- `invoke` no longer sends the messages of a resume twice, and a cancel that arrives while the
+  run is already cancelling is no longer absorbed.
+- Stream runs log the run, thread and user ids, and log context ids no longer leak from one run
+  to the next.
+- A stop request that fails because Redis is down is no longer lost.
+- OpenAI chat streaming no longer saves a half answer as complete when the connection drops or
+  a 429 arrives mid-reply; the error is raised.
+- Anthropic: a `max_tokens` stop that ends in a `tool_use` block no longer runs the tool.
+- Deeply nested tool arguments return a tool error instead of failing the run with
+  `RecursionError`.
+- Google: `output_type="audio"` works, and a bad `data:` URL no longer fails the run.
+- OpenAI batch `results()` includes failed requests from the error file.
+- A reranker error in `RAGAgent` no longer fails the run.
+- Swarm and supervisor member names no longer have to be upper case, and a supervisor `FINISH`
+  is matched as a whole word, not as a substring of a worker name.
+- `@tool(name)` works as documented, bound methods are supported, and the converter handles
+  `mpeg` and `x-wav` audio, `file_id` image parts and `resolve_media_refs` correctly.
+- `QdrantStore` filters on `user_id` and `thread_id` equal to `0`. The in-memory tool ledger is
+  scoped to the thread owner.
+- `OpenAI` embeddings: `text-embedding-3-large` maps to 3072 dimensions, and
+  `text-embedding-ada-002` and other common models are known.
+- `SqliteCheckpointer` rolls back a failed write, and claiming a new thread and writing it are
+  atomic.
+- Redis `alist_cache_keys` no longer matches keys that only share a prefix, and a retry after a
+  lost commit acknowledgement is no longer a `StaleStateError`.
+- The cloud media store no longer reports a delete as done when only the sidecar was removed,
+  and logs errors it used to hide.
+- `LocalFileMediaStore` writes data and sidecar files through a temp file and a rename, so a
+  crash no longer leaves a truncated file. Deleting a thread's media also removes the Google
+  File API uploads recorded for it.
+- Realtime: transcript saves no longer overwrite the thread's metadata and name after a
+  transient read error, setup failures and cancels no longer leak a billed Gemini session, and
+  tool calls with non-object arguments return an error result.
+- Kafka and Redis publishers retry after a failed first start and stay closed once closed. A
+  late event after close no longer reopens a connection.
+- An OTEL LLM span ends on failed and streaming calls, so the span registry no longer grows.
+  A streaming span ends with the stream and carries the token usage, finish reason and model
+  of the final message.
+- README: dropped the pre-1.0 line and corrected the stream format.
+- A running LLM call renews its slot in the distributed concurrency cap
+  (`distributed_max_concurrent_calls`) every third of `distributed_lease_seconds`, so a call that
+  outlives the lease keeps counting against the cap. Before, a slow call lost its slot. A renewal
+  error is logged and does not fail the call.
+- A stalled stream is retried before its first chunk and never after it (see `stream_idle_timeout`
+  under Added), so streamed output is not duplicated.
+- The `END` event of an MCP tool call carries the result that `after_invoke` returned, like a
+  local tool. Before, it carried the raw MCP result.
+- `CloudMediaStore.get_direct_url` takes the signed URL's file extension from the stored
+  metadata. The caller's `mime_type` is ignored.
+- Link updates on media (`modify_metadata`) are atomic on the local and in-memory stores, so
+  concurrent workers no longer lose thread links.
+
+### Security
+
+- Exceptions redact secret-looking keys (`api_key`, tokens, passwords) and URLs in their
+  context before logging it.
+- Node error events no longer carry the text of provider or other foreign exceptions. The event
+  shows the exception type and says the details are in the server log; the full text is logged.
+- Log lines neutralise CR and LF in model-controlled values such as tool names.
+- `Mem0Store` cannot be pointed at another user by a client `filters` value (see Changed).
+- Dependency floors now exclude versions with known advisories: Pillow 13.0.0, mcp 1.30.0,
+  OpenTelemetry 1.45.1. See Upgrade notes.
+- `PromptInjectionValidator` strict mode no longer blocks ordinary text.
 
 ## [1.0.0rc1] - 2026-10-28
 

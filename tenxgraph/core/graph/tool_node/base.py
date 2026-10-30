@@ -35,9 +35,11 @@ from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, E
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.log_safety import log_safe
 
 from . import deps
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
+from .mcp_exec import DEFAULT_MCP_CONNECT_TIMEOUT
 from .run_tools import run_remote_tools, tool_name
 from .schema import SchemaMixin
 
@@ -91,11 +93,19 @@ class ToolNode(
         ```
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         tools: t.Iterable[t.Callable],
         client: deps.Client | None = None,  # type: ignore
         pass_user_info_to_mcp: bool = False,
+        max_result_chars: int | None = None,
+        mcp_include: t.Iterable[str] | None = None,
+        mcp_exclude: t.Iterable[str] | None = None,
+        mcp_prefix: str | None = None,
+        mcp_max_result_chars: int | None = None,
+        mcp_max_description_chars: int | None = None,
+        mcp_cache_tools: bool = True,
+        mcp_connect_timeout: float | None = DEFAULT_MCP_CONNECT_TIMEOUT,
     ) -> None:
         """Initialize ToolNode with functions and optional MCP client.
 
@@ -107,6 +117,29 @@ class ToolNode(
             pass_user_info_to_mcp: If True, extracts the 'user' dictionary from the config
                 and passes it as metadata to MCP tool calls. The user info will be accessible
                 on the MCP server via `ctx.request_context.meta`. Defaults to False.
+
+            max_result_chars: Optional cap on the text a local tool returns. Longer
+                text is cut and a marker is appended, so one huge result is not saved to
+                state and re-sent to the model on every turn. ``None`` (default) means
+                no cap.
+            mcp_include: Optional allow-list of MCP tool names. Only these are shown to
+                the model and callable. ``None`` means every tool the server lists.
+            mcp_exclude: Optional MCP tool names to hide and refuse, applied after
+                ``mcp_include``. Both match the server's own tool names, without the prefix.
+            mcp_prefix: Optional string put in front of every MCP tool name the model
+                sees (for example ``"github_"``), so two ToolNodes can expose servers with
+                the same tool name. The prefix is removed again before the server call.
+            mcp_max_result_chars: Optional cap on the text of one MCP tool result. Longer
+                output is cut and a marker is appended. ``None`` (default) means no cap.
+            mcp_max_description_chars: Optional cap on an MCP tool description. ``None``
+                (default) means no cap.
+            mcp_cache_tools: When True (default) the server's tool list is fetched once and
+                reused, which saves a connect, ping and list round trip per model call.
+                Call ``await tool_node.refresh_mcp_tools()`` to fetch it again. Set False to
+                list the server on every call.
+            mcp_connect_timeout: Seconds to wait for the MCP connection to open (default
+                30). Only the connect is bounded, never a tool call. ``None`` waits without
+                a limit.
 
         Raises:
             ImportError: If MCP client is provided but required packages are not installed.
@@ -132,7 +165,8 @@ class ToolNode(
             # On the MCP server, access via ctx.request_context.meta
             ```
         """
-        logger.info("Initializing ToolNode with %d tools", len(list(tools)))
+        tools = list(tools)
+        logger.info("Initializing ToolNode with %d tools", len(tools))
 
         if client is not None:
             # Read flags dynamically so tests can patch tenxgraph.graph.tool_node.HAS_*
@@ -150,15 +184,36 @@ class ToolNode(
         self._funcs: dict[str, t.Callable] = {}
         self._client: deps.Client | None = client  # type: ignore
         self._pass_user_info_to_mcp: bool = pass_user_info_to_mcp
+        self._max_result_chars: int | None = max_result_chars
+        self._mcp_include: frozenset[str] | None = (
+            frozenset(mcp_include) if mcp_include is not None else None
+        )
+        self._mcp_exclude: frozenset[str] = frozenset(mcp_exclude or ())
+        self._mcp_prefix: str | None = mcp_prefix or None
+        self._mcp_max_result_chars: int | None = mcp_max_result_chars
+        self._mcp_max_description_chars: int | None = mcp_max_description_chars
+        self._mcp_cache_tools: bool = mcp_cache_tools
+        self._mcp_connect_timeout: float | None = mcp_connect_timeout
+        self._mcp_tools_cache: list[t.Any] | None = None
 
         for tool in tools:
             if not callable(tool):
                 raise TypeError("ToolNode only accepts callables")
-            self._funcs[tool.__name__] = tool
+            self._register(tool)
 
         self.mcp_tools: list[str] = []
         self.remote_tools: list[dict] = []
         self.remote_tool_names: list[str] = []
+
+    def _register(self, tool: t.Callable) -> None:
+        existing = self._funcs.get(tool.__name__)
+        if existing is not None and existing is not tool:
+            logger.warning(
+                "Tool name '%s' is already registered on this ToolNode; the earlier tool "
+                "is replaced.",
+                log_safe(tool.__name__),
+            )
+        self._funcs[tool.__name__] = tool
 
     def add_tool(self, tool: t.Callable) -> None:
         """Add a single tool to the ToolNode after initialization.
@@ -187,7 +242,7 @@ class ToolNode(
         """
         if not callable(tool):
             raise TypeError("ToolNode.add_tool() only accepts callables")
-        self._funcs[tool.__name__] = tool
+        self._register(tool)
         logger.debug(f"Added tool '{tool.__name__}' to ToolNode")
 
     async def _all_tools_async(
@@ -216,7 +271,7 @@ class ToolNode(
                 logger.warning(
                     "Ignoring per-run client tool '%s': the ToolNode already has a tool "
                     "with that name",
-                    name,
+                    log_safe(name),
                 )
                 continue
             tools.append(schema)
@@ -372,7 +427,7 @@ class ToolNode(
             on tool provider precedence: MCP → Local.
         """
         callback_manager = fresh(callback_manager)
-        logger.info("Executing tool '%s' with %d arguments", name, len(args))
+        logger.info("Executing tool '%s' with %d arguments", log_safe(name), len(args))
         logger.debug("Tool arguments: %s", args)
 
         event = EventModel.default(
@@ -523,7 +578,7 @@ class ToolNode(
             consistent async iterator interface over tool results.
         """
         callback_manager = fresh(callback_manager)
-        logger.info("Executing tool '%s' with %d arguments", name, len(args))
+        logger.info("Executing tool '%s' with %d arguments", log_safe(name), len(args))
         logger.debug("Tool arguments: %s", args)
         event = EventModel.default(
             config,

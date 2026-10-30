@@ -17,10 +17,13 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
 from typing import Any
 
+from pydantic import BaseModel
+
+from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
@@ -37,6 +40,7 @@ from tenxgraph.core.state.message_block import (
 
 from .base_converter import BaseConverter
 from .reasoning_utils import (
+    order_blocks,
     parse_think_tags,  # noqa: F401
 )
 from .tool_arguments import parse_tool_arguments
@@ -106,7 +110,6 @@ class OpenAIResponsesConverter(BaseConverter):
 
         # --- iterate output items -----------------------------------------
         blocks: list = []
-        reasoning_text = ""
         tool_calls_raw: list[dict] = []
         output_items = getattr(response, "output", [])
 
@@ -123,7 +126,6 @@ class OpenAIResponsesConverter(BaseConverter):
                 # signals that reasoning occurred.
                 summary = r if r else "(reasoning performed - enable summary to see details)"
                 blocks.append(ReasoningBlock(summary=summary))
-                reasoning_text += ("\n" + summary) if reasoning_text else summary
 
             elif item_type == "message":
                 t = self._extract_text_from_message_item(item)
@@ -153,8 +155,8 @@ class OpenAIResponsesConverter(BaseConverter):
         return Message(
             message_id=generate_id(resp_id),
             role="assistant",
-            content=blocks,
-            reasoning=reasoning_text,
+            content=order_blocks(blocks),
+            parsed_content=self._extract_parsed_output(response),
             timestamp=created,
             metadata={
                 "provider": "openai",
@@ -165,6 +167,20 @@ class OpenAIResponsesConverter(BaseConverter):
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
             tools_calls=tool_calls_raw if tool_calls_raw else None,
         )
+
+    @staticmethod
+    def _extract_parsed_output(response: Any) -> dict | BaseModel | None:
+        """Return the structured result of ``responses.parse()``, or None.
+
+        ``ParsedResponse.output_parsed`` holds the ``text_format`` instance; a plain
+        ``Response`` from ``responses.create()`` has no such attribute.
+        """
+        parsed = getattr(response, "output_parsed", None)
+        if isinstance(parsed, BaseModel | dict):
+            return parsed
+        if is_dataclass(parsed) and not isinstance(parsed, type):
+            return asdict(parsed)
+        return None
 
     # ---- streaming ------------------------------------------------------
 
@@ -180,12 +196,14 @@ class OpenAIResponsesConverter(BaseConverter):
         Yields intermediate ``Message(delta=True)`` per event and a final
         ``Message(delta=False)`` when the stream completes.
         """
-        # If it's not iterable at all, try the non-streaming path
-        if not hasattr(response, "__aiter__") and not hasattr(response, "__iter__"):
+        # A whole Response (for example from responses.parse) is a pydantic model, which
+        # defines __iter__, so check for it before treating the object as an event stream.
+        if not hasattr(response, "__aiter__"):
             if is_responses_api_response(response):
                 yield await self.convert_response(response)
                 return
-            raise TypeError("Unsupported response type for OpenAIResponsesConverter")
+            if not hasattr(response, "__iter__"):
+                raise TypeError("Unsupported response type for OpenAIResponsesConverter")
 
         async for msg in self._handle_stream(config, node_name, response, meta):
             yield msg
@@ -222,7 +240,6 @@ class OpenAIResponsesConverter(BaseConverter):
             message_id=generate_id(None),
             role="assistant",
             content=final_blocks,
-            reasoning=state.accumulated_reasoning,
             delta=False,
             tools_calls=state.tool_calls if state.tool_calls else None,
             metadata=metadata,
@@ -232,7 +249,7 @@ class OpenAIResponsesConverter(BaseConverter):
     async def _iterate_stream_events(self, stream: Any) -> AsyncGenerator[Any]:
         """Yield stream events from async or sync Responses API iterators."""
         try:
-            async for event in stream:
+            async for event in iter_with_idle_timeout(stream):
                 yield event
             return
         except TypeError:
@@ -272,9 +289,12 @@ class OpenAIResponsesConverter(BaseConverter):
         return [self._build_delta_message([TextBlock(text=delta_text)] if delta_text else [])]
 
     def _handle_reasoning_delta(self, state: _ResponseStreamState, event: Any) -> list[Message]:
-        """Accumulate streaming reasoning text."""
-        state.accumulated_reasoning += getattr(event, "delta", "")
-        return []
+        """Accumulate streaming reasoning text and emit it as a reasoning delta."""
+        delta_text = getattr(event, "delta", "")
+        state.accumulated_reasoning += delta_text
+        return (
+            [self._build_delta_message([ReasoningBlock(summary=delta_text)])] if delta_text else []
+        )
 
     def _handle_function_call_argument_delta(
         self,
@@ -390,10 +410,10 @@ class OpenAIResponsesConverter(BaseConverter):
     def _build_final_blocks(self, state: _ResponseStreamState) -> list:
         """Build the final content blocks after a Responses API stream ends."""
         final_blocks: list = []
-        if state.accumulated_text:
-            final_blocks.append(TextBlock(text=state.accumulated_text))
         if state.accumulated_reasoning:
             final_blocks.append(ReasoningBlock(summary=state.accumulated_reasoning))
+        if state.accumulated_text:
+            final_blocks.append(TextBlock(text=state.accumulated_text))
         for tool_call in state.tool_calls:
             function_data = tool_call.get("function", {})
             final_blocks.append(

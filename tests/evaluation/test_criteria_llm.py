@@ -117,22 +117,49 @@ class TestLLMCallerMixinCallLLMScore:
         assert reasoning == ""
 
     @pytest.mark.asyncio
-    async def test_call_llm_json_no_provider_available(self):
-        """Returns default dict when no LLM library is available."""
+    async def test_call_llm_json_unsupported_provider_raises(self):
+        """An unsupported provider is an error, never a believable 0.5 score."""
 
+        class TestCriterion(LLMCallerMixin):
+            config = CriterionConfig(judge_model="claude-3-5-sonnet")
+
+        with pytest.raises(RuntimeError, match="No LLM provider available"):
+            await TestCriterion()._call_llm_json("prompt")
+
+    @pytest.mark.asyncio
+    async def test_call_llm_json_llm_error_propagates(self):
         class TestCriterion(LLMCallerMixin):
             config = CriterionConfig(judge_model="gemini-2.5-flash")
 
-        criterion = TestCriterion()
-
-        with (
-            patch.object(TestCriterion, "_call_google_json", new=AsyncMock(return_value=None)),
-            patch.object(TestCriterion, "_call_openai_json", new=AsyncMock(return_value=None)),
+        with patch(
+            "tenxgraph.qa.evaluation.criteria.llm_utils.call_llm",
+            new=AsyncMock(side_effect=RuntimeError("403 PERMISSION_DENIED")),
         ):
-            result, usage = await criterion._call_llm_json("prompt")
+            with pytest.raises(RuntimeError, match="403 PERMISSION_DENIED"):
+                await TestCriterion()._call_llm_json("prompt")
 
-        assert result["score"] == pytest.approx(0.5)
-        assert "reasoning" in result
+    @pytest.mark.asyncio
+    async def test_llm_judge_reports_error_with_real_message(self):
+        criterion = LLMJudgeCriterion(config=CriterionConfig(num_samples=1))
+        with patch(
+            "tenxgraph.qa.evaluation.criteria.llm_utils.call_llm",
+            new=AsyncMock(side_effect=RuntimeError("401 bad key")),
+        ):
+            result = await criterion.evaluate(_make_result("answer"), _make_case("expected"))
+        assert result.is_error
+        assert "401 bad key" in result.error
+        assert result.passed is False
+
+    @pytest.mark.asyncio
+    async def test_simulation_goals_reports_error_with_real_message(self):
+        criterion = SimulationGoalsCriterion(config=CriterionConfig())
+        with patch(
+            "tenxgraph.qa.evaluation.criteria.llm_utils.call_llm",
+            new=AsyncMock(side_effect=RuntimeError("quota exceeded")),
+        ):
+            result = await criterion.evaluate(_make_result("answer"), _make_case("goal"))
+        assert result.is_error
+        assert "quota exceeded" in result.error
 
 
 # ---------------------------------------------------------------------------

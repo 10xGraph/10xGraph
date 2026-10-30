@@ -11,6 +11,8 @@ import pathlib
 import typing as t
 import uuid
 
+from tenxgraph.utils.log_safety import log_safe
+
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
 
@@ -152,8 +154,8 @@ def generic_tool_failure(
     ref = uuid.uuid4().hex[:8]
     (log or logger).error(
         "Tool '%s' (tool_call_id=%s) failed with an internal error (reference %s)",
-        tool_name,
-        tool_call_id,
+        log_safe(tool_name),
+        log_safe(tool_call_id),
         ref,
         exc_info=(type(exc), exc, exc.__traceback__),
     )

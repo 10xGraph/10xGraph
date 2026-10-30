@@ -36,6 +36,27 @@ _USER_ID_REQUIRED = (
 )
 
 
+def limit_to_token_budget(
+    results: list[MemorySearchResult], max_tokens: int | None
+) -> list[MemorySearchResult]:
+    """Keep leading results whose summed content fits ``max_tokens`` (about 4 characters each).
+
+    The first result is always kept, so a single large memory is not dropped to nothing.
+    ``None`` or a non-positive budget means no limit.
+    """
+    if not max_tokens or max_tokens <= 0:
+        return results
+    kept: list[MemorySearchResult] = []
+    used = 0
+    for item in results:
+        cost = len(item.content or "") // 4 + 1
+        if kept and used + cost > max_tokens:
+            break
+        kept.append(item)
+        used += cost
+    return kept
+
+
 def system_user_id(name: str) -> str:
     """Return the reserved owner id ``"__system__:<name>"`` for shared data called ``name``."""
     if not isinstance(name, str) or not name.strip():

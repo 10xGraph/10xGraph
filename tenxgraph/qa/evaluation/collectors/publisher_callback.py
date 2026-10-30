@@ -90,13 +90,18 @@ class PublisherCallback(AfterInvokeCallback):
     ) -> EventModel | None:
         """Build an EventModel from callback arguments, or None for unhandled types."""
         if context.invocation_type in (InvocationType.TOOL, InvocationType.MCP):
+            # Record what the model sent, not the resolved kwargs: input_data also carries
+            # injected parameters (state, emit, Inject[...] services) that are not the
+            # model's arguments. Fall back to input_data when no raw args are available.
+            raw_args = (context.metadata or {}).get("args")
+            call_args = raw_args if isinstance(raw_args, dict) else input_data
             return EventModel(
                 event=Event.TOOL_EXECUTION,
                 event_type=EventType.END,
                 node_name=context.function_name or context.node_name or "",
                 data={
                     "function_name": context.function_name,
-                    "args": input_data if isinstance(input_data, dict) else {},
+                    "args": dict(call_args) if isinstance(call_args, dict) else {},
                     "result": str(output_data) if output_data is not None else "",
                     "tool_call_id": (context.metadata or {}).get("tool_call_id", ""),
                 },

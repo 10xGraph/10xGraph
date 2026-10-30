@@ -138,10 +138,7 @@ class TestToolDecorator:
     def test_tool_decorator_invalid_input(self):
         """Test that decorator raises error for non-callable."""
         with pytest.raises(ValueError, match="can only be applied to callable"):
-
-            @tool("invalid") # type: ignore
-            class NotAFunction:  # type: ignore
-                pass
+            tool(name="invalid")(123)  # type: ignore
 
     def test_has_tool_decorator_false(self):
         """Test has_tool_decorator returns False for undecorated functions."""
@@ -455,3 +452,25 @@ class TestToolDecoratorSchemaGeneration:
         assert "properties" in params
         assert "param1" in params["properties"]
         assert "param2" in params["properties"]
+
+
+def test_positional_name_form_documented_in_docstring():
+    @tool("calculator")
+    def add(a: int, b: int) -> int:
+        """Add."""
+        return a + b
+
+    assert add._py_tool_name == "calculator"
+    assert add(1, 2) == 3
+
+
+def test_bound_method_can_be_decorated():
+    class Box:
+        def ping(self) -> str:
+            """Ping."""
+            return "pong"
+
+    box = Box()
+    bound = tool(box.ping, name="ping_tool")
+    assert bound._py_tool_name == "ping_tool"
+    assert bound() == "pong"

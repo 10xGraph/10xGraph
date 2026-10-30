@@ -13,6 +13,14 @@ from tenxgraph.core.graph.agent import Agent
 # ---------------------------------------------------------------------------
 
 
+class _StatusError(Exception):
+    """An SDK-style error carrying an HTTP ``status_code``."""
+
+    def __init__(self, status_code, message=""):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _mock_client():
     """Create a minimal mock OpenAI-style client."""
     client = MagicMock()
@@ -108,7 +116,7 @@ class TestResponsesFallback:
         """base_url set + responses.create fails → falls back to chat."""
         client = _mock_client()
         client.responses.create = AsyncMock(
-            side_effect=Exception("404: Not Found"))
+            side_effect=_StatusError(404, "404: Not Found"))
         agent = _create_agent(api_style="responses",
                               base_url="http://localhost:11434/v1",
                               client=client)
@@ -136,7 +144,7 @@ class TestResponsesFallback:
         """_effective_api_style becomes 'chat' after fallback."""
         client = _mock_client()
         client.responses.create = AsyncMock(
-            side_effect=Exception("Not supported"))
+            side_effect=_StatusError(501, "Not supported"))
         agent = _create_agent(api_style="responses",
                               base_url="http://localhost:8000/v1",
                               client=client)

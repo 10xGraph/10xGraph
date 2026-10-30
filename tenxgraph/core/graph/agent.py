@@ -15,7 +15,12 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.storage.media.config import MultimodalConfig
 
 from .agent_internal.anthropic import AgentAnthropicMixin
-from .agent_internal.constants import DEFAULT_RETRY_CONFIG, REASONING_DEFAULT, RetryConfig
+from .agent_internal.constants import (
+    DEFAULT_RETRY_CONFIG,
+    REASONING_DEFAULT,
+    RetryConfig,
+    default_reasoning_config,
+)
 from .agent_internal.execution import AgentExecutionMixin
 from .agent_internal.google import AgentGoogleMixin
 from .agent_internal.memory import AgentMemoryMixin
@@ -150,17 +155,24 @@ class Agent(
                 (ollama, vllm, openrouter, deepseek, etc.). Default: ``None``.
             api_style: API style for OpenAI provider. ``"chat"`` uses
                 Chat Completions, ``"responses"`` uses the Responses API.
-                Default: ``"chat"``.
+                Default: ``"responses"``, except when ``base_url`` is set, where
+                it is ``"chat"`` because most OpenAI-compatible servers only
+                implement Chat Completions. An explicit value always wins. With
+                ``"responses"`` and a ``base_url``, the first call probes the
+                server; if it answers 404, 405 or 501 (no Responses API) the agent logs
+                one warning and uses Chat Completions for the rest of its lifetime.
+                Other errors (429, timeouts, 5xx) are raised and do not switch it.
             memory: Optional ``MemoryConfig`` enabling agent-level long-term
                 memory tools and system prompts.
             reasoning_config: Unified reasoning control for all providers. Default
-                is ``{"effort": "medium"}`` (on). Pass ``None`` to turn off.
-                ``effort`` applies to both providers; ``summary`` is OpenAI-only;
+                (and ``True``) is reasoning on at the provider's lowest effort: OpenAI
+                ``"minimal"``, Anthropic ``"low"``, Google ``"low"`` (``thinking_budget=512``).
+                Pass ``None`` to turn off. ``effort`` applies to every provider;
+                ``summary`` is OpenAI-only (Responses defaults it to ``"auto"``);
                 ``thinking_budget`` is Google-only and overrides ``effort``.
 
                 For Google, ``effort`` is translated to ``thinking_budget`` automatically:
-                ``"low"`` → 512, ``"medium"`` → 8192 (default), ``"high"`` → 24576.
-                So thinking is **on by default** for Google with ``thinking_budget=8192``.
+                ``"low"`` → 512, ``"medium"`` → 8192, ``"high"`` → 24576.
 
                 Examples::
 
@@ -242,8 +254,10 @@ class Agent(
         # Pop kwargs-only params before passing to parent
         base_url: str | None = kwargs.pop("base_url", None)
         provider: str | None = kwargs.pop("provider", None)
-        # this is mainly for OpenAI-compatible APIs but can be used as a hint for provider detection
-        api_style: str = kwargs.pop("api_style", "chat")
+        # Default is "responses" for OpenAI, but "chat" behind a custom base_url (most
+        # OpenAI-compatible servers only speak Chat Completions). An explicit value wins.
+        api_style_arg: str | None = kwargs.pop("api_style", None)
+        api_style: str = api_style_arg or ("chat" if base_url else "responses")
 
         # check user using vertex ai for google or other model
         use_vertex_ai: bool = kwargs.pop(
@@ -300,11 +314,19 @@ class Agent(
         if api_style not in ("chat", "responses"):
             raise ValueError(f"Invalid api_style '{api_style}'. Supported: 'chat', 'responses'")
         self.api_style = api_style
+        # base_url values whose server rejected the Responses API. Mutable and shared with the
+        # per-attempt copies of this Agent, so one failed probe sticks for the Agent's lifetime.
+        self._responses_unsupported_urls: set[str] = set()
 
-        # Apply default (medium effort) when not explicitly provided;
-        # True or sentinel = enable with defaults; False or None = disabled.
-        if reasoning_config is REASONING_DEFAULT or reasoning_config is True:
-            reasoning_config = {"effort": "medium"}
+        # True or sentinel = reasoning on at the provider's lowest effort
+        # (DEFAULT_REASONING_EFFORT_BY_PROVIDER, resolved per request so a fallback on another
+        # provider gets its own value); False or None = disabled; a dict is sent as given.
+        # Remember whether the user chose a value: the chat path only sends reasoning
+        # parameters for an explicit choice, never for the implicit default.
+        self._reasoning_explicit = reasoning_config is not REASONING_DEFAULT
+        self._reasoning_default = reasoning_config is REASONING_DEFAULT or reasoning_config is True
+        if self._reasoning_default:
+            reasoning_config = default_reasoning_config(self.provider)
         self.reasoning_config: dict[str, Any] | None = (
             None if (reasoning_config is False or reasoning_config is None) else reasoning_config
         )  # type: ignore

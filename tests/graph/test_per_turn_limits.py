@@ -48,13 +48,22 @@ async def _turn(app, thread: str, stream: bool, data: dict | None = None) -> Non
 
 
 class _FakeConverter:
+    def __init__(self, name: str):
+        self.name = name
+
     async def invoke(self) -> Message:
-        return Message.text_message("W", role="assistant")
+        return Message.text_message(self.name, role="assistant")
 
 
 class _FakeSupervisor:
+    """Never says FINISH: alternates two workers (naming the one that just ran ends the turn)."""
+
+    def __init__(self):
+        self.calls = 0
+
     async def execute(self, state, config):
-        return _FakeConverter()
+        self.calls += 1
+        return _FakeConverter("A" if self.calls % 2 else "B")
 
 
 def _supervisor_graph(runs: list, max_rounds: int = 2):
@@ -63,11 +72,13 @@ def _supervisor_graph(runs: list, max_rounds: int = 2):
         return []
 
     g = StateGraph()
-    g.add_node("SUPERVISOR", _make_supervisor_node(_FakeSupervisor(), ["W"], max_rounds))
+    g.add_node("SUPERVISOR", _make_supervisor_node(_FakeSupervisor(), ["A", "B"], max_rounds))
     g.add_node("PRE", _make_increment_rounds_node())
-    g.add_node("W", worker)
+    g.add_node("A", worker)
+    g.add_node("B", worker)
     g.add_edge("PRE", "SUPERVISOR")
-    g.add_edge("W", "PRE")
+    g.add_edge("A", "PRE")
+    g.add_edge("B", "PRE")
     g.set_entry_point("SUPERVISOR")
     return g.compile(checkpointer=InMemoryCheckpointer())
 

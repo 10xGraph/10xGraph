@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from .base_embedding import BaseEmbedding
 
@@ -18,13 +19,23 @@ class OpenAIEmbedding(BaseEmbedding):
         self,
         model: str = "text-embedding-3-small",
         api_key: str | None = None,
+        dimensions: int | None = None,
     ) -> None:
+        """Create the embedder.
+
+        Args:
+            model: OpenAI embedding model name.
+            api_key: API key; falls back to ``OPENAI_API_KEY``.
+            dimensions: Optional output size. Sent to the API, which only accepts it for the
+                ``text-embedding-3-*`` models, and used as :attr:`dimension`.
+        """
         if not HAS_OPENAI:
             raise ImportError(
                 "The 'openai' package is required for OpenAIEmbedding. "
                 "Please install it via 'pip install openai'."
             )
         self.model = model
+        self._dimensions = dimensions
         if api_key:
             self.api_key = api_key
         elif "OPENAI_API_KEY" in os.environ:
@@ -47,6 +58,7 @@ class OpenAIEmbedding(BaseEmbedding):
             response = await self.client.embeddings.create(
                 input=texts,
                 model=self.model,
+                **self._extra_args(),
             )
             return [data.embedding for data in response.data]
         except OpenAIError as e:
@@ -59,16 +71,23 @@ class OpenAIEmbedding(BaseEmbedding):
             response = await self.client.embeddings.create(
                 input=text,
                 model=self.model,
+                **self._extra_args(),
             )
             return response.data[0].embedding if response.data else []
         except OpenAIError as e:
             raise RuntimeError(f"OpenAI API error: {e}") from e
 
+    def _extra_args(self) -> dict[str, Any]:
+        return {"dimensions": self._dimensions} if self._dimensions else {}
+
     @property
     def dimension(self) -> int:
+        if self._dimensions:
+            return self._dimensions
         model_dimensions = {
+            "text-embedding-ada-002": 1536,
             "text-embedding-3-small": 1536,
-            "text-embedding-3-large": 1536,
+            "text-embedding-3-large": 3072,
             "text-embedding-3-xl": 1536,
             "text-embedding-4-base": 8192,
             "text-embedding-4-large": 8192,

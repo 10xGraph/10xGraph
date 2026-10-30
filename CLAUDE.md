@@ -100,6 +100,14 @@ Note: the root `tenxgraph/__init__.py` exports `StateGraph`, `Agent`, `ToolNode`
 
 **CompiledGraph execution API:** `invoke` / `ainvoke` (run), `stream` / `astream` (incremental),
 `stop` / `astop` (interrupt), `override_node`, `attach_remote_tools`, `generate_graph`, `aclose`.
+- `aclose(grace=None, stop_timeout=None, timeout=None)`: refuses new runs (`GraphClosedError`), waits
+  `grace` for active runs, sets their in-process stop flag (each saves INTERRUPTED) and waits
+  `stop_timeout`, hard-cancels the rest (reason `shutdown`), drains background tasks, releases
+  resources by the ownership rules. Defaults split `shutdown_timeout` 50/25/25. Returns stats with
+  `runs` counts. Twice is a no-op. Runs are tracked in `core/graph/utils/run_registry.py`
+  (`RunHandle`, `current_run`); `astop()` also sets the in-process flag, so stop works with no
+  checkpointer or a failing cache. Core installs no signal handlers; the opt-in
+  `tenxgraph.utils.shutdown.install_shutdown_signals(graph)` connects SIGTERM and SIGINT to `aclose()`.
 - Pause from inside a node or tool with `tenxgraph.utils.interrupt(value, message=..., ...)`; the
   run saves the thread paused before that node. Resume with `invoke({"resume": value}, config)`:
   the node re-runs and `interrupt()` returns `value`. `GraphInterrupt` is a `BaseException`.
@@ -144,7 +152,7 @@ dropped because prefill 400s on current models. `output_type` is limited to `tex
 
 Note the SDK is capped at `anthropic>=1.0.0,<2`. The 1.0 release moved to **httpx2**, so an
 `http_client` passed through `llm_kwargs` on the Anthropic path must be an httpx2 client,
-while the OpenAI path still takes httpx.
+while the OpenAI path takes httpx2 on openai 3.x (httpx on 1.x/2.x).
 
 **ToolNode.** `ToolNode(tools, client=None, pass_user_info_to_mcp=False)`. First positional arg
 is `tools` (an iterable of callables). `client` is an MCP client (fastmcp/mcp). Tools run in

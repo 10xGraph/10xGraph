@@ -6,6 +6,12 @@ Pattern: GENERATE → (validate) → END
 The agent guarantees that tool-use is handled transparently inside the generation
 loop (GENERATE ↔ TOOL) before validation is attempted, so tools and structured
 output work together without extra graph wiring.
+
+Google GenAI cannot combine function calling with a JSON output schema in one
+request. When tools are given and the resolved provider is Google, the agent uses
+a two-step graph instead: GENERATE (tools, plain text) ↔ TOOL, then FORMAT (schema,
+no tools) turns the finished conversation into the schema, and validation and
+REPAIR loop over FORMAT. OpenAI and Anthropic keep the single-node graph.
 """
 
 from __future__ import annotations
@@ -45,6 +51,10 @@ StateT = TypeVar("StateT", bound=AgentState)
 
 # Keys used in execution_meta.internal_data
 _ATTEMPTS_KEY = register_per_turn_key("soa_attempts")
+
+# Transient user turn appended to the FORMAT request (never saved to state). A request
+# that ends on an assistant turn makes Gemini return an empty reply.
+FORMAT_REQUEST_NOTE = "Return the answer above as JSON that matches the schema."
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +131,7 @@ def _make_route_fn(
     *,
     has_tools: bool,
 ) -> Callable[[AgentState], str]:
-    """Build the conditional-edge routing function for the GENERATE node."""
+    """Build the conditional-edge routing function that validates the structured reply."""
 
     adapter = _build_type_adapter(output_schema)
 
@@ -142,7 +152,7 @@ def _make_route_fn(
 
         # Validate the final assistant response.
         attempts = state.execution_meta.internal_data.get(_ATTEMPTS_KEY, 0)
-        is_valid, _ = _validate_message(last, adapter)
+        is_valid, error = _validate_message(last, adapter)
 
         if is_valid:
             logger.debug("Structured output validated successfully after %d attempt(s).", attempts)
@@ -153,6 +163,9 @@ def _make_route_fn(
                 "Max structured output repair attempts (%d) reached; returning best response.",
                 max_attempts,
             )
+            # Mark the reply so callers can tell it does not match the schema.
+            last.metadata["structured_output_valid"] = False
+            last.metadata["structured_output_error"] = error
             return END
 
         return "REPAIR"
@@ -197,6 +210,56 @@ def _make_repair_fn(output_schema: type) -> Callable:
     return _repair
 
 
+def _make_generate_route_fn() -> Callable[[AgentState], str]:
+    """Route the plain-text GENERATE node (Google + tools): tool calls go to TOOL, else FORMAT."""
+
+    def _route(state: AgentState) -> str:
+        if not state.context:
+            return END
+        last = state.context[-1]
+        if last.role == "assistant" and last.tools_calls:
+            return "TOOL"
+        return "FORMAT"
+
+    return _route
+
+
+def _make_format_node(format_agent: Agent) -> Callable:
+    """Wrap *format_agent* so its request always ends with a user turn.
+
+    Tool calls and tool results are hidden from the view (as in the PlanActReflect
+    reflector); the conversation ends with GENERATE's plain-text answer (an assistant
+    turn). One transient user message (``FORMAT_REQUEST_NOTE``) is added to the request
+    view only; it is never saved to state. After a REPAIR the context already ends with
+    the correction user message, so nothing is added.
+    """
+
+    async def _format(state: AgentState, config: dict) -> object:
+        original_context = state.context
+        # Hide tool results and tool-call-only turns, and strip tool calls from
+        # assistant turns that have text, so the schema-only request never carries
+        # function-call history. GENERATE's final text already states the results.
+        visible: list[Message] = []
+        for msg in original_context or []:
+            if msg.role == "tool":
+                continue
+            if msg.role == "assistant" and msg.tools_calls:
+                if not msg.text().strip():
+                    continue
+                msg = msg.model_copy(update={"tools_calls": None})  # noqa: PLW2901
+            visible.append(msg)
+        if not visible or visible[-1].role != "user":
+            visible.append(Message.text_message(FORMAT_REQUEST_NOTE, role="user"))
+        state.context = visible
+        try:
+            return await format_agent.execute(state, config)
+        finally:
+            state.context = original_context
+
+    _format.__name__ = "format"
+    return _format
+
+
 # ---------------------------------------------------------------------------
 # StructuredOutputAgent
 # ---------------------------------------------------------------------------
@@ -236,6 +299,19 @@ class StructuredOutputAgent[StateT: AgentState]:
                  \\-[invalid, attempts < max]--> REPAIR --> GENERATE
                  \\-[tool calls (if tools provided)]--> TOOL --> GENERATE
 
+    On Google with tools, one request cannot hold both tools and a JSON schema, so
+    the graph has a second step::
+
+        GENERATE (tools, plain text) --[tool calls]--> TOOL --> GENERATE
+                 \\-[no tool calls]--> FORMAT (schema, no tools)
+        FORMAT --[valid]--> END
+               \\-[invalid, attempts < max]--> REPAIR --> FORMAT
+
+    GENERATE uses *system_prompt* as given. FORMAT uses the same prompt, so field
+    rules in it still apply, and sees the conversation plus a transient user message
+    (not saved) asking for the schema. GENERATE's plain-text answer stays in the saved
+    context; the turn's final reply is FORMAT's structured message.
+
     Args:
         model: LLM model identifier (e.g. ``"gpt-4o-mini"``, ``"gemini-2.0-flash"``).
         output_schema: Pydantic ``BaseModel`` subclass or ``TypedDict`` subclass
@@ -244,7 +320,9 @@ class StructuredOutputAgent[StateT: AgentState]:
         system_prompt: System prompt for the generation agent.
         max_attempts: Maximum number of repair+retry cycles per turn before
             accepting the best available response (default ``2``).  The count
-            resets on each new turn of a thread.
+            resets on each new turn of a thread.  A reply that still fails
+            validation carries ``metadata["structured_output_valid"] = False`` and
+            ``metadata["structured_output_error"]``.
         repair_system_prompt: System prompt for the repair agent.  When
             ``None`` (default) the repair node is a lightweight context-
             injection function rather than a full LLM call, which keeps
@@ -351,7 +429,8 @@ class StructuredOutputAgent[StateT: AgentState]:
             return None
         return ToolNode(tools, client=client, pass_user_info_to_mcp=pass_user_info_to_mcp)
 
-    def _build_generate_agent(self) -> Agent:
+    def _build_generate_agent(self, *, with_schema: bool = True) -> Agent:
+        extra: dict[str, Any] = {"output_schema": self._output_schema} if with_schema else {}
         return Agent(
             model=self._model,
             output_type=self._output_type,
@@ -362,6 +441,24 @@ class StructuredOutputAgent[StateT: AgentState]:
             tools_tags=self._tools_tags,
             reasoning_config=self._reasoning_config,
             skills=self._skills,
+            memory=self._memory,
+            retry_config=self._retry_config,
+            fallback_models=self._fallback_models,
+            multimodal_config=self._multimodal_config,
+            **extra,
+            **self._agent_kwargs,
+        )
+
+    def _build_format_agent(self) -> Agent:
+        """Schema-only agent (no tools) for the Google + tools FORMAT step."""
+        return Agent(
+            model=self._model,
+            output_type=self._output_type,
+            system_prompt=self._system_prompt,
+            tool_node=None,
+            extra_messages=self._extra_messages,
+            trim_context=self._trim_context,
+            reasoning_config=self._reasoning_config,
             memory=self._memory,
             retry_config=self._retry_config,
             fallback_models=self._fallback_models,
@@ -392,6 +489,14 @@ class StructuredOutputAgent[StateT: AgentState]:
 
         # --- GENERATE node ---
         generate_agent = self._build_generate_agent()
+        # Google cannot combine function calling with a JSON schema in one request, so
+        # with tools it needs a separate FORMAT step.  The provider is read from the
+        # built Agent (it resolves it from ``provider=`` or the model string).
+        two_step = (
+            self._tool_node is not None and getattr(generate_agent, "provider", None) == "google"
+        )
+        if two_step:
+            generate_agent = self._build_generate_agent(with_schema=False)
         self._graph.add_node("GENERATE", generate_agent)
 
         # --- TOOL node (optional) ---
@@ -409,22 +514,34 @@ class StructuredOutputAgent[StateT: AgentState]:
             repair_node = _make_repair_fn(self._output_schema)
 
         self._graph.add_node("REPAIR", repair_node)
-        self._graph.add_edge("REPAIR", "GENERATE")
 
-        # --- Conditional edges from GENERATE ---
-        path_map: dict[str, str] = {"REPAIR": "REPAIR", END: END}
-        if self._tool_node is not None:
-            path_map["TOOL"] = "TOOL"
-
-        self._graph.add_conditional_edges(
-            "GENERATE",
-            _make_route_fn(
-                self._output_schema,
-                self._max_attempts,
-                has_tools=self._tool_node is not None,
-            ),
-            path_map,
-        )
+        if two_step:
+            self._graph.add_node("FORMAT", _make_format_node(self._build_format_agent()))
+            self._graph.add_edge("REPAIR", "FORMAT")
+            self._graph.add_conditional_edges(
+                "GENERATE",
+                _make_generate_route_fn(),
+                {"TOOL": "TOOL", "FORMAT": "FORMAT", END: END},
+            )
+            self._graph.add_conditional_edges(
+                "FORMAT",
+                _make_route_fn(self._output_schema, self._max_attempts, has_tools=False),
+                {"REPAIR": "REPAIR", END: END},
+            )
+        else:
+            self._graph.add_edge("REPAIR", "GENERATE")
+            path_map: dict[str, str] = {"REPAIR": "REPAIR", END: END}
+            if self._tool_node is not None:
+                path_map["TOOL"] = "TOOL"
+            self._graph.add_conditional_edges(
+                "GENERATE",
+                _make_route_fn(
+                    self._output_schema,
+                    self._max_attempts,
+                    has_tools=self._tool_node is not None,
+                ),
+                path_map,
+            )
 
         # --- Entry point ---
         self._graph.set_entry_point("GENERATE")

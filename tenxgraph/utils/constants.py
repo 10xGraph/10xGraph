@@ -15,17 +15,11 @@ END: Literal["__end__"] = "__end__"
 
 # Execution deadlines.
 #
-# Nothing else bounds a node or a tool: the LLM SDK's own timeout (600s) does not
-# cover custom tools, MCP calls, or condition functions, so a hung call would
-# block a run forever. These are deliberately generous -- they are a backstop
-# against hangs, not a latency budget -- and both can be overridden per run via
-# the `node_timeout` / `tool_timeout` config keys, or disabled with None/0.
-#
-# The node default sits above DEFAULT_LLM_TIMEOUT_SECONDS (600s) so that a slow
-# LLM call fails on its own timeout, with its own error, rather than being masked
-# by the node deadline.
-DEFAULT_NODE_TIMEOUT_SECONDS: float = 900.0
-DEFAULT_TOOL_TIMEOUT_SECONDS: float = 300.0
+# There is no built-in limit on a node or a tool: how long they may run is the developer's
+# call. Set the `node_timeout` / `tool_timeout` config keys (seconds) to bound them; a value
+# set there applies on both `invoke` and `stream`. None (or 0) means no limit.
+DEFAULT_NODE_TIMEOUT_SECONDS: float | None = None
+DEFAULT_TOOL_TIMEOUT_SECONDS: float | None = None
 
 # How many tool calls from one assistant message may run at the same time. Each
 # parallel branch holds a deep copy of the state, so an unbounded fan-out

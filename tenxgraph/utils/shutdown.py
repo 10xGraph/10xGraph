@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -334,11 +335,122 @@ async def shutdown_with_timeout(
         # Cancel if it's a task
         if isinstance(coro_or_task, asyncio.Task):
             coro_or_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await coro_or_task
+            # Not ``suppress(CancelledError)`` around ``await``: that would also absorb a
+            # cancel aimed at the caller while it waits here.
+            await asyncio.wait({coro_or_task})
+            if not coro_or_task.cancelled():
+                coro_or_task.exception()  # mark any error as retrieved
 
         return {"status": "timeout", "duration": duration}
     except Exception as e:
         duration = asyncio.get_event_loop().time() - start_time
         logger.exception("Error during shutdown of %s: %s", task_name, e)
         return {"status": "error", "error": str(e), "duration": duration}
+
+
+class SignalShutdown:
+    """Handle returned by :func:`install_shutdown_signals`.
+
+    Attributes:
+        close_task: The task running ``graph.aclose()``; ``None`` until a signal arrives.
+    """
+
+    def __init__(
+        self,
+        graph: Any,
+        loop: Any,
+        signals: tuple[int, ...],
+        close_kwargs: dict[str, Any],
+    ):
+        self._graph = graph
+        self._loop = loop
+        self._signals = signals
+        self._close_kwargs = close_kwargs
+        self._installed: list[int] = []
+        self.close_task: Any = None
+
+    def _on_signal(self, sig: int) -> None:
+        name = SIGNAL_NAMES.get(sig, str(sig))
+        if self.close_task is not None:
+            logger.info("Received %s again; the graph is already closing", name)
+            return
+        logger.info("Received %s, closing the graph", name)
+        self.close_task = self._loop.create_task(self._graph.aclose(**self._close_kwargs))
+
+    async def wait(self) -> dict[str, Any] | None:
+        """Wait for the close that a signal started; returns its stats (``None`` if none ran)."""
+        if self.close_task is None:
+            return None
+        return await self.close_task
+
+    def uninstall(self) -> None:
+        """Remove the handlers this helper installed."""
+        for sig in self._installed:
+            with contextlib.suppress(Exception):
+                self._loop.remove_signal_handler(sig)
+        self._installed.clear()
+
+
+def install_shutdown_signals(
+    graph: Any,
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+    signals: tuple[int, ...] = (signal.SIGTERM, signal.SIGINT),
+    grace: float | None = None,
+    stop_timeout: float | None = None,
+    timeout: float | None = None,
+) -> SignalShutdown:
+    """Connect SIGTERM and SIGINT to ``graph.aclose()`` on the running loop (opt-in).
+
+    10xGraph never installs signal handlers by itself: the host program owns the process. Call
+    this once, from the main thread and inside the running event loop, if you want a signal to
+    end active runs gracefully (grace, then stop, then cancel; see ``CompiledGraph.aclose``)
+    and release the graph's resources::
+
+        async def main():
+            graph = build_graph().compile(checkpointer=checkpointer, shutdown_timeout=30)
+            shutdown = install_shutdown_signals(graph)
+            try:
+                await serve(graph)
+            finally:
+                shutdown.uninstall()
+
+    Notes:
+        - Main thread only (an event loop can add signal handlers only there); a
+          ``RuntimeError`` is raised from any other thread.
+        - Not available on Windows event loops (``NotImplementedError`` is logged and the
+          signal is skipped).
+        - It replaces the default SIGINT behaviour (``KeyboardInterrupt``) while installed.
+        - The first signal starts ``aclose()``; later signals are ignored. ``grace``,
+          ``stop_timeout`` and ``timeout`` go to ``aclose()`` unchanged.
+        - Servers that already handle SIGTERM (uvicorn, Gunicorn) should call
+          ``graph.aclose()`` from their shutdown hook instead.
+
+    Args:
+        graph: The ``CompiledGraph`` to close.
+        loop: The running loop; defaults to ``asyncio.get_running_loop()``.
+        signals: Signals to handle.
+        grace: Passed to ``aclose()``.
+        stop_timeout: Passed to ``aclose()``.
+        timeout: Passed to ``aclose()``.
+
+    Returns:
+        A :class:`SignalShutdown` with ``uninstall()`` and ``wait()``.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("install_shutdown_signals() must be called from the main thread")
+    if loop is None:
+        loop = asyncio.get_running_loop()
+    handle = SignalShutdown(
+        graph,
+        loop,
+        tuple(signals),
+        {"grace": grace, "stop_timeout": stop_timeout, "timeout": timeout},
+    )
+    for sig in handle._signals:
+        try:
+            loop.add_signal_handler(sig, handle._on_signal, sig)
+            handle._installed.append(sig)
+        except (NotImplementedError, ValueError, RuntimeError) as e:
+            logger.warning("Could not install a handler for %s: %s", SIGNAL_NAMES.get(sig, sig), e)
+    return handle

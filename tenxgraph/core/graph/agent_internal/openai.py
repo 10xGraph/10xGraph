@@ -5,10 +5,38 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .constants import CALL_EXCLUDED_KWARGS
+from .constants import CALL_EXCLUDED_KWARGS, resolve_reasoning_config
 
 
 logger = logging.getLogger("tenxgraph.agent")
+
+# Models that answered the default reasoning parameter with a 400 (non-reasoning models such as
+# gpt-4o). Process-local: later calls with the default config skip reasoning for them. An
+# explicit reasoning_config is never affected.
+_REASONING_REJECTED_MODELS: set[str] = set()
+
+# Status codes meaning the endpoint does not exist or is not implemented on the server. Only
+# these switch a custom base_url from the Responses API to Chat Completions.
+_ENDPOINT_UNSUPPORTED_STATUS = frozenset({404, 405, 501})
+
+
+def is_endpoint_unsupported(exc: BaseException) -> bool:
+    """True when ``exc`` says the endpoint is missing or unsupported (404, 405, 501)."""
+    return getattr(exc, "status_code", None) in _ENDPOINT_UNSUPPORTED_STATUS
+
+
+def is_reasoning_rejected(exc: BaseException) -> bool:
+    """True when ``exc`` is a 400 that names the reasoning parameter.
+
+    The error's ``param`` decides when the server sets one, so a 400 about reasoning items in
+    the input (``param="input"``) does not count; the message is checked only without it.
+    """
+    if getattr(exc, "status_code", None) != 400:  # noqa: PLR2004
+        return False
+    param = getattr(exc, "param", None)
+    if param:
+        return "reasoning" in str(param).lower()
+    return "reasoning" in str(exc).lower()
 
 
 def _to_responses_content(content: Any) -> Any:
@@ -81,6 +109,17 @@ def _to_responses_content(content: Any) -> Any:
 class AgentOpenAIMixin:
     """OpenAI and OpenAI-compatible API request helpers."""
 
+    def _openai_reasoning_config(self) -> dict[str, Any] | None:
+        """Reasoning config for this OpenAI request, or None.
+
+        The default config is dropped for a model in ``_REASONING_REJECTED_MODELS``.
+        """
+        if getattr(self, "_reasoning_default", False) and (
+            getattr(self, "model", None) in _REASONING_REJECTED_MODELS
+        ):
+            return None
+        return resolve_reasoning_config(self)
+
     async def _call_openai(
         self,
         messages: list[dict[str, Any]],
@@ -100,8 +139,8 @@ class AgentOpenAIMixin:
             if tools:
                 call_kwargs["tools"] = tools
 
-            logger.debug("Calling OpenAI beta.chat.completions.parse with model=%s", self.model)
-            response = await self.client.beta.chat.completions.parse(
+            logger.debug("Calling OpenAI chat.completions.parse with model=%s", self.model)
+            response = await self.client.chat.completions.parse(
                 model=self.model,
                 messages=messages,
                 response_format=output_schema,
@@ -117,6 +156,9 @@ class AgentOpenAIMixin:
         if self.output_type in ("text", "json"):
             if tools:
                 call_kwargs["tools"] = tools
+            if stream:
+                # Without this OpenAI sends no usage chunk and streamed runs report 0 tokens.
+                call_kwargs.setdefault("stream_options", {"include_usage": True})
 
             logger.debug("Calling OpenAI chat.completions.create with model=%s", self.model)
             response = await self.client.chat.completions.create(
@@ -234,21 +276,46 @@ class AgentOpenAIMixin:
             call_kwargs["instructions"] = instructions
         if responses_tools:
             call_kwargs["tools"] = responses_tools
-        if self.reasoning_config:  # type: ignore
-            call_kwargs["reasoning"] = self.reasoning_config
+        reasoning = self._openai_reasoning_config()
+        if reasoning:
+            # Without a summary the Responses API returns no reasoning text at all.
+            reasoning = dict(reasoning)
+            if "summary" not in reasoning and "generate_summary" not in reasoning:
+                reasoning["summary"] = "auto"
+            call_kwargs["reasoning"] = reasoning
 
         call_kwargs.pop("reasoning_effort", None)
 
-        logger.debug("Calling OpenAI responses.create with model=%s", self.model)
-        response = await self.client.responses.create(
-            model=self.model,
-            input=input_items,
-            stream=stream,
-            **call_kwargs,
-        )
+        response = await self._send_responses_request(input_items, stream, call_kwargs)
+        if getattr(self, "output_schema", None):
+            stream = False
         if not stream:
             details = getattr(getattr(response, "usage", None), "input_tokens_details", None)
             cached = getattr(details, "cached_tokens", 0) or 0
             if cached:
                 logger.debug("Cache hit: %d cached tokens (OpenAI responses API)", cached)
         return response
+
+    async def _send_responses_request(
+        self, input_items: list[dict[str, Any]], stream: bool, call_kwargs: dict[str, Any]
+    ) -> Any:
+        """Send the request: ``responses.parse`` with an output schema, else ``create``."""
+        output_schema = getattr(self, "output_schema", None)
+        if output_schema:
+            # responses.parse validates the reply into ``output_schema``. It returns the whole
+            # response at once, so streaming is turned off, as on the chat parse path.
+            logger.debug("Calling OpenAI responses.parse with model=%s", self.model)
+            return await self.client.responses.parse(
+                model=self.model,
+                input=input_items,
+                text_format=output_schema,
+                stream=False,
+                **call_kwargs,
+            )
+        logger.debug("Calling OpenAI responses.create with model=%s", self.model)
+        return await self.client.responses.create(
+            model=self.model,
+            input=input_items,
+            stream=stream,
+            **call_kwargs,
+        )

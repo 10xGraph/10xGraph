@@ -56,7 +56,9 @@ def parse_tool_arguments(raw: Any, *, tool_name: str = "") -> tuple[dict[str, An
         )
     try:
         parsed = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # RecursionError: deeply nested input overflows the decoder's stack; it is an
+        # unusable argument string like any other, not a reason to fail the run.
         return _invalid(tool_name, f"arguments are not valid JSON: {exc}", raw)
     if not isinstance(parsed, dict):
         return _invalid(

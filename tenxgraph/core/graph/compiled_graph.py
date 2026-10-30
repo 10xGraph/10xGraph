@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import datetime
 import logging
 from collections.abc import AsyncIterator, Callable, Generator
@@ -10,6 +11,7 @@ from uuid import uuid4
 
 from injectq import InjectQ
 
+from tenxgraph.core.exceptions.closed_error import GraphClosedError
 from tenxgraph.core.exceptions.graph_error import GraphError
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.tool_node.base import ToolNode
@@ -17,20 +19,25 @@ from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.core.state.stream_chunks import StreamChunk
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.storage.checkpointer import base_checkpointer
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.utils import (
     CallbackManager,
     ResponseGranularity,
+    resource_registry,
 )
-from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager, current_task_manager
+from tenxgraph.utils.callable_utils import ensure_no_running_loop, resolve_awaitable_id
 from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
 from .utils.invoke_handler import InvokeHandler
+from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
+from .utils.utils import FINALIZE_TIMEOUT_SECONDS, _detached_tasks, detach_task, wait_detached
 
 
 if TYPE_CHECKING:
@@ -42,6 +49,35 @@ if TYPE_CHECKING:
 StateT = TypeVar("StateT", bound=AgentState)
 
 logger = logging.getLogger("tenxgraph.graph")
+
+
+def _new_id() -> Any:
+    """A fresh id from the graph's id generator (sync or async), else a uuid4 string."""
+    return resolve_awaitable_id(InjectQ.get_instance().try_get("generated_id")) or str(uuid4())
+
+
+def _reset_task_manager(token: contextvars.Token) -> None:
+    """Undo the per-run task manager binding.
+
+    An async generator can be closed from a different context than the one that started
+    it, where reset() raises. The binding then simply lapses with that context.
+    """
+    try:
+        current_task_manager.reset(token)
+    except ValueError:
+        logger.debug("Task manager binding was set in another context; leaving it")
+
+
+def _reset_current_run(token: contextvars.Token) -> None:
+    """Undo the per-run handle binding (same rule as :func:`_reset_task_manager`)."""
+    try:
+        current_run.reset(token)
+    except ValueError:
+        logger.debug("Run handle binding was set in another context; leaving it")
+
+
+# How often aclose() looks at the registry while it waits for runs to end.
+_RUN_POLL_SECONDS = 0.02
 
 
 class CompiledGraph[StateT: AgentState]:
@@ -99,7 +135,7 @@ class CompiledGraph[StateT: AgentState]:
         event publishers.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         state: StateT,
         checkpointer: BaseCheckpointer[StateT] | None,
@@ -111,6 +147,8 @@ class CompiledGraph[StateT: AgentState]:
         task_manager: BackgroundTaskManager,
         shutdown_timeout: float = 30.0,
         media_policy: MediaFetchPolicy | None = None,
+        owns_resources: bool = True,
+        node_aliases: dict[str, str] | None = None,
     ):
         logger.info(
             f"Initializing CompiledGraph with nodes: {list(state_graph.nodes.keys())}",
@@ -127,12 +165,14 @@ class CompiledGraph[StateT: AgentState]:
             edges=state_graph.edges,
             interrupt_after=interrupt_after,
             interrupt_before=interrupt_before,
+            node_aliases=node_aliases,
         )
         self._stream_handler: StreamHandler[StateT] = StreamHandler[StateT](
             nodes=state_graph.nodes,
             edges=state_graph.edges,
             interrupt_after=interrupt_after,
             interrupt_before=interrupt_before,
+            node_aliases=node_aliases,
         )
 
         self._checkpointer: BaseCheckpointer[StateT] | None = checkpointer
@@ -146,6 +186,56 @@ class CompiledGraph[StateT: AgentState]:
         # Guards aclose() against being run more than once (e.g. an explicit
         # aclose() inside an ``async with`` block followed by __aexit__).
         self._closed = False
+        # Set at the first step of aclose(): new runs are refused from then on.
+        self._closing = False
+        # Runs active right now (any loop or thread); aclose() and astop() act on them.
+        self._runs = RunRegistry()
+        # Resource ownership: aclose() closes a shared resource only when the last live
+        # graph holding it closes; a graph with owns_resources=False never closes it.
+        self._owns_resources = owns_resources
+        if owns_resources:
+            for resource in (checkpointer, publisher, store):
+                resource_registry.register(resource, self)
+
+    def _skip_close(self, resource: object, name: str) -> dict[str, Any] | None:
+        """Return a skip result when this graph must not close ``resource``, else None."""
+        if not self._owns_resources:
+            return {"status": "skipped", "reason": "owns_resources=False"}
+        if not resource_registry.release(resource, self):
+            logger.info("%s is still used by another live graph; not closing it", name)
+            return {"status": "skipped", "reason": "shared with another live graph"}
+        return None
+
+    def _refuse_if_closing(self) -> None:
+        """Raise :class:`GraphClosedError` when ``aclose()`` has started."""
+        if self._closing or self._closed:
+            raise GraphClosedError()
+
+    def _begin_run(
+        self, cfg: dict[str, Any], kind: str, heartbeat: bool = True
+    ) -> tuple[RunHandle, contextvars.Token, contextvars.Token]:
+        """Register this run and bind its handle and task manager to the current context."""
+        handle = RunHandle(str(cfg.get("run_id")), cfg.get("thread_id"), kind)
+        if heartbeat:
+            handle.heartbeat = self._start_heartbeat(cfg)
+        self._runs.register(handle)
+        return handle, current_run.set(handle), current_task_manager.set(self._task_manager)
+
+    async def _finish_run(
+        self,
+        cfg: dict[str, Any],
+        handle: RunHandle,
+        tokens: tuple[contextvars.Token, contextvars.Token],
+        end_run: bool = True,
+    ) -> None:
+        """Undo :meth:`_begin_run`. Runs in the same ``finally`` that ends the run."""
+        _reset_current_run(tokens[0])
+        _reset_task_manager(tokens[1])
+        try:
+            if end_run:
+                await self._end_run(cfg, handle.heartbeat)
+        finally:
+            self._runs.unregister(handle)
 
     @property
     def media_policy(self) -> MediaFetchPolicy:
@@ -181,7 +271,7 @@ class CompiledGraph[StateT: AgentState]:
         cfg = dict(config or {})
 
         if "thread_id" not in cfg:
-            cfg["thread_id"] = InjectQ.get_instance().try_get("generated_id") or str(uuid4())
+            cfg["thread_id"] = _new_id()
             # A caller who omits thread_id gets a fresh random one, which means the
             # run cannot be resumed and `stop()` can never target it -- the caller
             # has no way to name it. That is fine for a one-shot script but is
@@ -201,13 +291,16 @@ class CompiledGraph[StateT: AgentState]:
             # run under one fake account. "anonymous" matches what the API layer
             # uses when no auth is configured, so the two agree.
             cfg["user_id"] = DEFAULT_ANONYMOUS_USER_ID
-            logger.debug(
-                "No user_id in config; using '%s'. Enable auth if you need per-user "
-                "isolation -- every anonymous run shares one identity.",
-                DEFAULT_ANONYMOUS_USER_ID,
-            )
+            if not getattr(self, "_warned_anonymous", False):
+                self._warned_anonymous = True
+                logger.warning(
+                    "No user_id in config; using '%s'. Every run without a user_id shares "
+                    "that one identity and its threads. Pass user_id in config for per-user "
+                    "isolation. This is logged once per graph.",
+                    DEFAULT_ANONYMOUS_USER_ID,
+                )
         if "run_id" not in cfg:
-            cfg["run_id"] = InjectQ.get_instance().try_get("generated_id") or str(uuid4())
+            cfg["run_id"] = _new_id()
 
         if "timestamp" not in cfg:
             cfg["timestamp"] = datetime.datetime.now().isoformat()
@@ -270,9 +363,16 @@ class CompiledGraph[StateT: AgentState]:
             ```
 
         Note:
-            This method uses asyncio.run() internally, so it should not be called
+            This method uses asyncio.run() internally and raises RuntimeError when called
             from within an async context. Use ainvoke() instead for async execution.
+
+            Publisher events are best-effort background work. Before returning, this
+            method waits up to ``shutdown_timeout`` for pending events to be delivered.
+            Events are shed (with a warning in the log) when more than 1000 are pending,
+            for example when the publisher's sink is slow or down.
         """
+        ensure_no_running_loop("invoke", "ainvoke")
+        self._refuse_if_closing()
         logger.info(
             "Starting synchronous graph execution with %d input keys, granularity=%s",
             len(input_data) if input_data else 0,
@@ -282,12 +382,37 @@ class CompiledGraph[StateT: AgentState]:
         # Async Will Handle Event Publish
 
         try:
-            result = asyncio.run(self.ainvoke(input_data, config, response_granularity))
+            result = asyncio.run(self._invoke_and_drain(input_data, config, response_granularity))
             logger.info("Synchronous graph execution completed successfully")
             return result
         except Exception as e:
             logger.exception("Synchronous graph execution failed: %s", e)
             raise
+
+    async def _invoke_and_drain(
+        self,
+        input_data: dict[str, Any],
+        config: dict[str, Any] | None,
+        response_granularity: ResponseGranularity,
+    ) -> dict[str, Any]:
+        """Run ainvoke, then wait for the background work it started (sync invoke only).
+
+        ``asyncio.run`` cancels whatever is still pending when it returns, which would
+        drop publisher events, memory writes and thread naming.
+        """
+        try:
+            return await self.ainvoke(input_data, config, response_granularity)
+        finally:
+            await self._drain_background_tasks()
+
+    async def _drain_background_tasks(self) -> None:
+        """Wait up to the shutdown timeout for tracked background tasks to finish."""
+        try:
+            await self._task_manager.wait_for_all(
+                timeout=self._shutdown_timeout, return_exceptions=True
+            )
+        except Exception as e:
+            logger.warning("Draining background tasks failed: %s", e)
 
     async def ainvoke(
         self,
@@ -309,8 +434,10 @@ class CompiledGraph[StateT: AgentState]:
         Returns:
             Response dict based on granularity
         """
+        self._refuse_if_closing()
         self._guard_not_realtime()
         cfg = self._prepare_config(config, is_stream=False)
+        handle, *tokens = self._begin_run(cfg, "invoke")
 
         try:
             return await self._invoke_handler.invoke(
@@ -320,16 +447,60 @@ class CompiledGraph[StateT: AgentState]:
                 response_granularity,
             )
         finally:
-            await self._end_run(cfg)
+            await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
 
-    async def _end_run(self, cfg: dict[str, Any]) -> None:
-        """Tell the checkpointer this run is over so its stop scope is released."""
+    def _start_heartbeat(self, cfg: dict[str, Any]) -> asyncio.Task | None:
+        """Keep this run's active-run marker alive while the run lasts.
+
+        The marker is short-lived on purpose: a run that dies without cleanup (SIGKILL, OOM)
+        leaves one that expires within a minute, and crash recovery reads that as a dead run.
+        """
         if not self._checkpointer:
+            return None
+        checkpointer = self._checkpointer
+
+        async def beat() -> None:
+            while True:
+                await asyncio.sleep(base_checkpointer.ACTIVE_RUN_HEARTBEAT_SECONDS)
+                try:
+                    await checkpointer.arefresh_run(cfg)
+                except Exception as e:  # a missed beat is retried on the next tick
+                    logger.warning("Run heartbeat failed for %s (%s)", cfg.get("thread_id"), e)
+
+        return asyncio.ensure_future(beat())
+
+    async def _end_run(self, cfg: dict[str, Any], heartbeat: asyncio.Task | None = None) -> None:
+        """Tell the checkpointer this run is over so its stop scope is released."""
+        if heartbeat is not None:
+            heartbeat.cancel()
+        checkpointer = self._checkpointer
+        if heartbeat is None and not checkpointer:
             return
-        try:
-            await self._checkpointer.aend_run(cfg)
-        except Exception:
-            logger.warning("Failed to release run scope for thread_id: %s", cfg.get("thread_id"))
+
+        async def release() -> None:
+            if heartbeat is not None:
+                # Wait for it to unwind; asyncio.wait never raises the task's own cancel.
+                await asyncio.wait({heartbeat})
+            if not checkpointer:
+                return
+            try:
+                await checkpointer.aend_run(cfg)
+            except Exception:
+                logger.warning(
+                    "Failed to release run scope for thread_id: %s", cfg.get("thread_id")
+                )
+
+        # The release is its own task: a cancel scope that stays cancelled (anyio) re-raises at
+        # every await here and would skip it. It is waited for (bounded) even while cancelled,
+        # so the caller (and a lock it holds) sees the marker gone; an outer cancel still
+        # propagates afterwards.
+        task = detach_task(release())
+        if not await wait_detached(task):
+            logger.warning(
+                "Releasing run scope for thread_id %s still running after %ss",
+                cfg.get("thread_id"),
+                FINALIZE_TIMEOUT_SECONDS,
+            )
 
     def stop(self, config: dict[str, Any]) -> dict[str, Any]:
         """Request the current graph execution to stop (sync helper).
@@ -338,6 +509,7 @@ class CompiledGraph[StateT: AgentState]:
         Handlers periodically check this flag and interrupt execution.
         Returns a small status dict.
         """
+        ensure_no_running_loop("stop", "astop")
         return asyncio.run(self.astop(config))
 
     async def astop(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -345,13 +517,38 @@ class CompiledGraph[StateT: AgentState]:
 
         Contract:
         - Requires a valid thread_id in config
+        - A run of this graph in this process is stopped through an in-process flag, even with
+          no checkpointer and when the cache write fails
         - If no active thread or no checkpointer, returns not-running
         - If state exists and is running, set stop_requested flag in thread info
         """
         cfg = self._prepare_config(config, is_stream=bool((config or {}).get("is_stream", False)))
+        # Runs of this graph in this process stop through their in-process flag. It acts at
+        # once and needs neither a checkpointer nor a reachable cache.
+        local = self._runs.for_thread(cfg.get("thread_id"))
+        for handle in local:
+            handle.request_stop()
         if not self._checkpointer:
+            if local:
+                return {"ok": True, "running": True, "local": True}
             return {"ok": False, "reason": "no-checkpointer"}
+        try:
+            return await self._request_stop_in_cache(cfg, local=bool(local))
+        except Exception as e:
+            if not local:
+                raise
+            # The in-process flag is already set, so the stop is not lost.
+            logger.warning(
+                "Could not record the stop for thread_id %s in the cache (%r); "
+                "the local run is stopped through its in-process flag",
+                cfg.get("thread_id"),
+                e,
+            )
+            return {"ok": True, "running": True, "local": True}
 
+    async def _request_stop_in_cache(self, cfg: dict[str, Any], local: bool) -> dict[str, Any]:
+        """Record a stop in the checkpointer so a run in another process sees it."""
+        assert self._checkpointer is not None  # noqa: S101
         # Load state to see if this thread is running
         # Lets load from the cache, incase if not available lets load from the db
         # In prebuilt implement like pgsql, there its called internally, no need this call
@@ -360,9 +557,10 @@ class CompiledGraph[StateT: AgentState]:
             cfg
         ) or await self._checkpointer.aget_state(cfg)
         if not state:
+            if local:
+                return {"ok": True, "running": True, "local": True}
             return {"ok": False, "running": False, "reason": "no-state"}
-
-        running = state.is_running() and not state.is_interrupted()
+        running = (state.is_running() and not state.is_interrupted()) or local
         # Set stop flag regardless; handlers will act if running
         if running:
             # Record the stop in its own cache entry FIRST. The running graph
@@ -372,7 +570,6 @@ class CompiledGraph[StateT: AgentState]:
             # into the state blob. Nothing in the run loop writes this key, so a
             # stop recorded here always survives to the next stop check.
             await self._checkpointer.arequest_stop(cfg)
-
             # Also mirror it into the cached state. Redundant for checkpointers
             # that back the stop key, but it keeps stop working for a custom
             # checkpointer that has not implemented the generic cache (whose
@@ -381,7 +578,6 @@ class CompiledGraph[StateT: AgentState]:
             await self._checkpointer.aput_state_cache(cfg, state)
             logger.info("Set stop_current_execution flag for thread_id: %s", cfg.get("thread_id"))
             return {"ok": True, "running": running}
-
         logger.info(
             "No running execution to stop for thread_id: %s (running=%s, interrupted=%s)",
             cfg.get("thread_id"),
@@ -464,6 +660,9 @@ class CompiledGraph[StateT: AgentState]:
             Message objects with incremental content
         """
 
+        ensure_no_running_loop("stream", "astream")
+        self._refuse_if_closing()
+
         # For sync streaming, we'll use asyncio.run to handle the async implementation
         async def _async_stream():
             async for chunk in self.astream(input_data, config, response_granularity):
@@ -485,6 +684,9 @@ class CompiledGraph[StateT: AgentState]:
             # Attempt to close the async generator cleanly
             with contextlib.suppress(Exception):
                 loop.run_until_complete(gen.aclose())  # type: ignore[attr-defined]
+            # Same as sync invoke: loop.close() would drop the pending background work.
+            with contextlib.suppress(Exception):
+                loop.run_until_complete(self._drain_background_tasks())
             loop.close()
         logger.info("Synchronous streaming completed")
 
@@ -508,8 +710,10 @@ class CompiledGraph[StateT: AgentState]:
         Yields:
             Message objects with incremental content
         """
+        self._refuse_if_closing()
         self._guard_not_realtime()
         cfg = self._prepare_config(config, is_stream=True)
+        handle, *tokens = self._begin_run(cfg, "stream")
 
         try:
             async for chunk in self._stream_handler.stream(
@@ -519,8 +723,11 @@ class CompiledGraph[StateT: AgentState]:
                 response_granularity,
             ):
                 yield chunk
+                # A consumer may drive each step from a new task (the API's stream wrapper
+                # does); a hard cancel must reach the task running the run now.
+                handle.task = asyncio.current_task()
         finally:
-            await self._end_run(cfg)
+            await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
 
     def attach_remote_tools(
         self,
@@ -657,6 +864,7 @@ class CompiledGraph[StateT: AgentState]:
         Forcing rule: the graph must contain exactly one LiveAgent (the root controller);
         ordinary turn-based graphs must use invoke/stream.
         """
+        self._refuse_if_closing()
         live = self._find_live_nodes()
         if not live:
             raise RuntimeError(
@@ -670,22 +878,46 @@ class CompiledGraph[StateT: AgentState]:
             )
 
         name, node = live[0]
-        agent = node.func
+        # Every connection runs on its own copy: the agent holds per-session state (provider
+        # socket, resume handle, transcript buffers), so a shared one would cross-wire users.
+        agent = node.func.new_session()
         agent._node_name = name
         cfg = self._prepare_config(config, is_stream=True)
         callback_manager = InjectQ.get_instance().try_get(CallbackManager)
         context_manager = self._state_graph._context_manager
-        run_state = state if state is not None else (self._state or AgentState())
+        run_state = state if state is not None else await self._realtime_start_state(cfg)
 
-        async for event in agent.arun(
-            input_queue,
-            cfg,
-            run_state,
-            checkpointer=self._checkpointer,
-            callback_manager=callback_manager,
-            context_manager=context_manager,
-        ):
-            yield event
+        handle, *tokens = self._begin_run(cfg, "realtime", heartbeat=False)
+        try:
+            async for event in agent.arun(
+                input_queue,
+                cfg,
+                run_state,
+                checkpointer=self._checkpointer,
+                callback_manager=callback_manager,
+                context_manager=context_manager,
+            ):
+                yield event
+        finally:
+            await self._finish_run(cfg, handle, (tokens[0], tokens[1]), end_run=False)
+
+    async def _realtime_start_state(self, cfg: dict[str, Any]) -> AgentState:
+        """The state a realtime session starts from: the thread's saved state, else a copy.
+
+        The session saves its state (with the transcripts) as the thread's checkpoint, so it
+        must start from what the thread already holds, not overwrite it. A thread with nothing
+        saved starts from a deep copy of the graph's state: sessions append to the context,
+        so sharing that one object would mix concurrent users' transcripts.
+        """
+        if self._checkpointer is not None:
+            try:
+                saved = await self._checkpointer.aget_state(cfg)
+            except Exception:
+                logger.warning("Could not load the thread's state for a realtime session")
+                saved = None
+            if saved is not None:
+                return saved
+        return self._state.model_copy(deep=True) if self._state is not None else AgentState()
 
     def realtime(
         self,
@@ -698,6 +930,7 @@ class CompiledGraph[StateT: AgentState]:
         Must be called from a thread with no running event loop; from inside an async
         context (FastAPI handler, Jupyter), use :meth:`arealtime` directly.
         """
+        self._refuse_if_closing()
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -721,23 +954,125 @@ class CompiledGraph[StateT: AgentState]:
                 loop.run_until_complete(agen.aclose())
             loop.close()
 
-    async def aclose(self) -> dict[str, Any]:  # noqa: PLR0915
-        """
-        Close the graph and release all resources gracefully.
+    def _shutdown_phases(
+        self, grace: float | None, stop_timeout: float | None, timeout: float | None
+    ) -> tuple[float, float, float]:
+        """Resolve the ``aclose`` times; defaults split ``shutdown_timeout`` 50/25/25."""
+        total = self._shutdown_timeout
+        return (
+            total * 0.5 if grace is None else max(0.0, grace),
+            total * 0.25 if stop_timeout is None else max(0.0, stop_timeout),
+            total * 0.25 if timeout is None else max(0.0, timeout),
+        )
 
-        This method ensures proper cleanup of all components with timeout handling.
-        It follows a structured shutdown sequence:
-        1. Background task manager (running tasks)
-        2. Checkpointer (state persistence)
-        3. Publisher (event publishing)
-        4. Store (data storage)
+    async def _wait_for_runs(self, handles: list[RunHandle], seconds: float) -> None:
+        """Wait up to ``seconds`` until none of ``handles`` is registered any more.
+
+        Polls the registry because runs may live on other event loops or threads.
+        """
+        loop = asyncio.get_running_loop()
+        end = loop.time() + seconds
+        while self._still_active(handles) and loop.time() < end:
+            await asyncio.sleep(min(_RUN_POLL_SECONDS, max(0.0, end - loop.time())))
+
+    def _still_active(self, handles: list[RunHandle]) -> list[RunHandle]:
+        active = {id(h) for h in self._runs.active()}
+        return [h for h in handles if id(h) in active]
+
+    async def _drain_runs(
+        self, grace: float, stop_timeout: float, cancel_timeout: float
+    ) -> tuple[dict[str, int], float]:
+        """Phases 1 to 4 of ``aclose``: grace, stop, hard cancel.
+
+        Returns the run counts and the seconds the cancel wait used.
+        """
+        handles = self._runs.active()
+        counts = {"active": len(handles), "finished": 0, "stopped": 0, "cancelled": 0}
+        if not handles:
+            return counts, 0.0
+
+        logger.info("Waiting up to %.1fs for %d active run(s) to finish", grace, len(handles))
+        await self._wait_for_runs(handles, grace)
+        left = self._still_active(handles)
+        counts["finished"] = len(handles) - len(left)
+        if not left:
+            return counts, 0.0
+
+        logger.info("Stopping %d run(s) that did not finish (up to %.1fs)", len(left), stop_timeout)
+        for handle in left:
+            handle.request_stop()
+        await self._wait_for_runs(left, stop_timeout)
+        still = self._still_active(left)
+        counts["stopped"] = len(left) - len(still)
+        if not still:
+            return counts, 0.0
+
+        logger.warning("Cancelling %d run(s) that did not stop", len(still))
+        for handle in still:
+            handle.cancel(SHUTDOWN_CANCEL_REASON)
+        cancel_started = asyncio.get_running_loop().time()
+        await self._wait_for_runs(still, cancel_timeout / 2)
+        spent = asyncio.get_running_loop().time() - cancel_started
+        counts["cancelled"] = len(still)
+        if stuck := self._still_active(still):
+            logger.error("%d run(s) did not end after the cancel", len(stuck))
+        return counts, spent
+
+    async def _drain_detached(self, seconds: float) -> dict[str, int]:
+        """Wait up to ``seconds`` for the detached cleanup tasks on this loop to finish.
+
+        These are cancel saves and run-marker releases that outlived their run's own wait.
+        They must finish before the checkpointer is released under them. They are not
+        cancelled here: each one has its own lifetime cap (see ``track_detached``).
+        """
+        loop = asyncio.get_running_loop()
+        pending = {t for t in _detached_tasks if not t.done() and t.get_loop() is loop}
+        if not pending:
+            return {"pending": 0, "unfinished": 0}
+        logger.info("Waiting up to %.1fs for %d cleanup task(s)", seconds, len(pending))
+        if seconds > 0:
+            await asyncio.wait(pending, timeout=seconds)
+        unfinished = sum(1 for t in pending if not t.done())
+        if unfinished:
+            logger.warning("%d cleanup task(s) still running at close", unfinished)
+        return {"pending": len(pending), "unfinished": unfinished}
+
+    async def aclose(  # noqa: PLR0912, PLR0915
+        self,
+        grace: float | None = None,
+        stop_timeout: float | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Close the graph: end active runs in phases, then release all resources.
+
+        Order:
+        1. Refuse new runs (they raise ``GraphClosedError``).
+        2. Wait up to ``grace`` seconds for active runs to finish on their own.
+        3. Set the stop flag on the rest; each saves its thread INTERRUPTED (reason
+           ``stop_requested``). Wait up to ``stop_timeout`` seconds.
+        4. Hard-cancel what still runs; the cancel saves the thread INTERRUPTED (reason
+           ``shutdown``). Wait up to half of ``timeout`` seconds.
+        5. Wait for detached cleanup (cancel saves, run-marker releases), then drain background
+           tasks (publisher events, memory writes), both within the rest of ``timeout``; cancel
+           the background tasks that are left.
+        6. Release the checkpointer, publisher and store, by the resource ownership rules.
+
+        Args:
+            grace: Seconds to let runs finish. Default: 50% of ``compile(shutdown_timeout=...)``.
+            stop_timeout: Seconds to wait after the stop flag. Default: 25%.
+            timeout: Seconds for the hard cancel and the background drain. Default: 25%. With
+                no ``timeout`` given, the drain may use whatever is left of ``shutdown_timeout``.
 
         Returns:
-            Dictionary with detailed shutdown statistics for each component.
+            Dictionary with shutdown statistics: ``runs`` (``active``, ``finished``,
+            ``stopped``, ``cancelled``), ``cleanup_tasks`` (``pending``, ``unfinished``),
+            ``background_tasks`` (drained or dropped), and one entry per released component.
 
         Calling this more than once is a no-op; the second call returns
         ``{"status": "already_closed"}``. Prefer the async-context-manager form,
-        which calls this automatically on exit:
+        which calls this automatically on exit. To call it on SIGTERM and SIGINT, see
+        :func:`tenxgraph.utils.shutdown.install_shutdown_signals`.
 
         Example:
             ```python
@@ -753,33 +1088,56 @@ class CompiledGraph[StateT: AgentState]:
                 try:
                     await graph.ainvoke(input_data)
                 finally:
-                    stats = await graph.aclose()
+                    stats = await graph.aclose(grace=10, stop_timeout=5, timeout=5)
                     print(f"Shutdown completed: {stats}")
             ```
         """
         from tenxgraph.utils.shutdown import shutdown_with_timeout
 
-        if self._closed:
+        if self._closed or self._closing:
             logger.debug("CompiledGraph.aclose() called again; already closed")
             return {"status": "already_closed"}
+        self._closing = True
         self._closed = True
-
         logger.info("Initiating graceful shutdown of CompiledGraph")
         stats: dict[str, Any] = {}
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_event_loop()
+        start_time = loop.time()
+        grace_s, stop_s, cancel_s = self._shutdown_phases(grace, stop_timeout, timeout)
 
-        # 1. Shutdown background task manager (handles all pending async writes)
+        # 1-4. End the active runs: grace, stop, hard cancel.
+        cancel_spent = 0.0
+        try:
+            stats["runs"], cancel_spent = await self._drain_runs(grace_s, stop_s, cancel_s)
+        except Exception as e:
+            stats["runs"] = {"status": "error", "error": str(e)}
+            logger.exception("Error ending active runs: %s", e)
+
+        # 5. Shutdown background task manager (handles all pending async writes)
+        drain_budget = max(0.0, cancel_s - cancel_spent)
+        if timeout is None:
+            drain_budget = max(drain_budget, self._shutdown_timeout - (loop.time() - start_time))
+        # 5a. Cleanup that outlived its run must finish before the checkpointer is released.
+        drain_started = loop.time()
+        try:
+            stats["cleanup_tasks"] = await self._drain_detached(drain_budget)
+        except Exception as e:
+            stats["cleanup_tasks"] = {"status": "error", "error": str(e)}
+            logger.exception("Error waiting for cleanup tasks: %s", e)
+        drain_budget = max(0.0, drain_budget - (loop.time() - drain_started))
         try:
             logger.debug("Shutting down background task manager...")
-            shutdown_stats = await self._task_manager.shutdown(timeout=self._shutdown_timeout)
+            shutdown_stats = await self._task_manager.shutdown(timeout=drain_budget)
             logger.info("Background task manager shutdown completed")
             stats["background_tasks"] = shutdown_stats
         except Exception as e:
             stats["background_tasks"] = {"status": "error", "error": str(e)}
             logger.exception("Error shutting down background tasks: %s", e)
 
-        # 2. Close checkpointer (may have pending writes)
-        if self._checkpointer:
+        # 6a. Close checkpointer (may have pending writes)
+        if self._checkpointer and (skip := self._skip_close(self._checkpointer, "Checkpointer")):
+            stats["checkpointer"] = skip
+        elif self._checkpointer:
             try:
                 logger.debug("Releasing checkpointer...")
                 result = await shutdown_with_timeout(
@@ -795,8 +1153,10 @@ class CompiledGraph[StateT: AgentState]:
         else:
             stats["checkpointer"] = {"status": "skipped", "reason": "no checkpointer"}
 
-        # 3. Close publisher (event delivery)
-        if self._publisher:
+        # 6b. Close publisher (event delivery)
+        if self._publisher and (skip := self._skip_close(self._publisher, "Publisher")):
+            stats["publisher"] = skip
+        elif self._publisher:
             try:
                 logger.debug("Closing publisher...")
                 result = await shutdown_with_timeout(
@@ -812,8 +1172,10 @@ class CompiledGraph[StateT: AgentState]:
         else:
             stats["publisher"] = {"status": "skipped", "reason": "no publisher"}
 
-        # 4. Close store (data persistence)
-        if self._store:
+        # 6c. Close store (data persistence)
+        if self._store and (skip := self._skip_close(self._store, "Store")):
+            stats["store"] = skip
+        elif self._store:
             try:
                 logger.debug("Releasing store...")
                 result = await shutdown_with_timeout(

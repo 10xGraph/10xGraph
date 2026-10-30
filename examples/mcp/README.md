@@ -14,7 +14,7 @@ faq:
   - question: How do I authenticate to a remote MCP server?
     answer: Add a headers entry to that server in the mcpServers config, such as an Authorization bearer token read from an environment variable.
   - question: How does the MCP server know which user made the call?
-    answer: Set pass_user_info_to_mcp=True on ReactAgent or ToolNode. The ToolNode adds config["user"], or {"user_id": ...} when only user_id is set, as a user argument on each MCP tool call.
+    answer: Set pass_user_info_to_mcp=True on ReactAgent or ToolNode. The ToolNode adds config["user"], or {"user_id": ...} when only user_id is set, as request metadata (`meta["user"]`) on each MCP tool call.
 ---
 
 ## What you will build
@@ -28,7 +28,7 @@ All of them share one pattern: describe the servers in an `mcpServers` dict, wra
 - `fastmcp.Client(config)`: the MCP client. The config lists servers by name with `url`, `transport` and optional `headers`.
 - `ReactAgent(client=...)`: builds a `ToolNode` around the client and wires the model and tool loop.
 - `ToolNode.all_tools()`: lists the tool schemas the client discovered.
-- `pass_user_info_to_mcp`: forwards the caller identity to the server as a `user` argument.
+- `pass_user_info_to_mcp`: forwards the caller identity to the server as request metadata (`meta["user"]`).
 - Tool name prefixes: with several servers, each tool is named `<server>_<tool>`.
 
 ## Prerequisites
@@ -61,13 +61,13 @@ python examples/mcp/local/agent.py
 `local/server.py` builds a FastMCP server and serves it over streamable HTTP:
 
 ```python
-@mcp.tool(description="Get the current weather for a location", exclude_args=["user"])
-def get_weather(location: str, user: dict | None = None) -> dict: ...
+@mcp.tool(description="Get the current weather for a location")
+def get_weather(location: str, ctx: Context) -> dict: ...  # reads ctx.request_context.meta
 
 build_server(args.name).run(transport="streamable-http", host="127.0.0.1", port=args.port)
 ```
 
-`exclude_args=["user"]` keeps `user` out of the schema the model sees. The agent fills it in.
+`ctx: Context` is injected by FastMCP and is not in the schema the model sees. The agent sends the caller as request metadata, and the tool reads `meta.model_extra["user"]`.
 
 `local/raw_client.py` talks to the server without an LLM: `client.list_tools()` and `client.call_tool("get_weather", {...})`. Run it first when a server misbehaves.
 

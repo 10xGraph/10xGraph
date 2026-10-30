@@ -33,7 +33,7 @@ agent = ReactAgent(
         {"role": "system", "content": "Answer weather questions with the available tools."}
     ],
     client=Client(mcp_config),
-    # Adds config["user"] (or {"user_id": ...}) to every MCP call as the `user` argument.
+    # Sends config["user"] (or {"user_id": ...}) with every MCP call as request metadata (meta["user"]).
     pass_user_info_to_mcp=True,
 )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import tempfile
 import warnings
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -48,6 +49,10 @@ _DEFAULT_DENY_FILES = (
     ".netrc",
     ".npmrc",
     ".pypirc",
+    ".git-credentials",
+    "*.tfstate",
+    "*.tfstate.*",
+    "*.tfvars",
 )
 _DEFAULT_DENY_DIRS = (".ssh", ".aws", ".gnupg", ".git")
 _NOT_ALLOWED = "path is not allowed"
@@ -80,6 +85,13 @@ class _HiddenPathError(ValueError):
         super().__init__(_NOT_ALLOWED)
 
 
+def _error_text(exc: Exception) -> str:
+    """Text for the model. OS errors name absolute paths, so they get a generic message."""
+    if isinstance(exc, _HiddenPathError | ValueError):
+        return str(exc)
+    return f"{type(exc).__name__}: the file operation failed"
+
+
 def _build_rules(deny: Iterable[str], use_default_deny: bool) -> _DenyRules:
     extra = tuple(str(p).casefold() for p in deny)
     base = _DEFAULT_RULES if use_default_deny else _DenyRules((), (), ())
@@ -103,6 +115,16 @@ def _is_hidden(path: Path, root: Path, rules: _DenyRules) -> bool:
         fnmatch.fnmatchcase(part, pattern) or fnmatch.fnmatchcase(relative, pattern)
         for pattern in rules.any_part
         for part in parts
+    )
+
+
+def _warn_module_level(name: str) -> None:
+    warnings.warn(
+        f"The module-level {name} tool is deprecated and will be removed in 2.0: its root "
+        "comes from the run config. Use create_file_tools(root=...) from "
+        "tenxgraph.prebuilt.tools instead.",
+        DeprecationWarning,
+        stacklevel=3,
     )
 
 
@@ -168,8 +190,25 @@ def _write_file_content(
         with target.open("a", encoding="utf-8") as handle:
             handle.write(content)
         return
-    if mode in {"overwrite", "create"}:
-        target.write_text(content, encoding="utf-8")
+    if mode == "create":
+        # "x" fails if the file appeared since the exists() check, so two writers cannot
+        # both create it.
+        with target.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+        return
+    if mode == "overwrite":
+        # Write beside the target and swap it in, so a kill mid-write leaves the old file
+        # or the new one, never a truncated one.
+        fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            if target.exists():
+                Path(tmp_name).chmod(target.stat().st_mode & 0o777)
+            Path(tmp_name).replace(target)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
         return
     raise ValueError(f"unsupported mode: {mode}")
 
@@ -294,7 +333,7 @@ def _read(
             }
         )
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": _error_text(exc)})
 
 
 def _write(
@@ -329,7 +368,7 @@ def _write(
             }
         return json.dumps(result)
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": _error_text(exc)})
 
 
 def _search(
@@ -382,7 +421,7 @@ def _search(
             {"query": query, "root": _relative(search_root, root), "results": results}
         )
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": _error_text(exc)})
 
 
 @tool(
@@ -399,6 +438,7 @@ def file_read(
     config: dict[str, Any] | None = None,
 ) -> str:
     """Read a workspace-scoped text file."""
+    _warn_module_level("file_read")
     return _read(path, start_line, end_line, max_chars, _configured_root(config))
 
 
@@ -416,6 +456,7 @@ def file_write(
     config: dict[str, Any] | None = None,
 ) -> str:
     """Write UTF-8 text to a workspace-scoped file."""
+    _warn_module_level("file_write")
     return _write(path, content, mode, create_dirs, _configured_root(config))
 
 
@@ -433,6 +474,7 @@ def file_search(
     config: dict[str, Any] | None = None,
 ) -> str:
     """Search workspace-scoped text files by filename and content."""
+    _warn_module_level("file_search")
     return _search(query, path, glob, max_results, _configured_root(config))
 
 

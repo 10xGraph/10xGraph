@@ -24,8 +24,11 @@ def create_handoff_tool(
 
     The tool uses a naming convention (transfer_to_<agent_name>) to signal
     handoff intent. The graph execution layer detects this pattern and
-    navigates to the target agent WITHOUT executing the tool, keeping
-    the conversation history clean.
+    navigates to the target agent WITHOUT executing the tool. The call is
+    answered with a "Transferred to <agent_name>. You are now <agent_name>: ..." tool result
+    telling the target it is in charge, so the target agent never inherits an
+    unanswered tool call. Other tool calls of the same message run first (their
+    results reach the target); a second handoff call gets a "Not run" result.
 
     Args:
         agent_name: Name of the target agent/node to transfer to.

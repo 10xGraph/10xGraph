@@ -156,10 +156,8 @@ class TestImageBlockToOpenAI:
             media=MediaRef(kind="file_id", file_id="file-abc123")
         )
         result = _image_block_to_openai(block)
-        assert result == {
-            "type": "image_url",
-            "image_url": {"url": "file-abc123"},
-        }
+        # Chat Completions image_url takes a URL or data URI, never a file id
+        assert result == {"type": "text", "text": "[Image file_id: file-abc123]"}
 
 
 # ---------------------------------------------------------------------------

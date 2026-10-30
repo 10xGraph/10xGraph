@@ -117,6 +117,8 @@ class KafkaPublisher(BasePublisher):
             raise RuntimeError("KafkaPublisher is closed")
 
         async with self._producer_lock:
+            if self._is_closed:
+                raise RuntimeError("KafkaPublisher is closed")
             if self._producer is not None:
                 return self._producer
 
@@ -129,7 +131,7 @@ class KafkaPublisher(BasePublisher):
                 ) from exc
 
             producer_cls = aiokafka.AIOKafkaProducer
-            self._producer = producer_cls(
+            producer = producer_cls(
                 bootstrap_servers=self.bootstrap_servers,
                 client_id=self.client_id,
                 max_batch_size=self.max_batch_size,
@@ -138,7 +140,16 @@ class KafkaPublisher(BasePublisher):
                 request_timeout_ms=self.request_timeout_ms,
                 **self._security_kwargs,
             )
-            await self._producer.start()
+            try:
+                await producer.start()
+            except BaseException:
+                # Keep nothing half-started: the next event must try again.
+                try:
+                    await producer.stop()
+                except Exception:
+                    logger.debug("KafkaPublisher cleanup after failed start", exc_info=True)
+                raise
+            self._producer = producer
             logger.info(
                 "KafkaPublisher connected successfully (batch_size=%d, linger_ms=%d)",
                 self.max_batch_size,
@@ -176,6 +187,7 @@ class KafkaPublisher(BasePublisher):
             return
 
         async with self._producer_lock:
+            self._is_closed = True
             if self._producer is not None:
                 try:
                     await self._producer.stop()
@@ -184,7 +196,6 @@ class KafkaPublisher(BasePublisher):
                     logger.debug("KafkaPublisher close encountered an error", exc_info=True)
                 finally:
                     self._producer = None
-                    self._is_closed = True
 
     def sync_close(self):
         """Synchronously close the Kafka producer.

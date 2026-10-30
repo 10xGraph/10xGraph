@@ -1,6 +1,6 @@
 [project]
 name = "10xgraph"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 description = "10xGraph (formerly Agentflow) is a Python framework for multi-agent AI systems that stay correct under failure: replay-safe tool calls that are not re-executed after a crash, versioned state writes, real node and tool timeouts, and two-tier Redis plus PostgreSQL checkpointing. MIT licensed, self-hosted, any model (OpenAI, Google Gemini, Anthropic). Pair it with 10xgraph-api to generate the production server around your graph."
 readme = "README.md"
 keywords = [
@@ -103,7 +103,10 @@ build-backend = "setuptools.build_meta"
 [project.optional-dependencies]
 google-genai = ["google-genai>=1.56.0"]
 realtime = ["google-genai>=1.56.0"]
-openai = ["openai>=1.77.0"]
+# Floor 1.93.1: chat.completions.parse left beta in 1.92.0 and responses.parse gained its
+# full argument list (reasoning, instructions, tools) in 1.93.1. Capped at <4 so a future
+# major (3.0 swapped httpx for httpx2) is not pulled in automatically.
+openai = ["openai>=1.93.1,<4"]
 # Capped at <2: the SDK went 0.x -> 1.0.0 (httpx2, awaited async raw responses),
 # so an uncapped lower bound would pull a future major automatically.
 anthropic = ["anthropic>=1.0.0,<2"]
@@ -111,23 +114,23 @@ anthropic-vertex = ["anthropic[vertex]>=1.0.0,<2"]
 anthropic-bedrock = ["anthropic[bedrock]>=1.0.0,<2"]
 pg_checkpoint = ["asyncpg>=0.29.0","redis>=4.2"]
 sqlite_checkpoint = ["aiosqlite>=0.19.0"]
-mcp = ["fastmcp>=2.11.3","mcp>=1.13.0"]
-images = ["Pillow>=12.2.0"]
+mcp = ["fastmcp>=2.11.3","mcp>=1.30.0"]
+images = ["Pillow>=13.0.0"]
 cloud-storage = ["cloud-storage-manager>=0.1.2"]
 redis = ["redis>=4.2"]
 kafka = ["aiokafka>=0.8.0"]
 rabbitmq = ["aio-pika>=9.0.0"]
 qdrant = ["qdrant-client>=1.10.0"]
-mem0 = ["mem0ai>=0.1.117"]
+mem0 = ["mem0ai>=2.0,<3"]
 a2a_sdk = ["a2a-sdk>=0.2.7"]
 otel = [
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
 ]
 logfire = ["logfire>=3.0.0"]
 langsmith = [
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
 ]
 observability = [
@@ -239,7 +242,6 @@ max-complexity = 10
 "tenxgraph/qa/evaluation/reporters/_html_css.py" = ["E501"]
 "tenxgraph/qa/evaluation/reporters/_html_js.py" = ["E501"]
 "tenxgraph/qa/evaluation/reporters/_html_template.py" = ["E501", "PLR0913"]
-"tenxgraph/qa/evaluation/reporters/_html_render.py" = ["PLR0912"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
@@ -318,7 +320,6 @@ module = [
     "tenxgraph.qa.evaluation.evaluator",
     "tenxgraph.qa.evaluation.quick_eval",
     "tenxgraph.qa.evaluation.reporters.console",
-    "tenxgraph.qa.evaluation.reporters._html_render",
     "tenxgraph.qa.evaluation.simulators.user_simulator",
     "tenxgraph.qa.testing.quick_test",
     "tenxgraph.qa.testing.test_agent",
@@ -380,6 +381,7 @@ markers = [
     "asyncio: mark test as async test",
     "integration: mark test as integration test requiring real databases",
     "slow: mark test as slow test that takes longer to run",
+    "real_schema_init: let PgCheckpointer create its schema on first use (default in tests/checkpointer: skipped)",
 ]
 
 [tool.coverage.run]
@@ -419,15 +421,15 @@ dev = [
     "pre-commit>=3.8.0",
     "mypy>=1.11.0",
     "types-PyYAML",
-    "Pillow>=12.2.0",
+    "Pillow>=13.0.0",
     "asyncpg>=0.30.0",
     "redis>=6.4.0",
     "fastmcp>=2.12.3",
-    "mcp>=1.14.1",
-    "mem0ai>=0.1.117",
+    "mcp>=1.30.0",
+    "mem0ai>=2.0,<3",
     "google-genai>=1.56.0",
     "a2a_sdk",
-    "aiohttp",
+    "aiohttp>=3.14.4",
     "aiosqlite>=0.19.0"
 ]
 

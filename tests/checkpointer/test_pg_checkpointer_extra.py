@@ -86,7 +86,6 @@ def test_row_to_message_handles_string_and_bytes_json(cp):
         "content": "plain text",
         "tool_calls": json.dumps([{"name": "x"}]),
         "tool_call_id": None,
-        "reasoning": "r",
         "created_at": None,
         "total_tokens": 0,
         "usages": json.dumps({"completion_tokens": 1, "prompt_tokens": 2, "total_tokens": 3}),
@@ -143,7 +142,6 @@ async def test_message_methods_cover_query_paths(cp):
             "content": "hello",
             "tool_calls": None,
             "tool_call_id": None,
-            "reasoning": None,
             "created_at": None,
             "total_tokens": 0,
             "usages": None,
@@ -152,6 +150,7 @@ async def test_message_methods_cover_query_paths(cp):
     )
     conn.fetch = AsyncMock(return_value=[])
     conn.execute = AsyncMock()
+    conn.transaction = MagicMock(return_value=_NoopTxn())
 
     cp._pg_pool = MagicMock()
     cp._pg_pool.acquire.return_value = _AcquireCtx(conn)
@@ -271,7 +270,16 @@ def test_create_pg_pool(cp):
     
     with patch("asyncpg.create_pool") as mock_create_pool:
         cp._create_pg_pool(pg_pool=None, postgres_dsn="postgres://url", pool_config={"min_size": 5})
-        mock_create_pool.assert_called_once_with(dsn="postgres://url", min_size=5)
+        mock_create_pool.assert_called_once_with(
+            dsn="postgres://url", command_timeout=60.0, timeout=30.0, min_size=5
+        )
+
+class _NoopTxn:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *a):
+        return False
 
 
 @pytest.mark.asyncio
@@ -667,7 +675,6 @@ async def test_get_message_is_owner_scoped(cp):
             "content": "hi",
             "tool_calls": None,
             "tool_call_id": None,
-            "reasoning": None,
             "created_at": None,
             "total_tokens": 0,
             "usages": None,
@@ -845,3 +852,23 @@ async def test_aget_tool_result_follows_the_authz_scope_over_the_setting(cp):
 
     query, *_ = conn.fetchrow.await_args.args
     assert "SELECT thread_id FROM" not in query
+
+
+def test_redis_pool_is_bounded_by_default_and_overridable(monkeypatch):
+    """G-43: the pool built from a URL has a connection cap, overridable key by key."""
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
+    cp = PgCheckpointer(postgres_dsn="postgres://x", redis=MagicMock())
+
+    pool = cp._create_redis_pool(
+        redis=None, redis_pool=None, redis_url="redis://localhost:6379/0", redis_pool_config={}
+    ).connection_pool
+    assert pool.max_connections == 50
+
+    pool = cp._create_redis_pool(
+        redis=None,
+        redis_pool=None,
+        redis_url="redis://localhost:6379/0",
+        redis_pool_config={"max_connections": 7},
+    ).connection_pool
+    assert pool.max_connections == 7

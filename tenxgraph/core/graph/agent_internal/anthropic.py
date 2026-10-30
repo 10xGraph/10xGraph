@@ -18,6 +18,7 @@ from .constants import (
     ANTHROPIC_DEFAULT_MAX_TOKENS_STREAMING,
     ANTHROPIC_NO_SAMPLING_MODELS,
     CALL_EXCLUDED_KWARGS,
+    resolve_reasoning_config,
 )
 
 
@@ -35,6 +36,7 @@ _ANTHROPIC_EXCLUDED_KWARGS = CALL_EXCLUDED_KWARGS | frozenset(
         "reasoning_effort",
         "auth_token",
         "middleware",
+        "stream_idle_timeout",
     }
 )
 
@@ -128,7 +130,7 @@ class AgentAnthropicMixin:
         )
 
         strip_rejected_sampling_params(self.model, call_kwargs)
-        apply_reasoning_config(getattr(self, "reasoning_config", None), call_kwargs)
+        apply_reasoning_config(resolve_reasoning_config(self), call_kwargs)
 
         anthropic_tools = convert_tools(tools)
 

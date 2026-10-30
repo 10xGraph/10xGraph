@@ -197,6 +197,24 @@ async def _call_anthropic(
 # ---------------------------------------------------------------------------
 
 
+def _google_text(response: Any) -> str:
+    """Join the text parts of a google-genai response.
+
+    ``response.text`` prints a warning whenever the reply also holds non-text parts such as a
+    function call, so the text parts are read directly.
+    """
+    parts: list[Any] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        parts.extend(getattr(content, "parts", None) or [])
+        break
+    return "".join(
+        p.text
+        for p in parts
+        if isinstance(getattr(p, "text", None), str) and not getattr(p, "thought", False)
+    )
+
+
 async def _call_google(
     client: Any,
     model: str,
@@ -230,7 +248,7 @@ async def _call_google(
         config=types.GenerateContentConfig(**config_kwargs),
     )
 
-    text = (response.text or "").strip()
+    text = _google_text(response).strip()
     inp = out = cache = 0
     meta = getattr(response, "usage_metadata", None)
     if meta is not None:

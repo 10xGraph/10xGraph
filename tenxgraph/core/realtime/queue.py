@@ -65,7 +65,21 @@ class LiveInputQueue:
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
-            logger.warning("LiveInputQueue full; dropping %s frame", item.kind)
+            if item.kind != "close":
+                logger.warning("LiveInputQueue full; dropping %s frame", item.kind)
+                return
+            # The close sentinel must never be lost, or the pump waits forever. Drop the
+            # oldest buffered frames until it fits.
+            while True:
+                try:
+                    dropped = self.get_nowait()
+                    logger.warning("LiveInputQueue full; dropping %s frame for close", dropped.kind)
+                    self._queue.put_nowait(item)
+                    return
+                except asyncio.QueueFull:
+                    continue
+                except asyncio.QueueEmpty:
+                    return
 
     def send_audio(self, data: bytes, sample_rate: int = INPUT_SAMPLE_RATE) -> None:
         self._put(LiveInput(kind="audio", data=data, sample_rate=sample_rate))

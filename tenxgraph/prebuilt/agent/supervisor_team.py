@@ -5,12 +5,16 @@ Pattern::
     SUPERVISOR --[pick WORKER_A]--> WORKER_A ---> SUPERVISOR
     SUPERVISOR --[pick WORKER_B]--> WORKER_B ---> SUPERVISOR
     SUPERVISOR --[FINISH]---------> END
+    SUPERVISOR --[FINISH, no worker ran this turn]--> RESPOND --> END
 
 The SUPERVISOR is a dedicated ``Agent`` built internally from *supervisor_model*.
 Its system prompt lists all workers and their descriptions so the LLM can make
 informed routing decisions.  The supervisor responds with **only** the name of
 the next worker (or ``FINISH``); a routing function extracts this token and
-directs the graph accordingly.
+directs the graph accordingly. Its own call sees each worker's reply labelled with
+the worker's name and the list of workers already run; naming the worker that just
+ran counts as ``FINISH``. When it finishes before any worker ran (a greeting, small
+talk), the RESPOND node answers the user so the turn is never blank.
 
 Each WORKER is a **pre-built** ``Agent`` (or any
 :class:`~tenxgraph.core.graph.base_agent.BaseAgent` subclass) supplied by the
@@ -92,6 +96,23 @@ _ROUTE_HISTORY_KEY = register_per_turn_key("sta_route_history")
 _FINISH_TOKEN = "FINISH"  # nosec: B105  # noqa: S105
 _SUPERVISOR_NODE = "SUPERVISOR"
 _PRE_SUPERVISOR_NODE = "PRE_SUPERVISOR"
+_RESPOND_NODE = "RESPOND"
+_RESERVED_NODES = (_SUPERVISOR_NODE, _PRE_SUPERVISOR_NODE, _RESPOND_NODE)
+
+# Transient user turns that keep a request from ending on an assistant turn. They are
+# added to one request view only and never saved to state.
+SUPERVISOR_REQUEST_NOTE = (
+    f"Reply with the name of the next worker, or {_FINISH_TOKEN} if my request is answered."
+)
+WORKER_CONTINUE_NOTE = "Continue the task: do your part of the work described above."
+
+_RESPOND_PROMPT_TEMPLATE = """\
+You are the assistant of a team of specialist workers:
+{worker_list}
+
+No worker is needed for the user's latest message (for example a greeting, small talk \
+or an unclear request). Reply to it yourself, briefly. When it helps, say what the team \
+can do or ask what the user needs."""
 
 
 # ---------------------------------------------------------------------------
@@ -142,18 +163,68 @@ Rules:
 """
 
 
+def _worker_list(workers: dict[str, WorkerConfig]) -> str:
+    return "\n".join(
+        f"- {name}: {cfg.description or f'Specialist worker {name}.'}"
+        for name, cfg in workers.items()
+    )
+
+
 def _build_supervisor_prompt(workers: dict[str, WorkerConfig]) -> list[dict[str, str]]:
     """Build the default supervisor system prompt from the worker registry."""
-    lines = []
-    for name, cfg in workers.items():
-        desc = cfg.description or f"Specialist worker {name}."
-        lines.append(f"- {name}: {desc}")
-    worker_list = "\n".join(lines)
     content = _SUPERVISOR_PROMPT_TEMPLATE.format(
-        worker_list=worker_list,
+        worker_list=_worker_list(workers),
         finish_token=_FINISH_TOKEN,
     )
     return [{"role": "system", "content": content}]
+
+
+def _build_respond_prompt(workers: dict[str, WorkerConfig]) -> list[dict[str, str]]:
+    """System prompt of the RESPOND node, which answers when no worker is needed."""
+    content = _RESPOND_PROMPT_TEMPLATE.format(worker_list=_worker_list(workers))
+    return [{"role": "system", "content": content}]
+
+
+def _supervisor_view(context: list[Message], history: list[str]) -> list[Message]:
+    """The conversation as the supervisor's own call sees it (transient, never saved).
+
+    Earlier turns are kept as plain user and assistant text. The work done for the latest
+    user message is folded into one user message that names each worker's reply in order
+    ("WEATHER replied: ...") and lists the workers already run, then asks for the next
+    worker or FINISH. Unlabelled worker replies and replayed routing tokens made the
+    supervisor re-dispatch workers that had already answered: consecutive assistant turns
+    are merged by some providers, so it could not tell who said what or that it was done.
+    """
+    last_user = next(
+        (i for i in range(len(context) - 1, -1, -1) if context[i].role == "user"), None
+    )
+    if last_user is None:
+        return list(context)
+
+    view: list[Message] = []
+    for msg in context[: last_user + 1]:
+        if msg.role == "user":
+            view.append(msg)
+        elif msg.role == "assistant" and msg.text().strip():
+            # Text only: an earlier turn's tool calls and results are not the supervisor's.
+            view.append(Message.text_message(msg.text(), role="assistant"))
+
+    replies = [
+        f"{msg.metadata.get('node_name') or 'A worker'} replied: {msg.text().strip()}"
+        for msg in context[last_user + 1 :]
+        if msg.role == "assistant" and msg.text().strip()
+    ]
+    if not replies and not history:
+        return view  # first call of the turn: the request ends with the user's message
+
+    work = "\n\n".join(replies) if replies else "No worker has replied yet."
+    already = ", ".join(history) if history else "none"
+    note = (
+        f"Work done so far for my latest message:\n\n{work}\n\n"
+        f"Workers already run for it, in order: {already}.\n{SUPERVISOR_REQUEST_NOTE}"
+    )
+    view.append(Message.text_message(note, role="user"))
+    return view
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +248,33 @@ def _make_increment_rounds_node() -> Callable[[AgentState], list]:
 # ---------------------------------------------------------------------------
 # Routing factory
 # ---------------------------------------------------------------------------
+
+
+def _make_worker_node(worker: BaseAgent) -> Callable:
+    """Wrap *worker* so its request never ends on an assistant turn.
+
+    From the second delegation of a turn on, the context ends with the previous worker's
+    reply. In that case one transient user message (``WORKER_CONTINUE_NOTE``) is added to
+    the request view. Nothing is added when the context ends with the user's message or a
+    tool result. The message is never saved to state.
+    """
+
+    async def _worker(state: AgentState, config: dict) -> object:
+        original_context = state.context
+        last = original_context[-1] if original_context else None
+        if last is not None and last.role == "assistant" and not last.tools_calls:
+            state.context = [
+                *original_context,
+                Message.text_message(WORKER_CONTINUE_NOTE, role="user"),
+            ]
+        try:
+            return await worker.execute(state, config)
+        finally:
+            state.context = original_context
+
+    _worker.__name__ = "worker"
+    _worker.agent = worker  # type: ignore[attr-defined]
+    return _worker
 
 
 def _make_worker_route(tool_node_name: str) -> Callable[[AgentState], str]:
@@ -205,7 +303,7 @@ def _resolve_decision(raw: str, worker_names: list[str], rounds: int) -> str:
        e.g. worker ``CODE`` matching ``DECODE``).
     3. Nothing recognisable → ``END``.
     """
-    if _FINISH_TOKEN in raw:
+    if re.search(rf"\b{_FINISH_TOKEN}\b", raw):
         logger.debug("Supervisor signalled FINISH after %d round(s).", rounds)
         return END
 
@@ -222,6 +320,7 @@ def _make_supervisor_node(
     supervisor_agent: Agent,
     worker_names: list[str],
     max_rounds: int,
+    respond_node: str | None = None,
 ) -> Callable[[AgentState, dict[str, Any]], Any]:
     """Return the SUPERVISOR node.
 
@@ -236,47 +335,52 @@ def _make_supervisor_node(
     Decision order:
 
     1. Hard-cap check: if ``max_rounds`` reached → ``END``.
-    2. Run the supervisor agent and extract its text decision.
-    3. Map the decision to a worker name or ``END``.
+    2. Run the supervisor agent on :func:`_supervisor_view` and extract its decision.
+    3. Map the decision to a worker name or ``END``. Naming the worker that just ran
+       again counts as ``END``: a worker already runs its own tool loop, so an immediate
+       repeat only re-answers.
+    4. With ``respond_node`` set, an ``END`` before any worker ran this turn goes to
+       ``respond_node`` instead, so the user always gets a reply (a greeting needs none
+       of the workers).
     """
 
     async def _supervisor(state: AgentState, config: dict[str, Any]) -> Command:
+        history: list[str] = state.execution_meta.internal_data.setdefault(_ROUTE_HISTORY_KEY, [])
+
+        def finish() -> Command:
+            if respond_node is not None and not history:
+                return Command(goto=respond_node)
+            return Command(goto=END)
+
         rounds = state.execution_meta.internal_data.get(_ROUNDS_KEY, 0)
         if rounds >= max_rounds:
             logger.warning("SupervisorTeam reached max_rounds=%d; terminating.", max_rounds)
-            return Command(goto=END)
+            return finish()
 
         # Force a non-streaming call so the converter resolves to a single Message
         # and the routing token is never emitted as a visible stream chunk.
         exec_config = dict(config)
         exec_config["is_stream"] = False
 
-        # The supervisor's past decisions are NOT persisted to context (that would
-        # leak routing tokens to the user), so it would otherwise have no memory of
-        # what it already dispatched and might re-route to a worker that is already
-        # done. Re-supply that memory privately, visible only to this LLM call —
-        # never streamed, never persisted (the real context is restored below).
-        history: list[str] = state.execution_meta.internal_data.setdefault(_ROUTE_HISTORY_KEY, [])
+        # The supervisor's decisions are never saved to the context (they would show the
+        # user routing words). Its own call gets a transient view that says, in order,
+        # which worker replied what and which workers already ran.
         original_context = state.context
-        if history:
-            # Replay past decisions as bare assistant tokens — exactly what the
-            # supervisor used to see when its routing messages lived in context.
-            # This is the signal it relies on to know a worker already ran and to
-            # advance (or FINISH) instead of re-dispatching. Transient only.
-            replay = [Message.text_message(name, role="assistant") for name in history]
-            state.context = [*original_context, *replay]
-
+        state.context = _supervisor_view(original_context, history)
         try:
             converter = await supervisor_agent.execute(state, exec_config)
             message = await converter.invoke()
         finally:
-            # Restore the real context so the breadcrumb is never persisted.
             state.context = original_context
 
         raw = (message.text() or "").strip().strip("`.,:;'\"").upper()
         decision = _resolve_decision(raw, worker_names, rounds)
-        if decision != END:
-            history.append(decision)
+        if decision != END and history and decision == history[-1]:
+            logger.info("Supervisor named %s again right after it ran; finishing.", decision)
+            decision = END
+        if decision == END:
+            return finish()
+        history.append(decision)
         return Command(goto=decision)
 
     _supervisor.__name__ = "supervisor"
@@ -355,10 +459,11 @@ class SupervisorTeamAgent[StateT: AgentState]:
     ):
         if not workers:
             raise ValueError("SupervisorTeamAgent requires at least one worker.")
-        if _SUPERVISOR_NODE in workers:
-            raise ValueError(
-                f"Worker name {_SUPERVISOR_NODE!r} is reserved for the supervisor node."
-            )
+        for reserved in _RESERVED_NODES:
+            if reserved in workers:
+                raise ValueError(
+                    f"Worker name {reserved!r} is reserved for the supervisor's own nodes."
+                )
 
         self._supervisor_model = supervisor_model
         self._workers = workers
@@ -401,6 +506,14 @@ class SupervisorTeamAgent[StateT: AgentState]:
             **self._supervisor_kwargs,
         )
 
+    def _build_respond_agent(self) -> Agent:
+        """The RESPOND node's agent: answers the user when no worker is needed."""
+        return Agent(
+            model=self._supervisor_model,
+            system_prompt=_build_respond_prompt(self._workers),
+            **self._supervisor_kwargs,
+        )
+
     def _configure_graph(self) -> None:
         self._graph = self._new_graph()
 
@@ -413,8 +526,14 @@ class SupervisorTeamAgent[StateT: AgentState]:
         supervisor_agent = self._build_supervisor_agent()
         self._graph.add_node(
             _SUPERVISOR_NODE,
-            _make_supervisor_node(supervisor_agent, worker_names, self._max_rounds),
+            _make_supervisor_node(
+                supervisor_agent, worker_names, self._max_rounds, respond_node=_RESPOND_NODE
+            ),
         )
+
+        # --- RESPOND node: the reply when the supervisor finishes before any worker ran ---
+        self._graph.add_node(_RESPOND_NODE, self._build_respond_agent())
+        self._graph.add_edge(_RESPOND_NODE, END)
 
         # --- PRE_SUPERVISOR node: increments round counter, then routes to SUPERVISOR ---
         self._graph.add_node(_PRE_SUPERVISOR_NODE, _make_increment_rounds_node())
@@ -422,7 +541,9 @@ class SupervisorTeamAgent[StateT: AgentState]:
 
         # --- WORKER nodes ---
         for name, cfg in self._workers.items():
-            self._graph.add_node(name, cfg.agent)
+            # Wrapped so a later worker's request never ends on the previous worker's
+            # reply; the agent itself is ``node.func.agent``.
+            self._graph.add_node(name, _make_worker_node(cfg.agent))
 
             worker_tool_node = cfg.agent.get_tool_node()
             if worker_tool_node is not None:

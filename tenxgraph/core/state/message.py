@@ -20,7 +20,6 @@ Functions:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Sequence
@@ -42,6 +41,7 @@ from tenxgraph.core.state.message_block import (
     ToolResultBlock,
     VideoBlock,
 )
+from tenxgraph.utils.callable_utils import resolve_awaitable_id
 
 
 logger = logging.getLogger("tenxgraph.state")
@@ -71,11 +71,7 @@ def generate_id(default_id: str | int | None) -> str | int:
 
     # if user provided an awaitable, resolve it
     if isinstance(generated_id, Awaitable):
-
-        async def wait_for_id():
-            return await generated_id
-
-        generated_id = asyncio.run(wait_for_id())
+        generated_id = resolve_awaitable_id(generated_id)
 
     if generated_id:
         return generated_id
@@ -140,7 +136,6 @@ class Message(BaseModel):
         content (Sequence[ContentBlock]): The message content blocks.
         delta (bool): Indicates if this is a delta/partial message.
         tools_calls (list[dict[str, Any]] | None): Tool call information, if any.
-        reasoning (str | None): Reasoning or explanation, if any.
         timestamp (datetime | None): Timestamp of the message.
         metadata (dict[str, Any]): Additional metadata.
         usages (TokenUsages | None): Token usage statistics.
@@ -156,7 +151,6 @@ class Message(BaseModel):
     content: Sequence[ContentBlock]
     delta: bool = False  # Indicates if this is a delta/partial message
     tools_calls: list[dict[str, Any]] | None = None
-    reasoning: str | None = None  # Remove it
     timestamp: float | None = Field(default_factory=lambda: datetime.now().timestamp())
     metadata: dict[str, Any] = Field(default_factory=dict)
     usages: TokenUsages | None = None

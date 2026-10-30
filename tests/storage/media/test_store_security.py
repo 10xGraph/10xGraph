@@ -142,7 +142,7 @@ class TestFileModes:
     async def test_nested_new_base_dirs_are_all_private(self, tmp_path) -> None:
         old = os.umask(0o022)
         try:
-            LocalFileMediaStore(str(tmp_path / "a" / "b" / "media"))
+            await LocalFileMediaStore(str(tmp_path / "a" / "b" / "media")).store(b"x", "image/png")
         finally:
             os.umask(old)
         for rel in ("a", "a/b", "a/b/media"):

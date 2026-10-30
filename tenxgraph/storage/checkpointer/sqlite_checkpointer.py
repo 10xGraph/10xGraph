@@ -64,7 +64,14 @@ def _default_home_dir() -> Path:
     return new_dir
 
 
-DEFAULT_DB_PATH = str(_default_home_dir() / "checkpointer.db")
+# Left unset: the home directory is looked up when a checkpointer is built, not at import, so
+# ``import tenxgraph`` works where there is no HOME and no passwd entry. Set it to override.
+DEFAULT_DB_PATH: str | None = None
+
+
+def _default_db_path() -> str:
+    return str(_default_home_dir() / "checkpointer.db")
+
 
 DDL_STATEMENTS: tuple[str, ...] = (
     """
@@ -115,6 +122,16 @@ DDL_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS af_thread_owner (
         thread_id TEXT NOT NULL PRIMARY KEY,
         owner_id  TEXT NOT NULL
+    )
+    """,
+    # Tool execution ledger: a completed tool call is recorded against its id so a node
+    # replayed after a crash does not fire it again.
+    """
+    CREATE TABLE IF NOT EXISTS af_tool_executions (
+        thread_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        result TEXT NOT NULL,
+        PRIMARY KEY (thread_id, tool_call_id)
     )
     """,
 )
@@ -170,7 +187,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         if db_path == ":memory:":
             self.db_path: str | Path = ":memory:"
         else:
-            self.db_path = Path(db_path) if db_path else Path(DEFAULT_DB_PATH)
+            self.db_path = Path(db_path) if db_path else Path(DEFAULT_DB_PATH or _default_db_path())
 
         self._conn: aiosqlite.Connection | None = None
         self._setup_done = False
@@ -184,15 +201,28 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     def _get_config_key(self, config: dict[str, Any]) -> str:
         return str(config.get("thread_id", ""))
 
-    async def _record_owner(self, conn: "aiosqlite.Connection", config: dict[str, Any]) -> None:
-        """Record the caller as the thread's owner on first write (needs a user_id)."""
+    async def _record_owner(self, conn: "aiosqlite.Connection", config: dict[str, Any]) -> bool:
+        """Record the caller as the thread's owner on first write (needs a user_id).
+
+        Runs inside the write transaction and reads the owner back, so two first writers that
+        both passed the unlocked pre-check cannot both think they own the thread. Returns
+        False when isolation is active and another user owns it.
+        """
         user_id = config.get("user_id") if isinstance(config, dict) else None
         if not user_id:
-            return
+            return True
+        key = self._get_config_key(config)
         await conn.execute(
             "INSERT OR IGNORE INTO af_thread_owner (thread_id, owner_id) VALUES (?, ?)",
-            (self._get_config_key(config), str(user_id)),
+            (key, str(user_id)),
         )
+        if not self._isolation_enabled(config, user_id):
+            return True
+        async with conn.execute(
+            "SELECT owner_id FROM af_thread_owner WHERE thread_id = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row is None or str(row["owner_id"]) == str(user_id)
 
     async def _owner_denied(self, config: dict[str, Any]) -> bool:
         """True when isolation is active and the caller does not own this thread."""
@@ -210,8 +240,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     def _serialize_state(self, state: StateT) -> str:
         return _dumps(self._encode_state(state))
 
-    def _deserialize_state(self, raw: str) -> StateT:
-        return self._decode_state(json.loads(raw))
+    def _deserialize_state(self, raw: str, thread_id: Any = None) -> StateT:
+        return self._decode_state(json.loads(raw), thread_id)
 
     async def _ensure_setup(self) -> None:
         if self._setup_done:
@@ -246,7 +276,13 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         """Serialize a write transaction and commit on success."""
         conn = await self._get_conn()
         async with self._write_lock:
-            yield conn
+            try:
+                yield conn
+            except BaseException:
+                # Without this the half-done statements stay pending and the next
+                # successful write commits them.
+                await conn.rollback()
+                raise
             await conn.commit()
 
     # ------------------------------------------------------------------
@@ -277,7 +313,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         data = self._serialize_state(state)
         async with self._write() as conn:
-            await self._record_owner(conn, config)
+            if not await self._record_owner(conn, config):
+                raise StorageError("Thread is owned by a different user")
             await conn.execute(
                 """
                 INSERT INTO af_states (thread_id, state_data, updated_at)
@@ -306,7 +343,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             row = await cursor.fetchone()
         if row is None:
             return None
-        return self._deserialize_state(row["state_data"])
+        return self._deserialize_state(row["state_data"], config.get("thread_id"))
 
     async def aclear_state(self, config: dict[str, Any]) -> bool:
         await self._ensure_setup()
@@ -332,7 +369,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         data = self._serialize_state(state)
         async with self._write() as conn:
-            await self._record_owner(conn, config)
+            if not await self._record_owner(conn, config):
+                return state
             await self._upsert_state_cache(conn, key, data)
         return state
 
@@ -362,7 +400,16 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             row = await cursor.fetchone()
         if row is None:
             return None
-        return self._deserialize_state(row["state_data"])
+        return self._deserialize_state(row["state_data"], config.get("thread_id"))
+
+    async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
+        await self._ensure_setup()
+        if await self._owner_denied(config):
+            return True  # no-op, do not reveal existence
+        key = self._get_config_key(config)
+        async with self._write() as conn:
+            await conn.execute("DELETE FROM af_state_cache WHERE thread_id = ?", (key,))
+        return True
 
     # ------------------------------------------------------------------
     # Generic cache — async (TTL, lazy prune on read)
@@ -425,6 +472,41 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             )
         return json.loads(row["value"]) if row else None
 
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
+        """Compare and delete in one statement."""
+        await self._ensure_setup()
+        async with self._write() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM af_cache WHERE namespace = ? AND key = ? AND value = ?",
+                (namespace, key, _dumps(expected)),
+            )
+            return cursor.rowcount > 0
+
+    async def aput_cache_value_if_absent(
+        self,
+        namespace: str,
+        key: str,
+        value: Any,
+        ttl_seconds: int | None = None,
+    ) -> bool:
+        """Insert unless a live value exists, in one statement; an expired row is replaced."""
+        await self._ensure_setup()
+        now = time.time()
+        expires_at = now + ttl_seconds if ttl_seconds else None
+        async with self._write() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO af_cache (namespace, key, value, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, key) DO UPDATE SET
+                    value = excluded.value,
+                    expires_at = excluded.expires_at
+                WHERE af_cache.expires_at IS NOT NULL AND af_cache.expires_at <= ?
+                """,
+                (namespace, key, _dumps(value), expires_at, now),
+            )
+            return cursor.rowcount > 0
+
     async def alist_cache_keys(
         self,
         namespace: str,
@@ -463,7 +545,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         now = time.time()
         async with self._write() as conn:
-            await self._record_owner(conn, config)
+            if not await self._record_owner(conn, config):
+                raise StorageError("Thread is owned by a different user")
             for msg in messages:
                 await conn.execute(
                     """
@@ -574,6 +657,22 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
                 "DELETE FROM af_messages WHERE thread_id = ? AND message_id = ?",
                 (key, str(message_id)),
             )
+            # The state and its cache copy carry the message too; remove it there in the
+            # same transaction so a deleted message cannot come back on the next run.
+            for table in ("af_states", "af_state_cache"):
+                async with conn.execute(
+                    f"SELECT state_data FROM {table} WHERE thread_id = ?",  # noqa: S608
+                    (key,),
+                ) as cursor:
+                    state_row = await cursor.fetchone()
+                if state_row is None:
+                    continue
+                payload = json.loads(state_row["state_data"])
+                if self._strip_message_from_payload(payload, message_id):
+                    await conn.execute(
+                        f"UPDATE {table} SET state_data = ? WHERE thread_id = ?",  # noqa: S608
+                        (_dumps(payload), key),
+                    )
         return True
 
     # ------------------------------------------------------------------
@@ -592,7 +691,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             raise StorageError("Thread is owned by a different user")
         data = _dumps(thread_info.model_dump(mode="json"))
         async with self._write() as conn:
-            await self._record_owner(conn, config)
+            if not await self._record_owner(conn, config):
+                raise StorageError("Thread is owned by a different user")
             await conn.execute(
                 """
                 INSERT INTO af_threads (thread_id, thread_data, updated_at)
@@ -682,7 +782,47 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             await conn.execute("DELETE FROM af_messages WHERE thread_id = ?", (key,))
             await conn.execute("DELETE FROM af_states WHERE thread_id = ?", (key,))
             await conn.execute("DELETE FROM af_state_cache WHERE thread_id = ?", (key,))
+            await conn.execute("DELETE FROM af_tool_executions WHERE thread_id = ?", (key,))
             await conn.execute("DELETE FROM af_thread_owner WHERE thread_id = ?", (key,))
+        return True
+
+    # ------------------------------------------------------------------
+    # Tool execution ledger
+    # ------------------------------------------------------------------
+
+    async def aget_tool_result(
+        self,
+        config: dict[str, Any],
+        tool_call_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the recorded result of a completed tool call, if there is one."""
+        await self._ensure_setup()
+        if await self._owner_denied(config):
+            return None  # not the owner -> no record, do not reveal existence
+        conn = await self._get_conn()
+        async with conn.execute(
+            "SELECT result FROM af_tool_executions WHERE thread_id = ? AND tool_call_id = ?",
+            (self._get_config_key(config), str(tool_call_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        return json.loads(row["result"]) if row else None
+
+    async def aput_tool_result(
+        self,
+        config: dict[str, Any],
+        tool_call_id: str,
+        result: dict[str, Any],
+    ) -> Any | None:
+        """Durably record that a tool call completed; the first recorded result wins."""
+        await self._ensure_setup()
+        async with self._write() as conn:
+            if not await self._record_owner(conn, config):
+                raise StorageError("Thread is owned by a different user")
+            await conn.execute(
+                "INSERT OR IGNORE INTO af_tool_executions (thread_id, tool_call_id, result) "
+                "VALUES (?, ?, ?)",
+                (self._get_config_key(config), str(tool_call_id), _dumps(result)),
+            )
         return True
 
     # ------------------------------------------------------------------

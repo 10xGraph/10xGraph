@@ -20,12 +20,12 @@ This repository is the core engine (PyPI `10xgraph`, import `tenxgraph`). The do
 
 - **Replay-safe tools.** The run loop persists the current node before running it, so a process killed mid-node re-runs that node on resume. Before calling a tool, 10xGraph checks the checkpointer's tool ledger and records each completed call as soon as it returns. A tool that already ran is not executed again: no double charge, no duplicate email. Requires a checkpointer.
 - **Versioned state writes.** Durable writes use optimistic compare-and-swap, so two runs on one thread cannot overwrite each other. The Redis cache write is version-guarded too.
-- **Real node and tool timeouts.** Set `node_timeout` and `tool_timeout` in the run config (defaults 900 s and 300 s), so a hung tool cannot hold a worker forever.
+- **Real node and tool timeouts.** Set `node_timeout` and `tool_timeout` in the run config (no limit unless you set them), applied on both invoke and stream.
 - **Human approval inside a tool.** `interrupt()` pauses the run and saves the thread; resume with the decision.
 
 **2. The production server ships in the box (`10xgraph-api`, MIT)**
 
-`10xgraph-api` generates the production server around your compiled graph: REST, SSE streaming, WebSocket and realtime-audio endpoints; JWT or custom auth; scoped authorization on every endpoint; thread ownership isolation; rate limiting; and Docker Compose and Kubernetes files. You drive it with the `10xgraph` command (`10xgraph init`, `10xgraph api`, `10xgraph build`). See [the ecosystem table](#ecosystem).
+`10xgraph-api` generates the production server around your compiled graph: REST, NDJSON streaming, WebSocket and realtime-audio endpoints; JWT or custom auth; scoped authorization on every endpoint; thread ownership isolation; rate limiting; and Docker Compose and Kubernetes files. You drive it with the `10xgraph` command (`10xgraph init`, `10xgraph api`, `10xgraph build`). See [the ecosystem table](#ecosystem).
 
 **3. Built to scale**
 
@@ -214,8 +214,8 @@ from tenxgraph.prebuilt.agent import AudioAgent
 from tenxgraph.core.realtime import LiveInputQueue, RealtimeConfig
 
 app = AudioAgent(
-    "gemini-live-2.5-flash-preview",
-    realtime_config=RealtimeConfig(model="gemini-live-2.5-flash-preview", voice="Puck"),
+    "gemini-3.8-live",
+    realtime_config=RealtimeConfig(model="gemini-3.8-live", voice="Puck"),
     tools=[lookup_order],
 ).compile()
 
@@ -238,7 +238,7 @@ work as they do on any other agent. Needs ``pip install "10xgraph[realtime]"``.
 
 - **Agents:** React, RAG, Guarded, Plan-Act-Reflect, Audio, Swarm, SupervisorTeam, StructuredOutput
 - **Orchestration:** Router, MapReduce, Sequential, Branch-Join
-- **Other:** dependency injection through InjectQ, skills (Agent Skills spec), 3-layer memory (working state, checkpointer, vector stores such as Qdrant and Mem0), publishers (Console, Redis, Kafka, RabbitMQ, OpenTelemetry), evaluation and testing helpers
+- **Other:** dependency injection through InjectQ, skills (Agent Skills spec; a skill's `allowed-tools` field is read and stored but not enforced), 3-layer memory (working state, checkpointer, vector stores such as Qdrant and Mem0), publishers (Console, Redis, Kafka, RabbitMQ, OpenTelemetry), evaluation and testing helpers
 
 ---
 
@@ -282,7 +282,7 @@ Other renamed identifiers (old values still work where noted):
 | Package | What it does | Install | Source |
 |---|---|---|---|
 | Core framework, `10xgraph` | Graph engine, state and checkpointing, memory, tools, MCP, publishers, evaluation | `pip install 10xgraph` | this repository |
-| API server, `10xgraph-api` (formerly `10xscale-agentflow-cli`) | Generates the production server around your graph: REST, SSE, WebSocket, JWT auth, scoped authorization, rate limiting, Docker and Kubernetes files | `pip install 10xgraph-api` | [10xGraph/10xgraph-api](https://github.com/10xGraph/10xgraph-api) |
+| API server, `10xgraph-api` (formerly `10xscale-agentflow-cli`) | Generates the production server around your graph: REST, NDJSON streaming, WebSocket, JWT auth, scoped authorization, rate limiting, Docker and Kubernetes files | `pip install 10xgraph-api` | [10xGraph/10xgraph-api](https://github.com/10xGraph/10xgraph-api) |
 | TypeScript client, `10xgraph-client` (formerly `@10xscale/agentflow-client`) | Typed client for every endpoint, React streaming hooks, client-side tools | `npm install 10xgraph-client` | [10xGraph/10xgraph-client](https://github.com/10xGraph/10xgraph-client) |
 | Playground | React UI to chat with agents and inspect graphs, threads and state | `10xgraph play` | [10xHub/agentflow-playground](https://github.com/10xHub/agentflow-playground) |
 | Documentation | Tutorials, guides, concepts, reference | [10xgraph.com](https://10xgraph.com) | [10xGraph/10xgraph-docs](https://github.com/10xGraph/10xgraph-docs) |
@@ -318,7 +318,7 @@ Runnable scripts in [`examples/`](https://github.com/10xGraph/10xGraph/tree/main
 | Multi-agent: swarm, supervisor, handoff, plan-act-reflect | [`swarm/`](https://github.com/10xGraph/10xGraph/tree/main/examples/swarm), [`supervisor_team/`](https://github.com/10xGraph/10xGraph/tree/main/examples/supervisor_team), [`handoff/`](https://github.com/10xGraph/10xGraph/tree/main/examples/handoff), [`multiagent/`](https://github.com/10xGraph/10xGraph/tree/main/examples/multiagent), [`plan_act_reflect/`](https://github.com/10xGraph/10xGraph/tree/main/examples/plan_act_reflect) |
 | Realtime audio, multimodal | [`realtime/`](https://github.com/10xGraph/10xGraph/tree/main/examples/realtime), [`multimodal/`](https://github.com/10xGraph/10xGraph/tree/main/examples/multimodal) |
 | Structured output, skills, custom state | [`structured_output/`](https://github.com/10xGraph/10xGraph/tree/main/examples/structured_output), [`skills/`](https://github.com/10xGraph/10xGraph/tree/main/examples/skills), [`custom-state/`](https://github.com/10xGraph/10xGraph/tree/main/examples/custom-state) |
-| Providers and A2A | [`providers/`](https://github.com/10xGraph/10xGraph/tree/main/examples/providers), [`a2a_sdk/`](https://github.com/10xGraph/10xGraph/tree/main/examples/a2a_sdk) |
+| Providers | [`providers/`](https://github.com/10xGraph/10xGraph/tree/main/examples/providers) |
 | Checkpointing, graceful shutdown | [`checkpointer/`](https://github.com/10xGraph/10xGraph/tree/main/examples/checkpointer), [`graceful_shutdown/`](https://github.com/10xGraph/10xGraph/tree/main/examples/graceful_shutdown) |
 | Evaluation and testing | [`evaluation/`](https://github.com/10xGraph/10xGraph/tree/main/examples/evaluation), [`testing/`](https://github.com/10xGraph/10xGraph/tree/main/examples/testing) |
 
@@ -336,7 +336,7 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 ## Limitations
 
 - Smaller community and fewer integrations than LangGraph or CrewAI.
-- Pre-1.0 (current release line 0.10.x): pin versions and read the changelog.
+- Pin versions and read the changelog before you upgrade.
 - The rename from Agentflow resets brand recognition; "10xGraph" has no search history yet.
 - LangGraph has stronger visual tooling (Studio, LangSmith observability).
 - Requires Python 3.12 or newer (tested on 3.12 to 3.15). Code-first, not a no-code builder.
@@ -352,7 +352,6 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 - Done: Streaming and event publishing
 - Done: Human-in-the-loop support
 - Done: Prebuilt agent patterns
-- Done: Agent-to-Agent (A2A) communication protocols
 - Done: Observability and tracing (OpenTelemetry)
 - Done: Realtime audio-to-audio agents (Gemini Live)
 - Planned: Remote node execution for distributed processing

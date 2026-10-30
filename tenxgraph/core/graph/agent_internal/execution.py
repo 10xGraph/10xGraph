@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+import copy
 import logging
+import random
 import re
+import time
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from injectq import Inject, InjectQ
@@ -12,6 +18,12 @@ from injectq.utils.exceptions import DependencyNotFoundError
 
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.tool_node.run_tools import tool_name
+from tenxgraph.core.llm.distributed_limiter import DistributedLimiter, limiter_key
+from tenxgraph.core.llm.stream_idle import (
+    peek_first_chunk,
+    resolve_stream_idle_timeout,
+    stream_idle_timeout_var,
+)
 from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
@@ -19,11 +31,13 @@ from tenxgraph.utils.converter import (
     convert_messages,
     inject_request_blocks,
     strip_media_blocks,
+    strip_provider_blocks,
 )
 from tenxgraph.utils.injection import fresh
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
+from .openai import _REASONING_REJECTED_MODELS, is_endpoint_unsupported, is_reasoning_rejected
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -58,6 +72,157 @@ _STATUS_CODE_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+
+
+# The converter key of the call that produced the latest response in this task. It is a
+# context variable, not an Agent attribute, so concurrent runs on one shared Agent (and a
+# fallback to another provider) can never read each other's value.
+converter_key_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "tenxgraph_llm_converter_key", default=None
+)
+_api_style_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "tenxgraph_llm_api_style", default=None
+)
+
+# Wording providers use for a 429 that no amount of waiting will clear: an exhausted
+# prepaid balance, a hard spend cap, or a billing problem. Rate-limit 429s do not use it.
+_PERMANENT_QUOTA_CODES = frozenset(
+    {"insufficient_quota", "billing_not_active", "billing_hard_limit_reached"}
+)
+_PERMANENT_QUOTA_MARKERS = (
+    "insufficient_quota",
+    "exceeded your current quota",
+    "usage limits",
+    "spend limit",
+    "spending limit",
+    "credit balance is too low",
+    "billing hard limit",
+)
+
+
+def _is_permanent_quota_error(exc: BaseException) -> bool:
+    """True for a 429 that reports a spent quota or spend cap, which retrying cannot fix."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status != 429:  # noqa: PLR2004
+        return False
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        for key in ("code", "type"):
+            if str(error.get(key) or "").lower() in _PERMANENT_QUOTA_CODES:
+                return True
+    if str(getattr(exc, "code", "") or "").lower() in _PERMANENT_QUOTA_CODES:
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _PERMANENT_QUOTA_MARKERS)
+
+
+def _parse_retry_after(raw: Any) -> float | None:
+    """Parse a ``Retry-After`` value: delta-seconds or an HTTP date."""
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return max(0.0, parsedate_to_datetime(str(raw)).timestamp() - time.time())
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """Seconds the provider asked us to wait (``retry-after-ms`` / ``Retry-After``), if any."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    try:
+        raw_ms = headers.get("retry-after-ms")
+        raw = headers.get("retry-after")
+    except AttributeError:
+        return None
+    if raw_ms is not None:
+        parsed_ms = _parse_retry_after(raw_ms)
+        if parsed_ms is not None:
+            return parsed_ms / 1000.0
+    return None if raw is None else _parse_retry_after(raw)
+
+
+def _usage_text(message: Any) -> str:
+    usages = getattr(message, "usages", None)
+    if usages is None:
+        return "unknown"
+    return (
+        f"prompt={getattr(usages, 'prompt_tokens', 0) or 0} "
+        f"completion={getattr(usages, 'completion_tokens', 0) or 0} "
+        f"total={getattr(usages, 'total_tokens', 0) or 0}"
+    )
+
+
+def _make_empty_reply_logger(node_name: str, model: str) -> Any:
+    """Build the converter callback that logs an empty provider reply and its token usage.
+
+    The tokens of an empty call belong to no saved message, so the warning is where they
+    stay visible.
+    """
+
+    def log(message: Any, will_retry: bool) -> None:
+        logger.warning(
+            "Node '%s' (model %s): the provider returned a reply with no text, no tool "
+            "calls and no media (tokens: %s). A request that ends with an assistant turn is "
+            "a common cause. %s",
+            node_name,
+            model,
+            _usage_text(message),
+            "Retrying the call once." if will_retry else "The retry was empty too.",
+        )
+
+    return log
+
+
+def _make_empty_reply_error(node_name: str, model: str) -> Any:
+    def build(message: Any) -> BaseException:
+        from tenxgraph.core.exceptions import NodeError
+
+        return NodeError(
+            message=f"Model '{model}' returned an empty reply in node '{node_name}'",
+            error_code="NODE_004",
+            context={"node_name": node_name, "model": model, "usage": _usage_text(message)},
+        )
+
+    return build
+
+
+def _make_stream_end_hook(llm_event: Any) -> Any:
+    """Build the callback that ends a streaming LLM span with the stream's token usage."""
+
+    def hook(final: Any, error: BaseException | None) -> None:
+        from tenxgraph.runtime.publisher.events import EventType
+        from tenxgraph.runtime.publisher.publish import publish_event
+
+        if error is not None:
+            llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
+            llm_event.is_error = True
+            llm_event.data["error"] = type(error).__name__
+        else:
+            llm_event.event_type = EventType.END  # type: ignore[assignment]
+        usages = getattr(final, "usages", None)
+        if usages is not None:
+            llm_event.data["input_tokens"] = getattr(usages, "prompt_tokens", 0) or 0
+            llm_event.data["output_tokens"] = getattr(usages, "completion_tokens", 0) or 0
+            llm_event.data["cache_read_tokens"] = getattr(usages, "cache_read_input_tokens", 0) or 0
+            llm_event.data["cache_creation_tokens"] = (
+                getattr(usages, "cache_creation_input_tokens", 0) or 0
+            )
+            llm_event.data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
+        meta = getattr(final, "metadata", None) or {}
+        if meta.get("finish_reason"):
+            llm_event.data["finish_reason"] = str(meta["finish_reason"])
+        if meta.get("model"):
+            llm_event.data["response_model"] = str(meta["model"])
+        publish_event(llm_event)
+
+    return hook
 
 
 def _extract_input_tokens(response: Any) -> int:
@@ -307,6 +472,8 @@ class AgentExecutionMixin:
 
     def _is_retryable_error(self, exc: Exception, retry_cfg: RetryConfig) -> bool:
         """Determine whether *exc* is a transient error worth retrying."""
+        if _is_permanent_quota_error(exc):
+            return False
         status = self._extract_status_code(exc)
         if status is not None and status in retry_cfg.retryable_status_codes:
             return True
@@ -349,6 +516,143 @@ class AgentExecutionMixin:
             registry[key] = breaker
         return breaker
 
+    def _bind_attempt(
+        self,
+        model: str,
+        provider: str,
+        client: Any,
+        base_url: str | None,
+        llm_kwargs: dict[str, Any] | None = None,
+    ) -> Any:
+        """Return a private copy of this Agent configured for one LLM attempt.
+
+        The shared Agent is never rewritten: concurrent runs keep seeing the primary
+        model, provider and client while a fallback attempt is awaiting.
+        """
+        bound = copy.copy(self)
+        bound.model = model
+        bound.provider = provider
+        bound.client = client
+        bound.base_url = base_url
+        if llm_kwargs is not None:
+            bound.llm_kwargs = llm_kwargs
+        return bound
+
+    def _fallback_client(self, provider: str, same_provider: bool, retry_cfg: Any) -> Any:
+        """Build (once) the client for a fallback provider.
+
+        A fallback on another provider gets none of the primary's credentials or
+        endpoint: sending an OpenAI key to Anthropic would leak it to the wrong host.
+        """
+        cache: dict[Any, Any] = self.__dict__.setdefault("_fallback_clients", {})
+        key = (provider, self.base_url if same_provider else None, same_provider)
+        client = cache.get(key)
+        if client is None:
+            if same_provider:
+                kwargs = self.llm_kwargs
+                base_url = self.base_url
+            else:
+                kwargs = {
+                    k: v
+                    for k, v in self.llm_kwargs.items()
+                    if k not in ("api_key", "base_url", "anthropic_backend")
+                }
+                base_url = None
+            helper = self._bind_attempt(self.model, provider, None, base_url, llm_kwargs=kwargs)
+            client = self._without_sdk_retries(
+                helper._create_client(provider, base_url, self.use_vertex_ai), retry_cfg
+            )
+            cache[key] = client
+        return client
+
+    def _without_sdk_retries(self, client: Any, retry_cfg: Any) -> Any:
+        """Stop the provider SDK from retrying underneath our own retry loop.
+
+        Both layers retrying multiplies requests (3 SDK x 4 ours = 12 per call). Skipped
+        when retries are disabled on the Agent or the developer set ``max_retries``.
+        """
+        if retry_cfg is None or "max_retries" in self.llm_kwargs:
+            return client
+        if type(client).__module__.split(".")[0] not in ("openai", "anthropic"):
+            return client
+        with_options = getattr(client, "with_options", None)
+        if with_options is None:
+            return client
+        try:
+            return with_options(max_retries=0)
+        except Exception:
+            return client
+
+    @staticmethod
+    def _converter_key_of(bound: Any) -> str:
+        style = _api_style_var.get() or getattr(bound, "_effective_api_style", None)
+        style = style or bound.api_style
+        if bound.provider == "openai" and style == "responses":
+            return "openai_responses"
+        return bound.provider
+
+    def _llm_semaphore(self, provider: str, retry_cfg: Any) -> asyncio.Semaphore | None:
+        limit = getattr(retry_cfg, "max_concurrent_calls", None)
+        if not limit:
+            return None
+        registry: dict[str, asyncio.Semaphore] = self.__dict__.setdefault("_llm_semaphores", {})
+        sem = registry.get(provider)
+        if sem is None:
+            sem = registry[provider] = asyncio.Semaphore(limit)
+        return sem
+
+    def _llm_distributed_limiter(
+        self, provider: str, model: str, retry_cfg: Any
+    ) -> DistributedLimiter | None:
+        limit = getattr(retry_cfg, "distributed_max_concurrent_calls", None)
+        if not limit:
+            return None
+        client = getattr(retry_cfg, "distributed_redis", None)
+        url = getattr(retry_cfg, "distributed_redis_url", None)
+        if client is None and not url:
+            logger.warning(
+                "distributed_max_concurrent_calls is set but no distributed_redis or "
+                "distributed_redis_url was given; the shared cap is off"
+            )
+            return None
+        key = limiter_key(getattr(retry_cfg, "distributed_key_prefix", "") or "", provider, model)
+        registry: dict[str, DistributedLimiter] = self.__dict__.setdefault(
+            "_llm_distributed_limiters", {}
+        )
+        limiter = registry.get(key)
+        if limiter is None:
+            limiter = registry[key] = DistributedLimiter(
+                key=key,
+                limit=int(limit),
+                lease_seconds=float(getattr(retry_cfg, "distributed_lease_seconds", 300.0)),
+                redis=client,
+                redis_url=url,
+            )
+        return limiter
+
+    async def _call_bound(
+        self,
+        bound: Any,
+        sem: asyncio.Semaphore | None,
+        messages: list[dict[str, Any]],
+        tools: list | None,
+        stream: bool,
+        kwargs: dict[str, Any],
+        shared: DistributedLimiter | None = None,
+    ) -> Any:
+        _api_style_var.set(None)
+        stream_idle_timeout_var.set(resolve_stream_idle_timeout(bound.llm_kwargs))
+        async with contextlib.AsyncExitStack() as stack:
+            if sem is not None:
+                await stack.enter_async_context(sem)
+            if shared is not None:
+                await stack.enter_async_context(shared.acquire())
+            result = await bound._call_llm(messages, tools, stream, **kwargs)
+            if stream:
+                result = await peek_first_chunk(result, stream_idle_timeout_var.get())
+        converter_key_var.set(self._converter_key_of(bound))
+        return result
+
     async def _call_llm_with_retry(  # noqa: PLR0912, PLR0915
         self,
         messages: list[dict[str, Any]],
@@ -362,26 +666,28 @@ class AgentExecutionMixin:
         1. Try the primary model up to ``retry_config.max_retries`` times.
         2. For each fallback model, try up to ``retry_config.max_retries`` times.
         3. If everything fails, raise the last exception.
+
+        Every attempt runs on a private copy of the Agent, so a fallback never changes
+        the model, provider or client other runs see. The key of the converter that
+        matches the successful attempt is left in :data:`converter_key_var`.
         """
         retry_cfg: RetryConfig | None = getattr(self, "retry_config", None)
         fallback_models: list[tuple[str, str | None]] = getattr(self, "fallback_models", [])
 
         # Fast-path: no retry config at all → single attempt, no catch
         if retry_cfg is None and not fallback_models:
-            return await self._call_llm(messages, tools, stream, **kwargs)
+            return await self._call_bound(self, None, messages, tools, stream, kwargs)
 
         max_retries = retry_cfg.max_retries if retry_cfg else 0
 
         # Build the ordered attempt list: primary + fallbacks
-        attempts: list[tuple[str, str, Any, str | None]] = [
-            (self.model, self.provider, self.client, self.base_url),
-        ]
+        attempts: list[tuple[str, str]] = [(self.model, self.provider)]
         for fb_model, fb_provider in fallback_models:
-            attempts.append((fb_model, fb_provider or self.provider, None, self.base_url))
+            attempts.append((fb_model, fb_provider or self.provider))
 
         last_exc: Exception | None = None
 
-        for attempt_idx, (model, provider, fallback_client, base_url) in enumerate(attempts):
+        for attempt_idx, (model, provider) in enumerate(attempts):
             is_fallback = attempt_idx > 0
 
             if is_fallback:
@@ -403,39 +709,36 @@ class AgentExecutionMixin:
                 last_exc = CircuitBreakerOpenError((provider, model), retry_after)
                 continue
 
+            try:
+                if is_fallback:
+                    same_provider = provider == self.provider
+                    bound = self._bind_attempt(
+                        model,
+                        provider,
+                        self._fallback_client(provider, same_provider, retry_cfg),
+                        self.base_url if same_provider else None,
+                    )
+                else:
+                    client = self._without_sdk_retries(self.client, retry_cfg)
+                    bound = (
+                        self
+                        if client is self.client
+                        else self._bind_attempt(model, provider, client, self.base_url)
+                    )
+            except Exception as exc:
+                # A fallback that cannot even build its client must not hide the
+                # primary failure or stop the remaining fallbacks.
+                logger.warning("Could not prepare %s (provider=%s): %s", model, provider, exc)
+                last_exc = last_exc or exc
+                continue
+            sem = self._llm_semaphore(provider, retry_cfg)
+            shared = self._llm_distributed_limiter(provider, model, retry_cfg)
+
             for retry in range(max_retries + 1):  # 0 .. max_retries
                 try:
-                    if is_fallback:
-                        # Temporarily swap model/provider/client for the call
-                        orig_model, orig_provider, orig_client, orig_base_url = (
-                            self.model,
-                            self.provider,
-                            self.client,
-                            self.base_url,
-                        )
-                        self.model = model
-                        self.provider = provider
-                        self.base_url = base_url
-                        active_client = fallback_client
-                        if active_client is None:
-                            # Lazily build the fallback client, honouring the
-                            # agent's Vertex AI selection (only affects google).
-                            active_client = self._create_client(
-                                provider,
-                                base_url,
-                                self.use_vertex_ai,
-                            )
-                        self.client = active_client
-                        try:
-                            result = await self._call_llm(messages, tools, stream, **kwargs)
-                        finally:
-                            # Restore originals regardless of outcome
-                            self.model = orig_model
-                            self.provider = orig_provider
-                            self.client = orig_client
-                            self.base_url = orig_base_url
-                    else:
-                        result = await self._call_llm(messages, tools, stream, **kwargs)
+                    result = await self._call_bound(
+                        bound, sem, messages, tools, stream, kwargs, shared
+                    )
 
                     if breaker is not None:
                         breaker.record_success()
@@ -466,6 +769,19 @@ class AgentExecutionMixin:
                             retry_cfg.initial_delay * (retry_cfg.backoff_factor**retry),
                             retry_cfg.max_delay,
                         )
+                        if retry_cfg.jitter > 0:
+                            delay *= 1 - retry_cfg.jitter * random.random()  # noqa: S311  # nosec B311
+                        asked = _retry_after_seconds(exc)
+                        if asked is not None:
+                            if asked > retry_cfg.max_delay:
+                                logger.warning(
+                                    "Provider asked to wait %.0fs for %s, above max_delay; "
+                                    "not retrying this model.",
+                                    asked,
+                                    model,
+                                )
+                                break
+                            delay = max(delay, asked)
                         logger.warning(
                             "Retryable error from %s (attempt %d/%d): %s. Retrying in %.1fs …",
                             model,
@@ -491,7 +807,109 @@ class AgentExecutionMixin:
         assert last_exc is not None  # noqa: S101
         raise last_exc
 
-    async def _call_llm(  # noqa: PLR0911
+    def _set_api_style(self, style: str) -> None:
+        self._effective_api_style = style
+        _api_style_var.set(style)
+
+    def _apply_chat_reasoning(self, kwargs: dict[str, Any]) -> None:
+        """Add reasoning parameters to a Chat Completions request, in place.
+
+        Only an explicit ``reasoning_config`` is sent. The implicit default
+        (the provider's lowest effort) is skipped because many models reject
+        ``reasoning_effort`` on chat, notably together with function tools.
+        """
+        config = self._openai_reasoning_config()
+        if not config or not getattr(self, "_reasoning_explicit", True):
+            return
+        if config.get("effort"):
+            kwargs.setdefault("reasoning_effort", config["effort"])
+        if self.base_url:
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), "reasoning": config}
+
+    async def _route_openai(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list | None,
+        stream: bool,
+        **kwargs: Any,
+    ) -> Any:
+        """Pick the OpenAI endpoint: Responses API, or Chat Completions as the fallback.
+
+        Responses is used for text/json output when ``api_style == "responses"``. Media
+        output types always go through ``_call_openai`` (images and audio endpoints). A
+        ``base_url`` server that rejects Responses is remembered, so later calls skip the probe.
+        """
+        use_responses = self.api_style == "responses" and self.output_type in ("text", "json")
+        unsupported: set[str] = self.__dict__.setdefault("_responses_unsupported_urls", set())
+
+        if use_responses and self.base_url and self.base_url in unsupported:
+            use_responses = False
+
+        if use_responses:
+            if not self.base_url:
+                self._set_api_style("responses")
+                return await self._openai_with_reasoning_retry(
+                    lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
+                    sent=bool(self._openai_reasoning_config()),
+                )
+            try:
+                result = await self._openai_with_reasoning_retry(
+                    lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
+                    sent=bool(self._openai_reasoning_config()),
+                )
+            except Exception as exc:
+                # Only "endpoint not found / not implemented" means the server lacks the
+                # Responses API. A 429, timeout or 5xx is transient and must not flip it.
+                if not is_endpoint_unsupported(exc):
+                    raise
+                if self.base_url not in unsupported:
+                    from tenxgraph.storage.media.url_policy import redact_url
+
+                    unsupported.add(self.base_url)
+                    logger.warning(
+                        "Responses API not supported at %s (%s). "
+                        "Using chat.completions for this agent from now on.",
+                        redact_url(self.base_url),
+                        exc,
+                    )
+            else:
+                self._set_api_style("responses")
+                return result
+
+        self._set_api_style("chat")
+
+        async def call_chat() -> Any:
+            chat_kwargs = dict(kwargs)
+            self._apply_chat_reasoning(chat_kwargs)
+            return await self._call_openai(messages, tools, stream, **chat_kwargs)
+
+        sent = bool(self._openai_reasoning_config()) and getattr(self, "_reasoning_explicit", True)
+        return await self._openai_with_reasoning_retry(call_chat, sent=sent)
+
+    async def _openai_with_reasoning_retry(self, call: Any, sent: bool) -> Any:
+        """Run ``call``; retry once without reasoning when a model rejects the default.
+
+        Applies only when reasoning came from the default (``True`` or unset) and a 400 names
+        the reasoning parameter. The model is remembered so later calls skip reasoning. An
+        explicit ``reasoning_config`` dict always raises.
+        """
+        try:
+            return await call()
+        except Exception as exc:
+            if not (
+                sent and getattr(self, "_reasoning_default", False) and is_reasoning_rejected(exc)
+            ):
+                raise
+            _REASONING_REJECTED_MODELS.add(self.model)
+            logger.warning(
+                "Model %s rejected the default reasoning parameter (%s). "
+                "Retrying without reasoning; later calls skip it for this model.",
+                self.model,
+                exc,
+            )
+            return await call()
+
+    async def _call_llm(
         self,
         messages: list[dict[str, Any]],
         tools: list | None = None,
@@ -499,6 +917,8 @@ class AgentExecutionMixin:
         **kwargs: Any,
     ) -> Any:
         """Route requests to the active provider and API style."""
+        # Signed thinking blocks are Anthropic-only; no other provider may receive them.
+        messages = messages if self.provider == "anthropic" else strip_provider_blocks(messages)
         logger.debug(
             "Calling LLM: provider=%s, output_type=%s, model=%s, stream=%s",
             self.provider,
@@ -508,51 +928,7 @@ class AgentExecutionMixin:
         )
 
         if self.provider == "openai":
-            if self.api_style == "responses":
-                if getattr(self, "output_schema", None):
-                    logger.debug(
-                        "output_schema is set; using chat completions parse path "
-                        "instead of Responses API"
-                    )
-                    self._effective_api_style = "chat"
-                    if self.reasoning_config and self.reasoning_config.get("effort"):
-                        kwargs.setdefault("reasoning_effort", self.reasoning_config["effort"])
-                    if self.base_url and self.reasoning_config:
-                        existing_extra = kwargs.get("extra_body", {})
-                        existing_extra["reasoning"] = self.reasoning_config
-                        kwargs["extra_body"] = existing_extra
-                    return await self._call_openai(messages, tools, stream, **kwargs)
-
-                if self.base_url:
-                    try:
-                        result = await self._call_openai_responses(
-                            messages, tools, stream, **kwargs
-                        )
-                        self._effective_api_style = "responses"
-                        return result
-                    except Exception as exc:
-                        logger.warning(
-                            "Responses API not supported at %s (%s). "
-                            "Falling back to chat.completions.create().",
-                            self.base_url,
-                            exc,
-                        )
-                        self._effective_api_style = "chat"
-                        if self.reasoning_config and self.reasoning_config.get("effort"):
-                            kwargs.setdefault("reasoning_effort", self.reasoning_config["effort"])
-                        return await self._call_openai(messages, tools, stream, **kwargs)
-
-                self._effective_api_style = "responses"
-                return await self._call_openai_responses(messages, tools, stream, **kwargs)
-
-            self._effective_api_style = "chat"
-            if self.reasoning_config and self.reasoning_config.get("effort"):
-                kwargs.setdefault("reasoning_effort", self.reasoning_config["effort"])
-            if self.base_url and self.reasoning_config:
-                existing_extra = kwargs.get("extra_body", {})
-                existing_extra["reasoning"] = self.reasoning_config
-                kwargs["extra_body"] = existing_extra
-            return await self._call_openai(messages, tools, stream, **kwargs)
+            return await self._route_openai(messages, tools, stream, **kwargs)
 
         if self.provider == "google":
             return await self._call_google(messages, tools, stream, **kwargs)
@@ -607,7 +983,7 @@ class AgentExecutionMixin:
             "client-side with the tokenizer matching your model."
         )
 
-    async def execute(
+    async def execute(  # noqa: PLR0915
         self,
         state: AgentState,
         config: dict[str, Any],
@@ -715,13 +1091,25 @@ class AgentExecutionMixin:
         )
         publish_event(llm_event)
 
-        response = await self._call_llm_with_retry(
-            messages=messages,
-            tools=tools if tools else None,
-            stream=is_stream,
-        )
+        converter_key_var.set(None)
+        try:
+            response = await self._call_llm_with_retry(
+                messages=messages,
+                tools=tools if tools else None,
+                stream=is_stream,
+            )
+        except BaseException as exc:
+            # Close the LLM span: without an ERROR event the publisher keeps it open
+            # for the life of the process.
+            llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
+            llm_event.is_error = True
+            llm_event.data["error"] = type(exc).__name__
+            publish_event(llm_event)
+            raise
 
         if not is_stream:
+            # A stream is read later by the caller, so its span ends when the stream does
+            # (see ``on_stream_end`` below), with the usage from the last chunks.
             llm_event.event_type = EventType.END  # type: ignore[assignment]
             llm_event.data["output_response"] = _extract_response_text(response)
             llm_event.data["input_tokens"] = _extract_input_tokens(response)
@@ -734,8 +1122,30 @@ class AgentExecutionMixin:
             llm_event.data["response_model"] = _extract_response_model(response)
             publish_event(llm_event)
 
-        converter_key = self._get_converter_key()
+        # The converter must match the attempt that answered, which is not the primary
+        # when a fallback on another provider took over.
+        converter_key = converter_key_var.get() or self._get_converter_key()
         converter = ModelResponseConverter(response, converter=converter_key)
+
+        async def _retry_empty() -> Any:
+            # One more call after an empty reply. A fallback model on another provider may
+            # answer, so the converter follows the provider that did.
+            converter_key_var.set(None)
+            retry_response = await self._call_llm_with_retry(
+                messages=messages,
+                tools=tools if tools else None,
+                stream=is_stream,
+            )
+            converter.converter = ModelResponseConverter(
+                retry_response, converter=converter_key_var.get() or self._get_converter_key()
+            ).converter
+            return retry_response
+
+        converter.empty_reply_retry = _retry_empty
+        converter.on_empty_reply = _make_empty_reply_logger(node_name, str(self.model))
+        converter.empty_reply_error = _make_empty_reply_error(node_name, str(self.model))
+        if is_stream:
+            converter.on_stream_end = _make_stream_end_hook(llm_event)
         if self.tools_tags:
             # Record which tools the model was shown, so dispatch can refuse a call to
             # a tool the tags hid from it.

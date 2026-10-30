@@ -18,33 +18,54 @@ Key functionality areas:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from injectq import Inject
 
+from tenxgraph.core.exceptions import StoredNodeMissingError
 from tenxgraph.core.state import AgentState, ExecutionStatus
 from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.core.state.message import Message
-from tenxgraph.core.state.message_block import RemoteToolCallBlock
-from tenxgraph.runtime.publisher.events import EventModel, EventType
+from tenxgraph.core.state.message_block import RemoteToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.reducers import add_messages
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
+    END,
     START,
+    metrics,
 )
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import (
+    INTERRUPT_REASON,
     RESUME_INTERRUPT_ID_KEY,
     RESUME_KEY,
     Interrupt,
+    clear_resume_values,
     pause_at,
     pending_interrupt,
     record_resume,
 )
 
-from .utils import reload_state, sync_data
+from .run_registry import current_run
+from .utils import (
+    CANCELLED_REASON,
+    CRASHED_REASON,
+    FINALIZE_TIMEOUT_SECONDS,
+    STOP_REASON,
+    LastSave,
+    _detached_tasks,  # noqa: F401  (re-exported: cleanup tasks still running)
+    detach_task,
+    get_next_node,
+    reload_state,
+    sync_data,
+    wait_detached,
+)
 
 
 StateT = TypeVar("StateT", bound=AgentState)
@@ -59,18 +80,20 @@ async def check_interrupted[StateT: AgentState](
     callback_mgr: CallbackManager = Inject[CallbackManager],
 ) -> tuple[StateT, dict[str, Any]]:
     callback_mgr = fresh(callback_mgr)
+    from tenxgraph.core.exceptions import InterruptPendingError, NothingToResumeError
+
     request = pending_interrupt(state)
     if request is not None:
         # Paused by interrupt(): the retried node needs the answer, and a plain new message
         # cannot stand in for it.
         if RESUME_KEY not in input_data:
-            raise ValueError(
+            raise InterruptPendingError(
                 f"Thread is paused at interrupt '{request.id}' in node '{request.node}'. "
                 f"Resume it with {{'{RESUME_KEY}': value}}."
             )
         record_resume(state, input_data[RESUME_KEY], input_data.get(RESUME_INTERRUPT_ID_KEY))
     elif RESUME_KEY in input_data:
-        raise ValueError("Nothing to resume: this thread is not paused at an interrupt()")
+        raise NothingToResumeError()
 
     if state.is_interrupted():
         logger.info(
@@ -146,8 +169,14 @@ async def check_and_handle_interrupt[StateT: AgentState](
     interrupt_before: list[str] | None = None,
     interrupt_after: list[str] | None = None,
     callback_mgr: CallbackManager = Inject[CallbackManager],
+    messages: list[Message] | None = None,
+    last_save: LastSave | None = None,
 ) -> bool:
-    """Check for interrupts and save state if needed. Returns True if interrupted."""
+    """Check for interrupts and save state if needed. Returns True if interrupted.
+
+    ``messages`` are the run's messages not yet saved; the pause saves them with the state.
+    ``last_save`` records the save, so a cancel cleanup waits for it instead of racing it.
+    """
     callback_mgr = fresh(callback_mgr)
     interrupt_nodes: list[str] = (
         interrupt_before if interrupt_type == "before" else interrupt_after
@@ -197,8 +226,9 @@ async def check_and_handle_interrupt[StateT: AgentState](
         await sync_data(
             state=state,
             config=config,
-            messages=[],
+            messages=messages or [],
             trim=True,
+            last_save=last_save,
         )
         logger.debug("Node '%s' interrupted", current_node)
         return True
@@ -215,6 +245,33 @@ REMOTE_TOOL_REASON = "remote_tool_call"
 
 # Run-config key telling the loop to continue after the node that paused for a client tool.
 RESUME_AFTER_NODE_KEY = "_resume_after_node"
+
+
+def resolve_stored_node(
+    stored: str,
+    nodes: dict[str, Any],
+    node_aliases: dict[str, str] | None,
+    thread_id: Any,
+) -> str:
+    """Map the node a thread was stored at onto a node the deployed graph has.
+
+    A node the graph still has is returned unchanged. A missing one is followed through
+    ``node_aliases`` (set at ``compile()``); with no usable alias the run stops with
+    ``StoredNodeMissingError`` instead of a bare ``KeyError`` deep in the loop.
+    """
+    if stored in nodes:
+        return stored
+    seen = {stored}
+    name = stored
+    while name in (node_aliases or {}):
+        name = (node_aliases or {})[name]
+        if name in nodes:
+            logger.info("Thread '%s': stored node '%s' resumes at '%s'", thread_id, stored, name)
+            return name
+        if name in seen:
+            break
+        seen.add(name)
+    raise StoredNodeMissingError(stored, thread_id, available_nodes=list(nodes))
 
 
 def is_remote_tool_marker(item: Any) -> bool:
@@ -243,16 +300,55 @@ def split_remote_calls(result: Any) -> tuple[list[Message], Any]:
     return [], result
 
 
+def node_after(
+    current_node: str,
+    explicit_next: str | None,
+    state: AgentState,
+    edges: list,
+) -> str:
+    """The node that follows ``current_node``: the one a Command chose, else the graph's."""
+    return explicit_next or get_next_node(current_node, state, edges)
+
+
+def skip_answered_tool_node(
+    node: Any,
+    current_node: str,
+    state: AgentState,
+    next_node: Callable[[str], str],
+) -> str:
+    """Move past a ToolNode whose tool calls are all answered already.
+
+    After a cancel or crash was repaired inside a ToolNode, every call of the saved tool
+    message has a result (from the ledger, or a synthetic one). The node has nothing left to
+    run, so a call with no new input resumes at the node after it.
+    """
+    from tenxgraph.core.graph.tool_node import ToolNode
+
+    if not isinstance(getattr(node, "func", None), ToolNode):
+        return current_node
+    last = state.context[-1] if state.context else None
+    if last is None or (last.role == "assistant" and last.tools_calls):
+        return current_node
+    following = next_node(current_node)
+    logger.info(
+        "Tool node '%s' has no unanswered tool calls; resuming at '%s'", current_node, following
+    )
+    return following
+
+
 async def interrupt_graph[StateT: AgentState](
     current_node: str,
     state: StateT,
     config: dict[str, Any],
     callback_mgr: CallbackManager = Inject[CallbackManager],
+    messages: list[Message] | None = None,
+    last_save: LastSave | None = None,
 ) -> bool:
     """Pause after ``current_node`` until the client sends the results of its tool calls.
 
     ``current_node`` stays put: which node comes next can depend on those results, so the
     resumed run works it out once they are in the context (see ``RESUME_AFTER_NODE_KEY``).
+    ``last_save`` records the save (see :func:`check_and_handle_interrupt`).
     """
     callback_mgr = fresh(callback_mgr)
     status = ExecutionStatus.INTERRUPTED_AFTER
@@ -276,8 +372,9 @@ async def interrupt_graph[StateT: AgentState](
     await sync_data(
         state=state,
         config=config,
-        messages=[],
+        messages=messages or [],
         trim=False,
+        last_save=last_save,
     )
     logger.debug("Node '%s' interrupted", current_node)
     return True
@@ -289,10 +386,13 @@ async def pause_for_interrupt[StateT: AgentState](
     config: dict[str, Any],
     request: Interrupt,
     callback_mgr: CallbackManager = Inject[CallbackManager],
+    messages: list[Message] | None = None,
+    last_save: LastSave | None = None,
 ) -> None:
     """Save ``state`` paused before ``current_node`` because it called ``interrupt()``.
 
     Resuming re-runs the node, and ``interrupt()`` then returns the resume value.
+    ``last_save`` records the save (see :func:`check_and_handle_interrupt`).
     """
     callback_mgr = fresh(callback_mgr)
     pause_at(state, request)
@@ -309,8 +409,9 @@ async def pause_for_interrupt[StateT: AgentState](
     await sync_data(
         state=state,
         config=config,
-        messages=[],
+        messages=messages or [],
         trim=False,
+        last_save=last_save,
     )
     logger.info("Node '%s' paused at interrupt '%s'", current_node, request.id)
 
@@ -323,11 +424,24 @@ async def check_stop_requested[StateT: AgentState](
     config: dict[str, Any],
     callback_mgr: CallbackManager = Inject[CallbackManager],
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
+    resume_after: Callable[[], str] | None = None,
+    last_save: LastSave | None = None,
 ) -> bool:
-    """Check if a stop has been requested externally."""
+    """Check if a stop has been requested externally.
+
+    ``resume_after`` is passed when ``current_node`` has just finished: it returns the node
+    that follows it. The stop is then saved at that node, so a call with no new input
+    continues there and does not run the finished node again. If nothing follows (the graph
+    is done) there is nothing left to stop: the request is dropped and the run completes.
+
+    ``last_save`` records the stop save (see :func:`check_and_handle_interrupt`).
+    """
     callback_mgr = fresh(callback_mgr)
     checkpointer = fresh(checkpointer)
-    state = await reload_state(config, state)  # type: ignore
+    # The reloaded copy is only read, for a stop flag set from outside. Everything that is
+    # saved below comes from the live ``state``: the cache copy can be older than it and
+    # would drop the node's output.
+    reloaded = await reload_state(config, state)  # type: ignore
 
     # A stop request lives in its own checkpointer key, NOT in the cached state.
     # This loop rewrites the state cache after every node, so a flag carried in
@@ -335,14 +449,24 @@ async def check_stop_requested[StateT: AgentState](
     # here. The dedicated key is never written by the loop, so it survives.
     # The state blob is still consulted, so a custom checkpointer that does not
     # back the stop key keeps working the way it did before.
-    stop_requested = state.is_stopped_requested()
+    stop_requested = state.is_stopped_requested() or reloaded.is_stopped_requested()
+    # The run's in-process flag (set by astop and aclose) needs no checkpointer or cache.
+    run = current_run.get()
+    if run is not None and run.stop_requested:
+        stop_requested = True
     if not stop_requested and checkpointer:
-        stop_requested = await checkpointer.ais_stop_requested(config)
-        if stop_requested:
-            state.execution_meta.stop_current_execution = StopRequestStatus.STOP_REQUESTED
+        try:
+            stop_requested = await checkpointer.ais_stop_requested(config)
+        except Exception as e:  # an unreachable cache must not fail the run
+            logger.warning("Stop check failed (%r); relying on the in-process stop flag", e)
 
     # Check if a stop was requested externally (e.g., frontend)
     if stop_requested:
+        resume_at = resume_after() if resume_after is not None else None
+        if resume_at == END:
+            if checkpointer:
+                await checkpointer.aclear_stop_request(config)
+            return False
         logger.info(
             "Stop requested for thread '%s' at node '%s'",
             config.get("thread_id"),
@@ -352,9 +476,17 @@ async def check_stop_requested[StateT: AgentState](
         if checkpointer:
             await checkpointer.aclear_stop_request(config)
 
+        # The request is consumed. Saving it as STOPPED (not STOP_REQUESTED) keeps the next
+        # run on this thread from reading it back from the cache and stopping at once.
+        state.execution_meta.stop_current_execution = StopRequestStatus.STOPPED
+        if resume_at is not None:
+            # The node finished: its interrupt() answers are spent and the run moves on.
+            clear_resume_values(state)
+            state.set_current_node(resume_at)
+            state.advance_step()
         state.set_interrupt(
             current_node,
-            "stop_requested",
+            STOP_REASON,
             ExecutionStatus.INTERRUPTED_AFTER,
             data={"source": "stop", "info": "requested via is_stopped_requested"},
         )
@@ -369,7 +501,9 @@ async def check_stop_requested[StateT: AgentState](
                 state=state,
             )
 
-        await sync_data(state=state, config=config, messages=messages, trim=True)
+        await sync_data(
+            state=state, config=config, messages=messages, trim=True, last_save=last_save
+        )
         event.event_type = EventType.INTERRUPTED
         event.metadata["interrupted"] = "Stop"
         event.metadata["status"] = "Graph execution stopped by request"
@@ -377,3 +511,257 @@ async def check_stop_requested[StateT: AgentState](
         publish_event(event)
         return True
     return False
+
+
+# Text of the result given to a tool call that never finished.
+UNFINISHED_TOOL_CALL_TEXT = "tool call did not finish: the run was interrupted"
+
+
+async def _recorded_tool_message(
+    checkpointer: BaseCheckpointer | None,
+    config: dict[str, Any],
+    tool_call_id: str,
+) -> Message | None:
+    """The tool message recorded in the ledger for ``tool_call_id``, if one exists."""
+    if not checkpointer:
+        return None
+    try:
+        recorded = await checkpointer.aget_tool_result(config, tool_call_id)
+        if isinstance(recorded, dict) and recorded.get("__kind__") == "message":
+            return Message.model_validate(recorded["value"])
+    except Exception as e:  # a ledger read must never block the repair
+        logger.warning("Could not read tool ledger for call %s (%s)", tool_call_id, e)
+    return None
+
+
+async def close_unanswered_tool_calls(
+    state: AgentState,
+    config: dict[str, Any],
+    messages: list[Message],
+    checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
+) -> list[Message]:
+    """Give every unanswered tool call of the last tool-calling assistant message a result.
+
+    A call gets the result recorded in the tool ledger if there is one, else an error result
+    saying it did not finish. Providers reject a history that holds a tool call with no
+    answer. Calls waiting on the client (a remote tool pause) or on ``interrupt()`` are a
+    legitimate pause and are left alone. The closing messages are added to ``state.context``
+    and to ``messages``, and returned.
+    """
+    checkpointer = fresh(checkpointer)
+    meta = state.execution_meta
+    if meta.status != ExecutionStatus.RUNNING and meta.interrupt_reason in (
+        REMOTE_TOOL_REASON,
+        INTERRUPT_REASON,
+    ):
+        return []
+
+    last_idx = next(
+        (i for i in range(len(state.context) - 1, -1, -1) if state.context[i].tools_calls),
+        None,
+    )
+    if last_idx is None or state.context[last_idx].role != "assistant":
+        return []
+
+    answered = {
+        block.call_id
+        for msg in state.context[last_idx + 1 :]
+        for block in msg.content or []
+        if isinstance(block, ToolResultBlock)
+    }
+    closing: list[Message] = []
+    for call in state.context[last_idx].tools_calls or []:
+        call_id = call.get("id")
+        if not call_id or call_id in answered:
+            continue
+        message = await _recorded_tool_message(checkpointer, config, call_id)
+        if message is None:
+            message = Message.tool_message(
+                content=[
+                    ToolResultBlock(
+                        call_id=call_id,
+                        output=UNFINISHED_TOOL_CALL_TEXT,
+                        is_error=True,
+                        status="failed",
+                    )
+                ]
+            )
+        closing.append(message)
+
+    if closing:
+        state.context = add_messages(state.context, closing)
+        messages.extend(closing)
+        logger.info("Closed %d unanswered tool call(s)", len(closing))
+    return closing
+
+
+async def finalize_cancelled_run(
+    state: AgentState,
+    config: dict[str, Any],
+    messages: list[Message],
+    event: EventModel,
+    current_node: str,
+    reason: str = CANCELLED_REASON,
+    last_save: LastSave | None = None,
+) -> None:
+    """Save a cancelled run as INTERRUPTED so the thread stays usable.
+
+    Closes unanswered tool calls, marks the state INTERRUPTED with ``reason``, syncs it to the
+    durable store and then publishes the INTERRUPTED event, in one detached task that finishes
+    even if this coroutine keeps being cancelled (a level-triggered anyio cancel scope). This
+    coroutine waits for that task up to ``FINALIZE_TIMEOUT_SECONDS``, also while cancelled, so
+    what runs after it (the run-marker release, the caller's thread lock) sees the save done. If
+    the save fails or is still running the state cache is left as it is: it holds the newest
+    state, including the user's message. This never raises; the caller re-raises the cancel.
+
+    ``last_save`` is the run's own latest save. One still running is waited for first, so two
+    saves of the run never race. When it saved the COMPLETED state, the run is over and stays
+    completed: nothing is marked INTERRUPTED.
+
+    The saved position stays at ``current_node``. What the next call does with it is decided on
+    load (decision D1): a new user message starts a new turn, a call with no new input resumes
+    at this node.
+    """
+    # A hard cancel by ``aclose()`` is recorded as a shutdown, not a plain cancel.
+    run = current_run.get()
+    if run is not None and run.cancel_reason and reason == CANCELLED_REASON:
+        reason = run.cancel_reason
+    thread_id = config.get("thread_id")
+    prior = last_save.task if last_save is not None else None
+
+    async def _finalize() -> None:
+        if prior is not None and not prior.done():
+            await asyncio.wait({prior})
+        if last_save is not None and last_save.finished_completed():
+            logger.info("Run on thread '%s' was cancelled after its final save", thread_id)
+            return
+        try:
+            await close_unanswered_tool_calls(state, config, messages)
+            state.set_interrupt(
+                current_node,
+                reason,
+                ExecutionStatus.INTERRUPTED_AFTER,
+                data={"source": "cancel", "info": "run was cancelled"},
+            )
+            await sync_data(state=state, config=config, messages=messages, trim=True)
+        finally:
+            # After the save, so the event carries the saved state (tool calls closed,
+            # interrupt set).
+            _publish_cancel_event(state, event)
+
+    # All the work runs in one task of its own. A cancel scope that stays cancelled (anyio,
+    # as used by Starlette on a client disconnect) re-raises CancelledError at every await of
+    # this coroutine, so nothing that must finish can be awaited here directly.
+    task = detach_task(_finalize())
+
+    def _log_failure(done: asyncio.Future) -> None:
+        if not done.cancelled() and done.exception() is not None:
+            logger.error(
+                "Could not save cancelled run for thread '%s' (%r); the state cache is kept",
+                thread_id,
+                done.exception(),
+            )
+
+    task.add_done_callback(_log_failure)
+    try:
+        finished = await wait_detached(task)
+    except asyncio.CancelledError:
+        # Cancelled again while waiting; the wait is over and the caller re-raises its cancel.
+        finished = task.done()
+    if not finished:
+        logger.error(
+            "Saving cancelled run for thread '%s' did not finish within %ss; the save is still "
+            "running in the background and the state cache is kept",
+            thread_id,
+            FINALIZE_TIMEOUT_SECONDS,
+        )
+
+
+def _publish_cancel_event(state: AgentState, event: EventModel) -> None:
+    try:
+        event.event_type = EventType.INTERRUPTED
+        event.metadata["interrupted"] = "Cancelled"
+        event.metadata["status"] = "Graph execution cancelled"
+        event.data["state"] = state.model_dump()
+        publish_event(event)
+    except Exception as e:  # publishing must never mask the cancel
+        logger.warning("Could not publish cancel event (%s)", e)
+
+
+async def _unsaved_turn_messages(
+    state: AgentState,
+    config: dict[str, Any],
+    checkpointer: BaseCheckpointer | None,
+) -> list[Message]:
+    """Messages of the latest turn (from the last user message on) the durable store lacks.
+
+    A crashed run may have died before its messages reached the durable store: the state cache
+    is written before every node, the durable store only at step boundaries.
+    """
+    start = next(
+        (i for i in range(len(state.context) - 1, -1, -1) if state.context[i].role == "user"),
+        None,
+    )
+    if start is None:
+        return []
+    if not checkpointer:
+        return []
+    unsaved: list[Message] = []
+    for msg in state.context[start:]:
+        try:
+            await checkpointer.aget_message(config, msg.message_id)
+        except Exception:  # not stored (or unreadable): store it; stores upsert by id
+            unsaved.append(msg)
+    return unsaved
+
+
+async def recover_crashed_run(
+    state: AgentState,
+    config: dict[str, Any],
+    checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
+) -> None:
+    """Repair a state a dead run left RUNNING, from that state itself (decision D2).
+
+    The state is the cached one when a cache exists, so it still holds the crashed turn's user
+    message. Unanswered tool calls are closed, the state is marked INTERRUPTED with reason
+    ``crashed`` and saved durably (store and cache), together with the turn's messages the store
+    does not have yet. The caller decides what the next call does with it (decision D1).
+    Never raises: if the save fails the repaired state is still returned to the caller, whose
+    own saves persist it.
+    """
+    checkpointer = fresh(checkpointer)
+    meta = state.execution_meta
+    dead_run = meta.run_id
+    logger.warning(
+        "Run '%s' on thread '%s' ended without finishing; repairing the thread",
+        dead_run,
+        config.get("thread_id"),
+    )
+    try:
+        unsaved = await _unsaved_turn_messages(state, config, checkpointer)
+        closing: list[Message] = []
+        await close_unanswered_tool_calls(state, config, closing)
+        state.set_interrupt(
+            meta.current_node,
+            CRASHED_REASON,
+            ExecutionStatus.INTERRUPTED_AFTER,
+            data={"source": "recovery", "info": "the previous run ended without finishing"},
+        )
+        await sync_data(state=state, config=config, messages=[*unsaved, *closing], trim=False)
+    except Exception as e:
+        logger.error("Could not save the repaired thread '%s' (%r)", config.get("thread_id"), e)
+    try:
+        metrics.counter("tenxgraph.run.recovered").inc()
+        event = EventModel.default(
+            config,
+            data={"state": state.model_dump(), "dead_run_id": dead_run},
+            event=Event.GRAPH_EXECUTION,
+            event_type=EventType.INTERRUPTED,
+            content_type=[ContentType.STATE],
+            node_name=meta.current_node,
+        )
+        event.metadata["interrupted"] = "Recovered"
+        event.metadata["status"] = "Crashed run recovered"
+        publish_event(event)
+    except Exception as e:  # publishing must never block the repair
+        logger.warning("Could not publish recovery event (%s)", e)

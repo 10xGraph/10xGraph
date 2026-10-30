@@ -101,6 +101,9 @@ class LocalExecMixin:
         is_error = False
 
         if isinstance(result, str):
+            cap = getattr(self, "_max_result_chars", None)
+            if cap is not None and len(result) > cap:
+                result = result[:cap] + f"\n[output cut: {len(result) - cap} more characters]"
             output: str | list[dict[str, t.Any]] = result
         elif isinstance(result, dict):
             is_error, cleaned = _extract_block_meta(result)

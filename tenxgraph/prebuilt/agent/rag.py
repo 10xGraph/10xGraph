@@ -418,7 +418,15 @@ class RAGAgent[StateT: AgentState]:
         if self._reranker is None or not docs:
             return docs
         logger.debug("RAGAgent RERANK: %d docs -> top_%d", len(docs), self._top_n)
-        return await self._reranker.arerank(query, docs, top_n=self._top_n)
+        try:
+            return await self._reranker.arerank(query, docs, top_n=self._top_n)
+        except Exception as exc:
+            # A reranker outage must not fail the answer: fall back to the retriever's order.
+            logger.warning(
+                "RAGAgent RERANK failed (%s); using the retrieval order instead",
+                type(exc).__name__,
+            )
+            return docs[: self._top_n]
 
     # ------------------------------------------------------------------
     # Node factories

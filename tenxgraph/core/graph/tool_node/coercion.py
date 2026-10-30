@@ -30,6 +30,7 @@ import dataclasses
 import enum
 import inspect
 import json
+import types
 import typing as t
 from functools import lru_cache
 
@@ -50,6 +51,24 @@ _MAX_DEPTH = 8
 # Types that reach the tool as a JSON string (or number) and must be parsed back into
 # the annotated type. Sourced from the schema builder so the two cannot drift.
 _SCALAR_TYPES: tuple[type, ...] = tuple(k for k in _SCALARS if isinstance(k, type))
+
+
+_PLAIN_LEAVES = (int, float, bool, str, type(None), list, dict, tuple, set, frozenset)
+
+
+def _is_plain(annotation: t.Any, depth: int = 0) -> bool:
+    """Return True when the annotation is built only from JSON-like builtins."""
+    if depth > _MAX_DEPTH:
+        return False
+    origin = t.get_origin(annotation)
+    if origin is t.Literal:
+        return True
+    if origin is not None:
+        args = [a for a in t.get_args(annotation) if a is not Ellipsis]
+        return origin in (*_PLAIN_LEAVES, t.Union, types.UnionType) and all(
+            _is_plain(a, depth + 1) for a in args
+        )
+    return annotation in _PLAIN_LEAVES
 
 
 def _is_structured(annotation: t.Any) -> bool:
@@ -163,7 +182,21 @@ def coerce_tool_argument(
         needs = _needs_coercion(annotation)
 
     if not needs:
-        return value
+        # Plain annotations (int, list[str], ...) are checked against the schema shown to
+        # the model, so add(a: int) never runs with a list. A value that converts cleanly
+        # ("5" for an int) is converted; one that cannot is refused.
+        try:
+            plain = _is_plain(annotation)
+        except TypeError:
+            plain = False
+        if not plain:
+            return value
+        if annotation is str and isinstance(value, int | float) and not isinstance(value, bool):
+            return str(value)  # ids and codes: a model often sends 123 for "123"
+        try:
+            return _validate(annotation, value)
+        except ValidationError as raw_error:
+            raise _readable_error(raw_error, tool_name, param_name) from raw_error
 
     try:
         return _validate(annotation, value)

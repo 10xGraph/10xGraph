@@ -11,7 +11,6 @@ import pytest
 
 from tenxgraph.core.realtime.base import (
     AudioDeltaEvent,
-    ErrorEvent,
     GoAwayEvent,
     InputTranscriptEvent,
     InterruptedEvent,
@@ -521,3 +520,26 @@ class TestGeminiLiveClientReceive:
 
         # both turns streamed from one receive() call, then it stops cleanly
         assert kinds == ["audio_delta", "turn_complete", "audio_delta", "turn_complete"]
+
+
+class _StallingCM:
+    async def __aenter__(self):
+        import asyncio
+
+        await asyncio.sleep(30)
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class TestConnectTimeout:
+    @pytest.mark.asyncio
+    async def test_connect_times_out_and_leaves_client_disconnected(self):
+        client = GeminiLiveClient(connector=lambda **kw: _StallingCM(), connect_timeout=0.05)
+        with pytest.raises(TimeoutError, match="timed out"):
+            await client.connect(RealtimeConfig(model="m"))
+        assert client.connected is False
+
+    def test_default_connect_timeout_is_set_and_overridable(self):
+        assert GeminiLiveClient(connector=lambda **kw: None)._connect_timeout == 30.0
+        assert GeminiLiveClient(connect_timeout=None)._connect_timeout is None

@@ -151,6 +151,7 @@ def pg(monkeypatch):
     c._pg_pool = MagicMock()
     c._pg_pool.acquire.return_value = _AcquireCtx(conn)
     c._test_conn = conn
+    c._schema_initialized = True  # pagination tests are not about schema setup
     return c
 
 

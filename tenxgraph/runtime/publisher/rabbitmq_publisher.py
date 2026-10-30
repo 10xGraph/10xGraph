@@ -56,6 +56,7 @@ class RabbitMQPublisher(BasePublisher):
                 - durable: Whether exchange is durable (default: True).
                 - connection_timeout: Connection timeout in seconds (default: 10).
                 - heartbeat: Heartbeat interval in seconds (default: 60).
+                - publish_timeout: Optional seconds to wait for one send (default: none).
         """
         super().__init__(config or {})
         self.url: str = self.config.get("url", "amqp://guest:guest@localhost/")
@@ -67,9 +68,9 @@ class RabbitMQPublisher(BasePublisher):
         self.connection_timeout: int = self.config.get("connection_timeout", 10)
         self.heartbeat: int = self.config.get("heartbeat", 60)
 
-        self._conn = None  # type: ignore[var-annotated]
-        self._channel = None  # type: ignore[var-annotated]
-        self._exchange = None  # type: ignore[var-annotated]
+        self._conn: Any = None
+        self._channel: Any = None
+        self._exchange: Any = None
         self._connection_lock = asyncio.Lock()
 
     async def _ensure(self):
@@ -82,6 +83,8 @@ class RabbitMQPublisher(BasePublisher):
             raise RuntimeError("RabbitMQPublisher is closed")
 
         async with self._connection_lock:
+            if self._is_closed:
+                raise RuntimeError("RabbitMQPublisher is closed")
             if self._exchange is not None:
                 return
 
@@ -93,31 +96,52 @@ class RabbitMQPublisher(BasePublisher):
                     "'pip install 10xgraph[rabbitmq]' or 'pip install aio-pika'."
                 ) from exc
 
-            # Connect with timeout and heartbeat
+            # Connect with timeout and heartbeat. A failure after the connection is open
+            # closes it, so the next publish starts clean instead of leaking a half-open
+            # connection.
             self._conn = await aio_pika.connect_robust(
                 self.url,
                 timeout=self.connection_timeout,
                 heartbeat=self.heartbeat,
             )
-            self._channel = await self._conn.channel()
-
-            if self.declare:
-                ex_type = getattr(
-                    aio_pika.ExchangeType,
-                    self.exchange_type.upper(),
-                    aio_pika.ExchangeType.TOPIC,
+            try:
+                self._exchange = await asyncio.wait_for(
+                    self._open_channel(aio_pika), timeout=self.connection_timeout
                 )
-                self._exchange = await self._channel.declare_exchange(
-                    self.exchange, ex_type, durable=self.durable
-                )
-            else:
-                # Fall back to default exchange
-                self._exchange = self._channel.default_exchange
+            except BaseException:
+                await self._discard_connection()
+                raise
 
             logger.info(
                 "RabbitMQPublisher connected successfully (heartbeat=%ds)",
                 self.heartbeat,
             )
+
+    async def _open_channel(self, aio_pika: Any) -> Any:
+        """Open the channel and return the exchange to publish to."""
+        self._channel = await self._conn.channel()
+        if self.declare:
+            ex_type = getattr(
+                aio_pika.ExchangeType,
+                self.exchange_type.upper(),
+                aio_pika.ExchangeType.TOPIC,
+            )
+            return await self._channel.declare_exchange(
+                self.exchange, ex_type, durable=self.durable
+            )
+        # Fall back to default exchange
+        return self._channel.default_exchange
+
+    async def _discard_connection(self) -> None:
+        """Close and forget a half-open connection after a failed start."""
+        conn, self._conn = self._conn, None
+        self._channel = None
+        self._exchange = None
+        if conn is not None:
+            try:
+                await conn.close()
+            except Exception:
+                logger.debug("RabbitMQPublisher half-open connection close error", exc_info=True)
 
     async def publish(self, event: EventModel) -> Any:
         """Publish an event to RabbitMQ.
@@ -141,7 +165,16 @@ class RabbitMQPublisher(BasePublisher):
         message = aio_pika.Message(body=payload)
         if self._exchange is None:
             raise RuntimeError("RabbitMQPublisher exchange not initialized")
-        await self._exchange.publish(message, routing_key=self.routing_key)
+        # Optional ``publish_timeout`` (seconds) bounds the send; unset waits for the broker.
+        timeout = self.config.get("publish_timeout")
+        if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
+            timeout = None
+        if timeout:
+            await asyncio.wait_for(
+                self._exchange.publish(message, routing_key=self.routing_key), timeout=timeout
+            )
+        else:
+            await self._exchange.publish(message, routing_key=self.routing_key)
         return True
 
     async def close(self):

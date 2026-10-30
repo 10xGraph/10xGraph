@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tenxgraph.qa.evaluation.reporters._utils import format_timestamp
+from tenxgraph.qa.evaluation.reporters._utils import format_timestamp, safe_stem
 
 
 if TYPE_CHECKING:
@@ -238,8 +238,7 @@ class ReporterManager:
 
     def _build_stem(self, report: EvalReport) -> str:
         """Build a filename stem from the report metadata."""
-        raw_id = report.eval_set_id or "eval"
-        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_id)
+        safe_id = safe_stem(report.eval_set_id)
 
         if self.config.timestamp_files:
             ts = format_timestamp(report.timestamp, fmt="%Y%m%d_%H%M%S")

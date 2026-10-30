@@ -235,21 +235,23 @@ class TestSupervisorNode:
         assert state.execution_meta.internal_data.get(_ROUTE_HISTORY_KEY) == []
 
     @pytest.mark.asyncio
-    async def test_history_replayed_as_transient_tokens_not_persisted(self):
-        """Past decisions are shown to the supervisor's own call but never persisted."""
+    async def test_history_shown_in_a_transient_summary_not_persisted(self):
+        """Past decisions reach the supervisor's own call in a labelled summary only."""
         sup = FakeSupervisorAgent("FINISH")
         node = _make_supervisor_node(sup, ["RESEARCHER"], max_rounds=10)
         state = AgentState()
         state.execution_meta.internal_data[_ROUTE_HISTORY_KEY] = ["RESEARCHER"]
-        original = [_msg("the shortlist", role="assistant")]
+        original = [_msg("find a venue", role="user"), _msg("the shortlist", role="assistant")]
         state.context = list(original)
 
         await node(state, {})
 
-        # The supervisor saw a transient RESEARCHER token appended to its context...
+        # The supervisor saw a user summary naming the worker already run...
         seen = sup.seen_contexts[0]
-        assert any(m.role == "assistant" and m.text() == "RESEARCHER" for m in seen)
-        # ...but the real context is restored (breadcrumb not persisted).
+        assert seen[-1].role == "user"
+        assert "in order: RESEARCHER." in seen[-1].text()
+        assert not any(m.role == "assistant" and m.text() == "RESEARCHER" for m in seen)
+        # ...but the real context is restored (nothing persisted).
         assert [m.text() for m in state.context] == [m.text() for m in original]
 
     @pytest.mark.asyncio
@@ -374,7 +376,8 @@ class TestSupervisorTeamAgentCompile:
             sta = SupervisorTeamAgent(supervisor_model="gpt-4o", workers=workers)
         sta._configure_graph()
         for name, cfg in workers.items():
-            assert sta._graph.nodes[name].func is cfg.agent
+            # Each worker node wraps the exact agent passed in.
+            assert sta._graph.nodes[name].func.agent is cfg.agent
 
     def test_compile_with_checkpointer(self):
         checkpointer = Mock()
@@ -485,7 +488,7 @@ class TestSupervisorAgentConfiguration:
         assert "temperature" in captured_kwargs or "provider" in captured_kwargs
 
     def test_each_worker_independently_configured(self):
-        """Workers are added as-is; their agents are the exact objects passed in."""
+        """Each worker node wraps the exact agent object passed in."""
         agent_a = _fake_agent()
         agent_b = _fake_agent()
         workers = {
@@ -496,8 +499,8 @@ class TestSupervisorAgentConfiguration:
             sta = SupervisorTeamAgent(supervisor_model="gpt-4o", workers=workers)
         sta._configure_graph()
 
-        assert sta._graph.nodes["A"].func is agent_a
-        assert sta._graph.nodes["B"].func is agent_b
+        assert sta._graph.nodes["A"].func.agent is agent_a
+        assert sta._graph.nodes["B"].func.agent is agent_b
 
 
 # ===========================================================================
@@ -548,3 +551,9 @@ class TestSupervisorIntegration:
         assert _SUPERVISOR_NODE in sta._graph.nodes
         assert "RESEARCHER" in sta._graph.nodes
         assert "CODER" in sta._graph.nodes
+
+
+def test_finish_matched_as_whole_word_only():
+    """A worker named FINISHER must not end the team (G-82)."""
+    assert _resolve_decision("FINISHER", ["FINISHER"], 0) == "FINISHER"
+    assert _resolve_decision("FINISH", ["FINISHER"], 0) == END

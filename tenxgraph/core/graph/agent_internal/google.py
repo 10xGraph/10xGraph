@@ -14,7 +14,7 @@ from tenxgraph.storage.media.url_policy import (
     resolve_media_policy,
 )
 
-from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT
+from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT, resolve_reasoning_config
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -46,6 +46,15 @@ def _external_media_urls(messages: list[dict[str, Any]]) -> list[str]:
             if isinstance(url, str) and url and not url.startswith(("data:", "gs://")):
                 urls.append(url)
     return urls
+
+
+def _safe_b64decode(data: str | bytes) -> bytes | None:
+    """Decode base64, or return None so one bad payload does not fail the request."""
+    try:
+        return base64.b64decode(data)
+    except (ValueError, TypeError):
+        logger.warning("Ignoring media with invalid base64 data for Google")
+        return None
 
 
 class AgentGoogleMixin:
@@ -269,7 +278,7 @@ class AgentGoogleMixin:
             return []
         return [types.Part(text=text)]
 
-    def _image_part_to_google(
+    def _image_part_to_google(  # noqa: PLR0911
         self, part: dict[str, Any], types: Any, fetched: FetchedMedia | None = None
     ) -> list[Any]:
         image_info = part.get("image_url", {})
@@ -283,7 +292,9 @@ class AgentGoogleMixin:
         if url.startswith("data:"):
             header, _, b64_data = url.partition(",")
             mime = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
-            raw = base64.b64decode(b64_data)
+            raw = _safe_b64decode(b64_data)
+            if raw is None:
+                return [types.Part(text="[Failed to load image]")]
             return [types.Part.from_bytes(data=raw, mime_type=mime)]
 
         if url.startswith("gs://"):
@@ -310,7 +321,9 @@ class AgentGoogleMixin:
         if not b64_data:
             return []
 
-        raw = base64.b64decode(b64_data)
+        raw = _safe_b64decode(b64_data)
+        if raw is None:
+            return [types.Part(text="[Failed to load audio]")]
         return [types.Part.from_bytes(data=raw, mime_type=f"audio/{fmt}")]
 
     def _document_part_to_google(
@@ -355,7 +368,9 @@ class AgentGoogleMixin:
         mime = media_info.get("mime_type", default_mime)
         data = media_info.get("data")
         if data:
-            raw = base64.b64decode(data)
+            raw = _safe_b64decode(data)
+            if raw is None:
+                return [types.Part(text="[Failed to load media]")]
             return [types.Part.from_bytes(data=raw, mime_type=mime)]
 
         url = media_info.get("url")
@@ -423,16 +438,12 @@ class AgentGoogleMixin:
             if function_declarations:
                 config_kwargs["tools"] = [types.Tool(function_declarations=function_declarations)]
 
-        if (
-            self.reasoning_config
-            and isinstance(self.reasoning_config, dict)
-            and text_like_output
-            and not structured_output
-        ):
+        reasoning = resolve_reasoning_config(self)
+        if reasoning and isinstance(reasoning, dict) and text_like_output and not structured_output:
             thinking_kwargs: dict[str, Any] = {"include_thoughts": True}
-            budget = self.reasoning_config.get("thinking_budget")
-            effort = self.reasoning_config.get("effort")
-            thinking_level = self.reasoning_config.get("thinking_level")
+            budget = reasoning.get("thinking_budget")
+            effort = reasoning.get("effort")
+            thinking_level = reasoning.get("thinking_level")
             if thinking_level is not None:
                 # Explicit thinking_level — preferred for Gemini 3 models.
                 # Accepts the string form ("low"/"medium"/"high"/"minimal") or
@@ -596,12 +607,19 @@ class AgentGoogleMixin:
             )
 
         if self.output_type == "audio":
-            prompt = self._extract_prompt(messages)
-            logger.debug("Calling Google aio.models.generate_audio with model=%s", self.model)
-            return await self.client.aio.models.generate_audio(
-                model=self.model,
-                prompt=prompt,
-                config=config,
+            # google-genai has no audio endpoint of its own: speech is generate_content
+            # asking for the AUDIO response modality.
+            from google.genai import types
+
+            if config is None:
+                config = types.GenerateContentConfig(response_modalities=["AUDIO"])
+            else:
+                config.response_modalities = ["AUDIO"]
+            return await self._call_google_content_generation(
+                google_contents,
+                config,
+                stream,
+                structured_output=False,
             )
 
         raise ValueError(f"Unsupported output_type '{self.output_type}' for Google provider")

@@ -426,7 +426,7 @@ class TestHTMLReporter:
         )
 
         html = reporter.to_html(report)
-        assert "<!DOCTYPE html>" in html
+        assert html.startswith("<!doctype html>")
         assert "Test Set" in html
         assert "Test Case 1" in html
 
@@ -445,42 +445,26 @@ class TestHTMLReporter:
 
             assert path.exists()
             content = path.read_text()
-            assert "<!DOCTYPE html>" in content
+            assert content.startswith("<!doctype html>")
 
-    def test_render_failed_case(self):
-        """Test rendering a failed case."""
+    def test_failed_and_error_cases_reach_payload(self):
+        """Failed and errored cases are embedded for the page to render."""
         reporter = HTMLReporter()
-
-        result = EvalCaseResult(
+        failed = EvalCaseResult(
             eval_id="failed_case",
             name="Failed Case",
             passed=False,
             criterion_results=[
-                CriterionResult(
-                    criterion="test",
-                    score=0.5,
-                    passed=False,
-                    threshold=0.8,
-                )
+                CriterionResult(criterion="test", score=0.5, passed=False, threshold=0.8)
             ],
         )
-
-        html = reporter._render_case(result)
-        assert "fail" in html
-        assert "Failed Case" in html
-
-    def test_render_error_case(self):
-        """Test rendering an error case."""
-        reporter = HTMLReporter()
-
-        result = EvalCaseResult.failure(
-            eval_id="error_case",
-            error="Something went wrong",
-            name="Error Case",
+        errored = EvalCaseResult.failure(
+            eval_id="error_case", error="Something went wrong", name="Error Case"
         )
+        report = EvalReport.create(eval_set_id="s", results=[failed, errored])
 
-        html = reporter._render_case(result)
-        assert "error" in html
+        html = reporter.to_html(report)
+        assert "Failed Case" in html
         assert "Something went wrong" in html
 
 

@@ -33,7 +33,7 @@ from tenxgraph.storage.store.long_term_memory import (
     _strip_thread_id,
     _validate_memory_type,
 )
-from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.decorators import tool
 from tenxgraph.utils.injection import fresh
 
@@ -172,7 +172,7 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
         task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
     ) -> str:
         store = fresh(store)
-        task_manager = fresh(task_manager)
+        task_manager = resolve_task_manager(fresh(task_manager))
         if user_config is None or not user_config.enabled:
             return json.dumps({"error": "user memory is disabled"})
         resolved_store = _memory_scope_store(memory_config, user_config, store)
@@ -253,7 +253,7 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
         task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
     ) -> str:
         store = fresh(store)
-        task_manager = fresh(task_manager)
+        task_manager = resolve_task_manager(fresh(task_manager))
         if agent_config is None or not agent_config.enabled:
             return json.dumps({"error": "agent memory is disabled"})
         resolved_store = _memory_scope_store(memory_config, agent_config, store)

@@ -477,3 +477,34 @@ class TestBackgroundTaskManager:
             first_call = mock_logger.error.call_args_list[0]
             args = first_call[0]
             assert "Background task raised an exception" in args[0]
+
+@pytest.mark.asyncio
+async def test_shutdown_lets_tasks_finish_within_timeout():
+    """BD5: shutdown waits up to the timeout before cancelling, so short tasks complete."""
+    done = []
+
+    async def work(i):
+        await asyncio.sleep(0.2)
+        done.append(i)
+
+    manager = BackgroundTaskManager()
+    for i in range(3):
+        manager.create_task(work(i), name=f"work-{i}")
+
+    result = await manager.shutdown(timeout=2.0)
+
+    assert sorted(done) == [0, 1, 2]
+    assert result["status"] == "completed"
+    assert result["remaining_tasks"] == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_tasks_left_after_timeout():
+    manager = BackgroundTaskManager()
+    task = manager.create_task(asyncio.sleep(30), name="slow")
+
+    result = await manager.shutdown(timeout=0.1)
+
+    assert result["status"] == "timeout"
+    await asyncio.sleep(0.05)
+    assert task.cancelled()

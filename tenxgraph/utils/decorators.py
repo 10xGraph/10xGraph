@@ -11,6 +11,7 @@ provide additional metadata for function calling APIs and agent execution.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -113,6 +114,13 @@ def tool[F: Callable[..., Any]](
         - Tags are converted to a set for efficient membership testing.
     """
 
+    # Documented form @tool("my_tool"): a bare string is the tool name.
+    if isinstance(_func, str):
+        if name is not None and name != _func:
+            raise ValueError("@tool got a positional name and name=; pass only one")
+        name = _func
+        _func = None
+
     def decorator(func: F) -> F:
         """Inner decorator that attaches metadata to the function.
 
@@ -130,40 +138,42 @@ def tool[F: Callable[..., Any]](
             raise ValueError(msg)
 
         # Set the tool name (use provided name or function name)
+        # A bound method cannot take attributes; store them on the underlying function.
+        target = func.__func__ if inspect.ismethod(func) else func
         tool_name = name if name is not None else func.__name__
-        func._py_tool_name = tool_name  # type: ignore[attr-defined]
+        target._py_tool_name = tool_name  # type: ignore[attr-defined]
 
         # Set the tool description (use provided description or docstring)
         tool_description = description
         if tool_description is None:
             tool_description = func.__doc__ or "No description provided."
-        func._py_tool_description = tool_description  # type: ignore[attr-defined]
+        target._py_tool_description = tool_description  # type: ignore[attr-defined]
 
         # Set tags (convert to set for efficient operations)
         if tags is not None:
             tool_tags = set(tags) if not isinstance(tags, set) else tags
-            func._py_tool_tags = tool_tags  # type: ignore[attr-defined]
+            target._py_tool_tags = tool_tags  # type: ignore[attr-defined]
         else:
-            func._py_tool_tags = set()  # type: ignore[attr-defined]
+            target._py_tool_tags = set()  # type: ignore[attr-defined]
 
         # Set provider if provided
         if provider is not None:
-            func._py_tool_provider = provider  # type: ignore[attr-defined]
+            target._py_tool_provider = provider  # type: ignore[attr-defined]
 
         # Set capabilities if provided
         if capabilities is not None:
-            func._py_tool_capabilities = capabilities  # type: ignore[attr-defined]
+            target._py_tool_capabilities = capabilities  # type: ignore[attr-defined]
 
         # Set additional metadata if provided
         if metadata is not None:
-            func._py_tool_metadata = metadata  # type: ignore[attr-defined]
+            target._py_tool_metadata = metadata  # type: ignore[attr-defined]
 
         # Explicit parameters schema bypasses automatic schema generation entirely
         if parameters is not None:
             if not isinstance(parameters, dict):
                 msg = f"@tool(parameters=...) must be a JSON Schema dict, got {type(parameters)}"
                 raise ValueError(msg)
-            func._py_tool_parameters = parameters  # type: ignore[attr-defined]
+            target._py_tool_parameters = parameters  # type: ignore[attr-defined]
 
         return func
 

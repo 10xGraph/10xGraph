@@ -65,8 +65,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # (config["authz"]) asks for it -- see _owner_denied / _record_owner.
         self._thread_owner: dict[str, str] = {}
 
-        # Tool execution ledger (idempotency): "<thread>:<tool_call_id>" -> result
-        self._tool_results: dict[str, dict[str, Any]] = {}
+        # Tool execution ledger (idempotency): (thread, tool_call_id) -> result
+        self._tool_results: dict[tuple[str, str], dict[str, Any]] = {}
 
         # Async locks for concurrent access
         self._state_lock = asyncio.Lock()
@@ -227,6 +227,15 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             logger.debug(f"Retrieved state cache for key: {key}, found: {cache is not None}")
             return copy.deepcopy(cache)
 
+    async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
+        """Drop the cached state for a thread; the durable state is untouched."""
+        if self._owner_denied(config):
+            return True  # not the owner -> no-op, do not reveal existence
+        key = self._get_config_key(config)
+        async with self._state_lock:
+            self._state_cache.pop(key, None)
+        return True
+
     async def aput_cache_value(
         self,
         namespace: str,
@@ -256,8 +265,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
     # -------------------------
     # Tool execution ledger
     # -------------------------
-    def _tool_key(self, config: dict[str, Any], tool_call_id: str) -> str:
-        return f"{self._get_config_key(config)}:{tool_call_id}"
+    def _tool_key(self, config: dict[str, Any], tool_call_id: str) -> tuple[str, str]:
+        # A tuple, not "thread:call": a thread id containing a colon must not alias another's.
+        return (self._get_config_key(config), str(tool_call_id))
 
     async def aget_tool_result(
         self,
@@ -265,6 +275,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         tool_call_id: str,
     ) -> dict[str, Any] | None:
         """Return a recorded tool result, so a replayed tool call is not re-fired."""
+        if self._owner_denied(config):
+            return None  # not the owner -> no record, do not reveal existence
         async with self._tool_lock:
             return self._tool_results.get(self._tool_key(config, tool_call_id))
 
@@ -275,7 +287,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         result: dict[str, Any],
     ) -> Any | None:
         """Record that a tool call completed, with its result."""
+        if self._owner_denied(config):
+            raise StorageError("Thread is owned by a different user")
         async with self._tool_lock:
+            self._record_owner(config)
             self._tool_results[self._tool_key(config, tool_call_id)] = result
             return True
 
@@ -283,6 +298,33 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         cache_key = f"{namespace}:{key}"
         async with self._cache_lock:
             return self._generic_cache.pop(cache_key, None)
+
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
+        """Compare and delete under the cache lock, in one step."""
+        cache_key = f"{namespace}:{key}"
+        async with self._cache_lock:
+            cached = self._generic_cache.get(cache_key)
+            if cached is None or cached[0] != expected:
+                return False
+            del self._generic_cache[cache_key]
+            return True
+
+    async def aput_cache_value_if_absent(
+        self,
+        namespace: str,
+        key: str,
+        value: Any,
+        ttl_seconds: int | None = None,
+    ) -> bool:
+        """Check and store under the cache lock, in one step; an expired value counts as absent."""
+        cache_key = f"{namespace}:{key}"
+        now = time.time()
+        async with self._cache_lock:
+            cached = self._generic_cache.get(cache_key)
+            if cached is not None and (cached[1] is None or cached[1] > now):
+                return False
+            self._generic_cache[cache_key] = (value, now + ttl_seconds if ttl_seconds else None)
+            return True
 
     async def alist_cache_keys(
         self,
@@ -348,7 +390,18 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._messages_lock:
             self._record_owner(config)
-            self._messages[key].extend(messages)
+            # Upsert by message id, as the SQL backends do: a run that re-sends messages it
+            # already stored (a resume, the final save after a step checkpoint) must not
+            # duplicate them.
+            stored = self._messages[key]
+            index = {str(m.message_id): i for i, m in enumerate(stored)}
+            for msg in messages:
+                at = index.get(str(msg.message_id))
+                if at is None:
+                    index[str(msg.message_id)] = len(stored)
+                    stored.append(msg)
+                else:
+                    stored[at] = msg
             if metadata:
                 self._message_metadata[key] = metadata
             logger.debug(f"Stored {len(messages)} messages for key: {key}")
@@ -468,8 +521,16 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                 if msg.message_id == message_id:
                     messages.remove(msg)
                     logger.debug(f"Deleted message with ID {message_id} for key: {key}")
-                    return True
-            raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+                    break
+            else:
+                raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+        # The state (and its cache copy) carries the message too; a deleted message must not
+        # come back on the next run or in GET state.
+        async with self._state_lock:
+            for store in (self._states, self._state_cache):
+                if key in store:
+                    self._strip_message_from_state(store[key], message_id)
+        return True
 
     # -------------------------
     # Message methods sync
@@ -628,6 +689,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._state_lock:
             self._states.pop(key, None)
             self._state_cache.pop(key, None)
+        async with self._tool_lock:
+            for ledger_key in [k for k in self._tool_results if k[0] == key]:
+                del self._tool_results[ledger_key]
         async with self._messages_lock:
             self._messages.pop(key, None)
             self._message_metadata.pop(key, None)

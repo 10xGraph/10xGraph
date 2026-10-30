@@ -20,6 +20,12 @@ def format_timestamp(ts: float, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
     return datetime.fromtimestamp(ts).strftime(fmt)
 
 
+def safe_stem(eval_set_id: str | None) -> str:
+    """Return the filename-safe form of an eval set id (as used for report file names)."""
+    raw_id = eval_set_id or "eval"
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_id)
+
+
 def case_display_name(result: EvalCaseResult) -> str:
     """Return a display name for a case result."""
     return result.name or result.eval_id

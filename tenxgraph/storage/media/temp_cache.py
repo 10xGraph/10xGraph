@@ -20,6 +20,7 @@ logger = logging.getLogger("tenxgraph.media.temp_cache")
 
 # Default TTL for temporary cached media (24 hours)
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
+CLEANUP_GRACE_SECONDS = 7 * 24 * 60 * 60  # keep the record past expiry so cleanup() can find it
 
 # Namespace prefix for temporary cache entries in the checkpointer
 TEMP_CACHE_NAMESPACE = "media:temp"
@@ -95,9 +96,8 @@ class TemporaryMediaCache:
             for key in keys:
                 data = await checkpointer.aget_cache_value(TEMP_CACHE_NAMESPACE, key)
                 if data is not None:
-                    entry = TempCacheEntry.from_dict(data)
-                    if not entry.is_expired:
-                        self._index[key] = entry
+                    # Expired entries are kept: cleanup() needs them to delete their blobs.
+                    self._index[key] = TempCacheEntry.from_dict(data)
         except Exception:
             logger.debug("Failed to load temp cache index from checkpointer")
 
@@ -139,7 +139,7 @@ class TemporaryMediaCache:
             TEMP_CACHE_NAMESPACE,
             index_key,
             entry.to_dict(),
-            ttl_seconds=self.ttl_seconds,
+            ttl_seconds=self.ttl_seconds + CLEANUP_GRACE_SECONDS,
         )
         self._index[index_key] = entry
         logger.debug(

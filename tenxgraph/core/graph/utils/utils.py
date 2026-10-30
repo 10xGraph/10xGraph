@@ -18,8 +18,11 @@ Key functionality areas:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import copy
 import logging
+import sys
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -46,6 +49,128 @@ from tenxgraph.utils.injection import fresh
 StateT = TypeVar("StateT", bound=AgentState)
 
 logger = logging.getLogger("tenxgraph.graph")
+
+# How long a cancelled run may take to save its own state before the cancel goes on. This bounds
+# our own finalizer save, never a developer tool or node.
+FINALIZE_TIMEOUT_SECONDS = 10.0
+
+# ``interrupt_reason`` values of a run that was cut off before it finished (cancel, shutdown,
+# crash recovery, stop). The thread is not waiting on anybody: a new user message starts a new
+# turn (decision D1). Pauses a developer or client asked for (``interrupt()``,
+# ``interrupt_before`` / ``interrupt_after``, client-side tools) are not in this set.
+CANCELLED_REASON = "cancelled"
+SHUTDOWN_REASON = "shutdown"
+CRASHED_REASON = "crashed"
+STOP_REASON = "stop_requested"
+ABORTED_RUN_REASONS = frozenset({CANCELLED_REASON, SHUTDOWN_REASON, CRASHED_REASON, STOP_REASON})
+
+
+# Cleanup that must outlive a cancelled waiter (cancel save, run-marker release). A strong
+# reference keeps each task alive until it is done.
+_detached_tasks: set[asyncio.Future] = set()
+
+
+def _expire_detached(task: asyncio.Future, limit: float) -> None:
+    if not task.done():
+        logger.error("Cleanup task still running after %ss; cancelling it", limit)
+        task.cancel()
+
+
+def track_detached(task: asyncio.Future, lifetime: float | None = None) -> asyncio.Future:
+    """Hold a strong reference to ``task`` and cancel it once it outlives ``lifetime``.
+
+    The default lifetime is twice ``FINALIZE_TIMEOUT_SECONDS``, so a store that hangs cannot
+    keep one task (and the state it holds) per abandoned run alive forever.
+    """
+    limit = 2 * FINALIZE_TIMEOUT_SECONDS if lifetime is None else lifetime
+    timer = asyncio.get_running_loop().call_later(limit, _expire_detached, task, limit)
+
+    def _done(done: asyncio.Future) -> None:
+        _detached_tasks.discard(done)
+        timer.cancel()
+
+    _detached_tasks.add(task)
+    task.add_done_callback(_done)
+    return task
+
+
+def detach_task(coro: Any, lifetime: float | None = None) -> asyncio.Task:
+    """Start ``coro`` as a task that outlives a cancelled waiter (see :func:`track_detached`)."""
+    task = asyncio.ensure_future(coro)
+    track_detached(task, lifetime)
+    return task
+
+
+async def wait_detached(task: asyncio.Future, timeout: float | None = None) -> bool:
+    """Wait for ``task`` up to ``timeout`` seconds, even while this coroutine is cancelled.
+
+    A cancel that arrives during the wait does not end it: the wait goes on until ``task`` is
+    done or the time is up, then that cancel is raised once. ``task`` is never cancelled here.
+    Returns True when ``task`` is done. ``timeout`` defaults to ``FINALIZE_TIMEOUT_SECONDS``.
+
+    A level-triggered anyio cancel scope (Starlette on a client disconnect) re-raises at every
+    await, so a plain retry loop would spin; when anyio is loaded the wait runs in a shielded
+    anyio scope instead. anyio is never imported here: core does not depend on it.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (FINALIZE_TIMEOUT_SECONDS if timeout is None else timeout)
+    cancel: asyncio.CancelledError | None = None
+    anyio = sys.modules.get("anyio")
+    scope = anyio.CancelScope(shield=True) if anyio is not None else contextlib.nullcontext()
+    with scope:
+        while not task.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait({task}, timeout=remaining)
+            except asyncio.CancelledError as e:
+                cancel = e
+    if cancel is not None:
+        raise cancel
+    return task.done()
+
+
+class LastSave:
+    """The latest durable save a run started, so cancel cleanup can wait for it, not race it."""
+
+    __slots__ = ("completed", "task")
+
+    def __init__(self) -> None:
+        self.task: asyncio.Future | None = None
+        self.completed = False  # the saved state was COMPLETED
+
+    def finished_completed(self) -> bool:
+        """True when the run's COMPLETED state was saved without error."""
+        task = self.task
+        return (
+            self.completed
+            and task is not None
+            and task.done()
+            and not task.cancelled()
+            and task.exception() is None
+        )
+
+
+def is_dead_run(state: AgentState, active_run_id: str | None, config: dict[str, Any]) -> bool:
+    """True when ``state`` was left RUNNING by a run that is no longer alive.
+
+    ``active_run_id`` is the run the thread's active-run marker names (None when the marker
+    is gone or expired). A state saved before run ids existed (``run_id`` None) cannot be
+    judged and is never treated as dead. A state written by the run that is loading it is the
+    run's own.
+    """
+    meta = state.execution_meta
+    if meta.status != ExecutionStatus.RUNNING or not meta.run_id:
+        return False
+    if meta.run_id == config.get("run_id"):
+        return False
+    return meta.run_id != active_run_id
+
+
+def has_new_user_message(input_data: dict[str, Any]) -> bool:
+    """True when the call brings at least one new message from the user."""
+    return any(getattr(m, "role", None) == "user" for m in input_data.get("messages") or [])
 
 
 async def parse_response(
@@ -168,6 +293,9 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
         # Register this run as the active one on the thread. A stop request belongs to the
         # run it targets: only a stale one (aimed at no run, or at a run that already ended)
         # is dropped here, so a new run cannot erase a stop meant for a run still going.
+        # Read the marker first: it names the run that was alive before this one took over, and
+        # crash recovery needs it. abegin_run overwrites it.
+        previous_run = await checkpointer.aget_active_run(config)
         await checkpointer.abegin_run(config)
 
         logger.debug("Attempting to load existing state from checkpointer")
@@ -191,6 +319,14 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
             # first node. Starting a run supersedes any prior stop request.
             existing_state.execution_meta.stop_current_execution = StopRequestStatus.NONE
 
+            # A RUNNING state with no live run behind it is a run that died (SIGKILL, OOM, a
+            # consumer that closed the stream early). Repair it from this state, which is the
+            # cached one when a cache exists and so still holds the dead turn's user message.
+            if is_dead_run(existing_state, previous_run, config):
+                from .handler_utils import recover_crashed_run
+
+                await recover_crashed_run(existing_state, config)
+
             # Normalize legacy node names (backward compatibility)
             # Some older runs may have persisted 'start'/'end' instead of '__start__'/'__end__'
             if existing_state.execution_meta.current_node == "start":
@@ -205,6 +341,24 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
             elif existing_state.execution_meta.current_node == "__end__":
                 existing_state.execution_meta.current_node = END
                 logger.debug("Normalized legacy current_node '__end__' to '%s'", END)
+
+            # A run that was cut off (cancel, shutdown, crash, stop) and now gets a new user
+            # message: start a new turn on the repaired context. Without new input the call
+            # resumes at the saved node (see check_interrupted).
+            meta = existing_state.execution_meta
+            if (
+                meta.is_interrupted()
+                and meta.interrupt_reason in ABORTED_RUN_REASONS
+                and has_new_user_message(input_data)
+            ):
+                logger.info(
+                    "New message after a run that ended '%s': starting a new turn",
+                    meta.interrupt_reason,
+                )
+                meta.current_node = START
+                meta.step = 0
+                meta.clear_interrupt()
+                meta.reset_turn_data()
 
             # Reset execution if graph previously completed (current_node == END)
             # This allows multi-turn conversations to continue from a completed state
@@ -254,6 +408,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
             # Update current node if available
             if "current_node" in partial_state and partial_state["current_node"] is not None:
                 existing_state.set_current_node(partial_state["current_node"])
+            existing_state.execution_meta.run_id = config.get("run_id")
             return existing_state
     else:
         logger.debug("No checkpointer available, will create new state")
@@ -277,6 +432,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     # Set thread_id in execution metadata
     thread_id = config.get("thread_id", "default")
     state.execution_meta.thread_id = thread_id
+    state.execution_meta.run_id = config.get("run_id")
     logger.debug("Set thread_id to %s", thread_id)
 
     # Merge new messages with context
@@ -592,8 +748,12 @@ async def sync_data(
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],  # will be auto-injected
     context_manager: BaseContextManager = Inject[BaseContextManager],  # will be auto-injected
     callback_mgr: CallbackManager = Inject[CallbackManager],  # will be auto-injected
+    last_save: LastSave | None = None,
 ) -> bool:
-    """Sync the current state and messages to the checkpointer."""
+    """Sync the current state and messages to the checkpointer.
+
+    ``last_save`` records the save this call starts, for the run's cancel cleanup.
+    """
     checkpointer = fresh(checkpointer)
     context_manager = fresh(context_manager)
     callback_mgr = fresh(callback_mgr)
@@ -617,13 +777,37 @@ async def sync_data(
 
     if checkpointer:
         logger.debug("Persisting state and %d messages to checkpointer", len(messages))
+
         # Durable store is the source of truth: write state + messages atomically
         # FIRST (audit M7), so a failure surfaces before the cache is updated and
         # the cache can never hold state that was never persisted (audit B5).
-        await checkpointer.aput_checkpoint(config, new_state, messages)
-        # Then refresh the realtime cache with the SAME trimmed state we just
-        # persisted, so cache and durable store never diverge in shape (audit M6).
-        await checkpointer.aput_state_cache(config, new_state)
+        # Both writes run as one shielded unit: a cancel that arrives during the save cannot
+        # leave the durable store new and the cache old.
+        async def _persist() -> None:
+            await checkpointer.aput_checkpoint(config, new_state, messages)
+            # Then refresh the realtime cache with the SAME trimmed state we just
+            # persisted, so cache and durable store never diverge in shape (audit M6).
+            await checkpointer.aput_state_cache(config, new_state)
+
+        save = asyncio.ensure_future(_persist())
+        if last_save is not None:
+            last_save.task = save
+            last_save.completed = new_state.execution_meta.status == ExecutionStatus.COMPLETED
+        try:
+            await asyncio.shield(save)
+        except asyncio.CancelledError:
+            if not save.done():
+                # Cancelled mid-save: the save goes on. Wait for it (bounded) so the cleanup
+                # that follows never runs beside it, then let the cancel go on.
+                track_detached(save)
+                if not await wait_detached(save):
+                    logger.warning(
+                        "Save still running %ss after cancel; it goes on in the background",
+                        FINALIZE_TIMEOUT_SECONDS,
+                    )
+            if save.done() and not save.cancelled() and save.exception() is not None:
+                logger.warning("Save failed after cancel (%r)", save.exception())
+            raise
 
     return is_context_trimmed
 

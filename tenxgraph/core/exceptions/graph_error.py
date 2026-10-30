@@ -1,6 +1,8 @@
 import logging
 from typing import Any
 
+from ._redact import redact_context
+
 
 logger = logging.getLogger("tenxgraph.exceptions")
 
@@ -49,7 +51,7 @@ class GraphError(Exception):
             "GraphError [%s]: %s | Context: %s",
             self.error_code,
             self.message,
-            self.context,
+            redact_context(self.context),
             exc_info=True,
         )
         super().__init__(message)

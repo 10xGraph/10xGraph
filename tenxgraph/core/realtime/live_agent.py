@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import hashlib
+import json
 import logging
+import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -28,6 +32,7 @@ from tenxgraph.core.graph.agent_internal.memory import AgentMemoryMixin
 from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.utils.tool_runtime import ToolRuntimeMixin
 from tenxgraph.core.llm import detect_provider
 from tenxgraph.core.realtime.base import (
     ErrorEvent,
@@ -89,6 +94,13 @@ def _advertised_tool_names(tools: list[Any] | None) -> frozenset[str]:
     return frozenset(names)
 
 
+class _LedgerAccess(ToolRuntimeMixin):
+    """Borrows the text path's ledger read/write helpers (they need only ``name``)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
 class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     """Realtime audio agent node. Run via :meth:`arun` (or ``CompiledGraph.arealtime``)."""
 
@@ -146,6 +158,11 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         # Serializes upstream sends against reconnect (close+connect) so the pump never
         # sends on a socket being torn down, and always picks up the reconnected client.
         self._send_lock = asyncio.Lock()
+        # One arun() at a time per instance: the fields above are per-session state.
+        # Concurrent sessions each get their own copy from new_session().
+        self._session_active = False
+        self._session_id = uuid.uuid4().hex
+        self._session_checkpointer: BaseCheckpointer | None = None
 
         # Per-session transcript accumulators (provider streams partial chunks; we flush
         # the concatenation on the finished marker). Reset at the start of each arun().
@@ -194,6 +211,25 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     def _resolve_tool_node(self) -> ToolNode | None:
         return self._tool_node
 
+    def new_session(self) -> LiveAgent:
+        """Return a copy of this agent with fresh per-session state.
+
+        Configuration (model, prompt, tools, client factory) is shared; the client, lock,
+        resume handle, transcript buffers and busy flag are new. ``CompiledGraph.arealtime``
+        runs every connection on its own copy so concurrent sessions cannot cross-wire.
+        """
+        session = copy.copy(self)
+        session._active_client = None
+        session._resume_handle = None
+        session._send_lock = asyncio.Lock()
+        session._session_active = False
+        session._session_id = uuid.uuid4().hex
+        session._input_transcript_buf = ""
+        session._output_transcript_buf = ""
+        session._session_tool_names = frozenset()
+        session._session_checkpointer = None
+        return session
+
     # ------------------------------------------------------------------ #
     # The duplex realtime loop.
     # ------------------------------------------------------------------ #
@@ -208,36 +244,49 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         context_manager: BaseContextManager | None = None,
     ) -> AsyncIterator[RealtimeEvent]:
         """Open the session and yield normalized events until the queue/session closes."""
+        if self._session_active:
+            raise RuntimeError(
+                "This LiveAgent already runs a session; use new_session() (arealtime does) "
+                "for concurrent sessions."
+            )
+        self._session_active = True
+        pump_task: asyncio.Task[None] | None = None
+        connected = False  # nothing is saved for a session that never reached the provider
         state = state if state is not None else AgentState()
-        if callback_manager is None:
-            callback_manager = CallbackManager()
-        self._input_transcript_buf = ""
-        self._output_transcript_buf = ""
-        rt = self._session_realtime_config(config)
-        rt = await self._resolve_session_tools(rt)
-        self._session_tool_names = _advertised_tool_names(rt.tools)
-        rt = await self._resolve_session_system_instruction(rt, state, config)
-
-        handle = await self._load_resume_handle(config, checkpointer)
-        client = self._client_factory()
-        await client.connect(rt, resume_handle=handle)
-        self._active_client = client
-        # Only reseed when the provider did NOT restore context from a handle; otherwise the
-        # model would receive the whole conversation twice (handle restore + reseed).
-        await self._maybe_reseed(config, checkpointer, context_manager, resumed=handle is not None)
-
-        # Session start mirrors a graph run: the LIVE node *is* the graph, so on_graph_start
-        # fires once here (before any turn) and on_graph_end once when the session ends.
-        state = await self._fire_graph_start(callback_manager, config, state)
-
-        # Closing the input queue ends the session: the pump sets this when it drains the
-        # close sentinel, and the receive loop stops once the provider goes idle.
-        stop_event = asyncio.Event()
-        pump_task = asyncio.create_task(self._pump(input_queue, stop_event))
-        attempts = 0  # consecutive error-driven reconnect attempts (reset on healthy receive)
-        turn_index = 0  # 1-based count of turns started; doubles as on_graph_end total_steps
-        turn_active = False  # a turn is open (content seen, no turn_complete/interrupt yet)
         try:
+            if callback_manager is None:
+                callback_manager = CallbackManager()
+            self._input_transcript_buf = ""
+            self._output_transcript_buf = ""
+            rt = self._session_realtime_config(config)
+            rt = await self._resolve_session_tools(rt)
+            self._session_tool_names = _advertised_tool_names(rt.tools)
+            rt = await self._resolve_session_system_instruction(rt, state, config)
+
+            handle = await self._load_resume_handle(config, checkpointer)
+            client = self._client_factory()
+            # Set before connect so the cleanup below closes it even if connect fails midway.
+            self._active_client = client
+            self._session_checkpointer = checkpointer
+            await client.connect(rt, resume_handle=handle)
+            connected = True
+            # Only reseed when the provider did NOT restore context from a handle; otherwise
+            # the model would receive the whole conversation twice (handle restore + reseed).
+            await self._maybe_reseed(
+                config, checkpointer, context_manager, resumed=handle is not None
+            )
+
+            # Session start mirrors a graph run: the LIVE node *is* the graph, so
+            # on_graph_start fires once here (before any turn) and on_graph_end once at end.
+            state = await self._fire_graph_start(callback_manager, config, state)
+
+            # Closing the input queue ends the session: the pump sets this when it drains the
+            # close sentinel, and the receive loop stops once the provider goes idle.
+            stop_event = asyncio.Event()
+            pump_task = asyncio.create_task(self._pump(input_queue, stop_event))
+            attempts = 0  # consecutive error-driven reconnect attempts (reset on healthy receive)
+            turn_index = 0  # 1-based count of turns started; doubles as on_graph_end total_steps
+            turn_active = False  # a turn is open (content seen, no turn_complete/interrupt yet)
             while True:
                 reconnect = False
                 forced = False  # go_away: reconnect even after input closed, to finish the turn
@@ -292,10 +341,31 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                 state = await self._fire_turn_end(callback_manager, config, state, turn_index)
             await self._fire_graph_end(callback_manager, config, state, turn_index)
         finally:
-            pump_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pump_task
-            await self._active_client.close()
+            try:
+                # Text still buffered (a turn cut off by a disconnect) and the final state.
+                if connected:
+                    await self._final_save(config, state, checkpointer)
+            finally:
+                try:
+                    if pump_task is not None:
+                        pump_task.cancel()
+                        # return_exceptions: the pump's own cancel is absorbed, but a cancel
+                        # aimed at this task still raises out of the await.
+                        await asyncio.gather(pump_task, return_exceptions=True)
+                finally:
+                    try:
+                        await self._close_active_client()
+                    finally:
+                        self._session_active = False
+
+    async def _close_active_client(self) -> None:
+        client = self._active_client
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception:
+            logger.warning("realtime provider close failed", exc_info=True)
 
     def _session_realtime_config(self, config: dict[str, Any]) -> RealtimeConfig:
         """Merge per-session overrides (``config["realtime"]``) over the agent's base config.
@@ -389,6 +459,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         must not truncate the model's in-flight response)."""
         receiver = client.receive().__aiter__()
         stop_task = asyncio.ensure_future(stop_event.wait())
+        next_task: asyncio.Future[Any] | None = None
         try:
             while True:
                 next_task = asyncio.ensure_future(receiver.__anext__())
@@ -402,14 +473,19 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                     except StopAsyncIteration:
                         return
                 # Provider idle and stop requested: abandon the pending receive and end.
-                next_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await next_task
                 return
         finally:
-            stop_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await stop_task
+            # Also reached when this generator is cancelled or closed mid-wait: never leave
+            # the pending receive running. gather() absorbs the tasks' own cancellation but
+            # still raises if the cancel was aimed at this task.
+            pending: list[asyncio.Future[Any]] = [stop_task]
+            if next_task is not None and not next_task.done():
+                pending.append(next_task)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            if next_task is not None and next_task.done() and not next_task.cancelled():
+                next_task.exception()  # retrieve so asyncio does not warn
 
     # ------------------------------------------------------------------ #
     # Pump: upstream queue -> provider socket.
@@ -466,13 +542,22 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                 event, "assistant", config, state, checkpointer
             )
 
+        if event.type == "turn_complete":
+            # The end of a turn saves what the turn said: a provider may end it with no
+            # transcription "finished" marker (Gemini Live does), which left the text unsaved.
+            flushed = await self._flush_transcripts(config, state, checkpointer)
+            await self._save_state(config, state, checkpointer)
+            return [*flushed, event]
+
         if event.type == "interrupted":
-            # Barge-in discards the model's in-flight turn; drop any partial transcript so
-            # the restarted turn isn't concatenated onto the abandoned one.
-            self._input_transcript_buf = ""
-            self._output_transcript_buf = ""
+            # Barge-in discards the model's in-flight reply (only part of it was spoken), so
+            # its partial transcript is dropped and the restarted turn isn't concatenated onto
+            # it. What the user said is kept.
+            flushed = await self._flush_transcripts(config, state, checkpointer, keep_output=False)
+            await self._save_state(config, state, checkpointer)
             self._publish_realtime(EventType.INTERRUPTED, config, ContentType.AUDIO, "barge_in")
-        elif event.type == "go_away":
+            return [*flushed, event]
+        if event.type == "go_away":
             self._publish_realtime(EventType.UPDATE, config, ContentType.UPDATE, "go_away")
         elif event.type == "session_update":
             self._resume_handle = event.resumption_handle
@@ -536,16 +621,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             # Only tools advertised to the model this session may run.
             logger.warning("realtime tool call for unadvertised tool '%s' refused", event.name)
             result = {"error": f"tool '{event.name}' is not available in this session"}
+        elif not isinstance(event.args, dict):
+            logger.warning("realtime tool call '%s' has non-object arguments", event.name)
+            result = {"error": f"invalid arguments for tool '{event.name}': expected an object"}
         else:
-            invoked = await tool_node.invoke(
-                event.name,
-                event.args,
-                event.id,
-                config,
-                state,
-                callback_manager=callback_manager,
+            result = await self._invoke_with_ledger(
+                tool_node, event, config, state, callback_manager
             )
-            result = self._extract_tool_result(invoked)
 
         # Socket stays open; feed the result back to the model. Hold _send_lock (and re-read
         # the live client inside it) so this send is serialized against the pump and any
@@ -555,6 +637,51 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             if client is not None:
                 await client.send_tool_response(event.id, event.name, result)
         return [event, ToolResultEvent(id=event.id, result=result)]
+
+    async def _invoke_with_ledger(
+        self,
+        tool_node: ToolNode,
+        event: ToolCallEvent,
+        config: dict[str, Any],
+        state: AgentState,
+        callback_manager: CallbackManager,
+    ) -> dict[str, Any]:
+        """Run a tool call once per thread, using the same tool ledger as the text path.
+
+        The key is the thread id, a hash of the tool name and arguments, and the provider
+        call id. The provider only documents the call id as "unique", with no scope, and
+        it may be absent (then a random id is made here and nothing can replay). Pairing
+        it with the call content stops an id reused by a later session from skipping a
+        different call, while a call re-sent after a reconnect or a crash restart of the
+        same thread replays the recorded result instead of running the tool again. Without
+        a thread id the key falls back to the session id (replay within the session only).
+        """
+        checkpointer = self._session_checkpointer
+        thread_id = str((config or {}).get("thread_id") or "")
+        scope = thread_id or self._session_id
+        try:
+            payload = json.dumps([event.name, event.args], sort_keys=True, default=str)
+        except Exception:
+            payload = repr((event.name, event.args))
+        digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+        key = ToolRuntimeMixin._ledger_key(f"realtime-{scope}-{digest}", event.id)
+        ledger = _LedgerAccess(self._node_name_or_default())
+        if checkpointer is not None and key:
+            recorded = await ledger._get_recorded_tool_result(checkpointer, config, key)
+            if recorded is not None:
+                logger.info(
+                    "realtime tool '%s' (call %s) replayed from ledger", event.name, event.id
+                )
+                return self._extract_tool_result(recorded)
+        invoked = await tool_node.invoke(
+            event.name, event.args, event.id, config, state, callback_manager=callback_manager
+        )
+        if checkpointer is not None and key:
+            await ledger._record_tool_result(checkpointer, config, key, invoked)
+        return self._extract_tool_result(invoked)
+
+    def _node_name_or_default(self) -> str:
+        return getattr(self, "_node_name", "LIVE")
 
     @staticmethod
     def _extract_tool_result(invoked: Any) -> dict[str, Any]:
@@ -570,6 +697,81 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     # ------------------------------------------------------------------ #
     # Transcript persistence (Message only; audio is never stored at rest).
     # ------------------------------------------------------------------ #
+    async def _flush_transcripts(
+        self,
+        config: dict[str, Any],
+        state: AgentState,
+        checkpointer: BaseCheckpointer | None,
+        *,
+        keep_output: bool = True,
+    ) -> list[RealtimeEvent]:
+        """Save transcript text still buffered because no "finished" marker closed it.
+
+        The user's words first, then the model's, each as one message, and one consolidated
+        transcript event each for the client. ``keep_output=False`` drops the model's buffer
+        instead (barge-in). A buffer a "finished" marker already saved is empty, so nothing
+        is saved twice.
+        """
+        flushed: list[RealtimeEvent] = []
+        user_text = self._input_transcript_buf.strip()
+        model_text = self._output_transcript_buf.strip() if keep_output else ""
+        self._input_transcript_buf = ""
+        self._output_transcript_buf = ""
+        if user_text:
+            await self._persist_transcript(user_text, "user", config, state, checkpointer)
+            self._publish_realtime(
+                EventType.RESULT, config, ContentType.TRANSCRIPT, "input_transcript"
+            )
+            flushed.append(InputTranscriptEvent(text=user_text, finished=True))
+        if model_text:
+            await self._persist_transcript(model_text, "assistant", config, state, checkpointer)
+            self._publish_realtime(
+                EventType.RESULT, config, ContentType.TRANSCRIPT, "output_transcript"
+            )
+            flushed.append(OutputTranscriptEvent(text=model_text, finished=True))
+        return flushed
+
+    async def _save_state(
+        self,
+        config: dict[str, Any],
+        state: AgentState,
+        checkpointer: BaseCheckpointer | None,
+    ) -> None:
+        """Save the session's state (its context holds the transcripts) as a checkpoint.
+
+        The messages are already saved one by one, so none are passed again. A storage
+        failure is logged, not raised, for the same reason as in :meth:`_persist_transcript`.
+        """
+        if checkpointer is None:
+            return
+        try:
+            await checkpointer.aput_checkpoint(config, state, [])
+            await checkpointer.aput_state_cache(config, state)
+        except Exception:
+            logger.exception("realtime state could not be saved")
+
+    async def _final_save(
+        self,
+        config: dict[str, Any],
+        state: AgentState,
+        checkpointer: BaseCheckpointer | None,
+    ) -> None:
+        """Save what the session still holds when it ends, however it ends.
+
+        A client that disconnects mid-turn closes this session's generator, and a cancelled
+        session (anyio) is cancelled again at every await, so the save runs in a task of its
+        own and is waited for a bounded time; a cancel is raised after the wait.
+        """
+        if checkpointer is None:
+            return
+        from tenxgraph.core.graph.utils.utils import detach_task, wait_detached
+
+        async def _save() -> None:
+            await self._flush_transcripts(config, state, checkpointer)
+            await self._save_state(config, state, checkpointer)
+
+        await wait_detached(detach_task(_save()))
+
     async def _persist_transcript(
         self,
         text: str,
@@ -581,7 +783,12 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         msg = Message(role=role, content=[TextBlock(text=text)], metadata={"modality": "audio"})
         state.context = add_messages(state.context, [msg])
         if checkpointer is not None:
-            await checkpointer.aput_messages(config, [msg])
+            # A storage failure must not look like a provider drop (which reconnects and
+            # reopens the billed session), so it is logged here, not raised.
+            try:
+                await checkpointer.aput_messages(config, [msg])
+            except Exception:
+                logger.exception("realtime transcript could not be saved")
 
     # ------------------------------------------------------------------ #
     # Resumption: within-session reconnect + cross-session reseed.
@@ -611,15 +818,23 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         try:
             thread = await checkpointer.aget_thread(config)
         except Exception:
-            thread = None
+            # Writing a thin ThreadInfo now would overwrite the stored name and metadata.
+            logger.warning("realtime resume handle not saved: thread read failed", exc_info=True)
+            return
         metadata = dict(thread.metadata or {}) if thread else {}
         metadata["resumption_handle"] = self._resume_handle
-        info = ThreadInfo(
-            thread_id=config.get("thread_id", ""),
-            user_id=config.get("user_id"),
-            metadata=metadata,
-        )
-        await checkpointer.aput_thread(config, info)
+        if thread is not None:
+            info = thread.model_copy(update={"metadata": metadata})
+        else:
+            info = ThreadInfo(
+                thread_id=config.get("thread_id", ""),
+                user_id=config.get("user_id"),
+                metadata=metadata,
+            )
+        try:
+            await checkpointer.aput_thread(config, info)
+        except Exception:
+            logger.exception("realtime resume handle could not be saved")
 
     async def _maybe_reseed(
         self,
@@ -691,7 +906,12 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                 if old is not None:
                     await old.close()
             client = self._client_factory()
-            await client.connect(rt, resume_handle=self._resume_handle)
+            try:
+                await client.connect(rt, resume_handle=self._resume_handle)
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await client.close()
+                raise
             self._active_client = client
 
     # ------------------------------------------------------------------ #

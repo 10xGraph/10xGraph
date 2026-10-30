@@ -172,7 +172,7 @@ class PromptInjectionValidator(BaseValidator):
             r"(?i)previous\s+conversation\s+(ended?|stops?)",
             # System prompt leakage attempts
             r"(?i)(show|display|reveal|print|output|return)\s+(your|the|system)\s+(prompt|instructions?|guidelines?|rules?)",
-            r"(?i)what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|guidelines?|rules?)",
+            r"(?i)what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|guidelines?)",
             r"(?i)repeat\s+(your|the)\s+(instructions?|guidelines?|system\s+prompt)",
             r"(?i)(tell|show)\s+me\s+(your|the)\s+(original|initial)\s+(prompt|instructions?)",
             # Delimiter confusion. Start only at the first marker of a run and never backtrack
@@ -186,7 +186,8 @@ class PromptInjectionValidator(BaseValidator):
             r"(?i)developer\s+mode\s+(on|enabled?|activated?)",
             r"(?i)jailbreak\s+(mode|activated?)",
             # Known jailbreak personas (word boundaries to avoid false positives)
-            r"\b(?:APOPHIS|STAN|DUDE)\b",
+            # Upper-case only: "Stan" and "dude" are ordinary words
+            r"(?-i:\b(?:APOPHIS|STAN|DUDE)\b)",
             # Template injection
             # The bodies exclude the opening characters, so a run of openers stays linear
             r"\{\{[^{}\n]*\}\}",  # Jinja2-style
@@ -200,10 +201,12 @@ class PromptInjectionValidator(BaseValidator):
             r"(?i)(as|from)\s+(admin|administrator|root|system|developer|engineer)",
             r"(?i)i\s+am\s+(the|your)\s+(admin|administrator|developer|creator|owner)",
             # Adversarial suffixes (common patterns)
-            r"(?:[^\w\s]{5,})",  # Long sequences of special characters
+            # Long runs of ASCII punctuation (emoji and CJK punctuation are text)
+            r"[!-/:-@\[-`{-~]{8,}",
             # Extremely long ASCII words (potential adversarial strings). ASCII only, because
             # Chinese, Japanese, Korean and Thai write whole clauses without spaces.
-            r"[A-Za-z0-9_]{30,}",
+            # Hex digests (sha256 and the like) are not adversarial strings
+            r"(?<![A-Za-z0-9_])(?![0-9a-fA-F]+(?![A-Za-z0-9_]))[A-Za-z0-9_]{30,}",
         ]
 
         # Combine default and custom patterns
@@ -270,12 +273,14 @@ class PromptInjectionValidator(BaseValidator):
             content = self._normalize(content)  # noqa: PLW2901
 
             # Pattern matching for injection attempts
-            for pattern in self._all_patterns:
+            for index, pattern in enumerate(self._all_patterns):
                 if re.search(pattern, content, re.IGNORECASE):
+                    # Neither the regex nor the input is put in the error: both would be
+                    # echoed to the caller, which helps an attacker tune a bypass.
                     self._handle_violation(
                         "Potential prompt injection detected: pattern matched",
                         "injection_pattern",
-                        {"pattern": pattern, "content_sample": content[:200]},
+                        {"pattern_index": index},
                     )
 
             # Encoding attack detection
@@ -425,7 +430,7 @@ class PromptInjectionValidator(BaseValidator):
             self._handle_violation(
                 "Hex encoding detected (possible obfuscation)",
                 "encoding_attack",
-                {"content_sample": content[:200]},
+                {},
             )
 
     def _check_suspicious_keywords(self, content: str) -> None:
@@ -436,16 +441,19 @@ class PromptInjectionValidator(BaseValidator):
             content: Content to check
         """
         content_lower = content.lower()
-        keyword_count = sum(
-            1 for keyword in self._suspicious_keywords if keyword.lower() in content_lower
-        )
+
+        def _present(keyword: str) -> bool:
+            # Whole words only: "DAN" must not match "dance" nor "STAN" "standard".
+            return (
+                re.search(rf"(?<!\w){re.escape(keyword.lower())}(?!\w)", content_lower) is not None
+            )
+
+        keyword_count = sum(1 for keyword in self._suspicious_keywords if _present(keyword))
 
         # If multiple suspicious keywords appear, flag it
         threshold = 3
         if keyword_count >= threshold:
-            matched_keywords = [
-                kw for kw in self._suspicious_keywords if kw.lower() in content_lower
-            ]
+            matched_keywords = [kw for kw in self._suspicious_keywords if _present(kw)]
             self._handle_violation(
                 f"Multiple suspicious keywords detected ({keyword_count})",
                 "suspicious_keywords",

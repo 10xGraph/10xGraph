@@ -250,16 +250,12 @@ class TestLogfirePublisher:
         assert pub._level == ObservabilityLevel.STANDARD
 
     def test_raises_import_error_when_logfire_missing(self):
-        saved = sys.modules.pop("logfire", ...)
-        try:
-            sys.modules.pop("logfire", None)
+        # A None entry in sys.modules makes `import logfire` raise ImportError
+        with patch.dict(sys.modules, {"logfire": None}):
             from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 
             with pytest.raises(ImportError, match="logfire"):
                 LogfirePublisher()
-        finally:
-            if saved is not ...:
-                sys.modules["logfire"] = saved
 
     def test_send_to_logfire_false(self):
         fake_lf = _fake_logfire_module()

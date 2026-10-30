@@ -142,3 +142,36 @@ def enforce_file_size(data: bytes, max_mb: float) -> None:
             f"File size ({len(data)} bytes) exceeds maximum "
             f"allowed size ({max_bytes} bytes / {max_mb} MB)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Pixel limit
+# ---------------------------------------------------------------------------
+
+
+def check_image_pixels(data: bytes, max_pixels: int | None) -> None:
+    """Raise ``ValueError`` if an image has more than ``max_pixels`` pixels.
+
+    Only the header is read (Pillow opens images lazily), so a small file that decodes to a
+    huge bitmap is refused before any pixel is decoded. Does nothing when ``max_pixels`` is
+    ``None``, when Pillow is not installed, or when ``data`` is not an image Pillow can open;
+    other checks decide about those.
+
+    Raises:
+        ValueError: The image is larger than ``max_pixels``.
+    """
+    if not max_pixels:
+        return
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            pixels = img.width * img.height
+    except Exception:
+        return
+    if pixels > max_pixels:
+        raise ValueError(f"Image has {pixels} pixels; the limit is {max_pixels} pixels")

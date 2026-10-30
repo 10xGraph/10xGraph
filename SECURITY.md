@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`10xgraph` (formerly `10xscale-agentflow`) is at 1.0 (release candidate `1.0.0rc1`) and ships from a single release line. Security
+`10xgraph` (formerly `10xscale-agentflow`) is at 1.0 (release candidate `1.0.0rc2`) and ships from a single release line. Security
 fixes are applied to the latest published release only. Pin a known-good version
 in production and upgrade promptly when a security release is announced.
 
@@ -58,7 +58,7 @@ projects, though we are happy to help route a report.
 
 ## Good practice for deployers
 
-- Keep `IS_DEBUG=false` and `MODE=production` in production.
+- Keep `MODE=production` in production (it turns debug off).
 - Never set `ORIGINS=*` in production.
 - Use a secrets manager rather than committing `.env` files.
 - Constrain which tools and MCP servers an agent can reach.

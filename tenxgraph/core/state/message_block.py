@@ -225,11 +225,17 @@ class ReasoningBlock(BaseModel):
         type (Literal["reasoning"]): Block type discriminator.
         summary (str): Summary of reasoning.
         details (list[str] | None): Detailed reasoning steps.
+        signature (str | None): Anthropic signature of a ``thinking`` block. Kept verbatim so
+            the block can be replayed to Anthropic, which rejects an edited or unsigned one.
+        redacted_data (str | None): Opaque payload of an Anthropic ``redacted_thinking``
+            block. Kept verbatim for replay; ``summary`` is empty for these.
     """
 
     type: Literal["reasoning"] = "reasoning"
     summary: str
     details: list[str] | None = None
+    signature: str | None = None
+    redacted_data: str | None = None
 
 
 class AnnotationBlock(BaseModel):

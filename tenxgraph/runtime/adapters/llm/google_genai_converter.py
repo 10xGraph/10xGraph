@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, cast
 
+from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
     Message,
     TokenUsages,
@@ -30,7 +31,8 @@ from tenxgraph.core.state.message_block import (
     VideoBlock,
 )
 
-from .base_converter import BaseConverter
+from .base_converter import BaseConverter, mark_stop_issue
+from .reasoning_utils import order_blocks
 from .tool_arguments import parse_tool_arguments
 
 
@@ -89,7 +91,7 @@ class GoogleGenAIConverter(BaseConverter):
         if parts is None:
             logger.warning("Google GenAI response content has no parts: %s", response)
 
-        blocks, tools_calls, reasoning_content = self._process_parts(parts)
+        blocks, tools_calls, _ = self._process_parts(parts)
 
         # Get model version and other metadata
         model_version = response.model_version or ""
@@ -101,17 +103,19 @@ class GoogleGenAIConverter(BaseConverter):
 
         parsed = getattr(response, "parsed", None)
 
+        metadata = {
+            "provider": "google_genai",
+            "model": model_version,
+            "finish_reason": str(finish_reason),
+        }
+        mark_stop_issue(metadata, finish_reason, "Google GenAI")
+
         return Message(
             message_id=generate_id(getattr(response, "response_id", None)),
             role="assistant",
-            content=blocks,
-            reasoning=reasoning_content,
+            content=order_blocks(blocks),
             timestamp=created_date,
-            metadata={
-                "provider": "google_genai",
-                "model": model_version,
-                "finish_reason": str(finish_reason),
-            },
+            metadata=metadata,
             usages=usages,
             raw=None,  # Google GenAI responses are Pydantic models
             tools_calls=tools_calls if tools_calls else None,
@@ -366,8 +370,7 @@ class GoogleGenAIConverter(BaseConverter):
         output_message = Message(
             message_id=generate_id(None),
             role="assistant",
-            content=content_blocks,
-            reasoning=accumulated_reasoning_content,
+            content=order_blocks(content_blocks),
             tools_calls=tool_calls if tool_calls else None,
             delta=True,
         )
@@ -379,6 +382,25 @@ class GoogleGenAIConverter(BaseConverter):
             seq,
             output_message,
         )
+
+    @staticmethod
+    def _chunk_finish_reason(chunk: Any) -> Any:
+        """Return the first candidate's finish reason on a stream chunk, if set."""
+        candidates = getattr(chunk, "candidates", None)
+        if not isinstance(candidates, list | tuple) or not candidates:
+            return None
+        return getattr(candidates[0], "finish_reason", None) or None
+
+    def _chunk_usage(self, chunk: Any) -> TokenUsages | None:
+        """Return token usage when a stream chunk carries ``usage_metadata``."""
+        meta = getattr(chunk, "usage_metadata", None)
+        if meta is None:
+            return None
+        try:
+            return self._extract_usage_metadata(chunk)
+        except Exception:
+            logger.debug("Ignoring unreadable usage_metadata on stream chunk", exc_info=True)
+            return None
 
     async def _handle_stream(
         self,
@@ -404,6 +426,8 @@ class GoogleGenAIConverter(BaseConverter):
         tool_ids = set()
         accumulated_reasoning_content = ""
         seq = 0
+        finish_reason: Any = None
+        stream_usage: TokenUsages | None = None
 
         is_awaitable = inspect.isawaitable(stream)
 
@@ -414,7 +438,13 @@ class GoogleGenAIConverter(BaseConverter):
         # Try async iteration
         if stream is not None:
             try:
-                async for chunk in stream:  # type: ignore
+                async for chunk in iter_with_idle_timeout(stream):
+                    reason = self._chunk_finish_reason(chunk)
+                    if reason is not None:
+                        finish_reason = reason
+                    usage = self._chunk_usage(chunk)
+                    if usage is not None:
+                        stream_usage = usage
                     accumulated_content, accumulated_reasoning_content, tool_calls, seq, message = (
                         self._process_chunk(
                             chunk,
@@ -437,12 +467,15 @@ class GoogleGenAIConverter(BaseConverter):
         metadata["provider"] = "google_genai"
         metadata["node_name"] = node_name
         metadata["thread_id"] = config.get("thread_id")
+        if finish_reason is not None:
+            metadata["finish_reason"] = str(getattr(finish_reason, "name", finish_reason))
+            mark_stop_issue(metadata, finish_reason, "Google GenAI")
 
         blocks = []
-        if accumulated_content:
-            blocks.append(TextBlock(text=accumulated_content))
         if accumulated_reasoning_content:
             blocks.append(ReasoningBlock(summary=accumulated_reasoning_content))
+        if accumulated_content:
+            blocks.append(TextBlock(text=accumulated_content))
         if tool_calls:
             for tc in tool_calls:
                 func_data = tc.get("function", {})
@@ -467,9 +500,9 @@ class GoogleGenAIConverter(BaseConverter):
             message_id=generate_id(None),
             content=blocks,
             delta=False,
-            reasoning=accumulated_reasoning_content,
             tools_calls=tool_calls if tool_calls else None,
             metadata=metadata,
+            **({"usages": stream_usage} if stream_usage is not None else {}),
         )
         yield message
 

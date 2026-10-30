@@ -1,7 +1,7 @@
 import secrets
 from collections.abc import Awaitable
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -26,6 +26,14 @@ def _generate_memory_id() -> str:
             if str_id:
                 return str_id
     return secrets.token_hex(16)
+
+
+def _has_reasoning(message: Message) -> bool:
+    """True when the message holds a reasoning block with text, details or redacted data."""
+    return any(
+        block.type == "reasoning" and bool(block.summary or block.details or block.redacted_data)
+        for block in message.content
+    )
 
 
 class RetrievalStrategy(StrEnum):
@@ -70,7 +78,7 @@ class MemorySearchResult(BaseModel):
     vector: list[float] | None = Field(default=None)
     user_id: str | None = None
     thread_id: str | None = None
-    timestamp: datetime | None = Field(default_factory=datetime.now)
+    timestamp: datetime | None = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("vector")
     @classmethod
@@ -93,7 +101,7 @@ class MemoryRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     category: str = Field(default="general")
     vector: list[float] | None = None
-    timestamp: datetime | None = Field(default_factory=datetime.now)
+    timestamp: datetime | None = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("vector")
     @classmethod
@@ -118,7 +126,7 @@ class MemoryRecord(BaseModel):
         # Convert timestamp (float) to ISO format string
         timestamp_str = None
         if message.timestamp:
-            timestamp_dt = datetime.fromtimestamp(message.timestamp)
+            timestamp_dt = datetime.fromtimestamp(message.timestamp, tz=UTC)
             timestamp_str = timestamp_dt.isoformat()
 
         metadata = {
@@ -126,7 +134,7 @@ class MemoryRecord(BaseModel):
             "message_id": str(message.message_id),
             "timestamp": timestamp_str,
             "has_tool_calls": bool(message.tools_calls),
-            "has_reasoning": bool(message.reasoning),
+            "has_reasoning": _has_reasoning(message),
             "token_usage": message.usages.model_dump() if message.usages else None,
             **(additional_metadata or {}),
         }

@@ -241,7 +241,8 @@ class TestTranscriptPersistence:
                 AudioDeltaEvent(data=b"\xaa\xbb"),  # must NOT be persisted
                 InputTranscriptEvent(text="hello", finished=True),
                 OutputTranscriptEvent(text="hi there", finished=True),
-                InputTranscriptEvent(text="partial", finished=False),  # must NOT persist
+                # Unfinished at session end: saved by the final save, not dropped.
+                InputTranscriptEvent(text="partial", finished=False),
             ]
         )
         agent = LiveAgent(MODEL, realtime_client_factory=_factory(client))
@@ -254,12 +255,11 @@ class TestTranscriptPersistence:
         roles = [(m.role, m.content[0].text) for m in state.context]
         assert ("user", "hello") in roles
         assert ("assistant", "hi there") in roles
-        assert all(text != "partial" for _, text in roles)
         # audio bytes never become messages
         for m in state.context:
             assert m.metadata.get("modality") == "audio"
         persisted = await cp.alist_messages(config)
-        assert {m.content[0].text for m in persisted} == {"hello", "hi there"}
+        assert [m.content[0].text for m in persisted] == ["hello", "hi there", "partial"]
 
 
 class TestTranscriptAccumulation:

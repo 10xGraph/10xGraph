@@ -17,8 +17,9 @@ logger = logging.getLogger("tenxgraph.llm")
 # Default timeout (in seconds) applied to LLM client construction when the
 # caller does not pass an explicit ``timeout``. Bounds every request so a stalled
 # provider connection cannot hang a graph run indefinitely. Override globally via
-# the ``AGENTFLOW_LLM_TIMEOUT`` environment variable (seconds) or programmatically
-# via :func:`set_default_llm_timeout`.
+# the ``TENXGRAPH_LLM_TIMEOUT`` environment variable (seconds; the old
+# ``AGENTFLOW_LLM_TIMEOUT`` still works), programmatically via
+# :func:`set_default_llm_timeout`, or per agent with ``timeout=`` in ``llm_kwargs``.
 DEFAULT_LLM_TIMEOUT_SECONDS = 600.0
 
 # Single-element holder so the override can be mutated without a ``global``
@@ -27,22 +28,21 @@ _default_timeout_override: dict[str, float | None] = {"value": None}
 
 
 def _env_timeout() -> float | None:
-    """Read ``AGENTFLOW_LLM_TIMEOUT`` (seconds), or None if unset/invalid."""
-    raw = os.getenv("AGENTFLOW_LLM_TIMEOUT")
-    if raw is None or not raw.strip():
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid AGENTFLOW_LLM_TIMEOUT=%r; expected a number of seconds. Ignoring.",
-            raw,
-        )
-        return None
-    if value <= 0:
-        logger.warning("AGENTFLOW_LLM_TIMEOUT=%s must be positive. Ignoring.", value)
-        return None
-    return value
+    """Read ``TENXGRAPH_LLM_TIMEOUT`` (then ``AGENTFLOW_LLM_TIMEOUT``), or None if unset/invalid."""
+    for name in ("TENXGRAPH_LLM_TIMEOUT", "AGENTFLOW_LLM_TIMEOUT"):
+        raw = os.getenv(name)
+        if raw is None or not raw.strip():
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r; expected a number of seconds. Ignoring.", name, raw)
+            return None
+        if value <= 0:
+            logger.warning("%s=%s must be positive. Ignoring.", name, value)
+            return None
+        return value
+    return None
 
 
 def get_default_llm_timeout() -> float:
@@ -51,7 +51,8 @@ def get_default_llm_timeout() -> float:
     Resolution order (first match wins):
 
     1. A programmatic override set via :func:`set_default_llm_timeout`.
-    2. The ``AGENTFLOW_LLM_TIMEOUT`` environment variable (seconds).
+    2. The ``TENXGRAPH_LLM_TIMEOUT`` environment variable (seconds), or the
+       deprecated ``AGENTFLOW_LLM_TIMEOUT``.
     3. :data:`DEFAULT_LLM_TIMEOUT_SECONDS`.
     """
     override = _default_timeout_override["value"]
@@ -67,7 +68,7 @@ def set_default_llm_timeout(seconds: float | None) -> None:
     """Globally override the default LLM request timeout, in seconds.
 
     Pass ``None`` to clear the override and fall back to the
-    ``AGENTFLOW_LLM_TIMEOUT`` environment variable / built-in default.
+    ``TENXGRAPH_LLM_TIMEOUT`` environment variable / built-in default.
 
     Raises:
         ValueError: If ``seconds`` is not a positive number.
@@ -90,6 +91,9 @@ _PROVIDER_PREFIXES = {
 }
 
 # Keys allowed in the AsyncOpenAI constructor but NOT in per-request calls.
+# ``http_client`` passes straight through to the SDK. It must match the installed
+# openai major: an ``httpx2.AsyncClient`` for openai 3.x, an ``httpx.AsyncClient``
+# for openai 1.x/2.x. See https://github.com/openai/openai-python/blob/main/httpx2.md
 _CLIENT_CONSTRUCTOR_KWARGS = frozenset(
     {
         "organization",
@@ -104,8 +108,8 @@ _CLIENT_CONSTRUCTOR_KWARGS = frozenset(
 
 # Anthropic's constructors do not accept ``organization`` / ``project``, so the
 # OpenAI-shaped allowlist above cannot be reused. ``http_client`` here must be an
-# httpx2 client: the anthropic SDK moved to httpx2 in 1.0, while the OpenAI SDK
-# still uses httpx. Passing the wrong one fails at request time.
+# httpx2 client: the anthropic SDK moved to httpx2 in 1.0. Passing the wrong one
+# fails at request time.
 _ANTHROPIC_CONSTRUCTOR_KWARGS = frozenset(
     {
         "timeout",
@@ -229,7 +233,10 @@ def create_llm_client(
         anthropic_backend: Backend selector for the Anthropic provider.
             ``None`` (direct Claude API), ``"vertex"``, or ``"bedrock"``.
         **extra_kwargs: Forwarded to the AsyncOpenAI constructor
-            (only recognised constructor keys are passed through).
+            (only recognised constructor keys are passed through). An
+            ``http_client`` must be an ``httpx2.AsyncClient`` with openai 3.x
+            (an ``httpx.AsyncClient`` with openai 1.x/2.x); the SDK does not
+            convert between them.
 
     Returns:
         An async-capable SDK client instance.
@@ -239,7 +246,9 @@ def create_llm_client(
         ValueError: If required configuration (project, api_key) is missing.
     """
     if provider == "google":
-        return _create_google_client(use_vertex_ai=use_vertex_ai)
+        return _create_google_client(
+            use_vertex_ai=use_vertex_ai, timeout=extra_kwargs.get("timeout")
+        )
 
     if provider == "openai":
         return _create_openai_client(
@@ -261,7 +270,7 @@ def create_llm_client(
     )
 
 
-def _create_google_client(*, use_vertex_ai: bool) -> Any:
+def _create_google_client(*, use_vertex_ai: bool, timeout: float | None = None) -> Any:
     try:
         from google import genai
         from google.genai.types import HttpOptions
@@ -272,7 +281,7 @@ def _create_google_client(*, use_vertex_ai: bool) -> Any:
         ) from exc
 
     # google-genai expresses the request timeout in milliseconds.
-    http_options = HttpOptions(timeout=int(get_default_llm_timeout() * 1000))
+    http_options = HttpOptions(timeout=int((timeout or get_default_llm_timeout()) * 1000))
 
     if use_vertex_ai:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -327,7 +336,9 @@ def _create_openai_client(
     # Bound the request unless the caller opted into their own timeout.
     client_kwargs.setdefault("timeout", get_default_llm_timeout())
     if base_url:
-        logger.info("Creating OpenAI client with custom base_url: %s", base_url)
+        from tenxgraph.storage.media.url_policy import redact_url
+
+        logger.info("Creating OpenAI client with custom base_url: %s", redact_url(base_url))
         return AsyncOpenAI(api_key=resolved_key, base_url=base_url, **client_kwargs)
 
     return AsyncOpenAI(api_key=resolved_key, **client_kwargs)
@@ -427,7 +438,9 @@ def _create_anthropic_client(
     if resolved_key:
         client_kwargs["api_key"] = resolved_key
     if base_url:
-        logger.info("Creating Anthropic client with custom base_url: %s", base_url)
+        from tenxgraph.storage.media.url_policy import redact_url
+
+        logger.info("Creating Anthropic client with custom base_url: %s", redact_url(base_url))
         client_kwargs["base_url"] = base_url
 
     return AsyncAnthropic(**client_kwargs)

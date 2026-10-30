@@ -7,6 +7,8 @@ used by DeepSeek-R1, Qwen-thinking, and similar models.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 # ---------------------------------------------------------------------------
 # Tag extraction
@@ -75,3 +77,20 @@ def parse_thought_tags(text: str) -> tuple[str, str]:
     stripped out and *reasoning* is the concatenation of all tag contents.
     """
     return _extract_tag(text, "<thought>", "</thought>")
+
+
+# ---------------------------------------------------------------------------
+# Block ordering
+# ---------------------------------------------------------------------------
+
+_BLOCK_RANK = {"reasoning": 0, "text": 1, "tool_call": 3, "remote_tool_call": 3}
+
+
+def order_blocks(blocks: list[Any]) -> list[Any]:
+    """Return *blocks* ordered reasoning, text, media, then tool calls.
+
+    Every converter runs its output through this so a message has one block order
+    whatever the provider sent. The sort is stable, so blocks of the same kind keep
+    their relative order.
+    """
+    return sorted(blocks, key=lambda b: _BLOCK_RANK.get(getattr(b, "type", ""), 2))

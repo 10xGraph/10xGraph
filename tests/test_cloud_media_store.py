@@ -205,12 +205,15 @@ class TestCloudMediaStore:
                 await store.get_public_url("00000000000000000000000000000000")
 
     @pytest.mark.asyncio
-    async def test_get_direct_url_uses_mime_without_meta_lookup(self, store, mock_storage):
-        url = await store.get_direct_url(
-            "abcdef0123456789abcdef0123456789",
-            mime_type="image/png",
-            expiration=123,
-        )
+    async def test_get_direct_url_takes_extension_from_stored_metadata(self, store, mock_storage):
+        meta = {"mime_type": "image/png", "ext": ".png"}
+        with patch.object(store, "_download_meta", new_callable=AsyncMock, return_value=meta):
+            # The caller's mime is wrong on purpose: the stored extension wins
+            url = await store.get_direct_url(
+                "abcdef0123456789abcdef0123456789",
+                mime_type="application/pdf",
+                expiration=123,
+            )
 
         assert url == "https://signed-url.example.com/blob"
         mock_storage.get_public_url.assert_awaited_once_with(

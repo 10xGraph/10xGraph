@@ -45,6 +45,7 @@ class ProviderMediaCache:
     def __init__(self, max_entries: int = 1000):
         self._max_entries = max_entries
         self._store: dict[str, dict[str, Any]] = {}  # provider -> {key -> ref}
+        self._remote: dict[str, dict[str, str]] = {}  # provider -> {key -> remote file id}
 
     @staticmethod
     def content_key(data: bytes) -> str:
@@ -64,12 +65,22 @@ class ProviderMediaCache:
             del bucket[oldest]
         bucket[key] = reference
 
+    def put_remote_id(self, provider: str, key: str, remote_id: str) -> None:
+        """Remember the provider-side file id for a cached upload, so it can be deleted."""
+        self._remote.setdefault(provider, {})[key] = remote_id
+
+    def remote_ids(self, provider: str) -> list[str]:
+        """Provider-side file ids of the uploads this cache knows about."""
+        return list(self._remote.get(provider, {}).values())
+
     def clear(self, provider: str | None = None) -> None:
         """Clear cached references for a provider (or all)."""
         if provider:
             self._store.pop(provider, None)
+            self._remote.pop(provider, None)
         else:
             self._store.clear()
+            self._remote.clear()
 
 
 async def upload_to_google_file_api(
@@ -121,9 +132,41 @@ async def upload_to_google_file_api(
     # Cache the result
     if cache is not None:
         cache.put("google", key, part)
+        remote_name = getattr(upload_result, "name", None)
+        if isinstance(remote_name, str) and remote_name:
+            cache.put_remote_id("google", key, remote_name)
         logger.debug("Cached Google file upload (key=%s)", key[:12])
 
     return part
+
+
+async def delete_google_uploads(cache: ProviderMediaCache, *, client: Any | None = None) -> int:
+    """Delete from Google's File API every upload ``cache`` remembers, then forget them.
+
+    Google keeps uploaded files until they expire, so call this to erase them sooner (for
+    example when a user's data is removed). A file that cannot be deleted is logged and
+    skipped; it stays in the cache's record only if it was not deleted. Returns how many
+    files were deleted.
+    """
+    import asyncio
+
+    if client is None:
+        from google import genai
+
+        client = genai.Client()
+
+    deleted = 0
+    bucket = cache._remote.get("google", {})
+    for key, name in list(bucket.items()):
+        try:
+            await asyncio.to_thread(client.files.delete, name=name)
+        except Exception as exc:
+            logger.warning("Could not delete Google file %s (%s)", name, type(exc).__name__)
+            continue
+        bucket.pop(key, None)
+        cache._store.get("google", {}).pop(key, None)
+        deleted += 1
+    return deleted
 
 
 async def _google_upload(client: Any, data: bytes, mime_type: str, display_name: str | None) -> Any:

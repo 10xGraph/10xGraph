@@ -34,6 +34,10 @@ DEFAULT_HIDDEN = [
     ".aws/credentials",
     ".gnupg/pubring.kbx",
     ".git/config",
+    ".git-credentials",
+    "terraform.tfstate",
+    "terraform.tfstate.backup",
+    "prod.tfvars",
 ]
 
 

@@ -1,16 +1,74 @@
-# 10xgraph 1.0.0rc1
+# 10xgraph 1.0.0rc2
 
-The 1.0 release candidate: the public API is now stable under a deprecation policy, with a security hardening round across tools, memory, media, checkpointers and handoffs.
+The second 1.0 release candidate: it is the `1.0.0rc1` code plus a round of fixes for multi-agent handoffs, streaming, realtime sessions and evals, graceful shutdown with crash recovery, and new defaults for OpenAI and reasoning.
 
 **This is a release candidate.** Pip skips it unless you pass `--pre`. This release has **breaking changes**. Read "Before you upgrade" first.
 
 ```bash
-pip install -U --pre "10xgraph==1.0.0rc1"
+pip install -U --pre "10xgraph==1.0.0rc2"
 ```
 
-`10xgraph-api` and `10xgraph-client` ship 1.0 release candidates alongside. From 1.0 the three packages are versioned together: major.minor is identical across them (`10xgraph` 1.1.x works with `10xgraph-api` 1.1.x and `10xgraph-client` 1.1.x), and patch numbers move independently. A public API is removed only in a major release, after at least one minor of deprecation.
+`10xgraph-api` and `10xgraph-client` ship 1.0 release candidates alongside (`10xgraph-api` 1.0.0rc2, `10xgraph-client` 1.0.0-rc.2). From 1.0 the three packages are versioned together: major.minor is identical across them (`10xgraph` 1.1.x works with `10xgraph-api` 1.1.x and `10xgraph-client` 1.1.x), and patch numbers move independently. A public API is removed only in a major release, after at least one minor of deprecation.
 
-## Before you upgrade
+## Before you upgrade (changes in rc2)
+
+If you are on `1.0.0rc1`, this section is all that is new. If you are coming from 0.10.x, read it and then "Upgrading from 0.10.x" below.
+
+**Reasoning and OpenAI defaults**
+- Default reasoning is now each provider's lowest effort. An unset `reasoning_config` or `True` (the `ReactAgent` default) used to mean `{"effort": "medium"}`; it now means OpenAI `"minimal"`, Anthropic `"low"`, Google `"low"` (`thinking_budget=512`), resolved per request. Pass `{"effort": "medium"}` to keep the old depth. `None` or `False` still turns reasoning off.
+- `Agent` uses the OpenAI Responses API by default (`api_style="responses"`). With a custom `base_url` and no `api_style`, it stays on Chat Completions. Pass `api_style="chat"` to keep the old behaviour. The `openai` extra is now `openai>=1.93.1,<4`; on openai 3.x an `http_client` in `llm_kwargs` must be an `httpx2.AsyncClient`.
+- On the Responses API, reasoning text now comes back by default (`reasoning.summary: "auto"`). If a model such as gpt-4o rejects the default reasoning parameter, the call is retried once without it.
+- A custom `base_url` falls back to Chat Completions only on 404, 405 or 501. Other errors, such as a 429 or timeout, are raised instead of switching for good.
+
+**Timeouts, tools and events**
+- Tool and node timeouts are off by default (they were 300 s and 900 s). Set `tool_timeout` or `node_timeout` in the run config for a limit; it now applies to both `invoke` and `stream`.
+- Tool arguments are checked against the declared types. Values that convert cleanly are converted; values that cannot convert are refused with a failed tool result.
+- Published events are snapshots, copied before they are queued. Consumers no longer see later edits.
+- `pass_user_info_to_mcp=True` sends user info in the MCP call's request `meta`, not as a `user` argument.
+
+**Runs and APIs**
+- Sync `invoke()`, `stream()`, `stop()` and sync checkpointer methods raise `RuntimeError` inside a running event loop. Use the async method instead.
+- `LiveAgent.arun()` raises `RuntimeError` if the instance already runs a session. `arealtime()` now gives each connection its own copy; call `new_session()` if you run `arun()` yourself.
+- A stop request is saved as `StopRequestStatus.STOPPED`. Code that checks for `STOP_REQUESTED` after a stop must accept `STOPPED` too.
+- `Message.reasoning` is removed. Read the `ReasoningBlock`s in `Message.content`.
+- `mem0ai` is bounded to `>=2.0,<3`.
+
+**Postgres rollout.** `PgCheckpointer` schema migrations (v4 from 0.10.x, v5 drops `messages.reasoning`) cannot run alongside old pods. Do not roll pod by pod: stop all old pods, run the migration (one new pod, or `await checkpointer.asetup()`), then start the rest. The migration is not reversible; a rollback to 0.10.x needs a database restore.
+
+**Dependency minimums** (extras): `Pillow>=13.0.0` (`images`), `mcp>=1.30.0` (`mcp`), `opentelemetry-api` and `opentelemetry-sdk` `>=1.45.1` (`otel`, `langsmith`), `mem0ai>=2.0,<3` (`mem0`).
+
+## What changed in rc2
+
+**Fixes you may have hit**
+- Handoffs: the target agent now gets a tool result for the handoff call and is told it is in charge, other tool calls in the same message are no longer dropped, and `SwarmAgent` no longer leaves an unanswered tool call.
+- Streaming: clients now receive the real deltas instead of the final message repeated for each chunk.
+- Realtime (`AudioAgent`) sessions save their transcripts and state, and a tool call re-sent on the same thread runs once.
+- `SupervisorTeamAgent` no longer re-dispatches workers that already answered. `PlanActReflectAgent` shows the planner's reply to the user and no longer loops on empty replies. `StructuredOutputAgent` with tools works on Google.
+- Empty model replies are retried once, then fail the node.
+- Evals: a failing judge model is reported as an error (not a 0.5 score), trajectory tool arguments are the ones the model sent, and case results carry `expected`.
+- Gemini memory search ranks better (document and query task types for `GoogleEmbedding`).
+- A Redis outage no longer slows every step of a `PgCheckpointer` run (`redis_breaker_cooldown`).
+
+**Shutdown and recovery**
+- `await graph.aclose(...)` ends active runs in phases (grace, stop, cancel and drain); `install_shutdown_signals(graph)` is an opt-in SIGTERM/SIGINT helper. New runs after close raise `GraphClosedError`.
+- A cancelled, crashed or shut-down run leaves a usable thread: unanswered tool calls are closed and the thread is marked INTERRUPTED. A thread left RUNNING by a crash is repaired on the next load.
+- New errors: `NothingToResumeError`, `InterruptPendingError`, `StoredNodeMissingError` (with `compile(node_aliases=...)` for renamed nodes) and `StateFormatVersionError`.
+
+**New options (all opt-in unless noted)**
+- Tool limits and MCP controls on `ToolNode`: `max_result_chars`, `mcp_include`, `mcp_exclude`, `mcp_prefix`, `mcp_connect_timeout`, and `mcp_cache_tools` (on by default).
+- Tool factories `create_fetch_url`, `create_google_web_search` and `create_vertex_ai_search` that fix hosts, model or datastore in code.
+- LLM resilience: `RetryConfig.jitter` and concurrency caps (including a cross-process cap through Redis), `stream_idle_timeout`, `TENXGRAPH_LLM_TIMEOUT`, and `stop_issue` message metadata.
+- `PgCheckpointer`: `redis_key_prefix` and safe default timeouts. Media: image pixel limit and size caps.
+- The HTML eval report is redesigned as an offline scorecard, and the user simulator emits progress events.
+- Security: exception context and node error events no longer expose secrets or foreign exception text, and log lines neutralise CR and LF.
+
+See `CHANGELOG.md` for the full list.
+
+## Upgrading from 0.10.x (changes since rc1 also apply)
+
+Everything below was the `1.0.0rc1` guidance and still applies when you jump from 0.10.x to rc2.
+
+### Breaking changes from 0.10.x
 
 **Removed APIs**
 - The graph-level memory API (`MemoryIntegration`, `create_memory_preload_node`, `get_memory_system_prompt`, `memory_tool`) is gone. Pass `Agent(memory=MemoryConfig(...))`.
@@ -56,7 +114,7 @@ pip install -U --pre "10xgraph==1.0.0rc1"
 - `PgCheckpointer` schema version 4 changes the messages primary key to `(thread_id, message_id)`. `aget_message` / `adelete_message` require `thread_id` in the config. The migration runs automatically on first setup. `aget_tool_result` is scoped to the thread owner.
 - Checkpointers apply the owner rule to state-cache writes, and the in-memory checkpointer returns copies of state, so mutating a loaded state no longer changes the store until you save it.
 
-## Security
+### Security
 
 - Handoffs, hidden tools, MCP name clashes and parallel tool calls are now enforced or bounded (see above).
 - `fetch_url` and client-supplied media URLs are fetched through a checked HTTP client: every redirect is verified, the connection is pinned to the checked address, and internal and cloud-metadata addresses are refused.
@@ -66,7 +124,7 @@ pip install -U --pre "10xgraph==1.0.0rc1"
 - Checkpointer reads, writes and paging are scoped to the owner and bounded, and local files are owner-only.
 - New `create_file_tools(root)` returns `file_read`, `file_write` and `file_search` locked to a directory set in code.
 
-## New
+### New
 
 - `MediaFetchPolicy`, `MediaURLError` and `fetch_media_url` in `tenxgraph.storage.media`, plus `compile(media_policy=...)` and `CompiledGraph.media_policy`.
 - `collection` on `UserMemoryConfig` and `AgentMemoryConfig`: a name, or a function of the run config.

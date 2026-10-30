@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ._redact import redact_context
+
 
 logger = logging.getLogger("tenxgraph.exceptions")
 
@@ -49,7 +51,7 @@ class StorageError(Exception):
             "StorageError [%s]: %s | Context: %s",
             self.error_code,
             self.message,
-            self.context,
+            redact_context(self.context),
             exc_info=True,
         )
         super().__init__(message)
@@ -104,7 +106,7 @@ class TransientStorageError(StorageError):
             "TransientStorageError [%s]: %s | Context: %s",
             error_code,
             message,
-            context or {},
+            redact_context(context or {}),
             exc_info=True,
         )
         super().__init__(message, error_code, context)
@@ -133,7 +135,7 @@ class SerializationError(StorageError):
             "SerializationError [%s]: %s | Context: %s",
             error_code,
             message,
-            context or {},
+            redact_context(context or {}),
             exc_info=True,
         )
         super().__init__(message, error_code, context)
@@ -162,7 +164,7 @@ class SchemaVersionError(StorageError):
             "SchemaVersionError [%s]: %s | Context: %s",
             error_code,
             message,
-            context or {},
+            redact_context(context or {}),
             exc_info=True,
         )
         super().__init__(message, error_code, context)
@@ -197,7 +199,7 @@ class StaleStateError(StorageError):
             "StaleStateError [%s]: %s | Context: %s",
             error_code,
             message,
-            context or {},
+            redact_context(context or {}),
         )
         super().__init__(message, error_code, context)
 
@@ -225,7 +227,7 @@ class ResourceNotFoundError(StorageError):
             "ResourceNotFoundError [%s]: %s | Context: %s",
             error_code,
             message,
-            context or {},
+            redact_context(context or {}),
             exc_info=True,
         )
         super().__init__(message, error_code, context)
@@ -259,7 +261,7 @@ class MetricsError(Exception):
             "MetricsError [%s]: %s | Context: %s",
             self.error_code,
             self.message,
-            self.context,
+            redact_context(self.context),
         )
         super().__init__(message)
 

@@ -113,3 +113,9 @@ def test_store_scope_user_id_honors_policy():
     assert s._scope_user_id(owner, "A") == "A"      # owner -> scope to A
     assert s._scope_user_id(none, "A") is None       # allow_all -> do not scope
     assert s._scope_user_id({}, "A") == "A"          # no policy -> safe default (scope)
+
+
+def test_graph_setup_scope_is_not_granted():
+    from tenxgraph.core.authz import ALL_SCOPES
+
+    assert "graph:setup" not in ALL_SCOPES

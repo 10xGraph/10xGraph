@@ -36,6 +36,12 @@ class _FakeRedis:
     async def delete(self, key):
         return 1 if self.data.pop(key, None) is not None else 0
 
+    async def eval(self, script, numkeys, key, expected):  # the compare-and-delete script
+        if self.data.get(key) == expected:
+            del self.data[key]
+            return 1
+        return 0
+
 
 def _pg() -> PgCheckpointer:
     with patch("asyncpg.create_pool", return_value=MagicMock()):
