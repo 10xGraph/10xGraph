@@ -882,7 +882,7 @@ class CompiledGraph[StateT: AgentState]:
         cfg = self._prepare_config(config, is_stream=True)
         callback_manager = InjectQ.get_instance().try_get(CallbackManager)
         context_manager = self._state_graph._context_manager
-        run_state = state if state is not None else (self._state or AgentState())
+        run_state = state if state is not None else await self._realtime_start_state(cfg)
 
         handle, *tokens = self._begin_run(cfg, "realtime", heartbeat=False)
         try:
@@ -897,6 +897,24 @@ class CompiledGraph[StateT: AgentState]:
                 yield event
         finally:
             await self._finish_run(cfg, handle, (tokens[0], tokens[1]), end_run=False)
+
+    async def _realtime_start_state(self, cfg: dict[str, Any]) -> AgentState:
+        """The state a realtime session starts from: the thread's saved state, else a copy.
+
+        The session saves its state (with the transcripts) as the thread's checkpoint, so it
+        must start from what the thread already holds, not overwrite it. A thread with nothing
+        saved starts from a deep copy of the graph's state: sessions append to the context,
+        so sharing that one object would mix concurrent users' transcripts.
+        """
+        if self._checkpointer is not None:
+            try:
+                saved = await self._checkpointer.aget_state(cfg)
+            except Exception:
+                logger.warning("Could not load the thread's state for a realtime session")
+                saved = None
+            if saved is not None:
+                return saved
+        return self._state.model_copy(deep=True) if self._state is not None else AgentState()
 
     def realtime(
         self,

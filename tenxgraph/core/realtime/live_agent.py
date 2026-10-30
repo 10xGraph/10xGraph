@@ -251,8 +251,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             )
         self._session_active = True
         pump_task: asyncio.Task[None] | None = None
+        connected = False  # nothing is saved for a session that never reached the provider
+        state = state if state is not None else AgentState()
         try:
-            state = state if state is not None else AgentState()
             if callback_manager is None:
                 callback_manager = CallbackManager()
             self._input_transcript_buf = ""
@@ -268,6 +269,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             self._active_client = client
             self._session_checkpointer = checkpointer
             await client.connect(rt, resume_handle=handle)
+            connected = True
             # Only reseed when the provider did NOT restore context from a handle; otherwise
             # the model would receive the whole conversation twice (handle restore + reseed).
             await self._maybe_reseed(
@@ -340,16 +342,21 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             await self._fire_graph_end(callback_manager, config, state, turn_index)
         finally:
             try:
-                if pump_task is not None:
-                    pump_task.cancel()
-                    # return_exceptions: the pump's own cancel is absorbed, but a cancel aimed
-                    # at this task still raises out of the await.
-                    await asyncio.gather(pump_task, return_exceptions=True)
+                # Text still buffered (a turn cut off by a disconnect) and the final state.
+                if connected:
+                    await self._final_save(config, state, checkpointer)
             finally:
                 try:
-                    await self._close_active_client()
+                    if pump_task is not None:
+                        pump_task.cancel()
+                        # return_exceptions: the pump's own cancel is absorbed, but a cancel
+                        # aimed at this task still raises out of the await.
+                        await asyncio.gather(pump_task, return_exceptions=True)
                 finally:
-                    self._session_active = False
+                    try:
+                        await self._close_active_client()
+                    finally:
+                        self._session_active = False
 
     async def _close_active_client(self) -> None:
         client = self._active_client
@@ -535,13 +542,22 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                 event, "assistant", config, state, checkpointer
             )
 
+        if event.type == "turn_complete":
+            # The end of a turn saves what the turn said: a provider may end it with no
+            # transcription "finished" marker (Gemini Live does), which left the text unsaved.
+            flushed = await self._flush_transcripts(config, state, checkpointer)
+            await self._save_state(config, state, checkpointer)
+            return [*flushed, event]
+
         if event.type == "interrupted":
-            # Barge-in discards the model's in-flight turn; drop any partial transcript so
-            # the restarted turn isn't concatenated onto the abandoned one.
-            self._input_transcript_buf = ""
-            self._output_transcript_buf = ""
+            # Barge-in discards the model's in-flight reply (only part of it was spoken), so
+            # its partial transcript is dropped and the restarted turn isn't concatenated onto
+            # it. What the user said is kept.
+            flushed = await self._flush_transcripts(config, state, checkpointer, keep_output=False)
+            await self._save_state(config, state, checkpointer)
             self._publish_realtime(EventType.INTERRUPTED, config, ContentType.AUDIO, "barge_in")
-        elif event.type == "go_away":
+            return [*flushed, event]
+        if event.type == "go_away":
             self._publish_realtime(EventType.UPDATE, config, ContentType.UPDATE, "go_away")
         elif event.type == "session_update":
             self._resume_handle = event.resumption_handle
@@ -681,6 +697,81 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     # ------------------------------------------------------------------ #
     # Transcript persistence (Message only; audio is never stored at rest).
     # ------------------------------------------------------------------ #
+    async def _flush_transcripts(
+        self,
+        config: dict[str, Any],
+        state: AgentState,
+        checkpointer: BaseCheckpointer | None,
+        *,
+        keep_output: bool = True,
+    ) -> list[RealtimeEvent]:
+        """Save transcript text still buffered because no "finished" marker closed it.
+
+        The user's words first, then the model's, each as one message, and one consolidated
+        transcript event each for the client. ``keep_output=False`` drops the model's buffer
+        instead (barge-in). A buffer a "finished" marker already saved is empty, so nothing
+        is saved twice.
+        """
+        flushed: list[RealtimeEvent] = []
+        user_text = self._input_transcript_buf.strip()
+        model_text = self._output_transcript_buf.strip() if keep_output else ""
+        self._input_transcript_buf = ""
+        self._output_transcript_buf = ""
+        if user_text:
+            await self._persist_transcript(user_text, "user", config, state, checkpointer)
+            self._publish_realtime(
+                EventType.RESULT, config, ContentType.TRANSCRIPT, "input_transcript"
+            )
+            flushed.append(InputTranscriptEvent(text=user_text, finished=True))
+        if model_text:
+            await self._persist_transcript(model_text, "assistant", config, state, checkpointer)
+            self._publish_realtime(
+                EventType.RESULT, config, ContentType.TRANSCRIPT, "output_transcript"
+            )
+            flushed.append(OutputTranscriptEvent(text=model_text, finished=True))
+        return flushed
+
+    async def _save_state(
+        self,
+        config: dict[str, Any],
+        state: AgentState,
+        checkpointer: BaseCheckpointer | None,
+    ) -> None:
+        """Save the session's state (its context holds the transcripts) as a checkpoint.
+
+        The messages are already saved one by one, so none are passed again. A storage
+        failure is logged, not raised, for the same reason as in :meth:`_persist_transcript`.
+        """
+        if checkpointer is None:
+            return
+        try:
+            await checkpointer.aput_checkpoint(config, state, [])
+            await checkpointer.aput_state_cache(config, state)
+        except Exception:
+            logger.exception("realtime state could not be saved")
+
+    async def _final_save(
+        self,
+        config: dict[str, Any],
+        state: AgentState,
+        checkpointer: BaseCheckpointer | None,
+    ) -> None:
+        """Save what the session still holds when it ends, however it ends.
+
+        A client that disconnects mid-turn closes this session's generator, and a cancelled
+        session (anyio) is cancelled again at every await, so the save runs in a task of its
+        own and is waited for a bounded time; a cancel is raised after the wait.
+        """
+        if checkpointer is None:
+            return
+        from tenxgraph.core.graph.utils.utils import detach_task, wait_detached
+
+        async def _save() -> None:
+            await self._flush_transcripts(config, state, checkpointer)
+            await self._save_state(config, state, checkpointer)
+
+        await wait_detached(detach_task(_save()))
+
     async def _persist_transcript(
         self,
         text: str,

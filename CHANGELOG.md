@@ -386,13 +386,35 @@ Related notes:
   (`NODE_004`), OpenAI and Anthropic reject it. Each member with handoff targets now has a
   `<NAME>_HANDOFF` node (`TRIAGE -> TRIAGE_HANDOFF -> PLANNER` in the graph) that answers every
   tool call of the handoff message before the target runs: "Transferred to <target>." for the
-  handoff and "Not run: control was transferred to <target>." for other calls in the same
-  message (they are not run, as with a ToolNode handoff). The results are saved to state and the
+  handoff and "Not run: control was transferred to <target>." for a second handoff call in
+  the same message. The results are saved to state and the
   messages table like any node output. A handoff now takes one more graph step, which counts
   toward `recursion_limit`. `SupervisorTeamAgent` requests no longer end on an assistant turn:
   the supervisor's request (after a worker's reply) and a later worker's request (after the
   previous worker's reply) get one transient user message that is never saved. Worker nodes now
   wrap the agent you pass in (`graph.nodes[name].func.agent`).
+
+- **Realtime (AudioAgent) sessions now save their transcripts and state.** A live
+  `gemini-3.8-live` session left its thread with no messages and no state: transcripts were
+  saved only on a transcription chunk marked `finished`, which Gemini Live does not send (a
+  turn just ends with `turn_complete`), so the text stayed in a buffer and was dropped when the
+  session ended. Now the end of each turn saves the user's and the model's text (one message
+  each, plus one complete transcript event per side for the client), a barge-in keeps what the
+  user said and drops only the model's cut-off reply, and the end of a session (also a client
+  that disconnects mid-turn) saves what is left. The session also saves its state as the
+  thread's checkpoint after each turn. A session now starts from the thread's saved state (a
+  later session or text turn continues the conversation instead of overwriting it) or from a
+  deep copy of the graph's state: sessions used to append to one shared state object, so
+  concurrent users' transcripts could mix. Audio is still never stored.
+
+- **A handoff no longer drops the other tool calls of its message.** OpenAI often calls a tool
+  and a handoff together (`get_weather` + `transfer_to_planner`). The handoff used to answer
+  the tool call "Not run", so the target had no weather and handed back: a live `gpt-6-luna`
+  swarm bounced WEATHER, PLANNER, WEATHER, PLANNER. The other calls now run first (in the
+  ToolNode handoff path and, through the member's `<NAME>_TOOL` node, in `SwarmAgent`), then
+  control moves on and the target sees their results. A second handoff call in the same
+  message still gets "Not run: control was transferred to <target>.", and that tool message
+  carries `metadata["not_run"] = True` (the playground shows it as "Skipped").
 
 - **`SupervisorTeamAgent` no longer re-dispatches workers that already answered.** The
   supervisor's request held the workers' replies as unlabelled assistant turns, followed by its

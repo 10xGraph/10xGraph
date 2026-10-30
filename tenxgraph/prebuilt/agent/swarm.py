@@ -18,10 +18,13 @@ After each member runs, a per-member routing function inspects
 ``state.context[-1].tools_calls`` via :func:`is_handoff_tool`.  If a handoff
 tool call is found the graph routes to the member's ``<NAME>_HANDOFF`` node,
 which answers every tool call of that message with a tool result ("Transferred
-to <target>." for the handoff, "Not run: ..." for the others) and then routes to
-the target.  The target therefore never inherits an unanswered tool call, which
-providers reject.  Without a handoff, regular tool calls go to ``<NAME>_TOOL``
-and a plain reply goes to ``END``.
+to <target>." for the handoff, "Not run: ..." for a second handoff) and then routes
+to the target.  When the same message also holds regular tool calls (models such
+as OpenAI call ``get_weather`` and ``transfer_to_planner`` together), it goes to
+``<NAME>_TOOL`` instead, which runs those calls, answers the handoff and jumps to
+the target, so the target sees their results.  The target therefore never inherits
+an unanswered tool call, which providers reject.  Without a handoff, regular tool
+calls go to ``<NAME>_TOOL`` and a plain reply goes to ``END``.
 
 Example::
 
