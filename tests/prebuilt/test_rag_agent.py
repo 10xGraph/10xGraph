@@ -58,6 +58,8 @@ class FakeStore(BaseStore):
 
     async def asetup(self): ...
 
+    async def aping(self) -> None: ...
+
     async def asearch(self, config, query, **kwargs) -> list[MemorySearchResult]:
         return self._results
 

@@ -162,6 +162,9 @@ class _FakeStore(BaseStore):
     async def asetup(self):
         return None
 
+    async def aping(self):
+        return None
+
     async def astore(self, config, content, **kwargs):
         self.rows.append(
             {

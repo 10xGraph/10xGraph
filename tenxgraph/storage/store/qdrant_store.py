@@ -750,6 +750,14 @@ class QdrantStore(BaseStore):
             f"in collection {collection}"
         )
 
+    async def aping(self) -> None:
+        """Check the Qdrant server is reachable; raise when it is not.
+
+        Lists collections, a read-only call that needs no collection to exist and neither creates
+        collections nor embeds anything. It is bounded by the client's configured ``timeout``.
+        """
+        await self.client.get_collections()
+
     async def arelease(self) -> None:
         """Clean up resources."""
         if hasattr(self.client, "close"):

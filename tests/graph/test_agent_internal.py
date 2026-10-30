@@ -147,6 +147,9 @@ class _FakeMemoryStore(BaseStore):
     def __init__(self, results: list[MemorySearchResult]):
         self.asearch_mock = AsyncMock(return_value=results)
 
+    async def aping(self):
+        return None
+
     async def astore(self, *args, **kwargs):
         return "stored"
 

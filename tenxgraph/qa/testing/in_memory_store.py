@@ -311,6 +311,10 @@ class InMemoryStore(BaseStore):
         )
         return len(to_delete)
 
+    async def aping(self) -> None:
+        """Nothing to reach: the store lives in this process."""
+        return None
+
     async def arelease(self) -> None:
         """Clean up resources (clears all data)."""
         count = len(self.memories)
