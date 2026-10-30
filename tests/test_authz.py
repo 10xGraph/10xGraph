@@ -79,6 +79,9 @@ def _min_store():
     from tenxgraph.storage.store.base_store import BaseStore
 
     class _S(BaseStore):
+        async def aping(self):
+            pass
+
         async def asetup(self):
             pass
 

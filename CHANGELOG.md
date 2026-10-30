@@ -35,6 +35,17 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
+## [1.0.0] - Unreleased
+
+### Breaking
+
+- **`BaseStore.aping()` is now abstract.** A custom store must implement `async def aping(self) -> None`: return when its backend is reachable and raise when it is not (an in-process store just returns). `10xgraph-api` calls it for `/health/ready` and at startup. A store without it raises `TypeError` when created.
+
+### Added
+
+- `QdrantStore.aping()`, `Mem0Store.aping()` and `InMemoryStore.aping()` check the store's backend is reachable.
+  `10xgraph-api` uses it for `/health/ready` and its startup check.
+
 ## [1.0.0rc2] - 2026-10-30
 
 The second release candidate of `10xgraph` 1.0, aligned with `10xgraph-api` 1.0.0rc2 and `10xgraph-client`

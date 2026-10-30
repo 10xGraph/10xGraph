@@ -392,6 +392,18 @@ class BaseStore(ABC):
 
     # --- Cleanup and Resource Management ---
 
+    @abstractmethod
+    async def aping(self) -> None:
+        """Check that the store's backend is reachable; raise when it is not.
+
+        Must be read-only (no writes, no embedding, no collection creation) and cheap, because
+        a server may call it on every readiness probe. An in-process store just returns.
+
+        Raises:
+            Exception: Any error that shows the backend cannot be reached.
+        """
+        raise NotImplementedError
+
     async def arelease(self) -> None:
         """Clean up any resources used by the store (override in subclasses if needed)."""
         raise NotImplementedError

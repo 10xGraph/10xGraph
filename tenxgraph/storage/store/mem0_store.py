@@ -34,6 +34,7 @@ vector store configuration). You can also use helper factory function
 ``create_mem0_store_with_qdrant`` for quick Qdrant backing.
 """
 
+import asyncio
 import logging
 import secrets
 from collections.abc import Awaitable, Iterable
@@ -418,6 +419,17 @@ class Mem0Store(BaseStore):
         res = await client.delete_all(user_id=user_id)  # type: ignore
         logger.debug("Forgot all memories for user %s", user_id)
         return res
+
+    async def aping(self) -> None:
+        """Check the configured vector store backend is reachable; raise when it is not.
+
+        Mem0 has no health call of its own, so this lists the collections of its vector store
+        (read-only, writes nothing). The call is synchronous inside Mem0, so it runs in a worker
+        thread and its time limit is whatever the vector store client enforces. The first call
+        builds the Mem0 client, which also fails when the backend cannot be reached.
+        """
+        client = await self._get_client()
+        await asyncio.to_thread(client.vector_store.list_cols)  # type: ignore
 
     async def arelease(self) -> None:
         logger.info("Mem0Store released resources")
