@@ -1,4 +1,30 @@
-# 10xgraph 1.0.0rc2
+# 10xgraph 1.0.0rc3
+
+The third 1.0 release candidate: the `1.0.0rc2` code plus a required connectivity check on memory stores, so `10xgraph-api` can verify the store at startup and in `/health/ready`.
+
+```bash
+pip install -U --pre "10xgraph==1.0.0rc3"
+```
+
+Use it with `10xgraph-api` 1.0.0rc3. `10xgraph-client` stays at 1.0.0-rc.2 (no client changes).
+
+## Before you upgrade (changes in rc3)
+
+- **`BaseStore.aping()` is now abstract.** A custom store must implement `async def aping(self) -> None`: return when its backend is reachable and raise when it is not. Keep it read-only and cheap (no writes, no embedding, no collection creation); an in-process store just returns. A store without it raises `TypeError` when created.
+
+## What changed in rc3
+
+- `QdrantStore.aping()` lists collections (read-only, needs no collection to exist).
+- `Mem0Store.aping()` lists the collections of its vector store.
+- `InMemoryStore.aping()` returns at once.
+
+`10xgraph-api` 1.0.0rc3 calls `aping()` in its startup check and in `/health/ready`, so a stopped Qdrant is now reported instead of skipped.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list. The rc2 notes follow.
+
+---
+
+## 10xgraph 1.0.0rc2
 
 The second 1.0 release candidate: it is the `1.0.0rc1` code plus a round of fixes for multi-agent handoffs, streaming, realtime sessions and evals, graceful shutdown with crash recovery, and new defaults for OpenAI and reasoning.
 

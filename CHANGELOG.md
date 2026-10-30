@@ -35,7 +35,10 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
-## [1.0.0] - Unreleased
+## [1.0.0rc3] - 2026-10-30
+
+The third release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc3. It is the
+`1.0.0rc2` code plus a required connectivity check on memory stores.
 
 ### Breaking
 
