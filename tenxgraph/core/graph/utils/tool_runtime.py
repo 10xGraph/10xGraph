@@ -301,6 +301,23 @@ class ToolRuntimeMixin:
             return [item for item in payload if isinstance(item, Message)]
         return []
 
+    def _stamp_node_name(self, item: Any, roles: tuple[str, ...] = ("tool",)) -> Any:
+        """Record the producing node on tool result messages (``metadata["node_name"]``).
+
+        Assistant replies already carry it; this gives tool results the same label so
+        clients can group a turn by node. Existing values are never overwritten.
+        """
+        if isinstance(item, Message):
+            if item.role in roles:
+                item.metadata.setdefault("node_name", self.name)
+        elif isinstance(item, dict):
+            for message in self._extract_tool_messages(item):
+                self._stamp_node_name(message, roles)
+        elif isinstance(item, list):
+            for entry in item:
+                self._stamp_node_name(entry, roles)
+        return item
+
     def _failure_message(self, tool_call: dict[str, Any], outcome: BaseException) -> Message:
         """Turn a tool that raised into the error result the model sees."""
         fn_name = tool_call.get("function", {}).get("name", "")

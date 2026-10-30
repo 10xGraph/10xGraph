@@ -34,10 +34,10 @@ from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
-from .utils.handler_utils import detach_task
 from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
+from .utils.utils import FINALIZE_TIMEOUT_SECONDS, detach_task, wait_detached
 
 
 if TYPE_CHECKING:
@@ -491,9 +491,16 @@ class CompiledGraph[StateT: AgentState]:
                 )
 
         # The release is its own task: a cancel scope that stays cancelled (anyio) re-raises at
-        # every await here and would skip it. An outer cancel still propagates, and the release
-        # finishes in the background.
-        await asyncio.shield(detach_task(release()))
+        # every await here and would skip it. It is waited for (bounded) even while cancelled,
+        # so the caller (and a lock it holds) sees the marker gone; an outer cancel still
+        # propagates afterwards.
+        task = detach_task(release())
+        if not await wait_detached(task):
+            logger.warning(
+                "Releasing run scope for thread_id %s still running after %ss",
+                cfg.get("thread_id"),
+                FINALIZE_TIMEOUT_SECONDS,
+            )
 
     def stop(self, config: dict[str, Any]) -> dict[str, Any]:
         """Request the current graph execution to stop (sync helper).

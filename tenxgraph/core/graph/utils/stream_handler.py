@@ -54,6 +54,7 @@ from .handler_mixins import (
     InterruptConfigMixin,
 )
 from .utils import (
+    LastSave,
     calculate_token_usage,
     call_realtime_sync,
     get_next_node,
@@ -219,6 +220,8 @@ class StreamHandler[StateT: AgentState](
         messages_ids = set()
         # How many of `messages` a per-step checkpoint has already saved.
         persisted_upto = 0
+        # The run's latest durable save, for the cancel cleanup (never two saves at once).
+        last_save = LastSave()
         max_steps = config.get("recursion_limit", 25)
         logger.debug("Max steps limit set to %d", max_steps)
 
@@ -690,6 +693,7 @@ class StreamHandler[StateT: AgentState](
                         config=config,
                         messages=messages[persisted_upto:],
                         trim=False,
+                        last_save=last_save,
                     )
                     persisted_upto = len(messages)
                 else:
@@ -779,6 +783,7 @@ class StreamHandler[StateT: AgentState](
                 config=config,
                 messages=messages,
                 trim=True,
+                last_save=last_save,
             )
 
             # Create completion event
@@ -818,7 +823,9 @@ class StreamHandler[StateT: AgentState](
         except asyncio.CancelledError:
             # Cancelled mid-run (client gone, shutdown, timeout around the run): save the
             # thread as INTERRUPTED so the next run can use it, then let the cancel go on.
-            await finalize_cancelled_run(state, config, messages, event, current_node)
+            await finalize_cancelled_run(
+                state, config, messages, event, current_node, last_save=last_save
+            )
             raise
         except Exception as e:
             # Handle execution errors
@@ -849,6 +856,7 @@ class StreamHandler[StateT: AgentState](
                 config=config,
                 messages=messages,
                 trim=True,
+                last_save=last_save,
             )
 
             yield StreamChunk(

@@ -472,6 +472,16 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             )
         return json.loads(row["value"]) if row else None
 
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
+        """Compare and delete in one statement."""
+        await self._ensure_setup()
+        async with self._write() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM af_cache WHERE namespace = ? AND key = ? AND value = ?",
+                (namespace, key, _dumps(expected)),
+            )
+            return cursor.rowcount > 0
+
     async def alist_cache_keys(
         self,
         namespace: str,

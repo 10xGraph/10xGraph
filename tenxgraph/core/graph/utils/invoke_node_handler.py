@@ -424,6 +424,8 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             config,
         )
         normalized_result = self._merge_tool_results(tool_result, state)
+        if not isinstance(normalized_result, Command):
+            self._stamp_node_name(normalized_result)
 
         if isinstance(normalized_result, Command):
             return normalized_result
@@ -608,6 +610,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             new_state, messages, next_node = await process_node_result(
                 result, state, messages, seen_message_ids
             )
+            self._stamp_node_name(messages, roles=("assistant",))
             event.data["state"] = new_state.model_dump()
             event.event_type = EventType.END
             event.metadata["status"] = "Function execution completed"
@@ -719,6 +722,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
             # Process the converter result (invoke for non-streaming)
             message = await converter.invoke()
+            self._stamp_node_name(message, roles=("assistant",))
 
             # Update state with new message
             new_state = state.model_copy(deep=True)

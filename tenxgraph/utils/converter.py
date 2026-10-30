@@ -572,6 +572,25 @@ def inject_memory_block(messages: list[dict[str, Any]], block: str) -> list[dict
     return inject_request_blocks(messages, block)
 
 
+def _is_empty_assistant_reply(message: Message) -> bool:
+    """True for a saved assistant reply with no text, tool calls or media.
+
+    A reasoning block that carries an Anthropic signature or redacted payload is kept: it is
+    replayed to Anthropic as-is. Unsigned reasoning alone counts as empty.
+    """
+    if message.role != "assistant" or message.tools_calls:
+        return False
+    if (message.text() or "").strip():
+        return False
+    for block in _get_message_content_blocks(message):
+        if isinstance(block, TextBlock):
+            continue
+        if isinstance(block, ReasoningBlock) and not (block.signature or block.redacted_data):
+            continue
+        return False
+    return True
+
+
 def convert_messages(
     system_prompts: list[dict[str, Any]],
     state: Union["AgentState", None] = None,
@@ -617,12 +636,16 @@ def convert_messages(
 
     if state and state.context:
         for msg in state.context:
+            if _is_empty_assistant_reply(msg):
+                continue  # an old empty reply must not teach the model to answer with nothing
             formatted = _convert_dict(msg)
             if formatted:
                 res.append(formatted)
 
     if extra_messages:
         for msg in extra_messages:
+            if _is_empty_assistant_reply(msg):
+                continue
             formatted = _convert_dict(msg)
             if formatted:
                 res.append(formatted)

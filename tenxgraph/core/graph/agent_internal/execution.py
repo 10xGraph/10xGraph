@@ -147,6 +147,51 @@ def _retry_after_seconds(exc: BaseException) -> float | None:
     return None if raw is None else _parse_retry_after(raw)
 
 
+def _usage_text(message: Any) -> str:
+    usages = getattr(message, "usages", None)
+    if usages is None:
+        return "unknown"
+    return (
+        f"prompt={getattr(usages, 'prompt_tokens', 0) or 0} "
+        f"completion={getattr(usages, 'completion_tokens', 0) or 0} "
+        f"total={getattr(usages, 'total_tokens', 0) or 0}"
+    )
+
+
+def _make_empty_reply_logger(node_name: str, model: str) -> Any:
+    """Build the converter callback that logs an empty provider reply and its token usage.
+
+    The tokens of an empty call belong to no saved message, so the warning is where they
+    stay visible.
+    """
+
+    def log(message: Any, will_retry: bool) -> None:
+        logger.warning(
+            "Node '%s' (model %s): the provider returned a reply with no text, no tool "
+            "calls and no media (tokens: %s). A request that ends with an assistant turn is "
+            "a common cause. %s",
+            node_name,
+            model,
+            _usage_text(message),
+            "Retrying the call once." if will_retry else "The retry was empty too.",
+        )
+
+    return log
+
+
+def _make_empty_reply_error(node_name: str, model: str) -> Any:
+    def build(message: Any) -> BaseException:
+        from tenxgraph.core.exceptions import NodeError
+
+        return NodeError(
+            message=f"Model '{model}' returned an empty reply in node '{node_name}'",
+            error_code="NODE_004",
+            context={"node_name": node_name, "model": model, "usage": _usage_text(message)},
+        )
+
+    return build
+
+
 def _make_stream_end_hook(llm_event: Any) -> Any:
     """Build the callback that ends a streaming LLM span with the stream's token usage."""
 
@@ -1041,6 +1086,24 @@ class AgentExecutionMixin:
         # when a fallback on another provider took over.
         converter_key = converter_key_var.get() or self._get_converter_key()
         converter = ModelResponseConverter(response, converter=converter_key)
+
+        async def _retry_empty() -> Any:
+            # One more call after an empty reply. A fallback model on another provider may
+            # answer, so the converter follows the provider that did.
+            converter_key_var.set(None)
+            retry_response = await self._call_llm_with_retry(
+                messages=messages,
+                tools=tools if tools else None,
+                stream=is_stream,
+            )
+            converter.converter = ModelResponseConverter(
+                retry_response, converter=converter_key_var.get() or self._get_converter_key()
+            ).converter
+            return retry_response
+
+        converter.empty_reply_retry = _retry_empty
+        converter.on_empty_reply = _make_empty_reply_logger(node_name, str(self.model))
+        converter.empty_reply_error = _make_empty_reply_error(node_name, str(self.model))
         if is_stream:
             converter.on_stream_end = _make_stream_end_hook(llm_event)
         if self.tools_tags:

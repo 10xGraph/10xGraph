@@ -299,6 +299,16 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._cache_lock:
             return self._generic_cache.pop(cache_key, None)
 
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
+        """Compare and delete under the cache lock, in one step."""
+        cache_key = f"{namespace}:{key}"
+        async with self._cache_lock:
+            cached = self._generic_cache.get(cache_key)
+            if cached is None or cached[0] != expected:
+                return False
+            del self._generic_cache[cache_key]
+            return True
+
     async def alist_cache_keys(
         self,
         namespace: str,

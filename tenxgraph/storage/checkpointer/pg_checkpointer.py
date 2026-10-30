@@ -103,6 +103,14 @@ redis.call('SETEX', KEYS[1], ARGV[3], ARGV[1])
 return 1
 """
 
+# Compare-and-delete for the generic cache: delete KEYS[1] only if it still holds ARGV[1].
+_CLEAR_IF_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
 # Infrastructure timeouts. Without them a blackholed Postgres or Redis hangs a run instead of
 # failing it. They apply to pools this class builds (a pool you pass in keeps its own settings)
 # and are overridden key by key through ``pool_config`` / ``redis_pool_config``. The Redis pool
@@ -1811,6 +1819,21 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 e,
             )
             return None
+
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
+        """Delete a generic cache value only if it still equals ``expected`` (one Lua call)."""
+        try:
+            cache_key = self._get_generic_cache_key(namespace, key)
+            deleted = await self.redis.eval(_CLEAR_IF_LUA, 1, cache_key, json.dumps(expected))
+            return bool(deleted)
+        except Exception as e:
+            logger.error(
+                "Failed to clear cached value for namespace=%s key=%s: %s",
+                namespace,
+                key,
+                e,
+            )
+            return False
 
     async def alist_cache_keys(
         self,

@@ -337,8 +337,10 @@ class TestPlanActReflectAgentCompile:
         with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
             agent._configure_graph()
+        # PLAN is wrapped in _make_plan_node(); the wrapper exposes the agent as ``.agent``.
         plan_node = agent._graph.nodes["PLAN"]
-        assert isinstance(plan_node.func, FakeManagedAgent)
+        assert plan_node.func.__name__ == "plan"
+        assert isinstance(plan_node.func.agent, FakeManagedAgent)
 
     def test_reflect_node_is_agent(self):
         with patch("tenxgraph.prebuilt.agent.plan_act_reflect.Agent", FakeManagedAgent):
@@ -361,7 +363,7 @@ class TestPlanActReflectAgentCompile:
             )
             agent._configure_graph()
 
-        plan_agent: FakeManagedAgent = agent._graph.nodes["PLAN"].func  # type: ignore
+        plan_agent: FakeManagedAgent = agent._graph.nodes["PLAN"].func.agent  # type: ignore
 
         # PLAN agent should have tools; REFLECT node is a wrapper function so
         # we verify via the agent's stored _tool_node attribute instead.
@@ -444,7 +446,7 @@ class TestPlanActReflectPromptPassthrough:
             agent = PlanActReflectAgent(model="fake-model", provider="openai")
             agent._configure_graph()
 
-        plan_agent: FakeManagedAgent = agent._graph.nodes["PLAN"].func  # type: ignore
+        plan_agent: FakeManagedAgent = agent._graph.nodes["PLAN"].func.agent  # type: ignore
         assert plan_agent.system_prompt == DEFAULT_PLAN_SYSTEM_PROMPT
 
     def test_default_reflect_prompt_used(self):
@@ -463,7 +465,7 @@ class TestPlanActReflectPromptPassthrough:
             )
             agent._configure_graph()
 
-        plan_agent: FakeManagedAgent = agent._graph.nodes["PLAN"].func  # type: ignore
+        plan_agent: FakeManagedAgent = agent._graph.nodes["PLAN"].func.agent  # type: ignore
         assert plan_agent.system_prompt == custom
 
     def test_custom_reflect_prompt_passed_to_reflect_agent(self):

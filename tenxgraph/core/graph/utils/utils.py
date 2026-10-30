@@ -19,8 +19,10 @@ Key functionality areas:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import logging
+import sys
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -61,6 +63,93 @@ SHUTDOWN_REASON = "shutdown"
 CRASHED_REASON = "crashed"
 STOP_REASON = "stop_requested"
 ABORTED_RUN_REASONS = frozenset({CANCELLED_REASON, SHUTDOWN_REASON, CRASHED_REASON, STOP_REASON})
+
+
+# Cleanup that must outlive a cancelled waiter (cancel save, run-marker release). A strong
+# reference keeps each task alive until it is done.
+_detached_tasks: set[asyncio.Future] = set()
+
+
+def _expire_detached(task: asyncio.Future, limit: float) -> None:
+    if not task.done():
+        logger.error("Cleanup task still running after %ss; cancelling it", limit)
+        task.cancel()
+
+
+def track_detached(task: asyncio.Future, lifetime: float | None = None) -> asyncio.Future:
+    """Hold a strong reference to ``task`` and cancel it once it outlives ``lifetime``.
+
+    The default lifetime is twice ``FINALIZE_TIMEOUT_SECONDS``, so a store that hangs cannot
+    keep one task (and the state it holds) per abandoned run alive forever.
+    """
+    limit = 2 * FINALIZE_TIMEOUT_SECONDS if lifetime is None else lifetime
+    timer = asyncio.get_running_loop().call_later(limit, _expire_detached, task, limit)
+
+    def _done(done: asyncio.Future) -> None:
+        _detached_tasks.discard(done)
+        timer.cancel()
+
+    _detached_tasks.add(task)
+    task.add_done_callback(_done)
+    return task
+
+
+def detach_task(coro: Any, lifetime: float | None = None) -> asyncio.Task:
+    """Start ``coro`` as a task that outlives a cancelled waiter (see :func:`track_detached`)."""
+    task = asyncio.ensure_future(coro)
+    track_detached(task, lifetime)
+    return task
+
+
+async def wait_detached(task: asyncio.Future, timeout: float | None = None) -> bool:
+    """Wait for ``task`` up to ``timeout`` seconds, even while this coroutine is cancelled.
+
+    A cancel that arrives during the wait does not end it: the wait goes on until ``task`` is
+    done or the time is up, then that cancel is raised once. ``task`` is never cancelled here.
+    Returns True when ``task`` is done. ``timeout`` defaults to ``FINALIZE_TIMEOUT_SECONDS``.
+
+    A level-triggered anyio cancel scope (Starlette on a client disconnect) re-raises at every
+    await, so a plain retry loop would spin; when anyio is loaded the wait runs in a shielded
+    anyio scope instead. anyio is never imported here: core does not depend on it.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (FINALIZE_TIMEOUT_SECONDS if timeout is None else timeout)
+    cancel: asyncio.CancelledError | None = None
+    anyio = sys.modules.get("anyio")
+    scope = anyio.CancelScope(shield=True) if anyio is not None else contextlib.nullcontext()
+    with scope:
+        while not task.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait({task}, timeout=remaining)
+            except asyncio.CancelledError as e:
+                cancel = e
+    if cancel is not None:
+        raise cancel
+    return task.done()
+
+
+class LastSave:
+    """The latest durable save a run started, so cancel cleanup can wait for it, not race it."""
+
+    __slots__ = ("completed", "task")
+
+    def __init__(self) -> None:
+        self.task: asyncio.Future | None = None
+        self.completed = False  # the saved state was COMPLETED
+
+    def finished_completed(self) -> bool:
+        """True when the run's COMPLETED state was saved without error."""
+        task = self.task
+        return (
+            self.completed
+            and task is not None
+            and task.done()
+            and not task.cancelled()
+            and task.exception() is None
+        )
 
 
 def is_dead_run(state: AgentState, active_run_id: str | None, config: dict[str, Any]) -> bool:
@@ -659,8 +748,12 @@ async def sync_data(
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],  # will be auto-injected
     context_manager: BaseContextManager = Inject[BaseContextManager],  # will be auto-injected
     callback_mgr: CallbackManager = Inject[CallbackManager],  # will be auto-injected
+    last_save: LastSave | None = None,
 ) -> bool:
-    """Sync the current state and messages to the checkpointer."""
+    """Sync the current state and messages to the checkpointer.
+
+    ``last_save`` records the save this call starts, for the run's cancel cleanup.
+    """
     checkpointer = fresh(checkpointer)
     context_manager = fresh(context_manager)
     callback_mgr = fresh(callback_mgr)
@@ -697,16 +790,23 @@ async def sync_data(
             await checkpointer.aput_state_cache(config, new_state)
 
         save = asyncio.ensure_future(_persist())
+        if last_save is not None:
+            last_save.task = save
+            last_save.completed = new_state.execution_meta.status == ExecutionStatus.COMPLETED
         try:
             await asyncio.shield(save)
         except asyncio.CancelledError:
             if not save.done():
-                # Cancelled mid-save: give the save a bounded time to finish, then let the
-                # cancel go on.
-                try:
-                    await asyncio.wait_for(asyncio.shield(save), FINALIZE_TIMEOUT_SECONDS)
-                except (Exception, asyncio.CancelledError) as e:
-                    logger.warning("Save did not finish after cancel (%r)", e)
+                # Cancelled mid-save: the save goes on. Wait for it (bounded) so the cleanup
+                # that follows never runs beside it, then let the cancel go on.
+                track_detached(save)
+                if not await wait_detached(save):
+                    logger.warning(
+                        "Save still running %ss after cancel; it goes on in the background",
+                        FINALIZE_TIMEOUT_SECONDS,
+                    )
+            if save.done() and not save.cancelled() and save.exception() is not None:
+                logger.warning("Save failed after cancel (%r)", save.exception())
             raise
 
     return is_context_trimmed

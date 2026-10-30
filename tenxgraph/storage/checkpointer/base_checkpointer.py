@@ -445,6 +445,17 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """Delete a previously cached value."""
         return None
 
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
+        """Delete a cached value only if it still equals ``expected``; True when deleted.
+
+        The default reads, then deletes, in two steps; a value written in between is deleted
+        too. Backends with a shared cache override this with one atomic step.
+        """
+        if await self.aget_cache_value(namespace, key) != expected:
+            return False
+        await self.aclear_cache_value(namespace, key)
+        return True
+
     async def alist_cache_keys(
         self,
         namespace: str,
@@ -521,13 +532,14 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     async def arefresh_run(self, config: dict[str, Any]) -> None:
         """Extend the active-run marker's life if it is still ``config["run_id"]``'s.
 
-        Called every ``ACTIVE_RUN_HEARTBEAT_SECONDS`` while a run is alive. A marker that now
-        belongs to another run, or is gone, is left alone.
+        Called every ``ACTIVE_RUN_HEARTBEAT_SECONDS`` while a run is alive. A marker that is
+        gone (expired, or cleared by mistake) is written again, since this run is alive; one
+        that belongs to another run is left alone.
         """
         run_id = config.get("run_id")
         if not run_id:
             return
-        if await self.aget_active_run(config) == str(run_id):
+        if await self.aget_active_run(config) in (str(run_id), None):
             await self.aput_cache_value(
                 ACTIVE_RUN_NAMESPACE,
                 self._stop_request_key(config),
@@ -539,17 +551,17 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """Mark ``config["run_id"]`` as finished.
 
         Clears the active-run marker if it is still this run's (a newer run may have
-        replaced it) and drops a stop request that targeted this run.
+        replaced it) and drops a stop request that targeted this run. Both are compared and
+        deleted in one step, so a newer run's marker or stop request written meanwhile stays.
         """
         run_id = config.get("run_id")
         if not run_id:
             return
         key = self._stop_request_key(config)
-        if await self.aget_active_run(config) == str(run_id):
-            await self.aclear_cache_value(ACTIVE_RUN_NAMESPACE, key)
+        await self.aclear_cache_value_if(ACTIVE_RUN_NAMESPACE, key, str(run_id))
         flag = await self.aget_cache_value(STOP_REQUEST_NAMESPACE, key)
         if flag and self._stop_target(flag) == str(run_id):
-            await self.aclear_cache_value(STOP_REQUEST_NAMESPACE, key)
+            await self.aclear_cache_value_if(STOP_REQUEST_NAMESPACE, key, flag)
 
     @staticmethod
     def _stop_target(flag: Any) -> str | None:

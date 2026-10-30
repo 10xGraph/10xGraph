@@ -19,6 +19,7 @@ from tenxgraph.core.graph.node import Node
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.tool_dispatch import validate_goto
 from tenxgraph.core.graph.utils.utils import (
+    LastSave,
     calculate_token_usage,
     call_realtime_sync,
     get_next_node,
@@ -178,6 +179,8 @@ class InvokeHandler[StateT: AgentState](
         # How many of `messages` have already been durably persisted by a per-step
         # checkpoint, so terminal and subsequent writes only send the new ones.
         persisted_upto = 0
+        # The run's latest durable save, for the cancel cleanup (never two saves at once).
+        last_save = LastSave()
         max_steps = config.get("recursion_limit", 25)
         logger.debug("Max steps limit set to %d", max_steps)
 
@@ -498,6 +501,7 @@ class InvokeHandler[StateT: AgentState](
                         config=config,
                         messages=pending,
                         trim=False,
+                        last_save=last_save,
                     )
                     persisted_upto = len(messages)
                 else:
@@ -561,6 +565,7 @@ class InvokeHandler[StateT: AgentState](
                 config=config,
                 messages=messages,
                 trim=True,
+                last_save=last_save,
             )
             event.event_type = EventType.END
             event.data["state"] = state.model_dump()
@@ -583,7 +588,9 @@ class InvokeHandler[StateT: AgentState](
         except asyncio.CancelledError:
             # Cancelled mid-run (client gone, shutdown, timeout around the run): save the
             # thread as INTERRUPTED so the next run can use it, then let the cancel go on.
-            await finalize_cancelled_run(state, config, messages, event, current_node)
+            await finalize_cancelled_run(
+                state, config, messages, event, current_node, last_save=last_save
+            )
             raise
         except Exception as e:
             # Handle execution errors
@@ -614,6 +621,7 @@ class InvokeHandler[StateT: AgentState](
                 config=config,
                 messages=messages,
                 trim=True,
+                last_save=last_save,
             )
             raise
 

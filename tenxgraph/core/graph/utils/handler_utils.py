@@ -58,9 +58,13 @@ from .utils import (
     CRASHED_REASON,
     FINALIZE_TIMEOUT_SECONDS,
     STOP_REASON,
+    LastSave,
+    _detached_tasks,  # noqa: F401  (re-exported: cleanup tasks still running)
+    detach_task,
     get_next_node,
     reload_state,
     sync_data,
+    wait_detached,
 )
 
 
@@ -577,17 +581,6 @@ async def close_unanswered_tool_calls(
     return closing
 
 
-_detached_tasks: set[asyncio.Task] = set()
-
-
-def detach_task(coro: Any) -> asyncio.Task:
-    """Start ``coro`` as a task that outlives a cancelled waiter, holding a strong reference."""
-    task = asyncio.ensure_future(coro)
-    _detached_tasks.add(task)
-    task.add_done_callback(_detached_tasks.discard)
-    return task
-
-
 async def finalize_cancelled_run(
     state: AgentState,
     config: dict[str, Any],
@@ -595,15 +588,21 @@ async def finalize_cancelled_run(
     event: EventModel,
     current_node: str,
     reason: str = CANCELLED_REASON,
+    last_save: LastSave | None = None,
 ) -> None:
     """Save a cancelled run as INTERRUPTED so the thread stays usable.
 
-    Closes unanswered tool calls, marks the state INTERRUPTED with ``reason``, and syncs it to
-    the durable store in one detached task that finishes even if this coroutine keeps being
-    cancelled (a level-triggered anyio cancel scope). The wait is bounded by
-    ``FINALIZE_TIMEOUT_SECONDS``. If the save fails or times out the state cache is left as it
-    is: it holds the newest state, including the user's message. This never raises; the caller
-    re-raises the cancel.
+    Closes unanswered tool calls, marks the state INTERRUPTED with ``reason``, syncs it to the
+    durable store and then publishes the INTERRUPTED event, in one detached task that finishes
+    even if this coroutine keeps being cancelled (a level-triggered anyio cancel scope). This
+    coroutine waits for that task up to ``FINALIZE_TIMEOUT_SECONDS``, also while cancelled, so
+    what runs after it (the run-marker release, the caller's thread lock) sees the save done. If
+    the save fails or is still running the state cache is left as it is: it holds the newest
+    state, including the user's message. This never raises; the caller re-raises the cancel.
+
+    ``last_save`` is the run's own latest save. One still running is waited for first, so two
+    saves of the run never race. When it saved the COMPLETED state, the run is over and stays
+    completed: nothing is marked INTERRUPTED.
 
     The saved position stays at ``current_node``. What the next call does with it is decided on
     load (decision D1): a new user message starts a new turn, a call with no new input resumes
@@ -614,16 +613,27 @@ async def finalize_cancelled_run(
     if run is not None and run.cancel_reason and reason == CANCELLED_REASON:
         reason = run.cancel_reason
     thread_id = config.get("thread_id")
+    prior = last_save.task if last_save is not None else None
 
     async def _finalize() -> None:
-        await close_unanswered_tool_calls(state, config, messages)
-        state.set_interrupt(
-            current_node,
-            reason,
-            ExecutionStatus.INTERRUPTED_AFTER,
-            data={"source": "cancel", "info": "run was cancelled"},
-        )
-        await sync_data(state=state, config=config, messages=messages, trim=True)
+        if prior is not None and not prior.done():
+            await asyncio.wait({prior})
+        if last_save is not None and last_save.finished_completed():
+            logger.info("Run on thread '%s' was cancelled after its final save", thread_id)
+            return
+        try:
+            await close_unanswered_tool_calls(state, config, messages)
+            state.set_interrupt(
+                current_node,
+                reason,
+                ExecutionStatus.INTERRUPTED_AFTER,
+                data={"source": "cancel", "info": "run was cancelled"},
+            )
+            await sync_data(state=state, config=config, messages=messages, trim=True)
+        finally:
+            # After the save, so the event carries the saved state (tool calls closed,
+            # interrupt set).
+            _publish_cancel_event(state, event)
 
     # All the work runs in one task of its own. A cancel scope that stays cancelled (anyio,
     # as used by Starlette on a client disconnect) re-raises CancelledError at every await of
@@ -640,18 +650,20 @@ async def finalize_cancelled_run(
 
     task.add_done_callback(_log_failure)
     try:
-        await asyncio.wait_for(asyncio.shield(task), FINALIZE_TIMEOUT_SECONDS)
-    except TimeoutError:
+        finished = await wait_detached(task)
+    except asyncio.CancelledError:
+        # Cancelled again while waiting; the wait is over and the caller re-raises its cancel.
+        finished = task.done()
+    if not finished:
         logger.error(
-            "Could not save cancelled run for thread '%s' within %ss; the state cache is kept",
+            "Saving cancelled run for thread '%s' did not finish within %ss; the save is still "
+            "running in the background and the state cache is kept",
             thread_id,
             FINALIZE_TIMEOUT_SECONDS,
         )
-    except asyncio.CancelledError:
-        # The waiter was cancelled again; the task is not, and carries on in the background.
-        logger.info("Saving cancelled run for thread '%s' continues in the background", thread_id)
-    except Exception as e:  # the task's own failure, already logged by the done-callback
-        logger.debug("Cancel save task failed (%r)", e)
+
+
+def _publish_cancel_event(state: AgentState, event: EventModel) -> None:
     try:
         event.event_type = EventType.INTERRUPTED
         event.metadata["interrupted"] = "Cancelled"

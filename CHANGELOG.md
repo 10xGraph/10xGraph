@@ -104,6 +104,14 @@ breaking list further down applies to you as well.
   store's `has_reasoning` metadata is now true when a message has a reasoning block with text,
   details or redacted data.
 
+### Fixed
+
+- **Streaming: clients saw the final message instead of the deltas.** The agent, function-node
+  and converter paths reused one `StreamChunk` for every item and only changed its `message`.
+  Because the stream is queued before it is read, every queued chunk pointed at the last item:
+  readers got the complete message once per converter item (duplicate reasoning rows, usage
+  counted per copy). Each item now gets its own chunk with its own metadata dict.
+
 ### Upgrade notes
 
 #### Postgres schema migration (read before the rollout)
@@ -361,6 +369,39 @@ Related notes:
 
 ### Fixed
 
+- **`StructuredOutputAgent` with tools now works on Google.** Gemini cannot combine function
+  calling with a JSON output schema in one request, so the prebuilt agent failed on the first
+  message. On Google with tools it now runs GENERATE (tools, plain text) then a FORMAT step
+  (schema, no tools) that turns the conversation into the schema; validation and REPAIR loop
+  over FORMAT. OpenAI, Anthropic and Google without tools are unchanged. The `Agent` guard for
+  tools plus `output_schema` on Google is unchanged.
+
+- **`PlanActReflectAgent` no longer loops on empty replies.** The reflector's request used to end
+  with the planner's assistant message (and a later planner request with the reflector's), which
+  makes Gemini return an empty reply and Anthropic drop the turn. Both now get one transient user
+  message at the end of the request (never saved to state), so a greeting such as "HI" ends after
+  2 LLM calls. `[DONE]` is recorded in a per-turn flag and removed from the saved reply, and an
+  empty reflector reply ends the turn instead of looping to `max_iterations`.
+- **Empty model replies are retried once, then fail the node.** An `Agent` reply with no text, no
+  tool calls and no media (reasoning alone counts as empty) is no longer saved. The call is
+  repeated once, with a warning that names the node, the model and the tokens the empty call
+  used; a second empty reply raises a `NodeError` (`NODE_004`). Streaming holds back the empty
+  final message, so no half-built reply reaches state. Saved empty assistant replies in old
+  threads are skipped when the request is built (a reasoning block with an Anthropic signature is
+  kept).
+- **Tool result messages carry `metadata["node_name"]`**, and so do assistant replies on the
+  `ainvoke` path (they only had it when streamed), so clients can group a turn by node.
+- **A cancelled run releases its thread only after its cancel save.** Under a level-triggered
+  cancel (anyio, Starlette on a client disconnect) the INTERRUPTED save used to go on in the
+  background while the active-run marker was already released, so a quick next run on the
+  thread could race it. The waiter now waits for the save (up to 10 s) while cancelled, inside a
+  shielded anyio scope when anyio is loaded, then re-raises the cancel; the marker release is
+  waited for the same way. A cancel during the run's own save waits for that save instead of
+  starting a second one beside it, and a run whose COMPLETED state was saved stays completed.
+  The INTERRUPTED event is published after the save and carries the saved state. Detached
+  cleanup is cancelled (ERROR log) after 20 s. `aend_run` clears the marker and stop request
+  with a compare-and-delete in one step (new `BaseCheckpointer.aclear_cache_value_if`, atomic in
+  the in-memory, SQLite and Redis caches), and the run heartbeat restores its own missing marker.
 - **Evals: tool arguments in a trajectory are the ones the model sent.** The recorded args used
   to include injected parameters (`emit`, `config`, `store`, an `Inject[...]` service, ...), so
   an exact `check_args=True` trajectory failed for any tool that declared one. The collector now

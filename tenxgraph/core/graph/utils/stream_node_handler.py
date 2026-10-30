@@ -611,6 +611,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         command_goto: str | None = None
 
         async for item in result:
+            self._stamp_node_name(item)
             if isinstance(item, Command):
                 command_goto = item.goto
                 yield item
@@ -775,15 +776,21 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             # first check its sync and not streaming
             next_node = None
             final_result = result
-            stream_event = StreamChunk(
-                event=StreamEvent.MESSAGE,
-                thread_id=config.get("thread_id"),
-                run_id=config.get("run_id"),
-                metadata={
-                    "node": self.name,
-                    "function_name": function_name,
-                },
-            )
+
+            def message_chunk(message: Any) -> StreamChunk:
+                # One chunk per item: the stream is queued before it is read, so a shared
+                # chunk would show every reader the last item.
+                return StreamChunk(
+                    event=StreamEvent.MESSAGE,
+                    message=message,
+                    thread_id=config.get("thread_id"),
+                    run_id=config.get("run_id"),
+                    metadata={
+                        "node": self.name,
+                        "function_name": function_name,
+                    },
+                )
+
             # if type of command then we will update it
             if isinstance(result, Command):
                 # now check the updated
@@ -796,8 +803,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                         if msg.message_id in seen_message_ids:
                             continue  # already streamed in an earlier step
                         yield msg
-                        stream_event.message = msg
-                        yield stream_event
+                        yield message_chunk(msg)
 
                 next_node = result.goto
 
@@ -818,8 +824,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 publish_event(event)
                 for m in messages:
                     yield m
-                    stream_event.message = m
-                    yield stream_event
+                    yield message_chunk(m)
 
                 yield {
                     "is_non_streaming": True,
@@ -843,8 +848,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                     if isinstance(item, Message) and not item.delta:
                         messages.append(item)
                     yield item
-                    stream_event.message = item
-                    yield stream_event
+                    yield message_chunk(item)
             # Things are done, so publish event and yield final response
             event.event_type = EventType.END
             if messages:
@@ -960,15 +964,18 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             # Collect all messages during streaming
             messages = []
 
-            stream_event = StreamChunk(
-                event=StreamEvent.MESSAGE,
-                thread_id=config.get("thread_id"),
-                run_id=config.get("run_id"),
-                metadata={
-                    "node": self.name,
-                    "function_name": self.name,
-                },
-            )
+            def message_chunk(message: Any) -> StreamChunk:
+                # One chunk per item (see the function-node path).
+                return StreamChunk(
+                    event=StreamEvent.MESSAGE,
+                    message=message,
+                    thread_id=config.get("thread_id"),
+                    run_id=config.get("run_id"),
+                    metadata={
+                        "node": self.name,
+                        "function_name": self.name,
+                    },
+                )
 
             stream_gen = converter.stream(
                 config,
@@ -983,8 +990,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 if isinstance(item, Message) and not item.delta:
                     messages.append(item)
                 yield item
-                stream_event.message = item
-                yield stream_event
+                yield message_chunk(item)
 
             result = {"state": state, "messages": messages, "next_node": None}
             result = await callback_mgr.execute_after_invoke(context, input_data, result)
