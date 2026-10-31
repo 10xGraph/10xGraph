@@ -2822,6 +2822,33 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
     #### RESOURCE CLEANUP #####
     ###########################
 
+    async def aping(self) -> None:
+        """Check Postgres, its schema version and (when configured) Redis; raise when not usable.
+
+        Runs ``SELECT 1`` on the pool, compares the recorded schema version with the one this
+        code expects, then pings Redis. Never creates or upgrades the schema (call ``asetup``
+        for that), so a missing schema raises. Redis is pinged directly, not through the
+        circuit breaker, so an outage is reported and the breaker state is left unchanged.
+
+        Raises:
+            RuntimeError: When the recorded schema version is older than the expected one.
+            Exception: Any error from Postgres or Redis.
+        """
+
+        async def _select_one():
+            async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
+                return await conn.fetchval("SELECT 1")
+
+        await self._retry_on_connection_error(_select_one, max_retries=3)
+        found = await self.aget_schema_version()
+        expected = self._get_current_schema_version()
+        if found < expected:
+            raise RuntimeError(
+                f"checkpointer schema version {found} is below the expected {expected}"
+            )
+        if self.redis is not None:
+            await self.redis.ping()
+
     async def arelease(self) -> Any | None:
         """
         Clean up connections and resources.

@@ -1,4 +1,28 @@
-# 10xgraph 1.0.0rc3
+# 10xgraph 1.0.0rc4
+
+The fourth 1.0 release candidate: the `1.0.0rc3` code plus a required connectivity check on checkpointers, so `10xgraph-api` can verify the checkpointer at startup and in `/health/ready` through one method.
+
+```bash
+pip install -U --pre "10xgraph==1.0.0rc4"
+```
+
+Use it with `10xgraph-api` 1.0.0rc4. `10xgraph-client` stays at 1.0.0-rc.2 (no client changes).
+
+## Before you upgrade (changes in rc4)
+
+- **`BaseCheckpointer.aping()` is now abstract.** A custom checkpointer must implement `async def aping(self) -> None`: return when its backends are reachable and usable and raise when they are not. Keep it read-only and cheap (no writes, no table creation); an in-process checkpointer just returns. A checkpointer without it raises `TypeError` when created.
+
+## What changed in rc4
+
+- `InMemoryCheckpointer.aping()` returns at once.
+- `SqliteCheckpointer.aping()` runs `SELECT 1` on its connection.
+- `PgCheckpointer.aping()` runs `SELECT 1`, raises `RuntimeError` naming both versions when the schema is older than expected, then pings Redis directly. It never changes the Redis circuit breaker state.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list. The rc3 notes follow.
+
+---
+
+## 10xgraph 1.0.0rc3
 
 The third 1.0 release candidate: the `1.0.0rc2` code plus a required connectivity check on memory stores, so `10xgraph-api` can verify the store at startup and in `/health/ready`.
 

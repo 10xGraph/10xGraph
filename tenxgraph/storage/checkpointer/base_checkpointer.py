@@ -1071,6 +1071,18 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         return run_coroutine(self.arelease())
 
     @abstractmethod
+    async def aping(self) -> None:
+        """Check that the checkpointer's backends are reachable and usable; raise when not.
+
+        Must be read-only (no writes, no table creation) and cheap, because a server may call
+        it on every readiness probe. An in-process checkpointer just returns.
+
+        Raises:
+            Exception: Any error that shows a backend cannot be reached or is not usable.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def arelease(self) -> Any | None:
         """
         Release resources asynchronously.

@@ -288,6 +288,8 @@ class TestBaseCheckpointerListCacheKeysDefault:
         class DummyCheckpointer(BaseCheckpointer):
             async def asetup(self):
                 pass
+            async def aping(self):
+                return None
             async def aput_state(self, config, state):
                 return state
             async def aget_state(self, config):

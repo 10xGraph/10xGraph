@@ -726,6 +726,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
     # -------------------------
     # Clean Resources
     # -------------------------
+    async def aping(self) -> None:
+        """Nothing to reach: the data lives in this process."""
+        return
+
     async def arelease(self) -> bool:
         """
         Release resources asynchronously.

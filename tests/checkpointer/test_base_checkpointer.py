@@ -7,6 +7,7 @@ from tenxgraph.utils.thread_info import ThreadInfo
 
 class DummyCheckpointer(BaseCheckpointer):
     async def asetup(self): pass
+    async def aping(self): return None
     async def aput_state(self, config, state): pass
     async def aget_state(self, config): pass
     async def aclear_state(self, config): pass
@@ -25,6 +26,7 @@ class DummyCheckpointer(BaseCheckpointer):
 
 class MinimalCheckpointer(BaseCheckpointer):
     async def asetup(self): pass
+    async def aping(self): return None
     async def aput_state(self, config, state): pass
     async def aget_state(self, config): pass
     async def aclear_state(self, config): pass

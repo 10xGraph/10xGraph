@@ -58,6 +58,9 @@ async def test_sqlite_ledger_survives_release(tmp_path):
 class NoLedgerCheckpointer(BaseCheckpointer):
     """Does not override the ledger methods."""
 
+    async def aping(self) -> None:  # pragma: no cover
+        return
+
     async def aput_state(self, config, state):  # pragma: no cover
         return state
 

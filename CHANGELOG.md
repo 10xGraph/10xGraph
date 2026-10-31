@@ -35,6 +35,19 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
+## [1.0.0rc4] - 2026-10-31
+
+The fourth release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc4. It is the
+`1.0.0rc3` code plus a required connectivity check on checkpointers.
+
+### Breaking
+
+- **`BaseCheckpointer.aping()` is now abstract.** A custom checkpointer must implement `async def aping(self) -> None`: return when its backends are reachable and usable, and raise when they are not (an in-process checkpointer just returns). Keep it read-only and cheap. A checkpointer without it raises `TypeError` when created.
+
+### Added
+
+- `InMemoryCheckpointer.aping()`, `SqliteCheckpointer.aping()` and `PgCheckpointer.aping()` check that the checkpointer is usable. `PgCheckpointer.aping()` runs `SELECT 1`, raises `RuntimeError` when the recorded schema version is below the expected one (the message names both), then pings Redis directly, so an outage is reported and the Redis circuit breaker is left unchanged.
+
 ## [1.0.0rc3] - 2026-10-30
 
 The third release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc3. It is the
