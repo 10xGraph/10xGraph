@@ -829,6 +829,19 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     # Release
     # ------------------------------------------------------------------
 
+    async def aping(self) -> None:
+        """Run ``SELECT 1`` on the database connection.
+
+        Read-only. Uses the shared connection, so it opens the database file if this
+        checkpointer has not yet; it creates no tables.
+
+        Raises:
+            Exception: When the database cannot be opened or queried.
+        """
+        conn = await self._get_conn()
+        async with conn.execute("SELECT 1") as cursor:
+            await cursor.fetchone()
+
     async def arelease(self) -> bool:
         if self._conn is not None:
             await self._conn.close()
