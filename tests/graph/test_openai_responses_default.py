@@ -80,11 +80,16 @@ def _client():
 
 def _api_error(status, message, param=None):
     """A real OpenAI SDK status error, as the client raises it."""
-    import httpx2
     import openai
 
-    request = httpx2.Request("POST", "http://localhost:8000/v1/responses")
-    response = httpx2.Response(status, request=request)
+    # openai 3.x runs on httpx2, 1.x/2.x on httpx; use whichever is installed.
+    try:
+        import httpx2 as httpx_mod
+    except ImportError:
+        import httpx as httpx_mod
+
+    request = httpx_mod.Request("POST", "http://localhost:8000/v1/responses")
+    response = httpx_mod.Response(status, request=request)
     cls = {
         400: openai.BadRequestError,
         404: openai.NotFoundError,
@@ -248,10 +253,14 @@ class TestFallbackOnlyOnUnsupported:
         assert agent._effective_api_style == "responses"
 
     async def test_timeout_raises_and_does_not_switch(self):
-        import httpx2
         import openai
 
-        timeout = openai.APITimeoutError(request=httpx2.Request("POST", "http://x/v1/responses"))
+        try:
+            import httpx2 as httpx_mod
+        except ImportError:
+            import httpx as httpx_mod
+
+        timeout = openai.APITimeoutError(request=httpx_mod.Request("POST", "http://x/v1/responses"))
         client = _client()
         client.responses.create = AsyncMock(side_effect=timeout)
         agent = _agent(client, api_style="responses", base_url="http://localhost:8000/v1")
