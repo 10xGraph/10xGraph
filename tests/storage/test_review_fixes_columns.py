@@ -175,7 +175,7 @@ class TestDdlSession:
 
     async def test_lock_timeout_becomes_setup_error_and_lock_is_released(self):
         conn = _Conn()
-        with pytest.raises(SetupLockTimeoutError, match="within 0.5s") as info:
+        with pytest.raises(SetupLockTimeoutError, match=r"within 0\.5s") as info:
             async with ddl_session(conn, lock_key=7, timeout=0.5, owner="PgVectorStore"):
                 raise _LockTimeout("canceling statement due to lock timeout")
         assert isinstance(info.value.__cause__, _LockTimeout)

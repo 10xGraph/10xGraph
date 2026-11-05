@@ -210,7 +210,9 @@ class TestStopKeys:
         cp.redis.setex = AsyncMock(return_value=True)
         cfg = _cfg()
         await cp.arequest_stop(cfg)
-        written = [c.args[0] for c in (*cp.redis.set.await_args_list, *cp.redis.setex.await_args_list)]
+        written = [
+            c.args[0] for c in (*cp.redis.set.await_args_list, *cp.redis.setex.await_args_list)
+        ]
         assert written and all("t1%3Aowner%3At%3Aorg_id%3DA" in key for key in written), written
         # One identity read per config, then the remembered identity is reused.
         await cp.ais_stop_requested(cfg)

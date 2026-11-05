@@ -16,6 +16,7 @@ Each test uses its own table and drops it after.
 # ruff: noqa: S608
 
 import asyncio
+import contextlib
 import math
 import os
 import time
@@ -25,7 +26,6 @@ import zlib
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.authz import build_authz
 from tenxgraph.storage.columns import SetupLockTimeoutError
 from tenxgraph.storage.store import PgVectorStore
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
@@ -93,8 +93,7 @@ def _cfg(user="alice", org="A"):
 
 
 async def _connect():
-    import asyncpg
-
+    asyncpg = pytest.importorskip("asyncpg")
     return await asyncpg.connect(POSTGRES_DSN)
 
 
@@ -119,7 +118,7 @@ async def _fill(pool, table, rows):
 class TestS2LiveTable:
     async def test_reads_go_on_while_tenant_columns_are_added(self, pool, table):
         await PgVectorStore(None, pool=pool, table=table).asetup()
-        await _fill(pool, table, 400_000)
+        await _fill(pool, table, 600_000)
         new = PgVectorStore(
             None,
             pool=pool,
@@ -128,6 +127,7 @@ class TestS2LiveTable:
         )
         reader = await _connect()
         try:
+            started = time.monotonic()
             setup = asyncio.create_task(new.asetup())
             latencies = []
             during = 0
@@ -145,12 +145,14 @@ class TestS2LiveTable:
                     during += 1
                 await asyncio.sleep(0.05)
             await setup
+            took = time.monotonic() - started
         finally:
             await reader.close()
         # Before the fix the whole setup held ACCESS EXCLUSIVE (ALTER TABLE + DROP INDEX +
-        # CREATE UNIQUE INDEX in one transaction): every read waited for the full rebuild.
+        # CREATE UNIQUE INDEX in one transaction): the first read waited for the full rebuild
+        # (about 0.9s of a 1.3s setup here). Now reads run while the indexes build.
         assert during >= 1, "setup finished before any read could run; make the table bigger"
-        assert max(latencies) < 1.0, latencies
+        assert max(latencies) < max(0.3, took * 0.25), (took, latencies)
         indexes = await _indexes(pool, table)
         assert all(valid for valid, _ in indexes.values()), indexes
 
@@ -158,9 +160,7 @@ class TestS2LiveTable:
         old = PgVectorStore(WordEmbedding(), pool=pool, table=table)
         await old.asetup()
         first = await old.astore({"user_id": "bob"}, "likes tea", memory_key="drink")
-        new = PgVectorStore(
-            WordEmbedding(), pool=pool, table=table, tenant_columns=["org_id"]
-        )
+        new = PgVectorStore(WordEmbedding(), pool=pool, table=table, tenant_columns=["org_id"])
         await new.asetup()
         # A process still on the previous version upserts on the old key index.
         assert await old.astore({"user_id": "bob"}, "likes green tea", memory_key="drink") == (
@@ -181,7 +181,7 @@ class TestS2LiveTable:
             tr = holder.transaction()
             await tr.start()
             await holder.execute(
-                f"INSERT INTO \"public\".\"{table}\" (id, collection, user_id, memory_type, "
+                f'INSERT INTO "public"."{table}" (id, collection, user_id, memory_type, '
                 "content) VALUES ('x', 'default', 'u', 'episodic', 'c')"
             )
             new = PgVectorStore(
@@ -214,7 +214,10 @@ class TestS2LiveTable:
             await conn.close()
         assert (await _indexes(pool, table))[f"{table}_c_org_id"][0] is False
         await PgVectorStore(
-            None, pool=pool, table=table, tenant_columns={"org_id": {"type": "text", "required": False}}
+            None,
+            pool=pool,
+            table=table,
+            tenant_columns={"org_id": {"type": "text", "required": False}},
         ).asetup()
         valid, definition = (await _indexes(pool, table))[f"{table}_c_org_id"]
         assert valid and "UNIQUE" not in definition and "(org_id)" in definition
@@ -231,10 +234,8 @@ class TestS2LiveTable:
         task = asyncio.create_task(new.asetup())
         await asyncio.sleep(0.4)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
         # The advisory lock is free again (the session lock went with the cancelled call).
         again = PgVectorStore(
             None,
@@ -270,7 +271,7 @@ class TestS3ColumnNames:
             pool=pool,
             table=table,
             tenant_columns=["org_id"],
-            extra_columns={name: "text" for name in names},
+            extra_columns=dict.fromkeys(names, "text"),
         )
         cfg = _cfg()
         cfg["user"].update({name: f"v_{name}" for name in names})
@@ -285,9 +286,7 @@ class TestS4UppercaseTable:
     async def test_setup_and_use(self, pool):
         name = f"Mem_{uuid.uuid4().hex[:8]}"
         try:
-            store = PgVectorStore(
-                WordEmbedding(), pool=pool, table=name, tenant_columns=["org_id"]
-            )
+            store = PgVectorStore(WordEmbedding(), pool=pool, table=name, tenant_columns=["org_id"])
             await store.asetup()
             mid = await store.astore(_cfg(), "apples", memory_key="k")
             assert [r.id for r in await store.asearch(_cfg(), "apples")] == [mid]
@@ -305,7 +304,7 @@ class TestS5ZeroVectors:
         good = await store.astore({"user_id": "u"}, "apples")
         # A zero vector stored before the fix (written directly).
         await pool.execute(
-            f"INSERT INTO \"public\".\"{table}\" (id, collection, user_id, memory_type, content, "
+            f'INSERT INTO "public"."{table}" (id, collection, user_id, memory_type, content, '
             "embedding) VALUES ('z', $1, 'u', 'episodic', 'zero', $2::text::vector)",
             store.collection,
             "[" + ",".join(["0"] * DIM) + "]",
@@ -339,7 +338,7 @@ class TestS6SetupDoesNotWait:
             tr = holder.transaction()
             await tr.start()
             await holder.execute(
-                f"INSERT INTO \"public\".\"{table}\" (id, collection, user_id, memory_type, "
+                f'INSERT INTO "public"."{table}" (id, collection, user_id, memory_type, '
                 "content, org_id) VALUES ('x', 'default', 'u', 'episodic', 'c', 'A')"
             )
             again = PgVectorStore(None, pool=pool, table=table, tenant_columns=["org_id"])

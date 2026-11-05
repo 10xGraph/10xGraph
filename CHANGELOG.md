@@ -37,6 +37,13 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Deprecated
+
+- `PgVectorStore.adrop_legacy_key_index()` and the legacy key index handling (setup keeps the
+  pre-tenant `<table>_key_uq` index next to the new `<table>_kuq_<hash>` index, and a keyed
+  write that hits it raises a `ValueError`) are transitional. They will be removed in the next
+  breaking release (1.5 or 2.0), after which setup replaces the old index directly.
+
 ### Breaking
 
 - `BaseStore.asearch` / `search`: `retrieval_strategy` and `distance_metric` now default to
@@ -157,6 +164,42 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
   caller's `"none"` scope (an admin) widened the knowledge-base search and a
   `store_config={"authz": ...}` was ignored. The knowledge-base scope now comes from
   `store_config` / `store_config_builder`, else the store default.
+- **Security:** `PgCheckpointer` with tenant columns no longer serves a deleted message from the
+  Redis state cache under a scope subset (for example `["user_id", "org_id"]` with tenant
+  columns `org_id`, `project_id`, or an org admin `["org_id"]`). `adelete_message` now moves the
+  thread's latest state row to a new version when it rewrites a state, so every cached copy of
+  the old state fails the version check, and a run still holding the old state gets
+  `StaleStateError` on its next save instead of writing the message back. With tenant columns
+  the state cache, stop and active-run keys are now the thread's identity (its row's `user_id`
+  and tenant values, read under the caller's scope), so every caller allowed to see a thread
+  shares one cache entry and one stop key: an org admin's stop reaches the run, and a clear or
+  delete by one caller drops the entry everyone reads. A hit is still served only after the
+  caller's scoped durable read. Without tenant columns the keys are unchanged.
+- `PgVectorStore`: declaring tenant columns on a table in use no longer blocks its reads. Setup
+  builds missing indexes of an existing table with `CREATE INDEX CONCURRENTLY` outside the
+  setup transaction, under a session-level advisory lock, and rebuilds an index left invalid by
+  a failed or cancelled build. The `memory_key` unique index with tenant columns is a new index
+  (`<table>_kuq_<hash>`); the old `<table>_key_uq` is kept so processes on the previous version
+  keep their keyed writes. New `PgVectorStore.adrop_legacy_key_index()` drops it once every
+  process runs the new version (rollout steps in the constructor docstring).
+- `PgVectorStore` and `PgCheckpointer`: setup reads the catalog first and runs no DDL for what
+  is in place, so a restart no longer waits behind open writes (`CREATE INDEX IF NOT EXISTS`
+  took a SHARE lock every time). The per-column indexes of tenant and extra columns are built
+  concurrently on an existing table, also by `PgCheckpointer`. New `ddl_lock_timeout` option on
+  both (default 10 seconds, `None` waits): a setup DDL statement that waits longer for a table
+  lock raises `tenxgraph.storage.columns.SetupLockTimeoutError`.
+- `PgVectorStore`: an extra column named `tsq` (or any name the search SQL uses, such as
+  `score`, `similarity`, `rnk`) no longer breaks `TEXT` / `HYBRID` search: every column in the
+  search SQL is qualified with a table alias.
+- `PgVectorStore`: an uppercase table name with declared columns no longer fails setup (index
+  names now follow the table-name rule).
+- `PgVectorStore`: a zero vector no longer gives a NaN cosine score that passes
+  `score_threshold`. Non-finite scores never pass a threshold; with the cosine metric a zero
+  vector raises `ValueError` on write and backfill, and a zero query vector falls back to
+  `TEXT` under `on_embedding_error="fallback"` (raises under `"raise"`).
+- Tenant and extra columns can no longer be named `authz`, `scope`, `scopes`, `role` or
+  `roles`: those keys of `config["user"]` carry authorization data (the API stamps `authz` and
+  reads the others), so a column with that name would store it.
 
 ### Removed
 

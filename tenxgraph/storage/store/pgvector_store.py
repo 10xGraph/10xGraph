@@ -841,6 +841,11 @@ class PgVectorStore(BaseStore):
         index for the current declaration exists, so keyed writes never lose their
         ``ON CONFLICT`` target. Returns ``[]`` when there is nothing to drop.
 
+        Deprecated: this method and the legacy key index handling (keeping the pre-tenant
+        ``<table>_key_uq`` index next to the new one) are transitional. They will be removed
+        in the next breaking release (1.5 or 2.0), after which setup replaces the old index
+        directly.
+
         Raises:
             RuntimeError: No valid key index matches the current declaration (run
                 ``asetup()`` first).

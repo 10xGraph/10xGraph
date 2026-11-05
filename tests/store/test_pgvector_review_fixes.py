@@ -24,14 +24,14 @@ TCFG = {"user_id": "u1", "user": {"user_id": "u1", "org_id": "A"}}
 def _unqualified(sql: str, name: str) -> bool:
     """Whether ``name`` appears as a column reference that is not ``alias.name``."""
     quoted = f'"{name}"'
-    return bool(re.search(rf'(?<![.\w]){re.escape(quoted)}', sql))
+    return bool(re.search(rf"(?<![.\w]){re.escape(quoted)}", sql))
 
 
 @pytest.mark.asyncio
 class TestQualifiedSearchSql:
     @pytest.mark.parametrize("strategy", ["similarity", "text", "hybrid"])
     async def test_declared_columns_never_unqualified(self, strategy):
-        extra = {name: "text" for name in SQL_NAMES}
+        extra = dict.fromkeys(SQL_NAMES, "text")
         store, conn, _ = _store(tenant_columns=["org_id"], extra_columns=extra)
         filters = {name: f"v_{name}" for name in ("tsq", "q", "score", "rnk")}
         await store.asearch(TCFG, "apples", retrieval_strategy=strategy, filters=filters)
@@ -177,8 +177,9 @@ class TestSetupSession:
         assert not any(s.startswith("DROP INDEX") for s in executed)
         built = [s for s in executed if s.startswith("CREATE UNIQUE INDEX CONCURRENTLY")]
         assert len(built) == 1 and f'"{t}_kuq_' in built[0]
-        assert '(collection, user_id, "org_id", memory_type, memory_key) NULLS NOT DISTINCT' in (
-            built[0]
+        assert (
+            '(collection, user_id, "org_id", memory_type, memory_key) NULLS NOT DISTINCT'
+            in (built[0])
         )
         assert any(s.startswith(f'CREATE INDEX CONCURRENTLY "{t}_c_org_id"') for s in executed)
         assert store._legacy_key_indexes == [f"{t}_key_uq"]
