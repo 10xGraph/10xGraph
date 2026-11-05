@@ -64,7 +64,6 @@ Use these repo-specific notes to be productive quickly when generating code, doc
 - `composio`, `langchain`: adapters for external tool registries via `ToolNode`.
 - `redis`, `kafka`, `rabbitmq`: Event publisher backends in `tenxgraph/runtime/publisher/`.
 - `qdrant`: Qdrant vector store for RAG patterns.
-- `mem0`: Mem0 long-term memory integration.
 
 ## Gotchas
 - Call `set_entry_point(...)` before `compile()` or you'll get `GraphError`.

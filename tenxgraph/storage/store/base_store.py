@@ -75,7 +75,7 @@ class BaseStore(ABC):
 
     This class provides a clean interface that supports:
     - Vector stores (Qdrant, Pinecone, Chroma, etc.)
-    - Managed memory services (mem0, Zep, etc.)
+    - Managed memory services (Zep, etc.)
     - Graph databases (Neo4j, etc.)
 
     Key Design Principles:
@@ -84,6 +84,10 @@ class BaseStore(ABC):
     - User and agent-centric operations
     - Extensible filtering and metadata
     """
+
+    #: True when ``astore(..., memory_key=key)`` is one atomic upsert on the key for the owner.
+    #: The memory layer then skips its search-then-update dedup for keyed writes.
+    supports_memory_key_upsert: bool = False
 
     def setup(self) -> Any:
         """
@@ -108,17 +112,29 @@ class BaseStore(ABC):
 
         Mirrors the checkpointer's isolation rule so one policy governs both:
 
-        - ``config["authz"].scope == "none"`` -> ``None`` (do not scope; see everything).
-        - otherwise (``"owner"`` or no policy) -> the given ``user_id`` (owner-only).
+        - ``config["authz"].scope == "none"``, or a column list without ``user_id`` ->
+          ``None`` (no user filter).
+        - otherwise (``"owner"``, a list with ``user_id``, or no policy) -> the given
+          ``user_id`` (owner-only).
 
         The safe default (no policy) keeps scoping by ``user_id`` -- memory is personal, so
         it stays isolated unless a developer explicitly runs ``allow_all``/``scope=none``.
         """
-        from tenxgraph.core.authz import SCOPE_NONE, isolation_scope
-
-        if isolation_scope(config) == SCOPE_NONE:
+        columns = self._isolation_columns(config)
+        if columns is not None and "user_id" not in columns:
             return None
         return user_id
+
+    def _isolation_columns(self, config: dict[str, Any]) -> tuple[str, ...] | None:
+        """The columns the request's authz scope picks, checked against this store's columns.
+
+        ``None`` when there is no policy. A scope list naming a tenant column this store does
+        not declare raises ``ValueError`` (a store without tenant columns accepts only
+        ``user_id`` in the list), so a scope is never silently weakened.
+        """
+        from tenxgraph.core.authz import isolation_columns
+
+        return isolation_columns(config, getattr(self, "tenant_column_names", ()))
 
     @staticmethod
     def _valid_user_id(user_id: Any) -> bool:
@@ -142,10 +158,9 @@ class BaseStore(ABC):
         if user_id is None:
             user_id = config.get("user_id")
         if not self._valid_user_id(user_id):
-            from tenxgraph.core.authz import SCOPE_NONE, isolation_scope
-
-            if isolation_scope(config) == SCOPE_NONE:
-                return None  # scope="none": deliberately no user filter
+            columns = self._isolation_columns(config)
+            if columns is not None and "user_id" not in columns:
+                return None  # scope="none" (or a list without user_id): no user filter
             raise ValueError(_USER_ID_REQUIRED)
         return self._scope_user_id(config, user_id)
 
@@ -240,8 +255,8 @@ class BaseStore(ABC):
         limit: int = 10,
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
-        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy | None = None,
+        distance_metric: DistanceMetric | None = None,
         max_tokens: int = 4000,
         **kwargs,
     ) -> list[MemorySearchResult]:
@@ -257,6 +272,8 @@ class BaseStore(ABC):
             limit: Maximum results
             score_threshold: Minimum similarity score
             filters: Additional filters
+            retrieval_strategy: Search strategy. ``None`` = use the store's configured default.
+            distance_metric: Distance metric. ``None`` = use the store's configured default.
             **kwargs: Store-specific parameters
 
         Returns:
@@ -273,8 +290,8 @@ class BaseStore(ABC):
         limit: int = 10,
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
-        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy | None = None,
+        distance_metric: DistanceMetric | None = None,
         max_tokens: int = 4000,
         **kwargs,
     ) -> list[MemorySearchResult]:

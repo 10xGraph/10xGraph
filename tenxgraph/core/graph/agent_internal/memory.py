@@ -141,6 +141,7 @@ class AgentMemoryMixin:
         from tenxgraph.prebuilt.tools.memory import (
             _memory_scope_config,
             _memory_scope_limit,
+            _memory_scope_retrieval_strategy,
             _memory_scope_score_threshold,
             _memory_scope_store,
         )
@@ -188,6 +189,7 @@ class AgentMemoryMixin:
                     category=scope_config.category,
                     limit=_memory_scope_limit(memory, scope_config, None),
                     score_threshold=_memory_scope_score_threshold(memory, scope_config),
+                    retrieval_strategy=_memory_scope_retrieval_strategy(memory, scope_config),
                     **({"max_tokens": memory.max_tokens} if memory.max_tokens else {}),
                 )
             except Exception:

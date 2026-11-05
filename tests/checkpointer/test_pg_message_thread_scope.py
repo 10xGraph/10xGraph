@@ -112,9 +112,10 @@ async def test_upgrade_from_v3_runs_the_message_key_migration(checkpointer):
 
 
 def test_migration_v5_drops_the_reasoning_column(checkpointer):
-    assert CURRENT_SCHEMA_VERSION == 5
+    assert CURRENT_SCHEMA_VERSION == 6
     migrations = checkpointer._build_migrations()
-    assert set(migrations) == {2, 3, 4, 5}
+    assert set(migrations) == {2, 3, 4, 5, 6}
+    assert migrations[6] == []  # no tenant/extra columns declared: v6 changes nothing
     (statement,) = migrations[5]
     assert "DROP COLUMN IF EXISTS reasoning" in statement
     assert '"messages"' in statement

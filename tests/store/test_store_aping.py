@@ -1,10 +1,9 @@
 """aping on the stores that talk to a backend: succeeds, raises, and has no side effects."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tenxgraph.storage.store.mem0_store import Mem0Store
 from tenxgraph.storage.store.qdrant_store import QdrantStore
 
 
@@ -41,32 +40,6 @@ async def test_qdrant_aping_raises_when_unreachable():
     with pytest.raises(ConnectionError):
         await store.aping()
     client.create_collection.assert_not_called()
-
-
-def _mem0(client):
-    with patch("tenxgraph.storage.store.mem0_store.HAS_MEM0", True):
-        store = Mem0Store(config={}, app_id="t")
-    store._client = client
-    return store
-
-
-@pytest.mark.asyncio
-async def test_mem0_aping_lists_collections_only():
-    client = MagicMock()
-    store = _mem0(client)
-    assert await store.aping() is None
-    client.vector_store.list_cols.assert_called_once()
-    client.add.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_mem0_aping_raises_when_unreachable():
-    client = MagicMock()
-    client.vector_store.list_cols.side_effect = ConnectionError("refused")
-    store = _mem0(client)
-    with pytest.raises(ConnectionError):
-        await store.aping()
-    client.add.assert_not_called()
 
 
 def test_base_store_subclass_without_aping_cannot_be_created():

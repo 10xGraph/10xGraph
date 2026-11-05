@@ -74,6 +74,27 @@ STATE_FORMAT_VERSION = 1
 _LEGACY_CLASS_PATH_KEY = "__class_path__"
 
 
+def _reject_filters(name: str, filters: object) -> None:
+    """Raise when ``filters`` is passed to a backend without declared columns."""
+    if filters:
+        from tenxgraph.storage.sql_filter import FilterError  # - avoids a cycle
+
+        raise FilterError(
+            f"{name} does not support thread filters: filters need declared columns, "
+            "which only PgCheckpointer has."
+        )
+
+
+def _reject_tenant_options(name: str, **options: object) -> None:
+    """Raise when a Postgres-only isolation option is passed to ``name``."""
+    given = sorted(key for key, value in options.items() if value)
+    if given:
+        raise ValueError(
+            f"{name} does not support {', '.join(given)}: tenant columns, extra columns and "
+            "row-level security need PgCheckpointer."
+        )
+
+
 class BaseCheckpointer[StateT: AgentState](ABC):
     """
     Abstract base class for checkpointing agent state, messages, and threads.
@@ -932,6 +953,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         search: str | None = None,
         offset: int | None = None,
         limit: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[ThreadInfo]:
         """
         List threads asynchronously with optional filtering.
@@ -941,6 +963,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             search (str, optional): Search string.
             offset (int, optional): Offset for pagination.
             limit (int, optional): Limit for pagination.
+            filters (dict, optional): Column filters (``tenxgraph.storage.sql_filter``).
+                Backends without declared columns raise ``FilterError`` when given any.
 
         Returns:
             list[ThreadInfo]: List of thread information objects.
@@ -982,20 +1006,39 @@ class BaseCheckpointer[StateT: AgentState](ABC):
 
         Driven by the trusted ``config["authz"]`` policy (see :mod:`tenxgraph.core.authz`):
 
-        - ``scope == "owner"`` -> isolate (when a ``user_id`` is present to scope by);
-        - ``scope == "none"``  -> do not isolate (allow_all / single-user);
+        - ``scope == "owner"``, or a column list with ``user_id`` -> isolate (when a
+          ``user_id`` is present to scope by);
+        - ``scope == "none"``, or a column list without ``user_id`` -> no user filter;
         - no policy (e.g. a direct SDK call with no API in front) -> fall back to this
           backend's own ``enforce_user_isolation`` setting (default off for backends that
           do not define one).
-        """
-        from tenxgraph.core.authz import SCOPE_NONE, SCOPE_OWNER, isolation_scope
 
-        scope = isolation_scope(config)
-        if scope == SCOPE_OWNER:
-            return bool(user_id)
-        if scope == SCOPE_NONE:
-            return False
-        return bool(getattr(self, "enforce_user_isolation", False) and user_id)
+        A column list naming a tenant column this backend does not declare raises
+        ``ValueError``. Tenant columns themselves are applied by backends that declare them
+        (``PgCheckpointer(tenant_columns=...)``).
+        """
+        columns = self._isolation_columns(config)
+        if columns is None:
+            return bool(getattr(self, "enforce_user_isolation", False) and user_id)
+        return "user_id" in columns and bool(user_id)
+
+    def _isolation_columns(self, config: dict[str, Any] | None) -> tuple[str, ...] | None:
+        """The columns the request's authz scope picks; ``None`` when there is no policy."""
+        from tenxgraph.core.authz import isolation_columns
+
+        return isolation_columns(config, getattr(self, "tenant_column_names", ()))
+
+    async def aget_thread_scope(self, thread_id: str | int) -> dict[str, Any] | None:
+        """Return the thread's isolation values (``user_id`` plus tenant columns), globally.
+
+        Like :meth:`aget_thread_owner`, this is not scoped to the caller: an authorization
+        layer uses it to decide whether a caller may act on the thread (the thread's values
+        must match the caller's on every column the caller's scope picks). Returns ``None``
+        when the thread does not exist. This default covers backends without tenant columns
+        (``{"user_id": owner}``); ``PgCheckpointer`` adds its tenant columns.
+        """
+        owner = await self.aget_thread_owner(thread_id)
+        return None if owner is None else {"user_id": owner}
 
     # -------------------------
     # Thread methods sync
@@ -1031,6 +1074,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         search: str | None = None,
         offset: int | None = None,
         limit: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[ThreadInfo]:
         """
         List threads synchronously with optional filtering.
@@ -1040,11 +1084,15 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             search (str, optional): Search string.
             offset (int, optional): Offset for pagination.
             limit (int, optional): Limit for pagination.
+            filters (dict, optional): Column filters (see ``alist_threads``).
 
         Returns:
             list[ThreadInfo]: List of thread information objects.
         """
-        return run_coroutine(self.alist_threads(config, search, offset, limit))
+        if filters is None:
+            # Custom subclasses written before ``filters`` existed keep working.
+            return run_coroutine(self.alist_threads(config, search, offset, limit))
+        return run_coroutine(self.alist_threads(config, search, offset, limit, filters=filters))
 
     def clean_thread(self, config: dict[str, Any]) -> Any | None:
         """

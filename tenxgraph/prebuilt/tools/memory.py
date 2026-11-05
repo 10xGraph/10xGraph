@@ -67,6 +67,13 @@ def _memory_scope_score_threshold(memory_config: Any, scope_config: Any) -> floa
     return memory_config.score_threshold
 
 
+def _memory_scope_retrieval_strategy(memory_config: Any, scope_config: Any) -> Any:
+    """Scope value wins over the MemoryConfig value; ``None`` = the store's default."""
+    if scope_config.retrieval_strategy is not None:
+        return scope_config.retrieval_strategy
+    return memory_config.retrieval_strategy
+
+
 def _memory_scope_config(
     runtime_config: dict[str, Any] | None,
     memory_config: Any,
@@ -129,6 +136,7 @@ async def _search_scope_memory(
     limit: int,
     score_threshold: float | None,
     task_manager: BackgroundTaskManager | None,
+    retrieval_strategy: Any = None,
 ) -> str:
     await _flush_pending_writes(task_manager)
     results = await store.asearch(
@@ -138,6 +146,7 @@ async def _search_scope_memory(
         category=category or config.get("category", "general"),
         limit=limit,
         score_threshold=score_threshold,
+        retrieval_strategy=retrieval_strategy,
     )
     return json.dumps(_format_search_results(results))
 
@@ -199,6 +208,7 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
                     limit=resolved_limit,
                     score_threshold=score_threshold,
                     task_manager=task_manager,
+                    retrieval_strategy=_memory_scope_retrieval_strategy(memory_config, user_config),
                 )
 
             metadata = _memory_tool_metadata("user")
@@ -273,6 +283,7 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
                 limit=_memory_scope_limit(memory_config, agent_config, limit),
                 score_threshold=_memory_scope_score_threshold(memory_config, agent_config),
                 task_manager=task_manager,
+                retrieval_strategy=_memory_scope_retrieval_strategy(memory_config, agent_config),
             )
         except Exception as e:
             logger.exception("agent_memory_tool error: %s", e)

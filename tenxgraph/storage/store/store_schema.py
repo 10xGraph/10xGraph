@@ -43,6 +43,7 @@ class RetrievalStrategy(StrEnum):
     TEMPORAL = "temporal"  # Time-based retrieval
     RELEVANCE = "relevance"  # Relevance scoring
     HYBRID = "hybrid"  # Combined approaches
+    TEXT = "text"  # Keyword / full-text search
     GRAPH_TRAVERSAL = "graph_traversal"  # Knowledge graph navigation
 
 

@@ -413,6 +413,92 @@ class TestRetrieveNode:
         assert store.asearch.call_args.kwargs["config"]["user_id"] == "__system__:knowledge_base"
 
     @pytest.mark.asyncio
+    async def test_user_forwarded_authz_not(self):
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(store=store, agent=_fake_agent())
+        user = {"user_id": "alice", "org_id": "o1"}
+        authz = {"scope": ["org_id"]}
+        await rag._make_retrieve_node()(
+            _state_with(_msg("q")), {**RUN, "user": user, "authz": authz}
+        )
+        sent = store.asearch.call_args.kwargs["config"]
+        assert sent["user"] == user
+        assert "authz" not in sent  # a caller scope never widens the knowledge-base search
+        assert sent["user_id"] == "__system__:knowledge_base"
+        assert "user" not in rag._store_config
+
+    @pytest.mark.asyncio
+    async def test_api_shape_caller_none_scope_does_not_widen(self):
+        """The API stamps authz inside config["user"]; it must not reach the KB search."""
+        from tenxgraph.core.authz import build_authz, get_authz, isolation_columns
+
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(store=store, agent=_fake_agent())
+        user = {"user_id": "admin", "org_id": "o1", "authz": build_authz("admin", scope="none")}
+        await rag._make_retrieve_node()(
+            _state_with(_msg("q")), {**RUN, "user": user, "user_id": "admin"}
+        )
+        sent = store.asearch.call_args.kwargs["config"]
+        assert sent["user"] == {"user_id": "admin", "org_id": "o1"}
+        assert get_authz(sent) is None  # store default applies, not the caller's "none"
+        assert isolation_columns(sent, ("org_id",)) is None
+        assert "authz" in user  # the caller's run config is not mutated
+
+    @pytest.mark.asyncio
+    async def test_api_shape_store_config_authz_applies(self):
+        """A developer's store_config["authz"] sets the KB scope even with an API-stamped user."""
+        from tenxgraph.core.authz import build_authz, get_authz, isolation_columns
+
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        kb_authz = build_authz(None, scope=["user_id"])
+        rag = RAGAgent(store=store, agent=_fake_agent(), store_config={"authz": kb_authz})
+        user = {"user_id": "alice", "org_id": "o1", "authz": build_authz("alice", scope="owner")}
+        await rag._make_retrieve_node()(
+            _state_with(_msg("q")), {**RUN, "user": user, "user_id": "alice"}
+        )
+        sent = store.asearch.call_args.kwargs["config"]
+        assert get_authz(sent)["scope"] == ["user_id"]
+        assert isolation_columns(sent, ("org_id",)) == ("user_id",)
+
+    @pytest.mark.asyncio
+    async def test_explicit_store_config_user_wins(self):
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(store=store, agent=_fake_agent(), store_config={"user": {"org_id": "kb"}})
+        await rag._make_retrieve_node()(
+            _state_with(_msg("q")), {**RUN, "user": {"org_id": "caller"}}
+        )
+        assert store.asearch.call_args.kwargs["config"]["user"] == {"org_id": "kb"}
+
+    @pytest.mark.asyncio
+    async def test_builder_user_wins_and_run_authz_ignored(self):
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(
+            store=store,
+            agent=_fake_agent(),
+            store_config_builder=lambda cfg: {"user_id": "u", "user": {"org_id": "b"}},
+        )
+        cfg = {**RUN, "user": {"org_id": "caller"}, "authz": {"scope": []}}
+        await rag._make_retrieve_node()(_state_with(_msg("q")), cfg)
+        sent = store.asearch.call_args.kwargs["config"]
+        assert sent["user"] == {"org_id": "b"}
+        assert "authz" not in sent
+
+    @pytest.mark.asyncio
+    async def test_nothing_forwarded_without_run_config_user(self):
+        store = FakeStore()
+        store.asearch = AsyncMock(return_value=[])
+        rag = RAGAgent(store=store, agent=_fake_agent())
+        await rag._make_retrieve_node()(_state_with(_msg("q")), {**RUN, "user_id": "alice"})
+        sent = store.asearch.call_args.kwargs["config"]
+        assert "user" not in sent
+        assert "authz" not in sent
+
+    @pytest.mark.asyncio
     async def test_store_config_builder_receives_run_config(self):
         store = FakeStore()
         store.asearch = AsyncMock(return_value=[])

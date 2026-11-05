@@ -37,7 +37,12 @@ from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.private_fs import mkdir_private, touch_private
 from tenxgraph.utils.thread_info import ThreadInfo
 
-from .base_checkpointer import BaseCheckpointer, validate_page
+from .base_checkpointer import (
+    BaseCheckpointer,
+    _reject_filters,
+    _reject_tenant_options,
+    validate_page,
+)
 
 
 try:
@@ -177,7 +182,21 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         await graph.ainvoke({"messages": [...]}, config={"thread_id": "t1"})
     """
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        tenant_columns: Any = None,
+        extra_columns: Any = None,
+        row_level_security: bool = False,
+    ) -> None:
+        # Tenant/extra columns and RLS need PgCheckpointer: fail loudly instead of ignoring.
+        _reject_tenant_options(
+            "SqliteCheckpointer",
+            tenant_columns=tenant_columns,
+            extra_columns=extra_columns,
+            row_level_security=row_level_security,
+        )
         if not HAS_AIOSQLITE:
             raise ImportError(
                 "SqliteCheckpointer requires 'aiosqlite'. "
@@ -737,7 +756,9 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         search: str | None = None,
         offset: int | None = None,
         limit: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[ThreadInfo]:
+        _reject_filters("SqliteCheckpointer", filters)
         start, limit = validate_page(offset, limit)
         await self._ensure_setup()
         user_id = config.get("user_id") if isinstance(config, dict) else None

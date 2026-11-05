@@ -1,8 +1,8 @@
-# Postgres (durable state) and Redis (hot-state cache) for postgres.py.
+# Postgres with pgvector (durable state, PgVectorStore) and Redis (hot-state cache).
 # Start: docker compose -f examples/persistence/docker-compose.yml up -d
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:0.8.7-pg16  # Postgres 16 with the pgvector extension
     environment:
       POSTGRES_USER: tenx
       POSTGRES_PASSWORD: tenx

@@ -1,6 +1,6 @@
 ---
-title: Long-Term Agent Memory with Qdrant and Mem0 in 10xGraph
-description: Give a 10xGraph Python agent long-term memory across sessions with MemoryConfig, a local Qdrant vector store or Mem0, user memory and shared agent memory.
+title: Long-Term Agent Memory with Qdrant in 10xGraph
+description: Give a 10xGraph Python agent long-term memory across sessions with MemoryConfig, a local Qdrant vector store, user memory and shared agent memory.
 section: Examples
 group: "Memory and knowledge"
 order: 150
@@ -19,7 +19,7 @@ faq:
 
 A Claude chat agent that remembers facts between conversations. In the first session a user says they are vegetarian and live in Lisbon. In a second session, on a new thread with the same `user_id`, the agent recalls both facts. A different user sees none of it.
 
-`qdrant_memory.py` uses a local Qdrant store, so no cloud account is needed. `mem0_memory.py` uses the same agent configuration with `Mem0Store`, where Mem0 extracts and deduplicates the facts.
+`qdrant_memory.py` uses a local Qdrant store, so no cloud account is needed.
 
 ## Key concepts
 
@@ -30,24 +30,21 @@ A Claude chat agent that remembers facts between conversations. In the first ses
 - `system_user_id(name)`: the reserved owner id (`__system__:<name>`) for shared data such as agent memory.
 - `create_local_qdrant_store(path, embedding)`: file-based Qdrant, no server.
 - `OpenAIEmbedding`: embeds memories with `text-embedding-3-small`.
-- `Mem0Store`: a store backed by Mem0, with its own LLM and embedder configuration.
 
 ## Prerequisites
 
 ```bash
-pip install "10xgraph[anthropic,openai,qdrant]"      # qdrant_memory.py
-pip install "10xgraph[anthropic,openai,qdrant,mem0]" # mem0_memory.py
+pip install "10xgraph[anthropic,openai,qdrant]"
 export ANTHROPIC_API_KEY=...   # chat model
-export OPENAI_API_KEY=...      # embeddings (and Mem0's LLM in mem0_memory.py)
+export OPENAI_API_KEY=...      # embeddings
 ```
 
-No Docker services are required. Both scripts store vectors in a temporary directory and delete it at the end.
+No Docker services are required. The script stores vectors in a temporary directory and delete it at the end.
 
 ## Run it
 
 ```bash
 python examples/long_term_memory/qdrant_memory.py
-python examples/long_term_memory/mem0_memory.py
 ```
 
 ## How it works
@@ -84,7 +81,7 @@ await app.ainvoke({"messages": [Message.text_message(text)]}, config)
 
 Writes happen in the background. The script calls `await app.aclose()` between sessions so they are flushed before session 2 searches.
 
-Agent memory is seeded by writing as `system_user_id("support-bot")`, which is the owner the agent memory tool searches. In `mem0_memory.py` the Mem0 config dict chooses Mem0's vector store, embedder and extraction LLM, independent of the Claude chat model. Set your own `app_id` on `Mem0Store`.
+Agent memory is seeded by writing as `system_user_id("support-bot")`, which is the owner the agent memory tool searches.
 
 ## Expected output
 
@@ -102,6 +99,20 @@ assistant: Refunds are available within 30 days of purchase.
 
 [bob/s3] user: What do you know about my diet?
 assistant: I don't have anything saved about your diet yet.
+```
+
+## Postgres and pgvector
+
+Two more scripts keep memory in the same Postgres as `PgCheckpointer`:
+
+- `pgvector_memory.py`: the same chat scenario on `PgVectorStore`. The store sets `retrieval_strategy=RetrievalStrategy.HYBRID` (vector and full-text search fused with RRF) and the agent memory scope overrides it with `SIMILARITY`. Needs `pip install "10xgraph[anthropic,openai,pgvector,pg_checkpoint]"`, the pgvector extension, and `POSTGRES_DSN`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`.
+- `multi_tenant_memory.py`: no LLM key. Declares `tenant_columns=["org_id"]` and `extra_columns={"public_id": "text", "plan": "text"}` on both `PgCheckpointer` and `PgVectorStore`. Two orgs reuse one `user_id` and stay isolated, and `alist_threads(config, filters={"plan": {"in": ["pro"]}})` narrows the listing by an extra column. Column values come only from `config["user"]`, which your trusted auth fills (here the script builds it). Never read them from request config, metadata, state or model output.
+
+```bash
+export POSTGRES_DSN=postgresql://tenx:tenx@localhost:5432/tenx
+export REDIS_URL=redis://localhost:6379/0
+python examples/long_term_memory/pgvector_memory.py
+python examples/long_term_memory/multi_tenant_memory.py
 ```
 
 ## Using a different model

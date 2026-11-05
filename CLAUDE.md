@@ -28,7 +28,7 @@ persistence, tools, memory, evaluation, and event publishing. Inspired by LangGr
 - **Surgical edits.** This is `Development Status :: 5 - Production/Stable`. Don't refactor
   module boundaries or rename exports without checking every `__init__.py` that re-exports them.
 - **Keep coverage green.** `pytest` enforces `--cov-fail-under=80`. New code needs tests.
-- **Optional deps are optional.** Provider SDKs, MCP, Postgres, Redis, Qdrant, Mem0, Kafka,
+- **Optional deps are optional.** Provider SDKs, MCP, Postgres, pgvector, Redis, Qdrant, Kafka,
   RabbitMQ, OTEL, a2a are all extras. Guard imports; never make core import a hard optional dep.
 
 ## Package layout (real, current)
@@ -38,7 +38,7 @@ The importable package is `tenxgraph/`. Top-level subpackages:
 | Subpackage | What lives there |
 |---|---|
 | `core/` | The engine. `graph/` (StateGraph, Agent, ToolNode, CompiledGraph, Node, Edge), `state/` (AgentState, Message, content blocks, reducers, context managers), `llm/` (provider detection + client factory + `call_llm`), `skills/` (dynamic skill injection), `exceptions/` |
-| `storage/` | `checkpointer/` (InMemory, Pg), `store/` (vector/long-term memory: Qdrant, Mem0, embeddings), `media/` (multimodal media processing, offload, resolvers, stores) |
+| `storage/` | `checkpointer/` (InMemory, Pg), `store/` (vector/long-term memory: PgVectorStore, Qdrant, embeddings), `columns.py` (tenant and extra columns), `sql_filter.py` (safe filters), `media/` (multimodal media processing, offload, resolvers, stores) |
 | `runtime/` | `adapters/llm/` (OpenAI / OpenAI-Responses / Google GenAI / Anthropic response converters), `publisher/` (Console, Redis, Kafka, RabbitMQ, OTEL, Composite), `protocols/` (a2a, acp) |
 | `prebuilt/` | `agent/` (React, RAG, PlanActReflect, SupervisorTeam, Swarm, StructuredOutput), `tools/` (calculator, fetch, files, handoff, memory, search) |
 | `qa/` | `evaluation/` (criteria, datasets, evaluator, reporters, simulators) and `testing/` (TestAgent, mocks, quick tests) |
@@ -68,7 +68,7 @@ from tenxgraph.core.skills import SkillConfig, SkillMeta, SkillsRegistry
 # Persistence
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer, BaseCheckpointer
 # Vector / long-term memory
-from tenxgraph.storage.store import QdrantStore, Mem0Store, MemoryConfig, AgentMemoryConfig
+from tenxgraph.storage.store import QdrantStore, MemoryConfig, AgentMemoryConfig
 
 # Publishers / converters
 from tenxgraph.runtime.publisher import ConsolePublisher, RedisPublisher, KafkaPublisher, RabbitMQPublisher
@@ -170,17 +170,34 @@ state lists merge.
 layer) for production; requires `[pg_checkpoint]`.
 
 **Memory / store.** 3-layer model: working state -> checkpointer (hot/durable) -> vector store
-(Qdrant/Mem0) for long-term. Memory is Agent-level only: `Agent(memory=MemoryConfig(...))` with
+(`PgVectorStore` in the same Postgres, or `QdrantStore`) for long-term. Memory is Agent-level only: `Agent(memory=MemoryConfig(...))` with
 `UserMemoryConfig` / `AgentMemoryConfig` registers `user_memory_tool` / `agent_memory_tool`
 (postload) or, in preload mode, searches once per graph invocation (cached per Agent under the
 run's `run_id`) and injects a fenced `<user_memories_xxx>` block into the latest user message of
 the request. The graph-level API (`MemoryIntegration`, `create_memory_preload_node`,
-`memory_tool`) was removed. Collection precedence: the scope's `collection` (name or function of the run config) always wins, then a `collection` in developer-built config, then the `QdrantStore` default (name or function). Every store operation needs a non-empty `user_id` (it raises
+`memory_tool`) was removed. Collection precedence: the scope's `collection` (name or function of the run config) always wins, then a `collection` in developer-built config, then the store default (`QdrantStore` / `PgVectorStore`, name or function). Every store operation needs a non-empty `user_id` (it raises
 otherwise; only authz `scope="none"` skips the read filter). Shared data (agent/app memory, RAG
 knowledge bases) is owned by a reserved `__system__` prefixed id from `system_user_id(name)`
 (`"__system__:<name>"`; `is_system_user_id()` tests for it). Agent memory uses the agent's
 `agent_id` (else `app_id`; `Agent` setup raises if agent memory is enabled with neither), RAG
 defaults to `system_user_id("knowledge_base")`, so shared data sets never mix.
+
+**PgVectorStore and tenant columns.** `PgVectorStore` (extra `pgvector`; Postgres 14+, pgvector
+extension 0.7.0+) keeps memories in one table with `SIMILARITY` / `TEXT` / `HYBRID` (RRF) search;
+`embedding=None` is a text-only store. Settings resolve store constructor -> `MemoryConfig` or
+scope `retrieval_strategy` -> `asearch` call. `on_embedding_error="fallback"` saves text without a
+vector and `abackfill_embeddings()` fills it later. `PgCheckpointer` and `PgVectorStore` share
+`tenant_columns` (isolation: `text bigint integer uuid`, required by default), `extra_columns`
+(data: any Postgres type, resolved on the server; filters on non-builtin types allow `is_null`
+only) and opt-in `row_level_security`, all in `storage/columns.py`. Values come only from
+`config["user"]` (set by the auth class), never from request config, metadata or state. The
+isolation scope in `config["authz"]["scope"]` is `"owner"`, `"none"` (`core.authz.Isolation`) or a
+list of columns (`isolation_columns()`); an unknown scope raises. `compile()` refuses a
+checkpointer and store with different tenant columns under `MODE=production`
+(`allow_tenant_mismatch=True` opts out). Client `filters` go through `storage/sql_filter.py`
+(`validate_filters`, bind parameters only, tenant columns rejected). `BaseCheckpointer.
+aget_thread_scope()` returns a thread's `user_id` plus tenant values. `RAGAgent` forwards only
+`config["user"]`, never `authz`. Guides: docs `guides/use-pgvector-store`, `guides/multi-tenant-data`.
 
 **Skills.** Implements the Agent Skills spec (agentskills.io): `SkillConfig(skills_dir=...)`
 discovers `<dir>/<name>/SKILL.md` skills. Two modes: `on-demand` (an `<available_skills>` catalog

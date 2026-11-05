@@ -89,6 +89,7 @@ class QdrantStore(BaseStore):
         api_key: str | None = None,
         collection: str | Callable[[dict[str, Any]], str] | None = None,
         distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
         **kwargs: Any,
     ):
         """
@@ -107,7 +108,9 @@ class QdrantStore(BaseStore):
                 authenticated identity (``config["user"]`` / ``config["user_id"]``), never
                 state. Precedence: scope ``collection`` (memory config), then a ``collection``
                 in the config, then this default.
-            distance_metric: Default distance metric
+            distance_metric: Distance metric of the collection (fixed at collection creation)
+            retrieval_strategy: Default search strategy when a call passes ``None``. Only
+                ``SIMILARITY`` is supported.
             **kwargs: Additional client parameters
         """
         if not HAS_QDRANT:
@@ -139,6 +142,8 @@ class QdrantStore(BaseStore):
 
         self.collection: str | Callable[[dict[str, Any]], str] = collection or DEFAULT_COLLECTION
         self._default_distance_metric = distance_metric
+        self._default_retrieval_strategy = RetrievalStrategy(retrieval_strategy)
+        self._check_strategy(self._default_retrieval_strategy)
 
         # A Qdrant URL can carry credentials, so the log shows it without them.
         shown_url = redact_url(url) if url else url
@@ -156,6 +161,14 @@ class QdrantStore(BaseStore):
             if isinstance(self.collection, str):
                 await self._ensure_collection_exists(self.collection)
         return True
+
+    @staticmethod
+    def _check_strategy(strategy: RetrievalStrategy) -> None:
+        if strategy != RetrievalStrategy.SIMILARITY:
+            raise ValueError(
+                f"retrieval_strategy {str(strategy)!r} is not supported by QdrantStore; "
+                "only 'similarity' is available."
+            )
 
     def _distance_metric_to_qdrant(self, metric: DistanceMetric):
         """Convert framework distance metric to Qdrant distance."""
@@ -483,8 +496,8 @@ class QdrantStore(BaseStore):
         limit: int = 10,
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
-        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy | None = None,
+        distance_metric: DistanceMetric | None = None,
         max_tokens: int = 4000,
         **kwargs,
     ) -> list[MemorySearchResult]:
@@ -493,6 +506,19 @@ class QdrantStore(BaseStore):
         Long-term memory is cross-thread — thread_id is intentionally excluded
         from the search filter so results span all conversations for the user.
         """
+        strategy = RetrievalStrategy(
+            retrieval_strategy
+            if retrieval_strategy is not None
+            else self._default_retrieval_strategy
+        )
+        self._check_strategy(strategy)
+        if distance_metric is not None and distance_metric != self._default_distance_metric:
+            raise ValueError(
+                f"distance_metric {str(distance_metric)!r} differs from the store's "
+                f"{str(self._default_distance_metric)!r}. A Qdrant collection's distance is "
+                "fixed at collection creation; set it on QdrantStore(distance_metric=...)."
+            )
+
         user_id, _thread_id, collection = self._extract_config_values(config)
         scoped_user_id = self._require_user_id(config, user_id)
 
