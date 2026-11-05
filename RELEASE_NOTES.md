@@ -39,6 +39,7 @@ Use it with `10xgraph-api` 1.0.0rc3. `10xgraph-client` stays at 1.0.0-rc.2 (no c
 ## What changed in rc3
 
 - `QdrantStore.aping()` lists collections (read-only, needs no collection to exist).
+- `Mem0Store.aping()` lists the collections of its vector store.
 - `InMemoryStore.aping()` returns at once.
 
 `10xgraph-api` 1.0.0rc3 calls `aping()` in its startup check and in `/health/ready`, so a stopped Qdrant is now reported instead of skipped.
@@ -80,10 +81,11 @@ If you are on `1.0.0rc1`, this section is all that is new. If you are coming fro
 - `LiveAgent.arun()` raises `RuntimeError` if the instance already runs a session. `arealtime()` now gives each connection its own copy; call `new_session()` if you run `arun()` yourself.
 - A stop request is saved as `StopRequestStatus.STOPPED`. Code that checks for `STOP_REQUESTED` after a stop must accept `STOPPED` too.
 - `Message.reasoning` is removed. Read the `ReasoningBlock`s in `Message.content`.
+- `mem0ai` is bounded to `>=2.0,<3`.
 
 **Postgres rollout.** `PgCheckpointer` schema migrations (v4 from 0.10.x, v5 drops `messages.reasoning`) cannot run alongside old pods. Do not roll pod by pod: stop all old pods, run the migration (one new pod, or `await checkpointer.asetup()`), then start the rest. The migration is not reversible; a rollback to 0.10.x needs a database restore.
 
-**Dependency minimums** (extras): `Pillow>=13.0.0` (`images`), `mcp>=1.30.0` (`mcp`), `opentelemetry-api` and `opentelemetry-sdk` `>=1.45.1` (`otel`, `langsmith`).
+**Dependency minimums** (extras): `Pillow>=13.0.0` (`images`), `mcp>=1.30.0` (`mcp`), `opentelemetry-api` and `opentelemetry-sdk` `>=1.45.1` (`otel`, `langsmith`), `mem0ai>=2.0,<3` (`mem0`).
 
 ## What changed in rc2
 
@@ -124,7 +126,7 @@ Everything below was the `1.0.0rc1` guidance and still applies when you jump fro
 - The old example folders and the `a2a_sdk` example are removed. Use the reorganised `examples/` folders.
 
 **Stores and memory**
-- Store operations with a missing or empty `user_id` now raise `ValueError` (`QdrantStore`).
+- Store operations with a missing or empty `user_id` now raise `ValueError` (`QdrantStore`, `Mem0Store`).
   - Pass a concrete `user_id`, or `system_user_id(name)` for shared data. Re-index records written with an empty owner.
   - `RAGAgent` searches as `system_user_id("knowledge_base")` unless `store_config` sets `user_id`. `store_config_builder` output must include `user_id`.
 - Agent memory is owned by `system_user_id(agent_id)` (or `app_id`), not the current user. `Agent(memory=...)` raises `ValueError` if agent memory is on with neither id. Re-store memories written under a user by the old behaviour.
@@ -132,7 +134,7 @@ Everything below was the `1.0.0rc1` guidance and still applies when you jump fro
 - `PRELOAD` memories are no longer a system message. They arrive as a fenced block in the latest user message of each request and are never saved to `state.context`. `Agent._build_memory_prompts` is replaced by `Agent._build_memory_block`; update prompts or tests that look for `[Long-term Memory Context]`.
 - `RAGAgent` puts retrieved documents in a request-only block and no longer rewrites `state.context`. `execution_meta.internal_data["rag_docs"]` and `_RAG_DOCS_KEY` are gone. A custom agent passed to `RAGAgent` must accept the keyword-only `request_blocks` argument on `execute`, or `RAGAgent` raises `TypeError`.
 - Skill and memory text is no longer run through `str.format`. Only your own `system_prompt` is interpolated, and a bad placeholder is logged instead of failing the run. Remove any reliance on `{placeholder}` expansion inside skill or memory text.
-- `QdrantStore.aforget_memory` applies `memory_type`, `category` and `filters`. The `qdrant` extra needs `qdrant-client>=1.10.0` and a Qdrant server 1.10 or newer.
+- `QdrantStore.aforget_memory` applies `memory_type`, `category` and `filters`. `Mem0Store.aforget_memory` raises `ValueError` if any of them is passed. The `qdrant` extra needs `qdrant-client>=1.10.0` and a Qdrant server 1.10 or newer.
 
 **Tools and handoffs**
 - Handoffs need a registered handoff tool. A `transfer_to_<X>` call only jumps if a tool made with `create_handoff_tool` is on that ToolNode. A `Command.goto` to an unknown node raises `GraphError` (`GRAPH_007`). `SwarmAgent` now enforces `can_handoff_to`.

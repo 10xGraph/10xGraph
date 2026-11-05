@@ -45,14 +45,113 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 - `QdrantStore.asearch` raises `ValueError` for a `retrieval_strategy` other than `SIMILARITY`
   (it was silently ignored) and for a `distance_metric` different from the store's (a Qdrant
   collection's distance is fixed when the collection is created).
+- `tenxgraph.core.authz.isolation_scope()` can now return a list (the list scope form). Code
+  that compares its result with `"owner"` / `"none"` should use `isolation_columns()`.
+- **Security:** an isolation scope that is present but not understood now raises
+  `ValueError` everywhere instead of silently weakening isolation. `build_authz(scope="owners")`
+  used to fall back to `"none"` (no isolation); `isolation_scope()` used to return `None` for an
+  unknown string or a non-string, non-list value, so storage applied its own default. Both
+  raise now, and so does every checkpointer and store call that reads such a scope. `None`
+  still means "no policy" only when there is no authz block or the block has no `scope` key.
+- Tenant columns (`tenant_columns=` on `PgCheckpointer` / `PgVectorStore`) accept only scalar
+  id types: `text`, `bigint`, `integer`, `uuid`. `boolean` and `timestamptz` tenant columns
+  now raise at construction.
 
 ### Added
+
+- `tenxgraph.core.authz.Isolation` (`StrEnum`: `OWNER = "owner"`, `NONE = "none"`), accepted
+  wherever a scope string is; `SCOPE_OWNER` / `SCOPE_NONE` are kept as aliases of its members.
+- Extra columns (`extra_columns=`) take any Postgres type (`jsonb`, `text[]`,
+  `numeric(10,2)`, `date`, `character varying(64)`, a custom enum, ...). A declared type gets a
+  syntax check (no quotes, semicolons, comments or non-numeric modifiers) and is resolved on
+  the server at setup with a parameterized `format_type(to_regtype($1), to_regtypemod($1))`;
+  only the canonical name the server returns reaches DDL, an unknown type fails setup, and an
+  existing column is compared by canonical name. Type modifiers need PostgreSQL 17. `json` /
+  `jsonb` values are serialised with `json.dumps` and cast in SQL; values of other new types go
+  to asyncpg as given, and a codec failure raises `ColumnValueError` naming the column and type
+  (never the value). The six built-in types keep their Python checks and filter operators;
+  filters on any other type allow only `is_null`.
 
 - `RetrievalStrategy.TEXT` (keyword / full-text search).
 - Search settings in three levels: store constructor (`QdrantStore(retrieval_strategy=...)`),
   then `MemoryConfig` / `UserMemoryConfig` / `AgentMemoryConfig` `retrieval_strategy` (scope
   wins), then the method call. Preload, the memory tools and `RAGAgent` pass it through;
   `RAGAgent(retrieval_strategy=None)` now uses the store default.
+- `PgVectorStore` (extra `pgvector`): long-term memory and RAG in Postgres with pgvector
+  (extension >= 0.7.0, Postgres 14+). One table with a schema version, an HNSW index for the
+  store's distance metric, a generated `tsvector` column and a unique `memory_key` index.
+  `SIMILARITY`, `TEXT` (`ts_rank`) and `HYBRID` (Reciprocal Rank Fusion) search; scores are
+  similarities, so `score_threshold` matches `QdrantStore`. Owner rules match `QdrantStore`;
+  overwriting another user's `memory_id` raises `PermissionError` in one statement. A
+  `memory_key` write is one atomic upsert (`BaseStore.supports_memory_key_upsert`), which the
+  memory layer uses instead of search-then-update. `on_embedding_error="fallback"` (default)
+  saves text without an embedding and searches by text when the embedding service fails;
+  `abackfill_embeddings()` fills the gaps. `embedding=None` gives a text-only store. A pool
+  passed in is never closed by `arelease()`.
+- Tenant and extra columns on `PgCheckpointer` and `PgVectorStore` (`tenant_columns=`,
+  `extra_columns=`, shared code in `tenxgraph.storage.columns`). Tenant columns (such as
+  `org_id`, `project_id`; types `text bigint integer uuid`) are real columns
+  with a B-tree index each, required by default (`{"type": ..., "required": False}` opts out);
+  extra columns are data, optional by default. Values come only from `config["user"]` (set by
+  your auth class), never from request config, metadata or state. Every store write saves them
+  and every read, update, delete, forget and search filters by the tenant columns the isolation
+  scope picks; on the checkpointer they are set when a thread is created, never changed, and
+  every thread, state, message and tool-ledger query filters through the thread row. A picked
+  column without a value raises. The Redis state cache key carries the caller's tenant values,
+  so a cache hit cannot cross tenants. `PgVectorStore`'s `memory_key` unique index includes the
+  tenant columns (`NULLS NOT DISTINCT` on Postgres 15+), so the same `user_id` in two tenants
+  keeps separate keyed memories. Nothing declared means no new columns and the same queries as
+  before. Schema: `PgCheckpointer` v6, `PgVectorStore` v2 (both add only declared columns;
+  rows written before hold NULL and are invisible to scopes that pick those columns until
+  backfilled).
+- The isolation scope (`config["authz"]["scope"]`) accepts a list of columns: any subset of
+  `user_id` and the backend's tenant columns, e.g. `["org_id"]` for an org admin. `"owner"`
+  means `["user_id", *tenant_columns]` and `"none"` means `[]`, as before. A list naming an
+  undeclared column raises. New `tenxgraph.core.authz.isolation_columns(config, tenant_columns)`;
+  `build_authz(scope=[...])` accepts lists and raises on malformed ones.
+- `InMemoryCheckpointer` and `SqliteCheckpointer` take keyword-only `tenant_columns`,
+  `extra_columns` and `row_level_security` that raise `ValueError` when set (they need
+  `PgCheckpointer`). A list isolation scope naming a tenant column raises on them and on
+  `QdrantStore`, which declare none.
+- `BaseCheckpointer.aget_thread_scope(thread_id)` (global, like `aget_thread_owner`): the
+  thread's `user_id` plus tenant values, for authorization layers.
+- Opt-in native Postgres row-level security (`row_level_security=True`, needs tenant columns)
+  on both backends: `ENABLE` + `FORCE ROW LEVEL SECURITY`, policies on the tenant columns
+  against `current_setting('tenxgraph.<col>', true)` (checkpointer child tables follow their
+  thread), values set per call with `set_config(..., true)` in a transaction. Costs one
+  transaction per call; superuser and `BYPASSRLS` roles skip it (setup logs a warning).
+- `compile()` checks that the checkpointer and the store declare the same tenant columns:
+  `MODE=production` raises `GraphError` (`GRAPH_TENANT_001`), other modes log a warning.
+- `PgVectorStore` sets `hnsw.iterative_scan = strict_order` for vector searches on pgvector
+  0.8+, so a filtered search still returns up to `limit` rows.
+- Safe filters on declared columns (`tenxgraph.storage.sql_filter`): `{"col": value}` or
+  `{"col": {"op": value, ...}}`, compiled to a WHERE fragment where every value is a bind
+  parameter and only allow-listed, quoted column names reach the SQL. Operators per type: text
+  `eq ne in nin like ilike is_null`; integer, bigint, timestamptz
+  `eq ne gt gte lt lte in nin is_null`; boolean, uuid `eq ne in nin is_null`. `ne` is
+  `IS DISTINCT FROM` and `nin` keeps NULL rows (add `{"is_null": false}` to drop them).
+  Filterable: built-ins (`thread_name`, `created_at`, `updated_at` on threads; `memory_type`,
+  `category`, `thread_id`, `memory_key`, `created_at`, `updated_at` on memories) and declared
+  extra columns. Tenant columns and `user_id` are rejected. Limits: 10 conditions, 100 items per
+  `in`/`nin` (non-empty), 256 characters per string. Filters are ANDed after the isolation
+  WHERE, so they can only narrow it. Errors raise `FilterError` (a `ValueError`) with messages
+  safe to return to API clients. `validate_filters(filters, schema)` checks a request without a
+  database; each backend exposes its schema as `filter_schema`.
+- `PgCheckpointer.alist_threads(config, search=None, offset=None, limit=None, filters=None)`.
+  `BaseCheckpointer.alist_threads` / `list_threads` take `filters`; `InMemoryCheckpointer` and
+  `SqliteCheckpointer` raise `FilterError` for non-empty `filters` (no declared columns). Custom
+  checkpointers whose `alist_threads` has no `filters` parameter keep working with
+  `list_threads` when no filters are passed.
+- `PgVectorStore` `filters` (in `asearch`, all three strategies, `aforget_memory` and now
+  `aget_all`) take the operators above on filterable columns; other keys still match top-level
+  JSONB metadata keys exactly. Changed for keys that are columns: a declared extra column now
+  matches its column instead of metadata, a tenant column or `user_id` raises, text columns
+  take only `str` or `int` values, and at most 10 conditions (metadata keys included) are
+  allowed.
+
+### Removed
+
+- `Mem0Store` and the `mem0` extra are removed.
 
 ## [1.0.0rc4] - 2026-10-31
 

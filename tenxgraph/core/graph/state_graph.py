@@ -19,6 +19,7 @@ from .base_agent import BaseAgent
 from .edge import Edge
 from .node import Node
 from .tool_node import ToolNode
+from .utils.tenant_check import check_tenant_columns
 
 
 if TYPE_CHECKING:
@@ -419,7 +420,7 @@ class StateGraph[StateT: AgentState]:
         logger.debug("Overrode node '%s' with new function", name)
         return self
 
-    def compile(
+    def compile(  # noqa: PLR0913
         self,
         checkpointer: BaseCheckpointer[StateT] | None = None,
         store: BaseStore | None = None,
@@ -431,6 +432,8 @@ class StateGraph[StateT: AgentState]:
         media_policy: "MediaFetchPolicy | None" = None,
         owns_resources: bool = True,
         node_aliases: dict[str, str] | None = None,
+        *,
+        allow_tenant_mismatch: bool = False,
     ) -> "CompiledGraph[StateT]":
         """Compile the graph for execution.
 
@@ -453,6 +456,13 @@ class StateGraph[StateT: AgentState]:
                 deploy renamed or removed. A thread stored at ``old_name`` resumes at
                 ``new_name``. Without an alias, such a thread fails with
                 ``StoredNodeMissingError`` naming the node and the thread.
+            allow_tenant_mismatch: Keyword-only. By default ``compile()`` raises
+                ``GraphError`` ``GRAPH_TENANT_001`` under ``MODE=production`` (and warns
+                otherwise) when the checkpointer and the store declare different tenant
+                columns. Pass ``True`` to allow it on purpose: it never raises and logs the
+                mismatch once at INFO level. Use it when the store holds only shared data
+                (for example a RAG knowledge base), so tenant isolation of memories is not
+                needed.
         """
         logger.info(
             "Compiling graph with %d nodes, %d edges, entry_point='%s'",
@@ -528,6 +538,8 @@ class StateGraph[StateT: AgentState]:
 
         # Stored rows hold data only; the checkpointer rebuilds them into this class.
         checkpointer.bind_state_type(type(self._state))
+
+        check_tenant_columns(checkpointer, store, allow_mismatch=allow_tenant_mismatch)
 
         # Import the CompiledGraph class
         from .compiled_graph import CompiledGraph

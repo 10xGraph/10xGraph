@@ -11,7 +11,12 @@ from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.thread_info import ThreadInfo
 
-from .base_checkpointer import BaseCheckpointer, validate_page
+from .base_checkpointer import (
+    BaseCheckpointer,
+    _reject_filters,
+    _reject_tenant_options,
+    validate_page,
+)
 
 
 if TYPE_CHECKING:
@@ -44,10 +49,25 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         _threads_lock (asyncio.Lock): Lock for thread operations.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        tenant_columns: Any = None,
+        extra_columns: Any = None,
+        row_level_security: bool = False,
+    ):
         """
         Initialize all in-memory storage and locks.
+
+        ``tenant_columns``, ``extra_columns`` and ``row_level_security`` exist only to fail
+        loudly: they need ``PgCheckpointer``, and passing any of them raises ``ValueError``.
         """
+        _reject_tenant_options(
+            "InMemoryCheckpointer",
+            tenant_columns=tenant_columns,
+            extra_columns=extra_columns,
+            row_level_security=row_level_security,
+        )
         # State storage
         self._states: dict[str, StateT] = {}
         self._state_cache: dict[str, StateT] = {}
@@ -630,6 +650,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         search: str | None = None,
         offset: int | None = None,
         limit: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[ThreadInfo]:
         """
         List all threads asynchronously with optional filtering.
@@ -639,10 +660,13 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             search (str, optional): Search string.
             offset (int, optional): Offset for pagination.
             limit (int, optional): Limit for pagination.
+            filters (dict, optional): Not supported here (no declared columns); a non-empty
+                value raises ``FilterError``.
 
         Returns:
             list[ThreadInfo]: List of thread information objects.
         """
+        _reject_filters("InMemoryCheckpointer", filters)
         start, limit = validate_page(offset, limit)
         end = (start + limit) if limit else None
         user_id = config.get("user_id") if isinstance(config, dict) else None
@@ -715,9 +739,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         search: str | None = None,
         offset: int | None = None,
         limit: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[ThreadInfo]:
         """List all threads synchronously with optional filtering."""
-        return run_coroutine(self.alist_threads(config, search, offset, limit))
+        return run_coroutine(self.alist_threads(config, search, offset, limit, filters))
 
     def clean_thread(self, config: dict[str, Any]) -> bool:
         """Clean/delete thread synchronously."""

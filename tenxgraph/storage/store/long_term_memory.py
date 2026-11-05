@@ -171,7 +171,7 @@ async def _find_duplicate_by_similarity(
         return None
 
 
-async def _do_write(
+async def _do_write(  # noqa: PLR0911
     store: BaseStore,
     config: dict[str, Any],
     action: str,
@@ -186,6 +186,8 @@ async def _do_write(
 
     For ``action="store"`` an automatic **deduplication** check runs first:
 
+    0. If ``memory_key`` is present and the store sets ``supports_memory_key_upsert``,
+       ``astore(..., memory_key=key)`` upserts on the key in one statement and nothing else runs.
     1. If ``memory_key`` is present in *metadata*, look for an existing
        memory with the same key (exact metadata filter).  If found →
        **update** the existing record.
@@ -198,6 +200,18 @@ async def _do_write(
 
     if action == "store":
         memory_key = (metadata or {}).get("memory_key", "")
+
+        # --- Strategy 0: the store upserts on the key atomically (no search-then-update race) ---
+        if memory_key and getattr(store, "supports_memory_key_upsert", False) is True:
+            mid = await store.astore(
+                cfg,
+                content,
+                memory_type=mem_type,
+                category=category,
+                metadata=metadata,
+                memory_key=memory_key,
+            )
+            return {"status": "upserted_by_key", "memory_id": str(mid), "memory_key": memory_key}
 
         # --- Strategy 1: key-based dedup (reliable for topic changes) ---
         if memory_key:

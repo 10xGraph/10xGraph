@@ -113,6 +113,16 @@ _RETRIEVE_NODE = "RETRIEVE"
 _RERANK_NODE = "RERANK"
 _SYNTHESIZE_NODE = "SYNTHESIZE"
 
+# Reserved run-config keys (set by the auth layer) forwarded into the knowledge-base search
+# config so a store with tenant columns scopes the search to the caller.
+# The caller's scope is NOT forwarded. It lives in two places: a top-level "authz" (core-only
+# use) and config["user"]["authz"] (where the API stamps it, and where core get_authz looks
+# first). The forwarded "user" is a shallow copy without its "authz" key, so a caller's "none"
+# scope (for example an admin view) cannot widen the knowledge-base search, and the scope comes
+# from "authz" in store_config / the builder output, or the store default.
+_FORWARDED_RUN_CONFIG_KEYS = ("user",)
+_CALLER_SCOPE_KEY = "authz"
+
 
 # ---------------------------------------------------------------------------
 # Reranker protocol + built-in implementations
@@ -314,6 +324,22 @@ class RAGAgent[StateT: AgentState]:
             Take identity from the authenticated run config, never from state or
             client-chosen fields.
 
+    Tenant stores: when the run config has ``"user"``, it is forwarded into the config passed
+    to ``store.asearch`` unless ``store_config`` or the builder output already sets it, so a
+    store with tenant columns (``PgVectorStore``) scopes knowledge-base searches to the
+    caller's tenant. It is read only from the run config (set by the auth layer), never from
+    state, messages or model output. The caller's scope is never forwarded: neither a
+    top-level ``"authz"`` nor the ``"authz"`` the API stamps inside ``config["user"]`` (the
+    forwarded ``"user"`` is a copy without that key). So a caller's ``"none"`` scope cannot
+    widen the knowledge-base search. Set ``"authz"`` in ``store_config`` or the builder output
+    to choose the knowledge-base scope; without one the store applies its default.
+
+    * Documents written with tenant values are visible only inside that tenant.
+    * Documents shared across tenants need either a scope that does not pick the tenant
+      columns (a ``config["authz"]`` scope list) or a store without tenant columns. In the
+      second case compile with ``allow_tenant_mismatch=True`` when the checkpointer declares
+      tenant columns.
+
     Graph infra params (forwarded to :class:`StateGraph`):
         state, context_manager, publisher, id_generator, container
     """
@@ -402,6 +428,18 @@ class RAGAgent[StateT: AgentState]:
             store_config = self._store_config_builder(config)
         else:
             store_config = {"user_id": system_user_id("knowledge_base"), **self._store_config}
+        # Tenant values are read from config["user"] only (set by the auth layer). Forward the
+        # caller's "user" from the run config, never from state or model output,
+        # unless the developer's store config already sets them. Drop the caller's "authz"
+        # from the copy: core get_authz reads config["user"]["authz"] first, so leaving it
+        # would apply the caller's scope and hide store_config["authz"].
+        store_config = dict(store_config)
+        for key in _FORWARDED_RUN_CONFIG_KEYS:
+            if key in config and key not in store_config:
+                value = config[key]
+                if isinstance(value, dict) and _CALLER_SCOPE_KEY in value:
+                    value = {k: v for k, v in value.items() if k != _CALLER_SCOPE_KEY}
+                store_config[key] = value
         logger.debug("RAGAgent RETRIEVE: query=%r top_k=%d", query, self._top_k)
         results = await self._store.asearch(
             config=store_config,

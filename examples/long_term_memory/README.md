@@ -101,6 +101,20 @@ assistant: Refunds are available within 30 days of purchase.
 assistant: I don't have anything saved about your diet yet.
 ```
 
+## Postgres and pgvector
+
+Two more scripts keep memory in the same Postgres as `PgCheckpointer`:
+
+- `pgvector_memory.py`: the same chat scenario on `PgVectorStore`. The store sets `retrieval_strategy=RetrievalStrategy.HYBRID` (vector and full-text search fused with RRF) and the agent memory scope overrides it with `SIMILARITY`. Needs `pip install "10xgraph[anthropic,openai,pgvector,pg_checkpoint]"`, the pgvector extension, and `POSTGRES_DSN`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`.
+- `multi_tenant_memory.py`: no LLM key. Declares `tenant_columns=["org_id"]` and `extra_columns={"public_id": "text", "plan": "text"}` on both `PgCheckpointer` and `PgVectorStore`. Two orgs reuse one `user_id` and stay isolated, and `alist_threads(config, filters={"plan": {"in": ["pro"]}})` narrows the listing by an extra column. Column values come only from `config["user"]`, which your trusted auth fills (here the script builds it). Never read them from request config, metadata, state or model output.
+
+```bash
+export POSTGRES_DSN=postgresql://tenx:tenx@localhost:5432/tenx
+export REDIS_URL=redis://localhost:6379/0
+python examples/long_term_memory/pgvector_memory.py
+python examples/long_term_memory/multi_tenant_memory.py
+```
+
 ## Using a different model
 
 Change the model string, for example `ReactAgent(model="gpt-5-mini", ...)` with `pip install "10xgraph[openai,qdrant]"`, or `model="gemini-2.5-flash"` with the `google-genai` extra. To embed with Google instead, swap `OpenAIEmbedding` for `GoogleEmbedding`. The memory configuration does not change.

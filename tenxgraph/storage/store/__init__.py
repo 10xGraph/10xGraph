@@ -10,6 +10,7 @@ from .long_term_memory import (
     get_agent_memory_system_prompt,
 )
 from .memory_config import AgentMemoryConfig, MemoryConfig, UserMemoryConfig
+from .pgvector_store import PgVectorStore
 from .qdrant_store import (
     DEFAULT_COLLECTION,
     QdrantStore,
@@ -48,6 +49,7 @@ __all__ = [
     "MemorySearchResult",
     "MemoryType",
     "OpenAIEmbedding",
+    "PgVectorStore",
     "QdrantStore",
     "SYSTEM_USER_PREFIX",
     "is_system_user_id",

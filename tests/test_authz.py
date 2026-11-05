@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tenxgraph.core.authz import (
     CHECKPOINT_READ,
     GRAPH_INVOKE,
@@ -19,8 +21,9 @@ def test_build_authz_shape():
     assert a == {"user_id": "u1", "scope": "owner", "scopes": ["checkpointer:read"]}
 
 
-def test_build_authz_bad_scope_falls_back_to_none():
-    assert build_authz("u1", scope="bogus")["scope"] == SCOPE_NONE
+def test_build_authz_unknown_scope_raises():
+    with pytest.raises(ValueError, match="Unknown isolation scope 'bogus'"):
+        build_authz("u1", scope="bogus")
 
 
 def test_isolation_scope_reads_block():
@@ -32,8 +35,13 @@ def test_isolation_scope_reads_block():
 
 def test_isolation_scope_absent_is_none():
     assert isolation_scope({}) is None
-    assert isolation_scope({"authz": {"scope": "weird"}}) is None
+    assert isolation_scope({"authz": {"user_id": "u1"}}) is None  # no scope key
     assert isolation_scope(None) is None
+
+
+def test_isolation_scope_unknown_value_raises():
+    with pytest.raises(ValueError, match="Unknown isolation scope 'weird'"):
+        isolation_scope({"authz": {"scope": "weird"}})
 
 
 def test_has_scope():
