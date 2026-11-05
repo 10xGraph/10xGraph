@@ -15,7 +15,6 @@ from tenxgraph.storage.store import (
     system_user_id,
 )
 from tenxgraph.storage.store.base_store import BaseStore
-from tenxgraph.storage.store.mem0_store import Mem0Store
 from tenxgraph.storage.store.qdrant_store import QdrantStore
 
 
@@ -109,15 +108,6 @@ async def test_qdrant_system_user_can_write_and_forget(qdrant, client):
     await qdrant.aforget_memory({"user_id": "alice", "thread_id": "t1"})
     flt = client.delete.call_args.kwargs["points_selector"].filter
     assert {c.key for c in flt.must} == {"user_id", "thread_id"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("config", BAD_CONFIGS)
-async def test_mem0_raises_without_user_id(config):
-    store = Mem0Store(config={}, app_id="app")
-    for op in ("astore", "asearch", "aget", "aget_all", "adelete", "aforget_memory"):
-        with pytest.raises(ValueError, match="user_id is required"):
-            await _calls(store)[op](config)
 
 
 def test_system_user_id_exports():

@@ -86,7 +86,7 @@ from tenxgraph.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer
 
 ## Optional dependencies
 
-Provider SDKs (OpenAI, Google GenAI), MCP, Postgres, Redis, Qdrant, Mem0, Kafka,
+Provider SDKs (OpenAI, Google GenAI), MCP, Postgres, Redis, Qdrant, Kafka,
 RabbitMQ, OTEL, and a2a are all **extras**. Guard their imports inside the
 functions that need them so the core package never hard-imports an optional
 dependency. See `tenxgraph/core/llm/client_factory.py` for the pattern.

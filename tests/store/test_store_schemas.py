@@ -63,7 +63,7 @@ class TestEnums:
         
         # Test that all expected values are present
         expected_values = {
-            "similarity", "temporal", "relevance", "hybrid", "graph_traversal"
+            "similarity", "temporal", "relevance", "hybrid", "text", "graph_traversal"
         }
         actual_values = {strategy.value for strategy in RetrievalStrategy}
         assert actual_values == expected_values

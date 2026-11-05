@@ -75,7 +75,7 @@ class BaseStore(ABC):
 
     This class provides a clean interface that supports:
     - Vector stores (Qdrant, Pinecone, Chroma, etc.)
-    - Managed memory services (mem0, Zep, etc.)
+    - Managed memory services (Zep, etc.)
     - Graph databases (Neo4j, etc.)
 
     Key Design Principles:
@@ -240,8 +240,8 @@ class BaseStore(ABC):
         limit: int = 10,
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
-        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy | None = None,
+        distance_metric: DistanceMetric | None = None,
         max_tokens: int = 4000,
         **kwargs,
     ) -> list[MemorySearchResult]:
@@ -257,6 +257,8 @@ class BaseStore(ABC):
             limit: Maximum results
             score_threshold: Minimum similarity score
             filters: Additional filters
+            retrieval_strategy: Search strategy. ``None`` = use the store's configured default.
+            distance_metric: Distance metric. ``None`` = use the store's configured default.
             **kwargs: Store-specific parameters
 
         Returns:
@@ -273,8 +275,8 @@ class BaseStore(ABC):
         limit: int = 10,
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
-        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy | None = None,
+        distance_metric: DistanceMetric | None = None,
         max_tokens: int = 4000,
         **kwargs,
     ) -> list[MemorySearchResult]:

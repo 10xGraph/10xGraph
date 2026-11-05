@@ -64,7 +64,7 @@ Run every example from the repository root. Each folder's README lists its extra
 
 | Example | What it shows |
 |---|---|
-| [long_term_memory](long_term_memory/) | Per-user memory with `MemoryConfig` on Qdrant or Mem0 |
+| [long_term_memory](long_term_memory/) | Per-user memory with `MemoryConfig` on Qdrant |
 | [rag](rag/) | `RAGAgent` with retrieval and optional reranking |
 
 ### Agent patterns

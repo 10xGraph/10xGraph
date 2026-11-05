@@ -9,11 +9,6 @@ from .long_term_memory import (
     ReadMode,
     get_agent_memory_system_prompt,
 )
-from .mem0_store import (
-    Mem0Store,
-    create_mem0_store,
-    create_mem0_store_with_qdrant,
-)
 from .memory_config import AgentMemoryConfig, MemoryConfig, UserMemoryConfig
 from .qdrant_store import (
     DEFAULT_COLLECTION,
@@ -48,7 +43,6 @@ __all__ = [
     "DEFAULT_COLLECTION",
     "DistanceMetric",
     "GoogleEmbedding",
-    "Mem0Store",
     "MemoryConfig",
     "MemoryRecord",
     "MemorySearchResult",
@@ -63,8 +57,6 @@ __all__ = [
     "AgentMemoryConfig",
     "create_cloud_qdrant_store",
     "create_local_qdrant_store",
-    "create_mem0_store",
-    "create_mem0_store_with_qdrant",
     "create_remote_qdrant_store",
     "get_agent_memory_system_prompt",
     "make_agent_memory_tool",

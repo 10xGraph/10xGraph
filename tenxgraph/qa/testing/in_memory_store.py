@@ -124,8 +124,8 @@ class InMemoryStore(BaseStore):
         limit: int = 10,
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
-        distance_metric: DistanceMetric = DistanceMetric.COSINE,
+        retrieval_strategy: RetrievalStrategy | None = None,
+        distance_metric: DistanceMetric | None = None,
         max_tokens: int = 4000,
         **kwargs: Any,
     ) -> list[MemorySearchResult]:
@@ -143,8 +143,8 @@ class InMemoryStore(BaseStore):
             limit: Maximum results to return
             score_threshold: Minimum score threshold (not used in simple search)
             filters: Additional filters (not used in simple search)
-            retrieval_strategy: Strategy (not used in simple search)
-            distance_metric: Distance metric (not used in simple search)
+            retrieval_strategy: Strategy, None = store default (not used in simple search)
+            distance_metric: Metric, None = store default (not used in simple search)
             max_tokens: Max tokens (not used in simple search)
             **kwargs: Additional parameters
 

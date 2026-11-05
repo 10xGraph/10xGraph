@@ -35,6 +35,25 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
+## [Unreleased]
+
+### Breaking
+
+- `BaseStore.asearch` / `search`: `retrieval_strategy` and `distance_metric` now default to
+  `None`, meaning "use the store's configured default". A custom store must accept `None` for
+  both arguments.
+- `QdrantStore.asearch` raises `ValueError` for a `retrieval_strategy` other than `SIMILARITY`
+  (it was silently ignored) and for a `distance_metric` different from the store's (a Qdrant
+  collection's distance is fixed when the collection is created).
+
+### Added
+
+- `RetrievalStrategy.TEXT` (keyword / full-text search).
+- Search settings in three levels: store constructor (`QdrantStore(retrieval_strategy=...)`),
+  then `MemoryConfig` / `UserMemoryConfig` / `AgentMemoryConfig` `retrieval_strategy` (scope
+  wins), then the method call. Preload, the memory tools and `RAGAgent` pass it through;
+  `RAGAgent(retrieval_strategy=None)` now uses the store default.
+
 ## [1.0.0rc4] - 2026-10-31
 
 The fourth release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc4. It is the

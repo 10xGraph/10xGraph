@@ -31,7 +31,7 @@ This repository is the core engine (PyPI `10xgraph`, import `tenxgraph`). The do
 
 - **Two-tier persistence.** `PgCheckpointer` caches active thread state in Redis and reads it first (default TTL 24 hours); PostgreSQL holds the durable history with versioned writes. Threads survive restarts and cache expiry. `SqliteCheckpointer` covers local work.
 - **Event publishing** to Kafka, Redis Pub/Sub, RabbitMQ and OpenTelemetry.
-- **Long-term memory** in Qdrant or Mem0.
+- **Long-term memory** in Qdrant.
 
 **4. One stack, backend to frontend**
 
@@ -76,7 +76,7 @@ Provider SDKs and infrastructure integrations are optional extras. Install only 
 | `realtime` | Audio-to-audio agents over Gemini Live |
 | `mcp` | Model Context Protocol client and tools |
 | `pg_checkpoint`, `sqlite_checkpoint` | Durable checkpointing (Postgres + Redis, or SQLite) |
-| `qdrant`, `mem0` | Long-term vector memory stores |
+| `qdrant` | Long-term vector memory store |
 | `redis`, `kafka`, `rabbitmq`, `otel` | Event publishers and tracing |
 | `images`, `cloud-storage` | Multimodal media handling and offload |
 | `all` | Every extra above at once, for development and CI |
@@ -238,7 +238,7 @@ work as they do on any other agent. Needs ``pip install "10xgraph[realtime]"``.
 
 - **Agents:** React, RAG, Guarded, Plan-Act-Reflect, Audio, Swarm, SupervisorTeam, StructuredOutput
 - **Orchestration:** Router, MapReduce, Sequential, Branch-Join
-- **Other:** dependency injection through InjectQ, skills (Agent Skills spec; a skill's `allowed-tools` field is read and stored but not enforced), 3-layer memory (working state, checkpointer, vector stores such as Qdrant and Mem0), publishers (Console, Redis, Kafka, RabbitMQ, OpenTelemetry), evaluation and testing helpers
+- **Other:** dependency injection through InjectQ, skills (Agent Skills spec; a skill's `allowed-tools` field is read and stored but not enforced), 3-layer memory (working state, checkpointer, vector stores such as Qdrant), publishers (Console, Redis, Kafka, RabbitMQ, OpenTelemetry), evaluation and testing helpers
 
 ---
 

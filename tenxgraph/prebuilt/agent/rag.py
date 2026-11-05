@@ -290,7 +290,7 @@ class RAGAgent[StateT: AgentState]:
         top_n: Documents forwarded to the LLM after reranking (default ``3``).
             Ignored when no reranker is provided — all ``top_k`` docs are used.
         retrieval_strategy: Vector search strategy passed to ``store.asearch``
-            (default :attr:`~tenxgraph.storage.store.store_schema.RetrievalStrategy.SIMILARITY`).
+            (default ``None``: the store's configured strategy).
         score_threshold: Minimum similarity score; ``None`` means no cutoff.
         store_config: Extra key/value pairs passed as the ``config`` argument
             to every ``store.asearch`` call (e.g. ``{"collection": "docs"}``).  The
@@ -325,7 +325,7 @@ class RAGAgent[StateT: AgentState]:
         reranker: BaseReranker | None = None,
         top_k: int = 5,
         top_n: int = 3,
-        retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
+        retrieval_strategy: RetrievalStrategy | None = None,
         score_threshold: float | None = None,
         store_config: dict[str, Any] | None = None,
         store_config_builder: Callable[[dict[str, Any]], dict[str, Any]] | None = None,

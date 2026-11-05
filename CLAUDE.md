@@ -28,7 +28,7 @@ persistence, tools, memory, evaluation, and event publishing. Inspired by LangGr
 - **Surgical edits.** This is `Development Status :: 5 - Production/Stable`. Don't refactor
   module boundaries or rename exports without checking every `__init__.py` that re-exports them.
 - **Keep coverage green.** `pytest` enforces `--cov-fail-under=80`. New code needs tests.
-- **Optional deps are optional.** Provider SDKs, MCP, Postgres, Redis, Qdrant, Mem0, Kafka,
+- **Optional deps are optional.** Provider SDKs, MCP, Postgres, Redis, Qdrant, Kafka,
   RabbitMQ, OTEL, a2a are all extras. Guard imports; never make core import a hard optional dep.
 
 ## Package layout (real, current)
@@ -38,7 +38,7 @@ The importable package is `tenxgraph/`. Top-level subpackages:
 | Subpackage | What lives there |
 |---|---|
 | `core/` | The engine. `graph/` (StateGraph, Agent, ToolNode, CompiledGraph, Node, Edge), `state/` (AgentState, Message, content blocks, reducers, context managers), `llm/` (provider detection + client factory + `call_llm`), `skills/` (dynamic skill injection), `exceptions/` |
-| `storage/` | `checkpointer/` (InMemory, Pg), `store/` (vector/long-term memory: Qdrant, Mem0, embeddings), `media/` (multimodal media processing, offload, resolvers, stores) |
+| `storage/` | `checkpointer/` (InMemory, Pg), `store/` (vector/long-term memory: Qdrant, embeddings), `media/` (multimodal media processing, offload, resolvers, stores) |
 | `runtime/` | `adapters/llm/` (OpenAI / OpenAI-Responses / Google GenAI / Anthropic response converters), `publisher/` (Console, Redis, Kafka, RabbitMQ, OTEL, Composite), `protocols/` (a2a, acp) |
 | `prebuilt/` | `agent/` (React, RAG, PlanActReflect, SupervisorTeam, Swarm, StructuredOutput), `tools/` (calculator, fetch, files, handoff, memory, search) |
 | `qa/` | `evaluation/` (criteria, datasets, evaluator, reporters, simulators) and `testing/` (TestAgent, mocks, quick tests) |
@@ -68,7 +68,7 @@ from tenxgraph.core.skills import SkillConfig, SkillMeta, SkillsRegistry
 # Persistence
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer, PgCheckpointer, BaseCheckpointer
 # Vector / long-term memory
-from tenxgraph.storage.store import QdrantStore, Mem0Store, MemoryConfig, AgentMemoryConfig
+from tenxgraph.storage.store import QdrantStore, MemoryConfig, AgentMemoryConfig
 
 # Publishers / converters
 from tenxgraph.runtime.publisher import ConsolePublisher, RedisPublisher, KafkaPublisher, RabbitMQPublisher
@@ -170,7 +170,7 @@ state lists merge.
 layer) for production; requires `[pg_checkpoint]`.
 
 **Memory / store.** 3-layer model: working state -> checkpointer (hot/durable) -> vector store
-(Qdrant/Mem0) for long-term. Memory is Agent-level only: `Agent(memory=MemoryConfig(...))` with
+(Qdrant) for long-term. Memory is Agent-level only: `Agent(memory=MemoryConfig(...))` with
 `UserMemoryConfig` / `AgentMemoryConfig` registers `user_memory_tool` / `agent_memory_tool`
 (postload) or, in preload mode, searches once per graph invocation (cached per Agent under the
 run's `run_id`) and injects a fenced `<user_memories_xxx>` block into the latest user message of

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from tenxgraph.storage.store.base_store import BaseStore
 
 from .long_term_memory import ReadMode
+from .store_schema import RetrievalStrategy
 
 
 class _MemoryScopeConfig(BaseModel):
@@ -40,6 +41,7 @@ class _MemoryScopeConfig(BaseModel):
     category: str = "general"
     limit: int | None = None
     score_threshold: float | None = None
+    retrieval_strategy: RetrievalStrategy | str | None = None
     collection: str | Callable[[dict[str, Any]], str] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -84,6 +86,13 @@ class _MemoryScopeConfig(BaseModel):
         if value is not None and value < 1:
             raise ValueError("limit must be greater than zero")
         return value
+
+    @field_validator("retrieval_strategy")
+    @classmethod
+    def _validate_retrieval_strategy(
+        cls, value: RetrievalStrategy | str | None
+    ) -> RetrievalStrategy | None:
+        return None if value is None else RetrievalStrategy(value)
 
     @field_validator("score_threshold")
     @classmethod
@@ -134,6 +143,7 @@ class MemoryConfig(BaseModel):
     retrieval_mode: ReadMode | str = ReadMode.POSTLOAD
     limit: int = 5
     score_threshold: float = 0.0
+    retrieval_strategy: RetrievalStrategy | str | None = None
     max_tokens: int | None = None
     inject_system_prompt: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
@@ -148,6 +158,13 @@ class MemoryConfig(BaseModel):
         if isinstance(value, ReadMode):
             return value
         return ReadMode(value)
+
+    @field_validator("retrieval_strategy")
+    @classmethod
+    def _validate_retrieval_strategy(
+        cls, value: RetrievalStrategy | str | None
+    ) -> RetrievalStrategy | None:
+        return None if value is None else RetrievalStrategy(value)
 
     @field_validator("limit")
     @classmethod

@@ -3,7 +3,7 @@
 This package provides all persistence and media-handling infrastructure:
 
 - ``tenxgraph.storage.checkpointer`` — agent state persistence (in-memory, Postgres, SQLite)
-- ``tenxgraph.storage.store``        — vector/long-term memory stores (Qdrant, Mem0, ...)
+- ``tenxgraph.storage.store``        — vector/long-term memory stores (Qdrant, ...)
 - ``tenxgraph.storage.media``        — multimodal media processing, storage, and resolution
 """
 
@@ -56,7 +56,6 @@ from .store import (
     BaseStore,
     DistanceMetric,
     GoogleEmbedding,
-    Mem0Store,
     MemoryConfig,
     MemoryRecord,
     MemorySearchResult,
@@ -67,8 +66,6 @@ from .store import (
     UserMemoryConfig,
     create_cloud_qdrant_store,
     create_local_qdrant_store,
-    create_mem0_store,
-    create_mem0_store_with_qdrant,
     create_remote_qdrant_store,
     get_agent_memory_system_prompt,
     is_system_user_id,
@@ -115,7 +112,6 @@ __all__ = [
     "MediaOffloadPolicy",
     "MediaProcessor",
     "MediaRefResolver",
-    "Mem0Store",
     "MemoryConfig",
     "MemoryRecord",
     "MemorySearchResult",
@@ -135,8 +131,6 @@ __all__ = [
     "checkpointer",
     "create_cloud_qdrant_store",
     "create_local_qdrant_store",
-    "create_mem0_store",
-    "create_mem0_store_with_qdrant",
     "create_openai_file_attachment",
     "create_openai_file_search_tool",
     "create_remote_qdrant_store",
