@@ -77,7 +77,7 @@ _LEGACY_CLASS_PATH_KEY = "__class_path__"
 def _reject_filters(name: str, filters: object) -> None:
     """Raise when ``filters`` is passed to a backend without declared columns."""
     if filters:
-        from tenxgraph.storage.sql_filter import FilterError  # noqa: PLC0415 - avoids a cycle
+        from tenxgraph.storage.sql_filter import FilterError  # - avoids a cycle
 
         raise FilterError(
             f"{name} does not support thread filters: filters need declared columns, "

@@ -208,9 +208,7 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
                     limit=resolved_limit,
                     score_threshold=score_threshold,
                     task_manager=task_manager,
-                    retrieval_strategy=_memory_scope_retrieval_strategy(
-                        memory_config, user_config
-                    ),
+                    retrieval_strategy=_memory_scope_retrieval_strategy(memory_config, user_config),
                 )
 
             metadata = _memory_tool_metadata("user")
