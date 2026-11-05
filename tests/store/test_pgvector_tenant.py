@@ -256,8 +256,10 @@ class TestSetup:
         assert any('ADD COLUMN IF NOT EXISTS "org_id" UUID' in s for s in executed)
         assert any('ADD COLUMN IF NOT EXISTS "plan" TEXT' in s for s in executed)
         assert any('"tenxgraph_memories_c_org_id" ON' in s for s in executed)
+        # With tenant columns the key index name carries a hash of its definition, so it never
+        # reuses the name of the index older processes still rely on.
         assert any(
-            'CREATE UNIQUE INDEX "tenxgraph_memories_key_uq"' in s
+            'CREATE UNIQUE INDEX "tenxgraph_memories_kuq_' in s
             and '(collection, user_id, "org_id", memory_type, memory_key) NULLS NOT DISTINCT' in s
             for s in executed
         )

@@ -94,11 +94,11 @@ class TestOptions:
 
     def test_migration_v6(self):
         cp = _cp(tenant_columns={"org_id": "uuid"}, extra_columns={"plan": "text"})
+        # Columns only: their indexes are built by _ensure_indexes (concurrently on a table
+        # in use), never inside the migration transaction.
         assert cp._build_migrations()[6] == [
             'ALTER TABLE "public"."threads" ADD COLUMN IF NOT EXISTS "org_id" UUID',
-            'CREATE INDEX IF NOT EXISTS "idx_threads_org_id" ON "public"."threads" ("org_id")',
             'ALTER TABLE "public"."threads" ADD COLUMN IF NOT EXISTS "plan" TEXT',
-            'CREATE INDEX IF NOT EXISTS "idx_threads_plan" ON "public"."threads" ("plan")',
         ]
         assert _cp()._build_migrations()[6] == []
 
@@ -191,6 +191,7 @@ class TestCacheKeys:
     @pytest.mark.asyncio
     async def test_cache_read_uses_tenant_key(self):
         cp = _cp(tenant_columns=TENANTS)
+        _wire(cp, _Conn(row=None))  # the thread is not visible yet: the caller's own key
         cp.redis.get = AsyncMock(return_value=None)
         cp.aget_state = AsyncMock(return_value=None)
         await cp.aget_state_cache(_cfg(org="B"))

@@ -28,7 +28,9 @@ def _tenant_signature(backend: object) -> dict[str, str | None]:
     return dict.fromkeys(name for name in names if isinstance(name, str))
 
 
-def check_tenant_columns(checkpointer: object, store: object | None) -> None:
+def check_tenant_columns(
+    checkpointer: object, store: object | None, *, allow_mismatch: bool = False
+) -> None:
     """Refuse (production) or warn (otherwise) when checkpointer and store isolate differently.
 
     Threads and memories of one request must be isolated by the same tenant columns: if the
@@ -36,6 +38,10 @@ def check_tenant_columns(checkpointer: object, store: object | None) -> None:
     types), memories of two tenants with the same ``user_id`` mix while their threads do not.
     ``MODE=production`` makes this a ``GraphError``; any other mode logs a warning. Nothing is
     checked without a store.
+
+    ``allow_mismatch=True`` (``compile(allow_tenant_mismatch=True)``) never raises: the mismatch
+    is logged once at INFO as allowed on purpose. Use it when the store holds only shared data
+    (for example a RAG knowledge base), so memories need no tenant isolation.
     """
     if store is None:
         return
@@ -59,6 +65,9 @@ def check_tenant_columns(checkpointer: object, store: object | None) -> None:
         f"{store_columns or 'none'}. Threads and memories would be isolated differently. "
         "Declare the same tenant_columns on both."
     )
+    if allow_mismatch:
+        logger.info("%s Mismatch allowed on purpose (allow_tenant_mismatch=True).", message)
+        return
     if _is_production():
         raise GraphError(
             message=message + " Refusing to compile with MODE=production.",

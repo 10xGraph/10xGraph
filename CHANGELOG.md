@@ -149,6 +149,15 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
   take only `str` or `int` values, and at most 10 conditions (metadata keys included) are
   allowed.
 
+### Fixed
+
+- **Security:** `RAGAgent` no longer passes the caller's isolation scope to the knowledge-base
+  search. It forwards the run config's `"user"` (for tenant values) as a copy without its
+  `"authz"` key: the API stamps the caller's scope there, and `get_authz` reads it first, so a
+  caller's `"none"` scope (an admin) widened the knowledge-base search and a
+  `store_config={"authz": ...}` was ignored. The knowledge-base scope now comes from
+  `store_config` / `store_config_builder`, else the store default.
+
 ### Removed
 
 - `Mem0Store` and the `mem0` extra are removed.

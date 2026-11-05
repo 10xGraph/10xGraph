@@ -56,7 +56,7 @@ async def test_first_query_creates_schema_once(monkeypatch):
     await cp.aget_thread_owner("t1")
     await cp.aget_thread_owner("t1")
     sql = [c.args[0] for c in conn.execute.call_args_list]
-    assert any("pg_advisory_xact_lock" in q for q in sql)
+    assert any("pg_advisory_lock" in q for q in sql)
     assert (
         sum(q.strip().startswith('CREATE TABLE IF NOT EXISTS "public"."threads"') for q in sql) == 1
     )
@@ -80,14 +80,18 @@ async def test_delete_message_rewrites_every_state_version(monkeypatch):
     gone = {"message_id": "gone"}
     conn.fetch = AsyncMock(
         return_value=[
-            {"state_id": 1, "state_data": json.dumps({"context": [keep, gone]})},
-            {"state_id": 2, "state_data": json.dumps({"context": [keep]})},
+            {"state_id": 1, "version": 1, "state_data": json.dumps({"context": [keep, gone]})},
+            {"state_id": 2, "version": 2, "state_data": json.dumps({"context": [keep]})},
         ]
     )
     await cp.adelete_message({"thread_id": "t1", "user_id": "u1"}, "gone")
     updates = [c.args for c in conn.execute.call_args_list if c.args[0].startswith("UPDATE")]
-    assert len(updates) == 1 and updates[0][2] == 1
-    assert json.loads(updates[0][1])["context"] == [keep]
+    rewrites = [u for u in updates if "SET state_data" in u[0]]
+    assert len(rewrites) == 1 and rewrites[0][2] == 1
+    assert json.loads(rewrites[0][1])["context"] == [keep]
+    # The latest state row moves to a new version so no cached copy matches any more.
+    bumps = [u for u in updates if "SET version" in u[0]]
+    assert len(bumps) == 1 and bumps[0][1:] == (3, 2)
     cp.redis.delete.assert_awaited()
 
 

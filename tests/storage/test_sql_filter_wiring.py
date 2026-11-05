@@ -55,13 +55,14 @@ class TestStoreFilters:
         )
         _, sql, args = conn.calls[-1]
         # Isolation first (collection, user, tenant), then the filters, then the metadata key.
-        assert '"collection" = $1 AND "user_id" = $2 AND "org_id" = $3' in sql
-        assert '"seats" >= $4 AND "seats" < $5 AND "plan" = ANY($6)' in sql
-        assert '"metadata" @> $7::text::jsonb' in sql
+        # Search SQL qualifies every column with the table alias ``m``.
+        assert 'm."collection" = $1 AND m."user_id" = $2 AND m."org_id" = $3' in sql
+        assert 'm."seats" >= $4 AND m."seats" < $5 AND m."plan" = ANY($6)' in sql
+        assert 'm."metadata" @> $7::text::jsonb' in sql
         assert args[:7] == ("agentflow_memories", "u1", "A", 2, 10, ["pro"], '{"tag": "x"}')
         if strategy == "hybrid":
             # Both candidate lists carry the full scope including the filters.
-            assert sql.count('"seats" >= $4') == 2
+            assert sql.count('m."seats" >= $4') == 2
 
     @pytest.mark.asyncio
     async def test_get_all_filters(self):

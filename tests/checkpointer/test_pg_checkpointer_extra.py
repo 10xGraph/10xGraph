@@ -803,7 +803,7 @@ async def test_schema_init_takes_advisory_lock(cp):
     await cp._initialize_schema()
 
     executed = [c.args[0] for c in conn.execute.await_args_list]
-    assert any("pg_advisory_xact_lock" in sql for sql in executed)
+    assert any("pg_advisory_lock" in sql for sql in executed)
 
 
 

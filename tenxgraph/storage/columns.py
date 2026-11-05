@@ -54,10 +54,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -68,22 +69,32 @@ __all__ = [
     "EXTRA_TYPE_RE",
     "FORMAT_TYPE_NAMES",
     "JSON_TYPES",
+    "RESERVED_USER_KEYS",
     "RLS_SCOPE_SETTING",
     "TENANT_COLUMN_TYPES",
     "ColumnSet",
     "ColumnSpec",
     "ColumnValueError",
     "MissingColumnValueError",
+    "SetupLockTimeoutError",
     "apply_settings",
     "build_isolation_where",
     "column_ddl",
     "column_value_errors",
+    "ddl_lock_timeout_setting",
+    "ddl_session",
+    "drop_index",
+    "ensure_column_indexes",
     "ensure_columns",
+    "ensure_index",
     "ensure_rls",
+    "index_catalog",
     "index_name",
+    "is_lock_timeout",
     "isolation_conditions",
     "parse_columns",
     "quote_ident",
+    "quote_index_name",
     "resolve_column_type",
     "rls_all_rows_settings",
     "rls_policy_expression",
@@ -93,6 +104,8 @@ __all__ = [
     "warn_if_rls_bypassed",
     "write_conditions",
 ]
+
+logger = logging.getLogger("tenxgraph.storage.columns")
 
 ColumnKind = Literal["tenant", "extra"]
 
@@ -161,6 +174,21 @@ _INT_RANGES = {
 _SPEC_KEYS = frozenset({"type", "required"})
 # ``user_id`` is a scope column name in every backend, so it can never be declared.
 _ALWAYS_RESERVED = frozenset({"user_id"})
+#: Keys of ``config["user"]`` that carry authorization data, not tenant or extra values: the
+#: API stamps ``authz`` (the isolation policy) into the identity and reads ``scope`` /
+#: ``scopes`` (granted scopes) and ``role`` / ``roles`` (role-based authorization) from it.
+#: A column with one of these names would store that data, so they cannot be declared.
+RESERVED_USER_KEYS = frozenset({"authz", "scope", "scopes", "role", "roles"})
+# Index names follow the table-name rule (uppercase allowed), unlike column names.
+_INDEX_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# A server-rendered ``regclass::text`` of an index: optionally schema-qualified, each part a
+# plain lowercase identifier or a double-quoted one without embedded quotes.
+_REGCLASS_PART = r'(?:"[^"\x00]{1,63}"|[a-z_][a-z0-9_$]{0,62})'
+_REGCLASS_TEXT_RE = re.compile(rf"^{_REGCLASS_PART}(?:\.{_REGCLASS_PART})?$")
+#: SQLSTATE of ``lock_not_available`` (raised when ``lock_timeout`` is hit).
+LOCK_NOT_AVAILABLE = "55P03"
+# How far ``is_lock_timeout`` follows ``__cause__`` / ``__context__``.
+_MAX_CAUSE_DEPTH = 10
 
 
 class ColumnValueError(ValueError):
@@ -171,10 +199,31 @@ class MissingColumnValueError(ColumnValueError):
     """A required column, or a column the isolation scope picks, has no value."""
 
 
+class SetupLockTimeoutError(RuntimeError):
+    """Setup DDL could not take a table lock within the backend's ``ddl_lock_timeout``.
+
+    Another transaction holds a lock on the table (a long write, or a session left idle in a
+    transaction). Nothing was changed by the statement that timed out; retry setup once the
+    transaction ends, or raise ``ddl_lock_timeout``.
+    """
+
+
 def quote_ident(name: str) -> str:
     """Return ``name`` as a double-quoted identifier after checking it against the name rule."""
     if not isinstance(name, str) or not _NAME_RE.match(name):
         raise ValueError(f"Invalid column name: {name!r}")
+    return f'"{name}"'
+
+
+def quote_index_name(name: str) -> str:
+    """Return an index name as a double-quoted identifier.
+
+    Index names are built from the table name, which may contain uppercase letters (the
+    tables' own rule), so they are checked against that rule rather than the lowercase-only
+    column-name rule of :func:`quote_ident`.
+    """
+    if not isinstance(name, str) or not _INDEX_NAME_RE.match(name):
+        raise ValueError(f"Invalid index name: {name!r}")
     return f'"{name}"'
 
 
@@ -506,14 +555,21 @@ def parse_columns(
 ) -> ColumnSet:
     """Validate the tenant and extra column declarations of one backend.
 
-    Raises ``ValueError`` for a bad name, a built-in (``reserved``) name, an unknown type, a
-    bad ``required`` flag, or a name declared twice.
+    Raises ``ValueError`` for a bad name, a built-in (``reserved``) name, a key of
+    ``config["user"]`` that carries authorization data (:data:`RESERVED_USER_KEYS`), an unknown
+    type, a bad ``required`` flag, or a name declared twice.
     """
     reserved_names = frozenset(reserved) | _ALWAYS_RESERVED
     tenant = _parse_kind(tenant_columns, "tenant")
     extra = _parse_kind(extra_columns, "extra")
     seen: set[str] = set()
     for spec in (*tenant, *extra):
+        if spec.name in RESERVED_USER_KEYS:
+            raise ValueError(
+                f"Column {spec.name!r} is reserved: config['user'][{spec.name!r}] carries "
+                "authorization data (the isolation policy, granted scopes or roles), not a "
+                "tenant or extra value. Pick another name."
+            )
         if spec.name in reserved_names:
             raise ValueError(
                 f"Column {spec.name!r} is a built-in column of the {table} table; pick "
@@ -647,24 +703,26 @@ def rls_policy_name(tenant: Sequence[ColumnSpec], base: str = "tenxgraph_isolati
 # ---------------------------------------------------------------------------
 
 
-def column_ddl(table_sql: str, columns: ColumnSet, index_prefix: str) -> list[str]:
-    """Idempotent DDL adding each declared column and one B-tree index on it.
+def column_ddl(
+    table_sql: str, columns: ColumnSet, index_prefix: str, *, indexes: bool = True
+) -> list[str]:
+    """Idempotent DDL adding each declared column and (``indexes=True``) one B-tree index on it.
 
     ``table_sql`` is the caller's quoted, schema-qualified table name. Postgres combines the
     single-column indexes (bitmap AND) for any subset a scope picks, so no composite index is
     needed per scope. Only built-in types have a fixed DDL type: a column of any other type
     raises ``ValueError`` here (use :func:`ensure_columns`, which resolves it on the server,
-    or pass ``columns.builtin_only()``).
+    or pass ``columns.builtin_only()``). Backends pass ``indexes=False`` and build the
+    indexes with :func:`ensure_column_indexes`, which can build them ``CONCURRENTLY``.
     """
     statements: list[str] = []
     for spec in columns.all:
         statements.append(
             f"ALTER TABLE {table_sql} ADD COLUMN IF NOT EXISTS {spec.quoted} {spec.sql_type}"
         )
-        statements.append(
-            f"CREATE INDEX IF NOT EXISTS {quote_ident(index_name(index_prefix, spec.name))} "
-            f"ON {table_sql} ({spec.quoted})"
-        )
+        if indexes:
+            name = quote_index_name(index_name(index_prefix, spec.name))
+            statements.append(f"CREATE INDEX IF NOT EXISTS {name} ON {table_sql} ({spec.quoted})")
     return statements
 
 
@@ -714,7 +772,9 @@ async def resolve_column_type(conn: Any, spec: ColumnSpec) -> str:
     return canonical
 
 
-async def ensure_columns(conn: Any, table_sql: str, columns: ColumnSet, index_prefix: str) -> None:
+async def ensure_columns(
+    conn: Any, table_sql: str, columns: ColumnSet, index_prefix: str, *, indexes: bool = True
+) -> None:
     """Add missing declared columns (and their indexes); raise when one exists with another type.
 
     Reads the catalog first, so an ``ALTER TABLE`` (and its exclusive lock) only runs for a
@@ -722,6 +782,11 @@ async def ensure_columns(conn: Any, table_sql: str, columns: ColumnSet, index_pr
     (:func:`resolve_column_type`) and only that canonical name reaches the DDL; an existing
     column is compared by canonical name, so ``varchar(64)`` matches
     ``character varying(64)``.
+
+    With ``indexes=True`` the missing B-tree indexes are built here too, without
+    ``CONCURRENTLY`` (fine inside a transaction, on a new or small table). Backends pass
+    ``indexes=False`` and call :func:`ensure_column_indexes` after the transaction, so an
+    existing table keeps serving reads and writes while its indexes are built.
     """
     if not columns:
         return
@@ -746,10 +811,154 @@ async def ensure_columns(conn: Any, table_sql: str, columns: ColumnSet, index_pr
                 f"Column {spec.name!r} already exists on {table_sql} as {found}, but it is "
                 f"declared as {canonical}. Change the declaration or migrate the column."
             )
-        await conn.execute(
-            f"CREATE INDEX IF NOT EXISTS {quote_ident(index_name(index_prefix, spec.name))} "
-            f"ON {table_sql} ({spec.quoted})"
+    if indexes:
+        await ensure_column_indexes(conn, table_sql, columns, index_prefix, concurrently=False)
+
+
+async def index_catalog(conn: Any, table_sql: str) -> dict[str, tuple[bool, str]]:
+    """The indexes on ``table_sql``: ``{name: (valid, qualified name)}``, from the catalog.
+
+    ``valid`` is ``pg_index.indisvalid``: ``False`` for the leftover of a ``CREATE INDEX
+    CONCURRENTLY`` that failed or was cancelled. The qualified name is the server's
+    ``regclass::text`` (quoted as needed), for a ``DROP INDEX``.
+    """
+    rows = await conn.fetch(
+        "SELECT c.relname, i.indisvalid, i.indexrelid::regclass::text AS qualified "
+        "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE i.indrelid = to_regclass($1)",
+        table_sql,
+    )
+    catalog: dict[str, tuple[bool, str]] = {}
+    for row in rows or []:
+        catalog[str(row["relname"])] = (bool(row["indisvalid"]), str(row["qualified"]))
+    return catalog
+
+
+async def drop_index(conn: Any, qualified: str, *, concurrently: bool) -> None:
+    """``DROP INDEX [CONCURRENTLY] IF EXISTS`` for a name read from :func:`index_catalog`."""
+    if not _REGCLASS_TEXT_RE.match(qualified):
+        raise ValueError(f"Unexpected index name from the catalog: {qualified!r}")
+    mode = "CONCURRENTLY " if concurrently else ""
+    await conn.execute(f"DROP INDEX {mode}IF EXISTS {qualified}")
+
+
+async def ensure_index(
+    conn: Any,
+    catalog: Mapping[str, tuple[bool, str]],
+    *,
+    name: str,
+    table_sql: str,
+    definition: str,
+    concurrently: bool,
+    unique: bool = False,
+) -> bool:
+    """Create index ``name`` unless the catalog already has a valid one; return whether it built.
+
+    Checking the catalog first means setup takes no lock at all when the index is in place
+    (``CREATE INDEX IF NOT EXISTS`` still takes a SHARE lock and waits behind open writes).
+    An invalid index of that name (a ``CONCURRENTLY`` build that failed or was cancelled) is
+    dropped and built again; ``IF NOT EXISTS`` would keep it forever.
+
+    ``concurrently=True`` builds with ``CREATE INDEX CONCURRENTLY``: reads and writes go on
+    while it runs. Postgres refuses it inside a transaction block, so the caller runs it on a
+    connection with no open transaction. A failed concurrent build leaves an invalid index,
+    which the next call rebuilds. ``definition`` is the part after ``ON <table>`` (built by
+    the backend from validated identifiers, never input).
+    """
+    found = catalog.get(name)
+    if found is not None and found[0]:
+        return False
+    if found is not None:
+        await drop_index(conn, found[1], concurrently=concurrently)
+    mode = "CONCURRENTLY " if concurrently else ""
+    kind = "UNIQUE INDEX" if unique else "INDEX"
+    await conn.execute(f"CREATE {kind} {mode}{quote_index_name(name)} ON {table_sql} {definition}")
+    return True
+
+
+async def ensure_column_indexes(
+    conn: Any,
+    table_sql: str,
+    columns: ColumnSet,
+    index_prefix: str,
+    *,
+    concurrently: bool,
+    catalog: Mapping[str, tuple[bool, str]] | None = None,
+) -> None:
+    """Build the missing B-tree index of each declared column (see :func:`ensure_index`)."""
+    if not columns:
+        return
+    if catalog is None:
+        catalog = await index_catalog(conn, table_sql)
+    for spec in columns.all:
+        await ensure_index(
+            conn,
+            catalog,
+            name=index_name(index_prefix, spec.name),
+            table_sql=table_sql,
+            definition=f"({spec.quoted})",
+            concurrently=concurrently,
         )
+
+
+def ddl_lock_timeout_setting(timeout: float | None) -> str:
+    """The ``lock_timeout`` value for setup DDL (``"0"`` waits forever)."""
+    if timeout is None:
+        return "0"
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
+        raise ValueError("ddl_lock_timeout must be None or a number of seconds > 0")
+    return f"{max(1, int(timeout * 1000))}ms"
+
+
+@asynccontextmanager
+async def ddl_session(
+    conn: Any, *, lock_key: int, timeout: float | None, owner: str
+) -> AsyncIterator[None]:
+    """Run setup DDL on ``conn`` under a session-level advisory lock and a ``lock_timeout``.
+
+    ``pg_advisory_lock`` (session level, not ``pg_advisory_xact_lock``) is held across
+    transactions and across ``CREATE INDEX CONCURRENTLY``, which cannot run inside one, so
+    setup in several processes still runs one at a time. The lock is taken before
+    ``lock_timeout`` is set, so a second process waits for the first one's setup instead of
+    timing out on it. Every DDL statement after that waits at most ``timeout`` seconds for a
+    table lock; hitting it raises :class:`SetupLockTimeoutError`. On exit the lock is released
+    and ``lock_timeout`` reset. If that fails (a broken or cancelled connection), Postgres
+    releases the lock when the session ends, and a pooled connection is reset on release
+    (asyncpg runs ``pg_advisory_unlock_all()`` and ``RESET ALL``).
+    """
+    await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+    try:
+        await conn.execute(
+            "SELECT set_config('lock_timeout', $1, false)", ddl_lock_timeout_setting(timeout)
+        )
+        try:
+            yield
+        except Exception as exc:
+            if is_lock_timeout(exc):
+                raise SetupLockTimeoutError(
+                    f"{owner} setup could not take a table lock within {timeout}s: another "
+                    "transaction holds it (a long write, or a session idle in a transaction). "
+                    "Nothing was changed by the statement that timed out. Retry setup when it "
+                    "ends, or raise ddl_lock_timeout."
+                ) from exc
+            raise
+    finally:
+        try:
+            await conn.execute("RESET lock_timeout")
+            await conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+        except Exception as exc:  # the session ends with the connection; the lock goes with it
+            logger.debug("%s: could not release the setup lock cleanly: %s", owner, exc)
+
+
+def is_lock_timeout(exc: BaseException | None) -> bool:
+    """Whether ``exc`` (or an exception it was raised from) is Postgres' ``lock_not_available``."""
+    seen = 0
+    while exc is not None and seen < _MAX_CAUSE_DEPTH:
+        if getattr(exc, "sqlstate", None) == LOCK_NOT_AVAILABLE:
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
 
 
 @contextmanager

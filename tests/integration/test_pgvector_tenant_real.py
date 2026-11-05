@@ -117,7 +117,10 @@ class TestSchema:
         }
         for col in ("org_id", "project_id", "public_id"):
             assert f"{table}_c_{col}" in indexes
-        key = indexes[f"{table}_key_uq"]
+        # A fresh table with tenant columns gets only the tenant key index (hashed name).
+        keys = [name for name in indexes if name.startswith(f"{table}_kuq_")]
+        assert len(keys) == 1 and f"{table}_key_uq" not in indexes
+        key = indexes[keys[0]]
         assert "(collection, user_id, org_id, project_id, memory_type, memory_key)" in key
         assert "NULLS NOT DISTINCT" in key
         await _store(pool, table, extra_columns={"public_id": "text"}).asetup()  # idempotent
@@ -153,11 +156,25 @@ class TestSchema:
         # ...and visible to a scope that does not.
         got = await store.aget(_cfg(scope=["user_id"]), legacy)
         assert got is not None and got.content == "legacy fact"
-        # The key index was rebuilt to include the tenant columns.
-        key = await pool.fetchval(
-            "SELECT indexdef FROM pg_indexes WHERE indexname = $1", f"{table}_key_uq"
-        )
-        assert "org_id, project_id" in key
+        # A new key index with the tenant columns was built next to the old one, which is kept
+        # for processes still running the previous version (their ON CONFLICT needs it).
+        indexes = {
+            r["indexname"]: r["indexdef"]
+            for r in await pool.fetch(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = $1", table
+            )
+        }
+        new_keys = [name for name in indexes if name.startswith(f"{table}_kuq_")]
+        assert len(new_keys) == 1 and "org_id, project_id" in indexes[new_keys[0]]
+        assert "org_id" not in indexes[f"{table}_key_uq"]
+        # An old-version process (no tenant columns) still has its keyed upsert.
+        assert await old.astore({"user_id": "alice"}, "legacy fact v2", memory_key="k") == legacy
+        # While the old index exists, the same user and key in a tenant collide with it.
+        with pytest.raises(ValueError, match="adrop_legacy_key_index"):
+            await store.astore(_cfg(), "tenant fact", memory_key="k")
+        # Once every process runs the new version, the operator drops it.
+        assert await store.adrop_legacy_key_index() == [f"{table}_key_uq"]
+        assert await store.adrop_legacy_key_index() == []
         new_id = await store.astore(_cfg(), "tenant fact", memory_key="k")
         assert new_id != legacy
 

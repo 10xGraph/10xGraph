@@ -278,7 +278,9 @@ class TestSetup:
         assert await store.asetup() is True
         executed = conn.sql("execute")
         assert conn.transactions == 1
-        assert executed[0].startswith("SELECT pg_advisory_xact_lock($1)")
+        # Session-level lock: it also covers CREATE INDEX CONCURRENTLY outside the transaction.
+        assert executed[0].startswith("SELECT pg_advisory_lock($1)")
+        assert executed[-1].startswith("SELECT pg_advisory_unlock($1)")
         create = next(
             s
             for s in executed
@@ -726,10 +728,10 @@ class TestSearch:
     @pytest.mark.parametrize(
         ("metric", "operator", "similarity"),
         [
-            (DistanceMetric.COSINE, "<=>", "(1 - (embedding <=> $3::text::vector))"),
-            (DistanceMetric.EUCLIDEAN, "<->", "(1 / (1 + (embedding <-> $3::text::vector)))"),
-            (DistanceMetric.DOT_PRODUCT, "<#>", "((embedding <#> $3::text::vector) * -1)"),
-            (DistanceMetric.MANHATTAN, "<+>", "(1 / (1 + (embedding <+> $3::text::vector)))"),
+            (DistanceMetric.COSINE, "<=>", "(1 - (m.embedding <=> $3::text::vector))"),
+            (DistanceMetric.EUCLIDEAN, "<->", "(1 / (1 + (m.embedding <-> $3::text::vector)))"),
+            (DistanceMetric.DOT_PRODUCT, "<#>", "((m.embedding <#> $3::text::vector) * -1)"),
+            (DistanceMetric.MANHATTAN, "<+>", "(1 / (1 + (m.embedding <+> $3::text::vector)))"),
         ],
     )
     async def test_similarity_sql(self, metric, operator, similarity):
@@ -737,8 +739,8 @@ class TestSearch:
         await store.asearch(CFG, "what is my name", limit=3)
         _, sql, args = conn.calls[-1]
         assert f"{similarity} AS score" in sql
-        assert f"ORDER BY embedding {operator} $3::text::vector LIMIT $4" in sql
-        assert "embedding IS NOT NULL" in sql
+        assert f"ORDER BY m.embedding {operator} $3::text::vector LIMIT $4" in sql
+        assert "m.embedding IS NOT NULL" in sql
         # thread_id is not a search filter (long-term memory is cross-thread).
         assert '"thread_id"' not in sql.split(" WHERE ", 1)[1]
         assert args == ("agentflow_memories", "u1", "[0.1,0.2,0.3,0.4]", 3)
@@ -747,9 +749,9 @@ class TestSearch:
         store, conn, _ = _store(text_search_config="simple")
         await store.asearch(CFG, "it's; DROP", retrieval_strategy="text", limit=2)
         _, sql, args = conn.calls[-1]
-        assert "ts_rank(tsv, tsq, 32) AS score" in sql
-        assert "websearch_to_tsquery($3::text::regconfig, $4) AS tsq" in sql
-        assert "tsv @@ tsq" in sql and "DROP" not in sql
+        assert "ts_rank(m.tsv, tsq_input.q, 32) AS score" in sql
+        assert "websearch_to_tsquery($3::text::regconfig, $4) AS tsq_input(q)" in sql
+        assert "m.tsv @@ tsq_input.q" in sql and "DROP" not in sql
         assert args == ("agentflow_memories", "u1", "simple", "it's; DROP", 2)
 
     async def test_hybrid_sql(self):
@@ -757,7 +759,7 @@ class TestSearch:
         await store.asearch(CFG, "q", limit=5)
         _, sql, args = conn.calls[-1]
         assert sql.startswith("WITH vec AS (")
-        assert "ROW_NUMBER() OVER (ORDER BY embedding <=> $3::text::vector) AS rnk" in sql
+        assert "ROW_NUMBER() OVER (ORDER BY m.embedding <=> $3::text::vector) AS rnk" in sql
         assert "FULL OUTER JOIN txt ON vec.id = txt.id" in sql
         assert "COALESCE($7::float8 / ($9::int + vec.rnk), 0)" in sql
         assert "m.collection = $10 AND m.id = f.id" in sql
@@ -818,8 +820,8 @@ class TestSearch:
             filters={"memory_key": "user_name", "x'; DROP TABLE t; --": True},
         )
         _, sql, args = conn.calls[-1]
-        assert '"memory_type" = $3 AND "category" = $4 AND "memory_key" = $5' in sql
-        assert '"metadata" @> $6::text::jsonb' in sql
+        assert 'm."memory_type" = $3 AND m."category" = $4 AND m."memory_key" = $5' in sql
+        assert 'm."metadata" @> $6::text::jsonb' in sql
         assert "DROP" not in sql
         assert json.loads(args[5]) == {"x'; DROP TABLE t; --": True}
 

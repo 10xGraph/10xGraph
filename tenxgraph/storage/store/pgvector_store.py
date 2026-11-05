@@ -28,8 +28,14 @@ from tenxgraph.storage.columns import (
     ColumnSpec,
     apply_settings,
     column_value_errors,
+    ddl_lock_timeout_setting,
+    ddl_session,
+    drop_index,
+    ensure_column_indexes,
     ensure_columns,
+    ensure_index,
     ensure_rls,
+    index_catalog,
     isolation_conditions,
     parse_columns,
     rls_all_rows_settings,
@@ -120,6 +126,8 @@ MIN_PGVECTOR_VERSION = (0, 7, 0)
 HNSW_MAX_DIMENSIONS = 2000
 
 DEFAULT_ACQUIRE_TIMEOUT = 30.0  # seconds to wait for a free pooled connection
+#: Seconds setup DDL waits for a table lock before it fails with ``SetupLockTimeoutError``.
+DEFAULT_DDL_LOCK_TIMEOUT = 10.0
 DEFAULT_POOL_CONFIG: dict[str, Any] = {
     "command_timeout": 60.0,  # per query
     "timeout": 30.0,  # per new connection
@@ -305,6 +313,7 @@ class PgVectorStore(BaseStore):
         tenant_columns: Any = None,
         extra_columns: Any = None,
         row_level_security: bool = False,
+        ddl_lock_timeout: float | None = DEFAULT_DDL_LOCK_TIMEOUT,
     ):
         """Create the store. Nothing touches the database until ``asetup()`` or the first call.
 
@@ -383,6 +392,33 @@ class PgVectorStore(BaseStore):
                 LOCAL``). Costs one transaction and one extra statement per call. Superusers
                 and roles with ``BYPASSRLS`` skip RLS (a warning is logged), and the table
                 owner is filtered only because of ``FORCE``. Needs tenant columns.
+            ddl_lock_timeout: Seconds a setup DDL statement waits for a lock on the table
+                (Postgres ``lock_timeout``) before setup fails with
+                ``tenxgraph.storage.columns.SetupLockTimeoutError``; ``None`` waits forever.
+                Without it an ``ALTER TABLE`` stuck behind a long write would queue every
+                later read of the table behind itself. Default 10 seconds.
+
+        Setup on a table that is in use: setup reads the catalog first and runs no DDL for
+        anything already in place, so a restart takes no table lock. Missing indexes on an
+        existing table are built with ``CREATE INDEX CONCURRENTLY`` (reads and writes go on);
+        an index left invalid by a build that failed or was cancelled is dropped and built
+        again on the next setup. Adding a declared column is a short ``ALTER TABLE`` under
+        ``ddl_lock_timeout``. Setup is serialised across processes by a session-level
+        advisory lock, which holds across those non-transactional statements.
+
+        Rolling out tenant columns on a table that already has data (the ``memory_key``
+        unique index gains the tenant columns):
+
+        1. Deploy the new version with ``tenant_columns``. Its setup adds the columns and
+           builds the new unique key index ``<table>_kuq_<hash>`` concurrently. The old key
+           index ``<table>_key_uq`` is kept, so processes still running the previous version
+           keep their keyed writes (their ``ON CONFLICT`` needs it). While both exist, a keyed
+           write for the same ``(collection, user_id, memory_type, memory_key)`` in a second
+           tenant fails with ``ValueError``; nothing else changes.
+        2. When every process runs the new version, backfill the tenant values of old rows
+           (they hold NULL and are invisible to scopes that pick those columns).
+        3. Call ``await store.adrop_legacy_key_index()`` once. It drops the old index
+           concurrently, and only when the new one is valid.
 
         Trusted-source rule for ``tenant_columns`` and ``extra_columns``: tenant and extra
         column values come only from ``config["user"]``. ``user`` is a reserved config key:
@@ -439,6 +475,8 @@ class PgVectorStore(BaseStore):
         if row_level_security and not self.columns.tenant:
             raise ValueError("row_level_security=True needs at least one tenant column")
         self.row_level_security = row_level_security
+        ddl_lock_timeout_setting(ddl_lock_timeout)  # validates
+        self.ddl_lock_timeout = ddl_lock_timeout
 
         self.embedding = embedding
         self.schema = schema
@@ -483,6 +521,8 @@ class PgVectorStore(BaseStore):
         self._iterative_scan = False
         # ``server_version_num`` (read by setup only when tenant columns are declared).
         self._server_version = 0
+        # Key indexes from an earlier declaration kept for older processes (found by setup).
+        self._legacy_key_indexes: list[str] = []
 
     # ------------------------------------------------------------------
     # Settings
@@ -520,9 +560,6 @@ class PgVectorStore(BaseStore):
     @property
     def _version_table(self) -> str:
         return f"{_quote_ident(self.schema)}.{_quote_ident(self.table + '_schema_version')}"
-
-    def _index_name(self, suffix: str) -> str:
-        return _quote_ident(f"{self.table}_{suffix}")
 
     def _key_columns(self) -> list[str]:
         """Columns of the unique ``memory_key`` index, quoted where they are declared columns.
@@ -632,6 +669,7 @@ class PgVectorStore(BaseStore):
     # ------------------------------------------------------------------
 
     def _build_create_sql(self) -> list[str]:
+        """``CREATE TABLE`` for the memory table. Indexes: ``_ensure_indexes``."""
         table = self._qualified_table
         embedding_column = (
             f"embedding vector({self._dimension()}),\n" if self.embedding is not None else ""
@@ -639,19 +677,6 @@ class PgVectorStore(BaseStore):
         # The text search configuration is checked against _TS_CONFIG_RE, so it cannot close
         # the string literal. A generated column needs a constant configuration.
         ts_config = f"'{self.text_search_config}'::regconfig"
-        # With tenant columns the key index includes them, so it is created after they are
-        # added (``_ensure_key_index``); without, it is created here as it always was.
-        key_index = (
-            []
-            if self.columns.tenant
-            else [
-                (
-                    f"CREATE UNIQUE INDEX IF NOT EXISTS {self._index_name('key_uq')} "
-                    f"ON {table} ({', '.join(self._key_columns())}) "
-                    "WHERE memory_key IS NOT NULL"
-                )
-            ]
-        )
         return [
             f"""
             CREATE TABLE IF NOT EXISTS {table} (
@@ -670,18 +695,21 @@ class PgVectorStore(BaseStore):
                 PRIMARY KEY (collection, id)
             )
             """,
-            f"""
+        ]
+
+    def _build_version_table_sql(self) -> str:
+        return f"""
             CREATE TABLE IF NOT EXISTS {self._version_table} (
                 version INT PRIMARY KEY,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
-            """,
-            (
-                f"CREATE INDEX IF NOT EXISTS {self._index_name('uid_idx')} "
-                f"ON {table} (collection, user_id)"
-            ),
-            *key_index,
-            f"CREATE INDEX IF NOT EXISTS {self._index_name('tsv_idx')} ON {table} USING gin (tsv)",
+            """
+
+    def _base_indexes(self) -> list[tuple[str, str]]:
+        """``(name, definition)`` of the plain indexes every table has."""
+        return [
+            (f"{self.table}_uid_idx", "(collection, user_id)"),
+            (f"{self.table}_tsv_idx", "USING gin (tsv)"),
         ]
 
     def _key_nulls_clause(self) -> str:
@@ -696,53 +724,174 @@ class PgVectorStore(BaseStore):
             return " NULLS NOT DISTINCT"
         return ""
 
-    async def _ensure_key_index(self, conn: Any) -> None:
-        """Rebuild the ``memory_key`` unique index when its columns differ from the store's.
-
-        Creates it on a new table with tenant columns. Rebuilds it once when tenant columns are
-        first declared on an existing table (or the declaration changes). Adding columns to the
-        key only relaxes it, so the rebuild cannot fail on existing rows; removing a tenant
-        column can, and then setup raises.
-        """
-        name = f"{self.table}_key_uq"
-        regclass = f"{_quote_ident(self.schema)}.{_quote_ident(name)}"
-        current = await conn.fetchval(
-            "SELECT ARRAY(SELECT a.attname::text FROM pg_index i "
-            "CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) "
-            "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
-            "WHERE i.indexrelid = to_regclass($1) ORDER BY k.ord)",
-            regclass,
-        )
-        wanted = [c.strip('"') for c in self._key_columns()]
-        if current:
-            nulls_ok = True
-            if self._key_nulls_clause():
-                definition = await conn.fetchval(
-                    "SELECT pg_get_indexdef(to_regclass($1))", regclass
-                )
-                nulls_ok = "NULLS NOT DISTINCT" in str(definition or "")
-            if list(current) == wanted and nulls_ok:
-                return
-            logger.info("PgVectorStore: rebuilding %s on (%s)", name, ", ".join(wanted))
-            await conn.execute(f"DROP INDEX IF EXISTS {regclass}")
-        await conn.execute(
-            f"CREATE UNIQUE INDEX {self._index_name('key_uq')} ON {self._qualified_table} "
+    def _key_index_definition(self) -> str:
+        """The part after ``ON <table>`` of the ``memory_key`` unique index."""
+        return (
             f"({', '.join(self._key_columns())}){self._key_nulls_clause()} "
             "WHERE memory_key IS NOT NULL"
         )
 
-    async def _ensure_declared_columns(self, conn: Any) -> None:
-        """Add the declared tenant and extra columns, key index and RLS policy (idempotent).
+    def _key_index_names(self) -> tuple[str, str]:
+        """``(plain, hashed)`` names for the key index of this declaration.
 
-        With nothing declared this does nothing at all (the table stays exactly as before).
-        To turn RLS off, keep the tenant columns and set ``row_level_security=False``: the
-        next setup drops the policy and disables RLS on the table.
+        Without tenant columns the index keeps its historical name ``<table>_key_uq``. With
+        tenant columns it is ``<table>_kuq_<hash of its definition>``, so a new definition
+        never reuses the name of the index older processes still rely on (see
+        ``adrop_legacy_key_index``). The hashed name is also the fallback when the plain name
+        is taken by an index with another definition.
+        """
+        digest = hashlib.blake2b(self._key_index_definition().encode(), digest_size=4).hexdigest()
+        hashed = f"{self.table}_kuq_{digest}"
+        plain = f"{self.table}_key_uq" if not self.columns.tenant else hashed
+        return plain, hashed
+
+    def _is_key_index_name(self, name: str) -> bool:
+        return name == f"{self.table}_key_uq" or name.startswith(f"{self.table}_kuq_")
+
+    async def _key_index_rows(self, conn: Any) -> list[Any]:
+        """The unique partial indexes on the table that this store manages as key indexes."""
+        rows = await conn.fetch(
+            "SELECT c.relname, i.indisvalid, i.indexrelid::regclass::text AS qualified, "
+            "pg_get_indexdef(i.indexrelid) AS definition, "
+            "ARRAY(SELECT a.attname::text "
+            "FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) "
+            "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+            "ORDER BY k.ord) AS columns "
+            "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE i.indrelid = to_regclass($1) AND i.indisunique AND i.indpred IS NOT NULL",
+            self._qualified_table,
+        )
+        return [row for row in rows or [] if self._is_key_index_name(str(row["relname"]))]
+
+    def _matches_key_definition(self, row: Any) -> bool:
+        wanted = [c.strip('"') for c in self._key_columns()]
+        nulls = "NULLS NOT DISTINCT" in str(row["definition"] or "")
+        return list(row["columns"] or []) == wanted and nulls == bool(self._key_nulls_clause())
+
+    async def _ensure_key_index(
+        self, conn: Any, catalog: dict[str, tuple[bool, str]], *, concurrently: bool
+    ) -> None:
+        """Make sure a valid ``memory_key`` unique index matches the store's declaration.
+
+        An index of either name with the wanted columns (and ``NULLS NOT DISTINCT`` flag)
+        satisfies it, so nothing runs on a restart. Otherwise the index is built under the
+        name from ``_key_index_names``, ``CONCURRENTLY`` on an existing table, and an invalid
+        leftover of that name is dropped and rebuilt. Key indexes of an earlier declaration
+        are kept (older processes still need them for their ``ON CONFLICT``) and dropped by
+        ``adrop_legacy_key_index()``. Adding tenant columns to the key only relaxes it, so
+        the build cannot fail on existing rows; removing one can, and then setup raises.
+        """
+        rows = await self._key_index_rows(conn)
+        current = next(
+            (row for row in rows if row["indisvalid"] and self._matches_key_definition(row)),
+            None,
+        )
+        if current is None:
+            plain, hashed = self._key_index_names()
+            taken = next((row for row in rows if str(row["relname"]) == plain), None)
+            name = hashed if taken is not None and taken["indisvalid"] else plain
+            logger.info(
+                "PgVectorStore: building %s on %s.%s%s",
+                name,
+                self.schema,
+                self.table,
+                " concurrently" if concurrently else "",
+            )
+            try:
+                await ensure_index(
+                    conn,
+                    catalog,
+                    name=name,
+                    table_sql=self._qualified_table,
+                    definition=self._key_index_definition(),
+                    concurrently=concurrently,
+                    unique=True,
+                )
+            except asyncpg.UniqueViolationError as e:  # type: ignore[union-attr]
+                if concurrently:  # a failed concurrent build leaves an invalid index behind
+                    leftover = (await index_catalog(conn, self._qualified_table)).get(name)
+                    if leftover is not None and not leftover[0]:
+                        await drop_index(conn, leftover[1], concurrently=True)
+                raise ValueError(
+                    f"Cannot build the memory_key index {name} on {self.schema}.{self.table}: "
+                    "existing rows share a key under the new declaration (a tenant column was "
+                    "removed?). Deduplicate them or keep the column."
+                ) from e
+        else:
+            name = str(current["relname"])
+        self._legacy_key_indexes = sorted(
+            str(row["relname"]) for row in rows if row["indisvalid"] and str(row["relname"]) != name
+        )
+        if self._legacy_key_indexes:
+            logger.warning(
+                "PgVectorStore: keeping key index(es) %s of an earlier declaration on %s.%s, "
+                "so processes still running the previous version keep their keyed writes. "
+                "Once every process runs this version, call adrop_legacy_key_index().",
+                ", ".join(self._legacy_key_indexes),
+                self.schema,
+                self.table,
+            )
+
+    async def adrop_legacy_key_index(self) -> list[str]:
+        """Drop the ``memory_key`` indexes of an earlier declaration; return their names.
+
+        Call it once every process runs the current declaration (see the rollout steps in
+        the constructor docstring). Each index is dropped with ``DROP INDEX CONCURRENTLY``
+        under the setup lock and ``ddl_lock_timeout``, and only after checking that a valid
+        index for the current declaration exists, so keyed writes never lose their
+        ``ON CONFLICT`` target. Returns ``[]`` when there is nothing to drop.
+
+        Raises:
+            RuntimeError: No valid key index matches the current declaration (run
+                ``asetup()`` first).
+        """
+        await self._ensure_setup()
+
+        async def _drop(conn: Any) -> list[str]:
+            async with ddl_session(
+                conn,
+                lock_key=self._setup_lock_key(),
+                timeout=self.ddl_lock_timeout,
+                owner="PgVectorStore",
+            ):
+                rows = await self._key_index_rows(conn)
+                current = [
+                    row for row in rows if row["indisvalid"] and self._matches_key_definition(row)
+                ]
+                if not current:
+                    raise RuntimeError(
+                        f"No valid memory_key index matches the declaration of "
+                        f"{self.schema}.{self.table}; run asetup() first."
+                    )
+                keep = str(current[0]["relname"])
+                dropped = []
+                for row in rows:
+                    if str(row["relname"]) == keep:
+                        continue
+                    await drop_index(conn, str(row["qualified"]), concurrently=True)
+                    dropped.append(str(row["relname"]))
+                return dropped
+
+        dropped = await self._run(_drop, setup=False)
+        self._legacy_key_indexes = []
+        if dropped:
+            logger.info("PgVectorStore: dropped legacy key index(es) %s", ", ".join(dropped))
+        return dropped
+
+    async def _ensure_declared_columns(self, conn: Any) -> None:
+        """Add the declared tenant and extra columns and the RLS policy (idempotent).
+
+        Runs inside the setup transaction; the columns' indexes are built by
+        ``_ensure_indexes``. With nothing declared this does nothing at all (the table stays
+        exactly as before). To turn RLS off, keep the tenant columns and set
+        ``row_level_security=False``: the next setup drops the policy and disables RLS on the
+        table.
         """
         if not self.columns:
             return
-        await ensure_columns(conn, self._qualified_table, self.columns, f"{self.table}_c")
-        if self.columns.tenant:
-            await self._ensure_key_index(conn)
+        await ensure_columns(
+            conn, self._qualified_table, self.columns, f"{self.table}_c", indexes=False
+        )
         await ensure_rls(
             conn,
             table_sql=self._qualified_table,
@@ -756,6 +905,38 @@ class PgVectorStore(BaseStore):
         )
         if self.row_level_security:
             await warn_if_rls_bypassed(conn, logger, "PgVectorStore")
+
+    async def _ensure_indexes(self, conn: Any, *, concurrently: bool) -> None:
+        """Build every index the table should have that is missing or invalid.
+
+        Reads the catalog once and skips what is in place, so a restart runs no DDL (a
+        ``CREATE INDEX IF NOT EXISTS`` would still wait for a SHARE lock behind open writes).
+        ``concurrently=True`` (an existing table) builds with ``CREATE INDEX CONCURRENTLY``
+        on a connection with no open transaction; a new table gets plain builds inside the
+        setup transaction, which nobody else can see yet.
+        """
+        table = self._qualified_table
+        catalog = await index_catalog(conn, table)
+        for name, definition in self._base_indexes():
+            await ensure_index(
+                conn,
+                catalog,
+                name=name,
+                table_sql=table,
+                definition=definition,
+                concurrently=concurrently,
+            )
+        await self._ensure_vector_index(conn, catalog, concurrently=concurrently)
+        await self._ensure_key_index(conn, catalog, concurrently=concurrently)
+        if self.columns:
+            await ensure_column_indexes(
+                conn,
+                table,
+                self.columns,
+                f"{self.table}_c",
+                concurrently=concurrently,
+                catalog=catalog,
+            )
 
     async def _ensure_extension(self, conn: Any) -> None:
         """Create the pgvector extension if needed and check its version."""
@@ -810,7 +991,9 @@ class PgVectorStore(BaseStore):
                 "another table, or migrate the existing one."
             )
 
-    async def _ensure_vector_index(self, conn: Any) -> None:
+    async def _ensure_vector_index(
+        self, conn: Any, catalog: dict[str, tuple[bool, str]], *, concurrently: bool
+    ) -> None:
         """Create the HNSW index, or read the metric of the one that exists."""
         if self.embedding is None:
             self._index_metric = None
@@ -834,11 +1017,16 @@ class PgVectorStore(BaseStore):
             self.schema,
             index_name,
         )
-        if existing is None:
+        valid = catalog.get(index_name, (True, ""))[0]
+        if existing is None or not valid:
             _op, opclass = _METRIC_SQL[self.distance_metric]
-            await conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {_quote_ident(index_name)} "
-                f"ON {self._qualified_table} USING hnsw (embedding {opclass})"
+            await ensure_index(
+                conn,
+                catalog,
+                name=index_name,
+                table_sql=self._qualified_table,
+                definition=f"USING hnsw (embedding {opclass})",
+                concurrently=concurrently,
             )
             self._index_metric = self.distance_metric
             return
@@ -869,6 +1057,29 @@ class PgVectorStore(BaseStore):
             CURRENT_SCHEMA_VERSION,
         )
 
+    async def _setup_schema(self, conn: Any) -> bool:
+        """Extension, table, version table, migrations, declared columns and RLS policy.
+
+        Runs inside the setup transaction. Every step reads the catalog first and runs DDL
+        only for what is missing. Returns whether the table was created by this call.
+        """
+        if self.columns.tenant:
+            self._server_version = int(
+                await conn.fetchval("SELECT current_setting('server_version_num')::int") or 0
+            )
+        if self.embedding is not None:
+            await self._ensure_extension(conn)
+        exists = await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", self._qualified_table)
+        if not exists:
+            for statement in self._build_create_sql():
+                await conn.execute(statement)
+        if not await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", self._version_table):
+            await conn.execute(self._build_version_table_sql())
+        await self._check_embedding_column(conn)
+        await self._apply_migrations(conn)
+        await self._ensure_declared_columns(conn)
+        return not exists
+
     async def _ensure_setup(self) -> None:
         if self._setup_done:
             return
@@ -877,23 +1088,24 @@ class PgVectorStore(BaseStore):
                 return
 
             async def _setup(conn: Any) -> None:
-                # One transaction under an advisory lock: concurrent setups (several workers
-                # starting at once) run one after another, and a cancel rolls back cleanly.
-                async with conn.transaction():
-                    await conn.execute("SELECT pg_advisory_xact_lock($1)", self._setup_lock_key())
-                    if self.columns.tenant:
-                        self._server_version = int(
-                            await conn.fetchval("SELECT current_setting('server_version_num')::int")
-                            or 0
-                        )
-                    if self.embedding is not None:
-                        await self._ensure_extension(conn)
-                    for statement in self._build_create_sql():
-                        await conn.execute(statement)
-                    await self._check_embedding_column(conn)
-                    await self._ensure_vector_index(conn)
-                    await self._apply_migrations(conn)
-                    await self._ensure_declared_columns(conn)
+                # Concurrent setups (several workers starting at once) run one after another
+                # under a session-level advisory lock, which also holds across the
+                # non-transactional CREATE INDEX CONCURRENTLY below; every DDL statement waits
+                # at most ddl_lock_timeout for a table lock.
+                async with ddl_session(
+                    conn,
+                    lock_key=self._setup_lock_key(),
+                    timeout=self.ddl_lock_timeout,
+                    owner="PgVectorStore",
+                ):
+                    # Schema changes in one transaction, so a cancel rolls back cleanly.
+                    async with conn.transaction():
+                        created = await self._setup_schema(conn)
+                        if created:
+                            await self._ensure_indexes(conn, concurrently=False)
+                    if not created:
+                        # Missing indexes of a table in use are built without blocking it.
+                        await self._ensure_indexes(conn, concurrently=True)
 
             await self._run(_setup, setup=False)
             self._setup_done = True
@@ -903,9 +1115,12 @@ class PgVectorStore(BaseStore):
         """Create the extension (when an embedding is set), the table and its indexes.
 
         Safe to call from many processes at once (Postgres advisory lock) and many coroutines
-        (asyncio lock). Upgrades an older table to ``CURRENT_SCHEMA_VERSION``. Raises a clear
-        ``RuntimeError`` when the pgvector extension cannot be created, and ``ValueError`` when
-        the table's embedding dimension differs from the embedding service's.
+        (asyncio lock). Upgrades an older table to ``CURRENT_SCHEMA_VERSION``. Runs no DDL for
+        anything already in place; missing indexes of an existing table are built
+        concurrently (see the constructor docstring). Raises a clear ``RuntimeError`` when the
+        pgvector extension cannot be created, ``ValueError`` when the table's embedding
+        dimension differs from the embedding service's, and ``SetupLockTimeoutError`` when a
+        DDL statement waits longer than ``ddl_lock_timeout`` for a table lock.
         """
         await self._ensure_setup()
         return True
@@ -1046,8 +1261,12 @@ class PgVectorStore(BaseStore):
                 "::text::jsonb"
             )
 
-    def _vector_literal(self, vector: Any) -> str:
-        """Validate an embedding and render it as a pgvector text literal ``[x,y,...]``."""
+    def _vector_literal(self, vector: Any, *, cosine: bool = False) -> str:
+        """Validate an embedding and render it as a pgvector text literal ``[x,y,...]``.
+
+        With ``cosine=True`` a zero vector raises ``ValueError``: its cosine distance to
+        anything is undefined (pgvector returns NaN), which would sort and score arbitrarily.
+        """
         dimension = self._dimension()
         if vector is None or len(vector) != dimension:
             raise ValueError("Embedding service returned invalid vector")
@@ -1057,14 +1276,22 @@ class PgVectorStore(BaseStore):
             if not math.isfinite(number):
                 raise ValueError("Embedding service returned invalid vector")
             values.append(repr(number))
+        if cosine and not any(float(item) != 0.0 for item in vector):
+            raise ValueError(
+                "Embedding service returned a zero vector: cosine distance is undefined for it"
+            )
         return "[" + ",".join(values) + "]"
 
-    async def _embed(self, text: str, *, query: bool) -> str | None:
+    async def _embed(
+        self, text: str, *, query: bool, metric: DistanceMetric | None = None
+    ) -> str | None:
         """Embed ``text`` and return a vector literal, or ``None`` after a fallback.
 
         An embedding service error is caught under ``on_embedding_error="fallback"`` (a warning
         is logged). A vector of the wrong size always raises: it is a configuration error, not
-        an outage.
+        an outage. Under ``metric=COSINE`` a zero vector is refused: a write raises
+        ``ValueError``; a query raises under ``"raise"`` and falls back to ``TEXT`` under
+        ``"fallback"``.
         """
         if self.embedding is None:
             return None
@@ -1084,7 +1311,19 @@ class PgVectorStore(BaseStore):
                 "searching by text instead" if query else "saving the memory without an embedding",
             )
             return None
-        return self._vector_literal(vector)
+        cosine = metric == DistanceMetric.COSINE
+        if query and cosine and self.on_embedding_error == "fallback":
+            try:
+                return self._vector_literal(vector, cosine=True)
+            except ValueError as e:
+                if "zero vector" not in str(e):
+                    raise
+                logger.warning(
+                    "PgVectorStore: the query embedding is a zero vector, which has no cosine "
+                    "distance; searching by text instead"
+                )
+                return None
+        return self._vector_literal(vector, cosine=cosine)
 
     @staticmethod
     def _prepare(
@@ -1189,7 +1428,7 @@ class PgVectorStore(BaseStore):
         memory_id = str(requested_id) if requested_id else await self.generate_framework_id()
         check_owner = self._scope_user_id(config, owner) is not None
         ctx = self._tenant_context(config, write=True, strict=False)
-        vector = await self._embed(text, query=False)
+        vector = await self._embed(text, query=False, metric=self.distance_metric)
 
         params: list[Any] = [
             memory_id,
@@ -1273,9 +1512,7 @@ class PgVectorStore(BaseStore):
                 with column_value_errors(column_params):
                     return await conn.fetchrow(sql, *params)
             except asyncpg.UniqueViolationError as e:  # type: ignore[union-attr]
-                raise ValueError(
-                    f"memory_id '{memory_id}' is already used by another memory"
-                ) from e
+                raise self._store_conflict_error(e, memory_id, memory_key) from e
             except asyncpg.InsufficientPrivilegeError as e:  # type: ignore[union-attr]
                 # Under RLS an upsert that hits another tenant's row fails the policy instead
                 # of matching no row; report it the same way.
@@ -1289,6 +1526,23 @@ class PgVectorStore(BaseStore):
         stored_id = str(row["id"])
         logger.debug("Stored memory %s in collection %s", stored_id, collection)
         return stored_id
+
+    def _store_conflict_error(
+        self, error: Exception, memory_id: str, memory_key: str | None
+    ) -> ValueError:
+        """The ``ValueError`` for a unique violation in ``astore``.
+
+        A keyed write that hits the key index of an earlier declaration (kept during a
+        rollout, see ``adrop_legacy_key_index``) gets its own message.
+        """
+        constraint = str(getattr(error, "constraint_name", "") or "")
+        if memory_key is not None and self._is_key_index_name(constraint):
+            return ValueError(
+                f"memory_key '{memory_key}' is taken in another tenant under the key index "
+                f"{constraint} of an earlier declaration. Drop it with "
+                "adrop_legacy_key_index() once every process runs this version."
+            )
+        return ValueError(f"memory_id '{memory_id}' is already used by another memory")
 
     async def aupdate(
         self,
@@ -1316,7 +1570,7 @@ class PgVectorStore(BaseStore):
         clean = {k: v for k, v in meta.items() if k not in _SYSTEM_METADATA_KEYS}
         replace = bool(kwargs.get("replace_metadata", False))
         ctx = self._tenant_context(config, write=True)
-        vector = await self._embed(text, query=False)
+        vector = await self._embed(text, query=False, metric=self.distance_metric)
 
         params: list[Any] = []
         where = self._scope_where(params, collection, scoped_user_id, tenant=ctx.conditions)
@@ -1458,7 +1712,8 @@ class PgVectorStore(BaseStore):
             vectors = await self.embedding.aembed_batch(texts)
             if len(vectors) != len(rows):
                 raise ValueError("Embedding service returned a different number of vectors")
-            literals = [self._vector_literal(v) for v in vectors]
+            cosine = self.distance_metric == DistanceMetric.COSINE
+            literals = [self._vector_literal(v, cosine=cosine) for v in vectors]
             args = (
                 [row["collection"] for row in rows],
                 [row["id"] for row in rows],
@@ -1576,14 +1831,19 @@ class PgVectorStore(BaseStore):
 
         vector = None
         if strategy != RetrievalStrategy.TEXT:
-            vector = await self._embed(query, query=True)
+            vector = await self._embed(query, query=True, metric=metric)
             if vector is None:
                 strategy = RetrievalStrategy.TEXT
             else:
                 self._warn_metric(metric)
 
+        # Every column in the search SQL is qualified with the table alias ``m`` (and the
+        # query with its own alias), so a declared column can never collide with a name the
+        # SQL introduces (the tsquery, ranks, scores).
         params: list[Any] = []
-        where = self._scope_where(params, collection, scoped_user_id, tenant=ctx.conditions)
+        where = self._scope_where(
+            params, collection, scoped_user_id, alias="m", tenant=ctx.conditions
+        )
         self._add_filters(where, memory_type=memory_type, category=category, filters=filters)
 
         if strategy == RetrievalStrategy.TEXT or vector is None:
@@ -1599,16 +1859,22 @@ class PgVectorStore(BaseStore):
         results: list[MemorySearchResult] = []
         best = (sum(self.hybrid_weights)) / (self.rrf_k + 1)
         for row in rows:
+            # A non-finite score (NaN from a zero vector stored before zero vectors were
+            # refused) never passes a threshold: NaN < x is False, so it would otherwise.
             if strategy == RetrievalStrategy.HYBRID:
                 similarity = row["similarity"]
                 if score_threshold is not None and (
-                    similarity is None or float(similarity) < score_threshold
+                    similarity is None
+                    or not math.isfinite(float(similarity))
+                    or float(similarity) < score_threshold
                 ):
                     continue
                 score = float(row["score"]) / best
             else:
                 score = float(row["score"])
-                if score_threshold is not None and score < score_threshold:
+                if score_threshold is not None and (
+                    not math.isfinite(score) or score < score_threshold
+                ):
                     continue
             results.append(self._row_to_result(row, score))
 
@@ -1619,27 +1885,34 @@ class PgVectorStore(BaseStore):
     def _similarity_sql(
         self, where: _Where, metric: DistanceMetric, vector: str, limit: int
     ) -> str:
+        """``SIMILARITY`` search. ``where`` is built with the table alias ``m``."""
         operator, _opclass = _METRIC_SQL[metric]
         vector_p = where.param(vector)
-        distance = f"embedding {operator} {vector_p}::text::vector"
-        where.add("embedding IS NOT NULL")
+        distance = f"m.embedding {operator} {vector_p}::text::vector"
+        where.add("m.embedding IS NOT NULL")
         limit_p = where.param(limit)
         return (
-            f"SELECT {self._columns()}, {_similarity_sql(metric, distance)} AS score "  # noqa: S608
-            f"FROM {self._qualified_table} WHERE {where.sql()} "
+            f"SELECT {self._columns('m')}, {_similarity_sql(metric, distance)} AS score "  # noqa: S608
+            f"FROM {self._qualified_table} AS m WHERE {where.sql()} "
             f"ORDER BY {distance} LIMIT {limit_p}"
         )
 
     def _text_sql(self, where: _Where, query: str, limit: int) -> str:
+        """``TEXT`` search. ``where`` is built with the table alias ``m``.
+
+        The tsquery is the column ``q`` of the function alias ``tsq_input``; every reference
+        is qualified, so a declared column named ``tsq`` or ``q`` cannot shadow it.
+        """
         config_p = where.param(self.text_search_config)
         query_p = where.param(query)
-        where.add("tsv @@ tsq")
+        rank = "ts_rank(m.tsv, tsq_input.q, 32)"
+        where.add("m.tsv @@ tsq_input.q")
         limit_p = where.param(limit)
         return (
-            f"SELECT {self._columns()}, ts_rank(tsv, tsq, 32) AS score "  # noqa: S608
-            f"FROM {self._qualified_table}, "
-            f"websearch_to_tsquery({config_p}::text::regconfig, {query_p}) AS tsq "
-            f"WHERE {where.sql()} ORDER BY score DESC, id LIMIT {limit_p}"
+            f"SELECT {self._columns('m')}, {rank} AS score "  # noqa: S608
+            f"FROM {self._qualified_table} AS m, "
+            f"websearch_to_tsquery({config_p}::text::regconfig, {query_p}) AS tsq_input(q) "
+            f"WHERE {where.sql()} ORDER BY {rank} DESC, m.id LIMIT {limit_p}"
         )
 
     def _hybrid_sql(
@@ -1663,17 +1936,22 @@ class PgVectorStore(BaseStore):
         collection_p = where.param(collection)
         limit_p = where.param(limit)
         table = self._qualified_table
-        distance = f"embedding {operator} {vector_p}::text::vector"
+        # ``scope`` is built with the table alias ``m``; each CTE aliases the table as ``m``
+        # and the tsquery as ``tsq_input(q)``, so every reference is qualified (see
+        # ``_text_sql``).
         m_distance = f"m.embedding {operator} {vector_p}::text::vector"
+        rank = "ts_rank(m.tsv, tsq_input.q, 32)"
         return (
             "WITH vec AS ("  # noqa: S608
-            f"SELECT id, ROW_NUMBER() OVER (ORDER BY {distance}) AS rnk FROM {table} "
-            f"WHERE {scope} AND embedding IS NOT NULL ORDER BY {distance} LIMIT {candidates_p}"
+            f"SELECT m.id, ROW_NUMBER() OVER (ORDER BY {m_distance}) AS rnk FROM {table} AS m "
+            f"WHERE {scope} AND m.embedding IS NOT NULL ORDER BY {m_distance} "
+            f"LIMIT {candidates_p}"
             "), txt AS ("
-            "SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, tsq, 32) DESC) AS rnk "
-            f"FROM {table}, websearch_to_tsquery({config_p}::text::regconfig, {query_p}) AS tsq "
-            f"WHERE {scope} AND tsv @@ tsq "
-            f"ORDER BY ts_rank(tsv, tsq, 32) DESC LIMIT {candidates_p}"
+            f"SELECT m.id, ROW_NUMBER() OVER (ORDER BY {rank} DESC) AS rnk "
+            f"FROM {table} AS m, "
+            f"websearch_to_tsquery({config_p}::text::regconfig, {query_p}) AS tsq_input(q) "
+            f"WHERE {scope} AND m.tsv @@ tsq_input.q "
+            f"ORDER BY {rank} DESC LIMIT {candidates_p}"
             "), fused AS ("
             "SELECT COALESCE(vec.id, txt.id) AS id, "
             f"COALESCE({vector_weight_p}::float8 / ({k_p}::int + vec.rnk), 0) + "

@@ -214,6 +214,8 @@ class _TypeConn:
 
     async def fetch(self, sql, *args):
         self.calls.append(("fetch", sql, args))
+        if "pg_index" in sql:  # index_catalog: no indexes yet
+            return []
         return self.existing
 
     async def fetchval(self, sql, *args):

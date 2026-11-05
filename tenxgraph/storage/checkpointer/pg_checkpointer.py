@@ -26,8 +26,13 @@ from tenxgraph.storage.columns import (
     build_isolation_where,
     column_ddl,
     column_value_errors,
+    ddl_lock_timeout_setting,
+    ddl_session,
+    ensure_column_indexes,
     ensure_columns,
+    ensure_index,
     ensure_rls,
+    index_catalog,
     isolation_conditions,
     parse_columns,
     rls_all_rows_settings,
@@ -98,6 +103,15 @@ THREAD_BUILTIN_COLUMNS = frozenset(
 # Tables whose rows belong to a thread. Under native RLS each gets a policy that shows a row only
 # when its thread row is visible (the ``threads`` policy carries the tenant columns).
 _THREAD_CHILD_TABLES = ("states", "messages", "tool_executions")
+
+# Seconds a setup DDL statement waits for a table lock before setup fails with
+# ``SetupLockTimeoutError`` (``ddl_lock_timeout`` option; None waits forever).
+DEFAULT_DDL_LOCK_TIMEOUT = 10.0
+
+# Config key under which the thread's identity (owner and tenant values, read from its row after
+# a scoped check) is kept for the rest of a call or run. Underscore-prefixed keys are internal:
+# the API drops them from client config. See ``PgCheckpointer._thread_identity``.
+_THREAD_IDENTITY_KEY = "_thread_identity"
 
 # Advisory-lock key used to serialize schema creation/migration across processes.
 # Any stable arbitrary 64-bit constant works; it only has to be the same in every
@@ -350,6 +364,20 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
               Costs one transaction and one statement per call, plus a thread lookup per
               child row. Superusers and ``BYPASSRLS`` roles skip RLS (a warning is logged).
               Needs tenant columns.
+            - ddl_lock_timeout: Seconds a setup DDL statement waits for a table lock
+              (Postgres ``lock_timeout``) before setup fails with
+              ``tenxgraph.storage.columns.SetupLockTimeoutError`` (default 10; None waits
+              forever). Setup reads the catalog first and runs no DDL for anything already in
+              place, so a restart takes no table lock; a missing index on an existing table is
+              built with ``CREATE INDEX CONCURRENTLY`` (an invalid leftover of a failed build is
+              dropped and rebuilt). Setup is serialised across processes by a session-level
+              advisory lock.
+
+            Redis keys with tenant columns: the state cache, stop and active-run keys belong to
+            the thread, not the caller. They are built from the thread row's own ``user_id`` and
+            tenant values, read under the caller's scope, so every caller allowed to see a
+            thread (its owner in another project, an org admin) shares one cache entry and one
+            stop key. A cache hit is still served only after the caller's scoped durable read.
 
             Trusted-source rule for ``tenant_columns`` and ``extra_columns``: tenant and extra
             column values come only from ``config["user"]``. ``user`` is a reserved config key:
@@ -485,6 +513,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if row_level_security and not self.columns.tenant:
             raise ValueError("row_level_security=True needs at least one tenant column")
         self.row_level_security = row_level_security
+        self.ddl_lock_timeout = kwargs.get("ddl_lock_timeout", DEFAULT_DDL_LOCK_TIMEOUT)
+        ddl_lock_timeout_setting(self.ddl_lock_timeout)  # validates
 
         # Validate schema name to prevent SQL injection
         if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", schema):
@@ -694,6 +724,29 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Returns:
             list[str]: List of SQL statements for table creation.
         """
+        statements = [sql for _table, sql in self._build_table_statements()]
+        statements.extend(
+            f"CREATE INDEX IF NOT EXISTS {name} ON {self._get_table_name(table)}{definition}"
+            for name, table, definition in self._base_index_specs()
+        )
+        return statements
+
+    @staticmethod
+    def _base_index_specs() -> list[tuple[str, str, str]]:
+        """``(index name, table, definition)`` of the plain indexes of a fresh schema.
+
+        Version-dependent indexes on ``states`` are created by the schema migrations (see
+        _build_migrations) so that an upgrade from a pre-version schema adds the column before
+        indexing it.
+        """
+        return [
+            ("idx_threads_user_id", "threads", "(user_id)"),
+            ("idx_states_thread_id", "states", "(thread_id)"),
+            ("idx_messages_thread_id", "messages", "(thread_id)"),
+        ]
+
+    def _build_table_statements(self) -> list[tuple[str | None, str]]:
+        """``(table, sql)`` creating each table (``None`` for the enum type block)."""
         thread_id_type = self._get_sql_type(self.id_type)
         user_id_type = self._get_sql_type(self.user_id_type)
         message_id_type = self._get_sql_type(self.id_type)
@@ -712,23 +765,32 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         return [
             # Schema version tracking table
-            f"""
+            (
+                "schema_version",
+                f"""
             CREATE TABLE IF NOT EXISTS {self._get_table_name("schema_version")} (
                 version INT PRIMARY KEY,
                 applied_at TIMESTAMPTZ DEFAULT NOW()
             )
             """,
+            ),
             # Create message role enum (safe for older Postgres versions)
             (
-                "DO $$\n"
-                "BEGIN\n"
-                "    CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system', 'tool');\n"
-                "EXCEPTION\n"
-                "    WHEN duplicate_object THEN NULL;\n"
-                "END$$;"
+                None,
+                (
+                    "DO $$\n"
+                    "BEGIN\n"
+                    "    CREATE TYPE message_role AS ENUM "
+                    "('user', 'assistant', 'system', 'tool');\n"
+                    "EXCEPTION\n"
+                    "    WHEN duplicate_object THEN NULL;\n"
+                    "END$$;"
+                ),
             ),
             # Create threads table
-            f"""
+            (
+                "threads",
+                f"""
             CREATE TABLE IF NOT EXISTS {self._get_table_name("threads")} (
                 {thread_pk},
                 thread_name VARCHAR(255),
@@ -738,12 +800,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 meta JSONB DEFAULT '{{}}'::jsonb
             )
             """,
+            ),
             # Create states table.
             # ``version`` is a per-thread monotonically increasing counter used
             # for optimistic concurrency control (see aput_state/aput_checkpoint).
             # The UNIQUE (thread_id, version) constraint is what makes concurrent
             # appends collide instead of silently duplicating a version.
-            f"""
+            (
+                "states",
+                f"""
             CREATE TABLE IF NOT EXISTS {self._get_table_name("states")} (
                 state_id SERIAL PRIMARY KEY,
                 thread_id {thread_id_type} NOT NULL
@@ -756,8 +821,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 meta JSONB DEFAULT '{{}}'::jsonb
             )
             """,
+            ),
             # Create messages table
-            f"""
+            (
+                "messages",
+                f"""
             CREATE TABLE IF NOT EXISTS {self._get_table_name("messages")} (
                 {message_col} NOT NULL,
                 thread_id {thread_id_type} NOT NULL
@@ -775,15 +843,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 PRIMARY KEY (thread_id, message_id)
             )
             """,
-            # Create indexes. Version-dependent indexes on ``states`` are created
-            # by the schema migrations (see _build_migrations) so that an upgrade
-            # from a pre-version schema adds the column before indexing it.
-            f"CREATE INDEX IF NOT EXISTS idx_threads_user_id ON "
-            f"{self._get_table_name('threads')}(user_id)",
-            f"CREATE INDEX IF NOT EXISTS idx_states_thread_id ON "
-            f"{self._get_table_name('states')}(thread_id)",
-            f"CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON "
-            f"{self._get_table_name('messages')}(thread_id)",
+            ),
         ]
 
     def _build_migrations(self) -> dict[int, list[str]]:
@@ -872,12 +932,16 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 f"ALTER TABLE {messages} DROP COLUMN IF EXISTS reasoning",
             ],
             # v6: the developer's tenant and extra columns on ``threads`` (ADD COLUMN IF NOT
-            # EXISTS + one B-tree index each). Nothing declared: no change. A column declared
-            # later is added by _ensure_declared_columns, which runs on every setup. Extra
-            # columns of other types (jsonb, text[], ...) are added there too, after the
-            # server resolves the declared type: their text never reaches DDL.
+            # EXISTS). Nothing declared: no change. A column declared later is added by
+            # _ensure_declared_columns, which runs on every setup. Extra columns of other
+            # types (jsonb, text[], ...) are added there too, after the server resolves the
+            # declared type: their text never reaches DDL. Their B-tree indexes are built by
+            # _ensure_indexes, concurrently on an existing table.
             6: column_ddl(
-                self._get_table_name("threads"), self.columns.builtin_only(), "idx_threads"
+                self._get_table_name("threads"),
+                self.columns.builtin_only(),
+                "idx_threads",
+                indexes=False,
             ),
         }
 
@@ -888,11 +952,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         the catalog first, so nothing is altered when everything is in place. With nothing
         declared it does nothing. To turn RLS off, keep the tenant columns and set
         ``row_level_security=False``: the next setup drops the policies and disables RLS.
+        The columns' indexes are built by ``_ensure_indexes``.
         """
         if not self.columns:
             return
         threads = self._get_table_name("threads")
-        await ensure_columns(conn, threads, self.columns, "idx_threads")
+        await ensure_columns(conn, threads, self.columns, "idx_threads", indexes=False)
         tenant = self.columns.tenant
         enabled = self.row_level_security
         await ensure_rls(
@@ -1000,32 +1065,94 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
             async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
                 try:
-                    async with conn.transaction():
-                        # Serialize schema creation ACROSS processes (multiple
-                        # gunicorn workers / k8s replicas starting at once). An
-                        # in-process flag is not enough: concurrent
-                        # CREATE TABLE IF NOT EXISTS / CREATE TYPE can still fail
-                        # with "duplicate key value violates unique constraint
-                        # pg_type_typname_nsp_index", which the DO-block's
-                        # duplicate_object guard does not catch. The advisory lock
-                        # is released automatically when the transaction ends.
-                        await conn.execute("SELECT pg_advisory_xact_lock($1)", SCHEMA_INIT_LOCK_ID)
-
-                        sql_statements = self._build_create_tables_sql()
-                        for sql in sql_statements:
-                            logger.debug("Executing SQL: %s", sql.strip())
-                            await conn.execute(sql)
-
-                        # Apply pending migrations and record the schema version.
-                        await self._check_and_apply_schema_version(conn)
-                        # Declared tenant/extra columns and RLS policies (idempotent).
-                        await self._ensure_declared_columns(conn)
+                    # Serialize schema creation ACROSS processes (multiple gunicorn workers /
+                    # k8s replicas starting at once). An in-process flag is not enough:
+                    # concurrent CREATE TABLE IF NOT EXISTS / CREATE TYPE can still fail with
+                    # "duplicate key value violates unique constraint
+                    # pg_type_typname_nsp_index", which the DO-block's duplicate_object guard
+                    # does not catch. The lock is session-level so it also covers the
+                    # CREATE INDEX CONCURRENTLY that runs after the transaction; every DDL
+                    # statement waits at most ddl_lock_timeout for a table lock.
+                    async with ddl_session(
+                        conn,
+                        lock_key=SCHEMA_INIT_LOCK_ID,
+                        timeout=self.ddl_lock_timeout,
+                        owner="PgCheckpointer",
+                    ):
+                        async with conn.transaction():
+                            # Catalog first: a restart runs no DDL for what is in place.
+                            new_tables = await self._create_missing_tables(conn)
+                            # Apply pending migrations and record the schema version.
+                            await self._check_and_apply_schema_version(conn)
+                            # Declared tenant/extra columns and RLS policies (idempotent).
+                            await self._ensure_declared_columns(conn)
+                            # Tables created just now are invisible to others: plain builds.
+                            await self._ensure_indexes(conn, new_tables, concurrently=False)
+                        # Indexes missing on tables in use are built without blocking them.
+                        await self._ensure_indexes(
+                            conn, self._index_tables() - new_tables, concurrently=True
+                        )
 
                     self._schema_initialized = True
                     logger.debug("Database schema initialized successfully")
                 except Exception as e:
                     logger.error("Failed to initialize database schema: %s", e)
                     raise
+
+    async def _create_missing_tables(self, conn) -> set[str]:
+        """Create the tables (and the role enum) that do not exist yet; return their names.
+
+        Reads the catalog first, so a restart runs no ``CREATE TABLE`` at all.
+        """
+        created: set[str] = set()
+        for table, sql in self._build_table_statements():
+            if table is not None:
+                exists = await conn.fetchval(
+                    "SELECT to_regclass($1) IS NOT NULL", self._get_table_name(table)
+                )
+                if exists:
+                    continue
+                created.add(table)
+            logger.debug("Executing SQL: %s", sql.strip())
+            await conn.execute(sql)
+        return created
+
+    @staticmethod
+    def _index_tables() -> set[str]:
+        """Tables whose indexes ``_ensure_indexes`` manages."""
+        return {"threads", "states", "messages"}
+
+    async def _ensure_indexes(self, conn, tables: set[str], *, concurrently: bool) -> None:
+        """Build the missing or invalid base and declared-column indexes of ``tables``.
+
+        Reads the catalog first and skips indexes that are in place: ``CREATE INDEX IF NOT
+        EXISTS`` would still wait for a SHARE lock behind every open write. With
+        ``concurrently=True`` (tables in use) the builds use ``CREATE INDEX CONCURRENTLY``,
+        outside any transaction; an invalid leftover of a failed build is dropped and rebuilt.
+        """
+        for table in sorted(tables & self._index_tables()):
+            table_sql = self._get_table_name(table)
+            catalog = await index_catalog(conn, table_sql)
+            for name, index_table, definition in self._base_index_specs():
+                if index_table != table:
+                    continue
+                await ensure_index(
+                    conn,
+                    catalog,
+                    name=name,
+                    table_sql=table_sql,
+                    definition=definition,
+                    concurrently=concurrently,
+                )
+            if table == "threads" and self.columns:
+                await ensure_column_indexes(
+                    conn,
+                    table_sql,
+                    self.columns,
+                    "idx_threads",
+                    concurrently=concurrently,
+                    catalog=catalog,
+                )
 
     async def aget_schema_version(self) -> int:
         """The schema version recorded in the database; 0 when the schema is missing.
@@ -1119,43 +1246,179 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Args:
             thread_id (str|int): Thread identifier.
             user_id (str|int): User identifier.
-            config (dict, optional): The call's config. With tenant columns declared, the
-                caller's tenant values (from ``config["user"]``) are part of the key, so the
-                same ``user_id`` in another tenant never reads this cache entry.
+            config (dict, optional): The call's config. With tenant columns declared the key
+                is the thread's identity: its owner and tenant values from the thread row
+                (``_thread_identity``), or, before that row has been read, the caller's
+                ``user_id`` and tenant values from ``config["user"]``.
 
         Returns:
             str: Redis cache key.
         """
+        owner, suffix = self._key_identity(user_id, config)
         # Ids are percent-encoded so a ":" inside one cannot make two different
         # (thread, user) pairs produce the same key.
         return (
             f"{self.redis_key_prefix}state_cache:"
-            f"{quote(str(thread_id), safe='')}:{quote(str(user_id), safe='')}"
-            f"{self._tenant_key_suffix(config)}"
+            f"{quote(str(thread_id), safe='')}:{quote(str(owner), safe='')}{suffix}"
         )
 
     def _tenant_key_suffix(self, config: dict[str, Any] | None) -> str:
-        """``:t:org_id=<v>:project_id=<v>`` for the caller's tenant values ('' without columns).
+        """``:t:org_id=<v>:project_id=<v>`` for the key identity's tenant values ('' without).
 
-        Every declared tenant column is in the suffix (picked by the scope or not), so a
-        cache entry belongs to exactly one (user, tenant values) identity. A missing value is
-        written as ``col!``, which no percent-encoded value can produce.
+        Every declared tenant column is in the suffix (picked by the scope or not). The values
+        are the thread row's (``_thread_identity``) once read, else the caller's. A missing
+        value is written as ``col!``, which no percent-encoded value can produce.
+        """
+        return self._key_identity(None, config)[1]
+
+    def _key_identity(self, user_id: Any, config: dict[str, Any] | None) -> tuple[Any, str]:
+        """``(owner, tenant suffix)`` the Redis keys of a thread are built from.
+
+        With tenant columns and a ``_thread_identity`` read for this thread, both come from
+        the thread row, so every caller allowed to see the thread shares its keys. Otherwise
+        the caller's ``user_id`` and tenant values are used (as for a thread this caller is
+        about to create, whose row will hold exactly those values).
         """
         if not self.columns.tenant:
-            return ""
-        values = self.columns.resolve(config)
+            return user_id, ""
+        identity = self._thread_identity(config)
+        if identity is not None:
+            owner = identity["user_id"]
+            texts = identity["tenant"]
+        else:
+            owner = user_id
+            values = self.columns.resolve(config)
+            texts = {}
+            for spec in self.columns.tenant:
+                value = values.get(spec.name)
+                texts[spec.name] = None if value is None else spec.to_setting(value)
         parts = []
         for spec in self.columns.tenant:
-            value = values.get(spec.name)
-            if value is None:
+            text = texts.get(spec.name)
+            if text is None:
                 parts.append(f"{spec.name}!")
             else:
-                parts.append(f"{spec.name}={quote(spec.to_setting(value), safe='')}")
-        return ":t:" + ":".join(parts)
+                parts.append(f"{spec.name}={quote(str(text), safe='')}")
+        return owner, ":t:" + ":".join(parts)
+
+    def _thread_identity(self, config: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The ``_thread_identity`` kept in ``config`` for its current thread, if any.
+
+        Only this class writes it, after the thread row passed the caller's scoped check
+        (``_remember_identity``). It is ignored when it was read for another thread.
+        """
+        if not self.columns.tenant or not isinstance(config, dict):
+            return None
+        identity = config.get(_THREAD_IDENTITY_KEY)
+        if not isinstance(identity, dict):
+            return None
+        if str(identity.get("thread_id")) != str(config.get("thread_id")):
+            return None
+        return identity
+
+    def _remember_identity(self, config: dict[str, Any] | None, thread_id: Any, row: Any) -> None:
+        """Keep the thread row's owner and tenant values in ``config`` (tenant columns only).
+
+        ``row`` must come from a read that passed the caller's scope check.
+        """
+        if not self.columns.tenant or not isinstance(config, dict) or row is None:
+            return
+        tenant = {}
+        for spec in self.columns.tenant:
+            value = row[spec.name]
+            tenant[spec.name] = None if value is None else spec.to_setting(value)
+        config[_THREAD_IDENTITY_KEY] = {
+            "thread_id": str(thread_id),
+            "user_id": row["user_id"],
+            "tenant": tenant,
+        }
+
+    def _identity_columns_sql(self) -> str:
+        """``user_id, "org_id", ...``: the thread-row columns of its identity."""
+        return ", ".join(["user_id", *(spec.quoted for spec in self.columns.tenant)])
+
+    async def _read_thread_identity(
+        self, thread_id: Any, user_id: Any, config: dict[str, Any]
+    ) -> Any:
+        """Read the thread row's identity and current state version under the caller's scope.
+
+        Returns the row (``user_id``, tenant columns, ``durable_version``) and remembers the
+        identity in ``config``, or ``None`` when the caller cannot see the thread or it does
+        not exist. A scope the caller cannot satisfy raises before any query.
+        """
+        where, params = self._thread_row_scope(thread_id, user_id, config)
+        query = (
+            f"SELECT {self._identity_columns_sql()}, "  # noqa: S608
+            f"(SELECT COALESCE(MAX(version), 0) FROM {self._get_table_name('states')} "
+            "WHERE thread_id = $1) AS durable_version "
+            f"FROM {self._get_table_name('threads')} WHERE {where}"
+        )
+        row = await self._run_scoped(
+            lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
+        )
+        if row is None:
+            if self._thread_identity(config) is not None:
+                config.pop(_THREAD_IDENTITY_KEY, None)  # no longer visible: own keys again
+            return None
+        self._remember_identity(config, thread_id, row)
+        return row
+
+    async def _resolve_thread_identity(self, config: dict[str, Any]) -> None:
+        """Make the stop and active-run keys of this call the thread's (tenant columns only).
+
+        Reads the thread row once per config under the caller's scope. When the caller cannot
+        see the thread, or Postgres cannot be read, nothing is remembered and the caller's own
+        values are used, which only ever reach keys of the caller's own identity.
+        """
+        if not self.columns.tenant or self._thread_identity(config) is not None:
+            return
+        thread_id, user_id = config.get("thread_id"), config.get("user_id")
+        if not thread_id or not user_id:
+            return
+        try:
+            await self._read_thread_identity(self._db_thread_id(thread_id), user_id, config)
+        except Exception as e:  # the caller's own keys are the safe fallback
+            logger.debug("Could not read the identity of thread_id=%s: %s", thread_id, e)
 
     def _stop_request_key(self, config: dict[str, Any]) -> str:
-        """Per-thread stop/active-run key, also scoped by the caller's tenant values."""
-        return super()._stop_request_key(config) + self._tenant_key_suffix(config)
+        """Per-thread stop/active-run key.
+
+        Without tenant columns: ``<thread>:<caller user_id>`` as in the base class. With
+        tenant columns: the thread's identity (owner and tenant values), so an owner working
+        in another project, or an org admin, reaches the run's stop and active-run keys.
+        """
+        if not self.columns.tenant:
+            return super()._stop_request_key(config)
+        owner, suffix = self._key_identity(config.get("user_id"), config)
+        return f"{config.get('thread_id')}:{owner}{suffix}"
+
+    async def aget_active_run(self, config: dict[str, Any]) -> str | None:
+        await self._resolve_thread_identity(config)
+        return await super().aget_active_run(config)
+
+    async def abegin_run(self, config: dict[str, Any]) -> None:
+        await self._resolve_thread_identity(config)
+        await super().abegin_run(config)
+
+    async def arefresh_run(self, config: dict[str, Any]) -> None:
+        await self._resolve_thread_identity(config)
+        await super().arefresh_run(config)
+
+    async def aend_run(self, config: dict[str, Any]) -> None:
+        await self._resolve_thread_identity(config)
+        await super().aend_run(config)
+
+    async def arequest_stop(self, config: dict[str, Any]) -> Any | None:
+        await self._resolve_thread_identity(config)
+        return await super().arequest_stop(config)
+
+    async def ais_stop_requested(self, config: dict[str, Any]) -> bool:
+        await self._resolve_thread_identity(config)
+        return await super().ais_stop_requested(config)
+
+    async def aclear_stop_request(self, config: dict[str, Any]) -> Any | None:
+        await self._resolve_thread_identity(config)
+        return await super().aclear_stop_request(config)
 
     def _get_generic_cache_key(self, namespace: str, key: str) -> str:
         """Build a Redis key for shared non-state cache entries."""
@@ -1535,6 +1798,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     error_code="STORAGE_FORBIDDEN_001",
                     context={"thread_id": thread_id},
                 )
+        # The caller passed the check: later cache and stop keys of this call use the thread's
+        # own identity (see _key_identity).
+        self._remember_identity(config, thread_id, row)
 
     def _row_to_thread_info(self, row) -> ThreadInfo:
         """Build a :class:`ThreadInfo` from a ``threads`` row."""
@@ -2066,6 +2332,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         try:
             scope_sql, scope_params = self._thread_scope(thread_id, user_id, config)
+            # With tenant columns the cache key is the thread's identity: read it (scoped)
+            # before the rows go, so the shared entry is the one dropped below.
+            await self._resolve_thread_identity(config)
 
             # Clear from PostgreSQL with retry logic, scoped to the owner.
             query = f"DELETE FROM {self._get_table_name('states')} WHERE {scope_sql}"  # noqa: S608
@@ -2159,23 +2428,31 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Dropping it forces the next read back to Postgres, so the thread heals
         itself instead of staying wedged until the TTL expires.
 
-        ``config`` selects the caller's tenant-scoped key when tenant columns are declared.
+        ``config`` selects the key when tenant columns are declared: the thread's identity key
+        once its row has been read (``_thread_identity``), plus the caller's own key, which
+        may hold an entry written before the thread existed.
         """
         try:
-            cache_key = self._get_thread_key(thread_id, user_id, config)
+            keys = [self._get_thread_key(thread_id, user_id, config)]
+            if self._thread_identity(config) is not None:
+                caller_config = {k: v for k, v in config.items() if k != _THREAD_IDENTITY_KEY}
+                caller_key = self._get_thread_key(thread_id, user_id, caller_config)
+                if caller_key not in keys:
+                    keys.append(caller_key)
         except ValueError as e:  # a malformed tenant value: nothing of ours can be cached
             logger.warning("Skipped state cache invalidation for thread_id=%s: %s", thread_id, e)
             return
         for attempt in range(retries + 1):
             try:
-                await self._redis_call(lambda: self.redis.delete(cache_key))
+                await self._redis_call(lambda: self.redis.delete(*keys))
                 logger.debug("Invalidated stale state cache for thread_id=%s", thread_id)
                 return
             except _RedisUnavailable:
                 # Redis is down: delete the entry as soon as it is reachable again (see
                 # _redis_call), so it cannot be served after recovery.
-                if len(self._skipped_invalidations) < _MAX_SKIPPED_INVALIDATIONS:
-                    self._skipped_invalidations.add(cache_key)
+                for cache_key in keys:
+                    if len(self._skipped_invalidations) < _MAX_SKIPPED_INVALIDATIONS:
+                        self._skipped_invalidations.add(cache_key)
                 return
             except Exception as e:  # invalidation is best-effort
                 if attempt >= retries:
@@ -2214,6 +2491,25 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.warning("Could not verify state cache for thread_id=%s: %s", thread_id, e)
             return True
 
+    async def _durable_version_for_cache(
+        self, thread_id: str | int, user_id: str | int, config: dict[str, Any]
+    ) -> int | None:
+        """The thread's durable state version for a cache check (tenant columns).
+
+        Reads the thread row under the caller's scope (``_read_thread_identity``), which also
+        makes the cache key the thread's identity. A thread the caller cannot see, or that does
+        not exist yet, counts as version 0 under the caller's own key, which only this same
+        identity can have written. ``None`` when Postgres cannot be read: the cache is trusted,
+        as ``_cache_matches_durable`` does.
+        """
+        self._thread_row_scope(thread_id, user_id, config)  # scope errors raise here
+        try:
+            row = await self._read_thread_identity(thread_id, user_id, config)
+        except Exception as e:
+            logger.warning("Could not verify state cache for thread_id=%s: %s", thread_id, e)
+            return None
+        return int(row["durable_version"]) if row is not None else 0
+
     async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
         """Drop the cached state for a thread; the Postgres state is untouched.
 
@@ -2248,6 +2544,13 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         logger.debug("Getting cached state for thread_id=%s, user_id=%s", thread_id, user_id)
 
+        # With tenant columns the key is the thread's identity, so the scoped durable read (the
+        # thread row and its current state version) comes first. Built outside the try below:
+        # a scope this caller cannot satisfy must raise, never fall back to the cache.
+        durable_version: int | None = None
+        if self.columns.tenant:
+            durable_version = await self._durable_version_for_cache(thread_id, user_id, config)
+
         try:
             # Try Redis first
             cache_key = self._get_thread_key(thread_id, user_id, config)
@@ -2256,14 +2559,19 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             if cached_data:
                 data = json.loads(cached_data)
                 version = data.get(_CACHE_VERSION_KEY)
+                cached_version = int(version) if version is not None else 0
                 # An entry without a version was cached before the thread's first durable
                 # write, so it is current only while Postgres holds no state (version 0).
                 # Served after a durable write whose cache write-through was lost (Redis
                 # down), it would load an old state with no version, and the next save,
                 # having nothing to compare, would overwrite the newer durable state.
-                if not await self._cache_matches_durable(
-                    thread_id, user_id, config, int(version) if version is not None else 0
-                ):
+                if self.columns.tenant:
+                    current = durable_version is None or durable_version == cached_version
+                else:
+                    current = await self._cache_matches_durable(
+                        thread_id, user_id, config, cached_version
+                    )
+                if not current:
                     # Redis came back from an older snapshot, a lagging replica, or the
                     # thread was deleted while the cache delete failed. Postgres is the
                     # source of truth: serving this would fail the run's first save with a
@@ -2740,6 +3048,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         Delete a message by ID.
 
+        The message is also removed from every retained state version. When that rewrites a
+        state, the thread's latest state row moves to a new version, so every cached copy of
+        the old state (under any key) fails the version check in ``aget_state_cache`` and is
+        dropped, and a run still holding the old state gets ``StaleStateError`` on its next
+        save instead of writing the deleted message back.
+
         Args:
             config (dict): Configuration dictionary.
             message_id (str|int): Message identifier.
@@ -2770,30 +3084,54 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             query = self._append_owner_scope(query, params, user_id, config)
             scope_sql, scope_params = self._thread_scope(thread_id, user_id, config)
             states = self._get_table_name("states")
+            threads = self._get_table_name("threads")
 
             async def _delete(conn):
                 # Same row lock a state write takes, so a writer cannot re-save the state
-                # between our read and our rewrite.
-                await conn.execute(
-                    f"SELECT 1 FROM {self._get_table_name('threads')} "  # noqa: S608
-                    f"WHERE thread_id = $1 FOR UPDATE",
-                    thread_id,
-                )
+                # between our read and our rewrite (or take the version we move to below).
+                if self.columns.tenant:
+                    # Read the thread's identity with the lock, under the caller's scope, so
+                    # the cache entry dropped below is the thread's shared one.
+                    row_sql, row_params = self._thread_row_scope(thread_id, user_id, config)
+                    owner_row = await conn.fetchrow(
+                        f"SELECT {self._identity_columns_sql()} FROM {threads} "  # noqa: S608
+                        f"WHERE {row_sql} FOR UPDATE",
+                        *row_params,
+                    )
+                    self._remember_identity(config, thread_id, owner_row)
+                else:
+                    await conn.execute(
+                        f"SELECT 1 FROM {threads} WHERE thread_id = $1 FOR UPDATE",  # noqa: S608
+                        thread_id,
+                    )
                 await conn.execute(query, *params)
                 # The message also lives inside every retained state version; leaving it
                 # there brings it back on the next run and in GET state.
                 rows = await conn.fetch(
-                    f"SELECT state_id, state_data FROM {states} WHERE {scope_sql}",  # noqa: S608
+                    f"SELECT state_id, version, state_data FROM {states} "  # noqa: S608
+                    f"WHERE {scope_sql}",
                     *scope_params,
                 )
+                rewritten = False
                 for row in rows:
                     payload = self._loads_jsonb(row["state_data"])
                     if self._strip_message_from_payload(payload, message_id):
+                        rewritten = True
                         await conn.execute(
                             f"UPDATE {states} SET state_data = $1 WHERE state_id = $2",  # noqa: S608
                             json.dumps(payload),
                             row["state_id"],
                         )
+                if rewritten:
+                    # An in-place rewrite keeps MAX(version), so a cached copy of the old
+                    # state (under any caller's key) would still pass the version check.
+                    # Moving the latest row to a new version makes every such copy stale.
+                    latest = max(rows, key=lambda r: (int(r["version"]), int(r["state_id"])))
+                    await conn.execute(
+                        f"UPDATE {states} SET version = $1 WHERE state_id = $2",  # noqa: S608
+                        int(latest["version"]) + 1,
+                        latest["state_id"],
+                    )
 
             await self._run_scoped(_delete, in_transaction=True, settings=self._rls(config))
             # The cached state carries the message too. Dropping it makes the next read
@@ -3272,9 +3610,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
             # Delete thread (cascade will handle messages and states) with retry logic
             query = f"DELETE FROM {self._get_table_name('threads')} WHERE {where}"  # noqa: S608
-            await self._run_scoped(
-                lambda conn: conn.execute(query, *params), settings=self._rls(config)
-            )
+            if self.columns.tenant:
+                # The deleted row's identity names the thread's shared cache entry.
+                query += f" RETURNING {self._identity_columns_sql()}"
+                deleted = await self._run_scoped(
+                    lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
+                )
+                self._remember_identity(config, thread_id, deleted)
+            else:
+                await self._run_scoped(
+                    lambda conn: conn.execute(query, *params), settings=self._rls(config)
+                )
 
             # Postgres is the source of truth and is already gone. A Redis failure here
             # must not turn a completed delete into an error; the stale cache entry is
