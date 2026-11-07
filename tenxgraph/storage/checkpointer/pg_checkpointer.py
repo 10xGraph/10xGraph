@@ -13,6 +13,7 @@ from urllib.parse import quote, unquote
 
 from injectq import InjectQ
 
+from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.exceptions.storage_exceptions import (
     SchemaVersionError,
@@ -328,7 +329,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
               columns). Set once from the caller when the thread is created and never
               changed. Every query that touches a thread (threads, states, messages, tool
               executions) is filtered through the thread row by the tenant columns the
-              request's isolation scope picks (all of them when there is no authz policy).
+              caller's reach picks (all of them when there is no identity).
               A picked column whose value is missing raises; it is never dropped from the
               filter. Required by default (a write without the value raises);
               ``{"type": ..., "required": False}`` opts out. Tenant columns are scalar ids:
@@ -1210,7 +1211,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             ValueError: If required fields are missing.
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
         if not user_id:
             raise ValueError("user_id must be provided in config")
 
@@ -1372,7 +1373,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         if not self.columns.tenant or self._thread_identity(config) is not None:
             return
-        thread_id, user_id = config.get("thread_id"), config.get("user_id")
+        thread_id, user_id = config.get("thread_id"), owner_id(config)
         if not thread_id or not user_id:
             return
         try:
@@ -1389,7 +1390,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         if not self.columns.tenant:
             return super()._stop_request_key(config)
-        owner, suffix = self._key_identity(config.get("user_id"), config)
+        owner, suffix = self._key_identity(owner_id(config), config)
         return f"{config.get('thread_id')}:{owner}{suffix}"
 
     async def aget_active_run(self, config: dict[str, Any]) -> str | None:
@@ -1615,15 +1616,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
     def _isolation(self, config: dict[str, Any] | None, *, write: bool = False) -> _Isolation:
         """Resolve the declared columns' values and the tenant isolation for one call.
 
-        Values come only from ``config["user"]``. The picked tenant columns follow the request's
-        authz scope (``tenxgraph.core.authz.isolation_columns``); with no policy every tenant
+        Values come only from ``config["user"]``. The picked tenant columns follow the caller's
+        reach (``tenxgraph.core.authz.filter_columns``); with no identity every tenant
         column applies, whatever ``enforce_user_isolation`` says (that setting is about
         ``user_id`` only). ``write=True`` (thread creation) raises when a required column has
         no value; a read raises when a picked column has no value. On a write (thread
         creation) a missing optional value is compared as "no value" instead, so a caller
         without it owns only threads that have none either.
         """
-        picked = self._isolation_columns(config)  # validates the scope even with no columns
+        picked = self._filter_columns(config)  # validates the reach even with no columns
         if not self.columns:
             return _NO_ISOLATION
         values = self.columns.resolve(config, write=write)
@@ -1894,8 +1895,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """Build the WHERE fragment + params selecting a thread's rows.
 
         ``states``/``messages`` carry a ``thread_id`` but no ``user_id`` of their
-        own; ownership lives on ``threads``. When isolation is active (per the request
-        policy, or ``enforce_user_isolation`` when there is no policy) we scope through the
+        own; ownership lives on ``threads``. When isolation is active (per the caller's
+        reach, or ``enforce_user_isolation`` when there is no identity) we scope through the
         parent table, so a caller can only touch threads they own. Otherwise we key on
         ``thread_id`` alone and skip the join entirely.
 
@@ -1918,7 +1919,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
     ) -> bool:
         """Whether ownership scoping should be applied for this call.
 
-        Driven by the trusted ``config["authz"]`` policy when present, falling back to this
+        Driven by the identity in ``config["user"]`` when present, falling back to this
         checkpointer's ``enforce_user_isolation`` setting otherwise (so ``config`` is
         optional and a caller that omits it keeps the historical behaviour). Scoping still
         requires an actual ``user_id`` -- scoping on a missing one would match nothing.
@@ -2751,8 +2752,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         node finished, and the node is now being replayed), so the tool must NOT
         be called again -- we return what it returned last time.
 
-        Scoped to the thread's owner when isolation is on (``config["authz"]`` scope
-        ``owner``, else ``enforce_user_isolation``), like the message reads, so a caller
+        Scoped to the thread's owner when isolation is on (identity reach
+        ``own``, else ``enforce_user_isolation``), like the message reads, so a caller
         naming another user's thread gets no record. With isolation off it skips the join.
         """
         thread_id, user_id = self._validate_config(config)
@@ -2933,7 +2934,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             Exception: If retrieval fails.
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         # Message ids are unique per thread only, so the thread is part of the key.
         if not thread_id:
@@ -2991,7 +2992,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         offset, limit = validate_page(offset, limit)
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         if not thread_id:
             raise ValueError("thread_id must be provided in config")
@@ -3065,7 +3066,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             Exception: If deletion fails.
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         # Message ids are unique per thread only, so the thread is part of the key.
         if not thread_id:
@@ -3164,7 +3165,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             thread (or the caller does not own the thread).
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         if not thread_id:
             raise ValueError("thread_id must be provided in config")
@@ -3470,7 +3471,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """Return ``{"user_id": ..., <tenant column>: ...}`` for a thread, globally.
 
         Not scoped to any caller (like :meth:`aget_thread_owner`): an authorization layer
-        compares these values with the caller's on every column the caller's scope picks.
+        compares these values with the caller's on every column the caller's reach picks.
         Tenant values written before a column existed are ``None``. Returns ``None`` when the
         thread does not exist.
         """
@@ -3525,7 +3526,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         offset, limit = validate_page(offset, limit)
         conditions = validate_filters(filters, self.filter_schema)
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         # `user_id = user_id or "test-user"` used to sit here, which made the check
         # below dead code and silently listed a fake user's threads whenever the

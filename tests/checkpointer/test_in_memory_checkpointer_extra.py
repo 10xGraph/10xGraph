@@ -419,14 +419,12 @@ async def test_base_default_raises_not_implemented():
 
 
 # ---------------------------------------------------------------------------
-# Owner-only isolation driven by config["authz"] policy
+# Owner-only isolation driven by the config["user"] identity
 # ---------------------------------------------------------------------------
 
 
 def _owner_cfg(thread_id, user_id):
-    from tenxgraph.core.authz import build_authz
-
-    return {"thread_id": thread_id, "user_id": user_id, "authz": build_authz(user_id, scope="owner")}
+    return {"thread_id": thread_id, "user": {"user_id": user_id, "reach": "own"}}
 
 
 @pytest.mark.asyncio
@@ -474,15 +472,27 @@ async def test_inmem_owner_only_messages(cp):
 
 @pytest.mark.asyncio
 async def test_inmem_no_policy_is_backward_compatible(cp):
-    # Without an authz block, in-memory does not scope (historical behaviour).
+    # Without an identity, in-memory does not scope (historical behaviour).
     await cp.aput_state({"thread_id": "t1", "user_id": "A"}, _make_state())
     assert await cp.aget_state({"thread_id": "t1", "user_id": "B"}) is not None
 
 
 @pytest.mark.asyncio
-async def test_inmem_allow_all_scope_sees_everything(cp):
-    from tenxgraph.core.authz import build_authz
-
+async def test_inmem_reach_all_sees_everything(cp):
     await cp.aput_state(_owner_cfg("t1", "A"), _make_state())
-    none_cfg = {"thread_id": "t1", "user_id": "B", "authz": build_authz("B", scope="none")}
-    assert await cp.aget_state(none_cfg) is not None
+    all_cfg = {"thread_id": "t1", "user": {"user_id": "B", "reach": "all"}}
+    assert await cp.aget_state(all_cfg) is not None
+
+
+@pytest.mark.asyncio
+async def test_inmem_identity_user_id_wins_over_config_user_id(cp):
+    await cp.aput_state(_owner_cfg("t1", "A"), _make_state())
+    spoof = {"thread_id": "t1", "user_id": "A", "user": {"user_id": "B", "reach": "own"}}
+    assert await cp.aget_state(spoof) is None
+
+
+@pytest.mark.asyncio
+async def test_inmem_reach_tenant_raises(cp):
+    cfg = {"thread_id": "t1", "user": {"user_id": "A", "reach": "tenant"}}
+    with pytest.raises(ValueError, match="tenant"):
+        await cp.aget_state(cfg)

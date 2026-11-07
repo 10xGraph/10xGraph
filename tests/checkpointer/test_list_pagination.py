@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.authz import build_authz
 from tenxgraph.core.state import Message
 from tenxgraph.storage.checkpointer import base_checkpointer
 from tenxgraph.storage.checkpointer.base_checkpointer import MAX_LIST_LIMIT, validate_page
@@ -120,9 +119,9 @@ async def _check_owner_filter(cp):
     for owner in ("u1", "u2"):
         for i in range(4):
             tid = f"{owner}-{i}"
-            cfg = {"thread_id": tid, "user_id": owner, "authz": build_authz(owner, scope="owner")}
+            cfg = {"thread_id": tid, "user_id": owner, "user": {"user_id": owner, "reach": "own"}}
             await cp.aput_thread(cfg, ThreadInfo(thread_id=tid, thread_name=tid, user_id=owner))
-    cfg = {"user_id": "u1", "authz": build_authz("u1", scope="owner")}
+    cfg = {"user_id": "u1", "user": {"user_id": "u1", "reach": "own"}}
     allu1 = await cp.alist_threads(cfg)
     assert sorted(t.thread_id for t in allu1) == [f"u1-{i}" for i in range(4)]
     page = await cp.alist_threads(cfg, offset=3, limit=5)

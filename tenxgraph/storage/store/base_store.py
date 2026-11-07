@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from injectq import InjectQ
 
+from tenxgraph.core.authz import filter_columns, owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.utils import run_coroutine
 
@@ -108,33 +109,26 @@ class BaseStore(ABC):
         raise NotImplementedError
 
     def _scope_user_id(self, config: dict[str, Any], user_id: str | int | None) -> str | int | None:
-        """Return the user_id to scope memory operations by, honoring the authz policy.
+        """Return the user_id to scope memory operations by, honoring the caller's reach.
 
-        Mirrors the checkpointer's isolation rule so one policy governs both:
+        - reach ``all`` (no ``user_id`` in the filter columns) -> ``None`` (no user filter).
+        - otherwise (reach ``own`` / ``tenant``, or no identity) -> the given ``user_id``.
 
-        - ``config["authz"].scope == "none"``, or a column list without ``user_id`` ->
-          ``None`` (no user filter).
-        - otherwise (``"owner"``, a list with ``user_id``, or no policy) -> the given
-          ``user_id`` (owner-only).
-
-        The safe default (no policy) keeps scoping by ``user_id`` -- memory is personal, so
-        it stays isolated unless a developer explicitly runs ``allow_all``/``scope=none``.
+        With no identity memory stays scoped by ``user_id``: it is personal, so it stays
+        isolated unless the caller's identity has reach ``all``.
         """
-        columns = self._isolation_columns(config)
+        columns = self._filter_columns(config)
         if columns is not None and "user_id" not in columns:
             return None
         return user_id
 
-    def _isolation_columns(self, config: dict[str, Any]) -> tuple[str, ...] | None:
-        """The columns the request's authz scope picks, checked against this store's columns.
+    def _filter_columns(self, config: dict[str, Any]) -> tuple[str, ...] | None:
+        """The columns the caller's reach filters by, checked against this store's columns.
 
-        ``None`` when there is no policy. A scope list naming a tenant column this store does
-        not declare raises ``ValueError`` (a store without tenant columns accepts only
-        ``user_id`` in the list), so a scope is never silently weakened.
+        ``None`` when there is no identity. Reach ``tenant`` on a store without tenant columns,
+        or a missing tenant value, raises ``ValueError``, so a scope is never silently weakened.
         """
-        from tenxgraph.core.authz import isolation_columns
-
-        return isolation_columns(config, getattr(self, "tenant_column_names", ()))
+        return filter_columns(config, getattr(self, "tenant_column_names", ()))
 
     @staticmethod
     def _valid_user_id(user_id: Any) -> bool:
@@ -150,17 +144,18 @@ class BaseStore(ABC):
     ) -> str | int | None:
         """Return the user_id to filter reads/updates/deletes by, or raise if it is missing.
 
-        ``user_id`` defaults to ``config["user_id"]``. A missing, ``None``, empty or blank id
+        ``user_id`` defaults to :func:`owner_id` (the identity's id, else ``config["user_id"]``).
+        A missing, ``None``, empty or blank id
         raises ``ValueError`` (a store must never fall back to "every user"). The only
-        exception is the explicit authz policy ``scope="none"`` (admin / ``allow_all``), where
-        ``None`` is returned and callers skip the user filter.
+        exception is an identity with reach ``all``, where ``None`` is returned and callers skip
+        the user filter.
         """
         if user_id is None:
-            user_id = config.get("user_id")
+            user_id = owner_id(config)
         if not self._valid_user_id(user_id):
-            columns = self._isolation_columns(config)
+            columns = self._filter_columns(config)
             if columns is not None and "user_id" not in columns:
-                return None  # scope="none" (or a list without user_id): no user filter
+                return None  # reach "all": no user filter
             raise ValueError(_USER_ID_REQUIRED)
         return self._scope_user_id(config, user_id)
 
@@ -170,11 +165,11 @@ class BaseStore(ABC):
         """Return the concrete user_id a record is written under, or raise if it is missing.
 
         Used by writes and by ``aforget_memory``. Unlike ``_require_user_id`` this ignores
-        ``scope="none"``: a stored record always has an owner (use ``system_user_id(name)`` for
+        reach ``all``: a stored record always has an owner (use ``system_user_id(name)`` for
         shared data), and a bulk forget always names whose memories to delete.
         """
         if user_id is None:
-            user_id = config.get("user_id")
+            user_id = owner_id(config)
         if not self._valid_user_id(user_id):
             raise ValueError(_USER_ID_REQUIRED)
         return user_id  # type: ignore[return-value]

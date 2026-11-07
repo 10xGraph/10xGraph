@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tenxgraph.core.authz import Identity
 from tenxgraph.storage.columns import (
     COLUMN_TYPES,
     ColumnSpec,
@@ -174,16 +175,29 @@ class TestConvert:
         assert _spec("timestamptz").to_setting(datetime(2026, 1, 1, tzinfo=tz)).endswith("+01:00")
 
 
+def _u(**kw):
+    return {"user_id": "u", **kw}
+
+
 class TestResolve:
     def test_reads_only_config_user(self):
         cols = parse_columns({"org_id": "text"}, {"public_id": "text"})
-        config = {"org_id": "FORGED", "public_id": "FORGED", "user": {"org_id": "A"}}
+        config = {
+            "org_id": "FORGED",
+            "public_id": "FORGED",
+            "user": {"user_id": "u", "tenant": {"org_id": "A"}},
+        }
         assert cols.resolve(config) == {"org_id": "A", "public_id": None}
 
-    def test_object_user(self):
-        cols = parse_columns({"org_id": "text"})
-        assert cols.resolve({"user": SimpleNamespace(org_id="A")}) == {"org_id": "A"}
+    def test_identity_object_user(self):
+        cols = parse_columns({"org_id": "text"}, {"plan": "text"})
+        identity = Identity(user_id="u", tenant={"org_id": "A"}, claims={"plan": "pro"})
+        assert cols.resolve({"user": identity}) == {"org_id": "A", "plan": "pro"}
+        assert user_value(identity, "org_id") == "A"
         assert user_value(None, "org_id") is None
+
+    def test_object_user(self):
+        assert user_value(SimpleNamespace(org_id="A"), "org_id") == "A"
 
     def test_write_requires_required_columns(self):
         cols = parse_columns(
@@ -191,10 +205,12 @@ class TestResolve:
             {"plan": {"type": "text", "required": True}, "note": "text"},
         )
         with pytest.raises(MissingColumnValueError, match="org_id"):
-            cols.resolve({"user": {"plan": "pro"}}, write=True)
+            cols.resolve({"user": _u(claims={"plan": "pro"})}, write=True)
         with pytest.raises(MissingColumnValueError, match="plan"):
-            cols.resolve({"user": {"org_id": "A"}}, write=True)
-        assert cols.resolve({"user": {"org_id": "A", "plan": "pro"}}, write=True) == {
+            cols.resolve({"user": _u(tenant={"org_id": "A"})}, write=True)
+        assert cols.resolve(
+            {"user": _u(tenant={"org_id": "A"}, claims={"plan": "pro"})}, write=True
+        ) == {
             "org_id": "A",
             "team": None,
             "plan": "pro",
@@ -205,7 +221,7 @@ class TestResolve:
     def test_type_errors_raise(self):
         cols = parse_columns({"org_id": "uuid"})
         with pytest.raises(ColumnValueError):
-            cols.resolve({"user": {"org_id": "nope"}})
+            cols.resolve({"user": _u(tenant={"org_id": "nope"})})
 
 
 class TestWhereAndRls:

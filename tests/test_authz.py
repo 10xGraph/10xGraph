@@ -1,132 +1,135 @@
-"""Tests for the core authz contract (config["authz"])."""
+"""Tests for Identity, Reach and the owner_filter helpers."""
 
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from tenxgraph.core.authz import (
-    CHECKPOINT_READ,
-    GRAPH_INVOKE,
-    SCOPE_NONE,
-    SCOPE_OWNER,
-    build_authz,
-    get_authz,
-    has_scope,
-    isolation_scope,
+    Identity,
+    Reach,
+    can,
+    filter_columns,
+    get_identity,
+    owner_filter,
 )
 
 
-def test_build_authz_shape():
-    a = build_authz("u1", scope=SCOPE_OWNER, scopes=[CHECKPOINT_READ])
-    assert a == {"user_id": "u1", "scope": "owner", "scopes": ["checkpointer:read"]}
+def _cfg(**kw):
+    return {"user": Identity(user_id="u1", **kw)}
 
 
-def test_build_authz_unknown_scope_raises():
-    with pytest.raises(ValueError, match="Unknown isolation scope 'bogus'"):
-        build_authz("u1", scope="bogus")
+def test_dict_and_model_input():
+    ident = Identity(user_id="u1", reach="tenant", tenant={"org_id": "a"})
+    assert get_identity({"user": ident}) is ident
+    from_dict = get_identity(
+        {"user": {"user_id": "u1", "reach": "tenant", "tenant": {"org_id": "a"}}}
+    )
+    assert from_dict == ident
+    assert get_identity({}) is None
+    assert get_identity({"user": None}) is None
+    assert get_identity(None) is None
 
 
-def test_isolation_scope_reads_block():
-    cfg = {"authz": build_authz("u1", scope=SCOPE_OWNER)}
-    assert isolation_scope(cfg) == "owner"
-    cfg2 = {"authz": build_authz("u1", scope=SCOPE_NONE)}
-    assert isolation_scope(cfg2) == "none"
+def test_extra_and_unknown_reach_refused():
+    with pytest.raises(ValidationError):
+        Identity(user_id="u1", email="x")
+    with pytest.raises(ValidationError):
+        Identity(user_id="u1", reach="everyone")
+    with pytest.raises(ValidationError):
+        get_identity({"user": {"user_id": "u1", "reach": "bogus"}})
+    with pytest.raises(ValidationError):
+        get_identity({"user": {"email": "x"}})
 
 
-def test_isolation_scope_absent_is_none():
-    assert isolation_scope({}) is None
-    assert isolation_scope({"authz": {"user_id": "u1"}}) is None  # no scope key
-    assert isolation_scope(None) is None
+def test_frozen():
+    ident = Identity(user_id="u1")
+    with pytest.raises(ValidationError):
+        ident.user_id = "u2"
 
 
-def test_isolation_scope_unknown_value_raises():
-    with pytest.raises(ValueError, match="Unknown isolation scope 'weird'"):
-        isolation_scope({"authz": {"scope": "weird"}})
+def test_defaults():
+    ident = Identity(user_id="u1")
+    assert ident.reach is Reach.OWN
+    assert ident.kind == "user"
+    assert ident.permissions is None
 
 
-def test_has_scope():
-    cfg = {"authz": build_authz("u1", scopes=[GRAPH_INVOKE])}
-    assert has_scope(cfg, GRAPH_INVOKE) is True
-    assert has_scope(cfg, CHECKPOINT_READ) is False
+def test_wildcards():
+    ident = Identity(user_id="u1", permissions=frozenset({"graph:*", "threads:read"}))
+    assert ident.can("graph:invoke")
+    assert ident.can("graph:stop")
+    assert ident.can("threads:read")
+    assert not ident.can("threads:write")
+    assert not ident.can("store:read")
+    assert Identity(user_id="u1", permissions=frozenset({"*"})).can("admin:write")
+    assert not Identity(user_id="u1", permissions=frozenset()).can("graph:read")
+    assert Identity(user_id="u1").can("anything:goes")
 
 
-def test_has_scope_permissive_when_no_block():
-    # No authz block -> allow (single-user / direct SDK usage).
-    assert has_scope({}, GRAPH_INVOKE) is True
+def test_can_helper_unrestricted_without_identity():
+    assert can({}, "admin:write")
+    assert not can(_cfg(permissions=frozenset({"graph:*"})), "admin:write")
+    assert can(_cfg(permissions=frozenset({"graph:*"})), "graph:invoke")
 
 
-def test_get_authz_ignores_malformed():
-    assert get_authz({"authz": "not-a-dict"}) is None
-    assert get_authz("nope") is None
+def test_mapping_access_merges_claims():
+    ident = Identity(
+        user_id="u1",
+        tenant={"org_id": "acme"},
+        claims={"email": "a@b.c", "user_id": "spoof", "org_id": "spoof"},
+    )
+    assert ident["user_id"] == "u1"
+    assert ident.get("org_id") == "acme"
+    assert ident.get("email") == "a@b.c"
+    assert ident.get("missing") is None
+    assert ident.get("missing", 5) == 5
+    assert "email" in ident and "nope" not in ident
+    with pytest.raises(KeyError):
+        ident["nope"]
+    assert dict(ident) == {"email": "a@b.c", "user_id": "u1", "org_id": "acme"}
 
 
-def test_get_authz_trusted_user_block_wins_over_top_level():
-    # The API stamps the policy into config["user"]["authz"]. A top-level block (which a
-    # client could smuggle in through request config) must never override it.
-    trusted = build_authz("u1", scope=SCOPE_OWNER, scopes=[CHECKPOINT_READ])
-    forged = build_authz("u1", scope=SCOPE_NONE, scopes=[GRAPH_INVOKE])
-    cfg = {"authz": forged, "user": {"user_id": "u1", "authz": trusted}}
-    assert get_authz(cfg) == trusted
-    assert isolation_scope(cfg) == "owner"
-    assert has_scope(cfg, GRAPH_INVOKE) is False
+def test_owner_filter_none_without_identity():
+    assert owner_filter({}, ("org_id",)) is None
+    assert filter_columns({}, ("org_id",)) is None
 
 
-def test_get_authz_top_level_still_used_without_user_block():
-    # Direct SDK usage: the developer passes the block at the top level.
-    block = build_authz("u1", scope=SCOPE_OWNER)
-    assert get_authz({"authz": block}) == block
-    assert get_authz({"authz": block, "user": {"user_id": "u1"}}) == block
+def test_owner_filter_own():
+    cfg = _cfg(tenant={"org_id": "a", "extra": "x"})
+    assert owner_filter(cfg) == {"user_id": "u1"}
+    assert owner_filter(cfg, ("org_id",)) == {"user_id": "u1", "org_id": "a"}
+    assert filter_columns(cfg, ("org_id",)) == ("user_id", "org_id")
 
 
-# ---------------------------------------------------------------------------
-# Store isolation helper (BaseStore._scope_user_id honors the policy)
-# ---------------------------------------------------------------------------
+def test_owner_filter_tenant():
+    cfg = _cfg(reach="tenant", tenant={"org_id": "a"})
+    assert owner_filter(cfg, ("org_id",)) == {"org_id": "a"}
+    assert filter_columns(cfg, ("org_id",)) == ("org_id",)
+    with pytest.raises(ValueError, match="tenant columns"):
+        owner_filter(cfg, ())
 
 
-def _min_store():
-    from tenxgraph.storage.store.base_store import BaseStore
-
-    class _S(BaseStore):
-        async def aping(self):
-            pass
-
-        async def asetup(self):
-            pass
-
-        async def astore(self, *a, **k):
-            pass
-
-        async def asearch(self, *a, **k):
-            pass
-
-        async def aget(self, *a, **k):
-            pass
-
-        async def aget_all(self, *a, **k):
-            pass
-
-        async def aupdate(self, *a, **k):
-            pass
-
-        async def adelete(self, *a, **k):
-            pass
-
-        async def aforget_memory(self, *a, **k):
-            pass
-
-    return _S()
+def test_owner_filter_all():
+    cfg = _cfg(reach="all")
+    assert owner_filter(cfg) == {}
+    assert owner_filter(cfg, ("org_id",)) == {}
+    assert filter_columns(cfg) == ()
 
 
-def test_store_scope_user_id_honors_policy():
-    s = _min_store()
-    owner = {"user": {"authz": build_authz("A", scope=SCOPE_OWNER)}}
-    none = {"user": {"authz": build_authz("A", scope=SCOPE_NONE)}}
-    assert s._scope_user_id(owner, "A") == "A"      # owner -> scope to A
-    assert s._scope_user_id(none, "A") is None       # allow_all -> do not scope
-    assert s._scope_user_id({}, "A") == "A"          # no policy -> safe default (scope)
+@pytest.mark.parametrize("reach", ["own", "tenant"])
+def test_missing_tenant_value_raises(reach):
+    cfg = _cfg(reach=reach, tenant={"other": "x"})
+    with pytest.raises(ValueError, match="org_id"):
+        owner_filter(cfg, ("org_id",))
 
 
-def test_graph_setup_scope_is_not_granted():
-    from tenxgraph.core.authz import ALL_SCOPES
-
-    assert "graph:setup" not in ALL_SCOPES
+@pytest.mark.parametrize("reach", ["own", "tenant", "all"])
+def test_system_owner_pinned_on_every_reach(reach):
+    cfg = _cfg(reach=reach, tenant={"org_id": "a"})
+    assert owner_filter(cfg, ("org_id",), owner="__system__:kb") == {
+        "user_id": "__system__:kb",
+        "org_id": "a",
+    }
+    assert owner_filter(cfg, owner="__system__:kb") == {"user_id": "__system__:kb"}
+    assert owner_filter({}, owner="__system__:kb") is None

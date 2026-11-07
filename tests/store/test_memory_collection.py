@@ -43,10 +43,10 @@ class TestScopeCollection:
     def test_callable_gets_run_config_and_beats_run_collection(self):
         memory = MemoryConfig(
             user_memory=UserMemoryConfig(
-                collection=lambda cfg: f"company_{cfg['user']['tenant_id']}"
+                collection=lambda cfg: f"company_{cfg['user']['tenant']['tenant_id']}"
             )
         )
-        run = {"user": {"tenant_id": "acme"}, "collection": "attacker"}
+        run = {"user": {"user_id": "u1", "tenant": {"tenant_id": "acme"}}, "collection": "attacker"}
         assert _scope_cfg(memory, "user", run)["collection"] == "company_acme"
 
     def test_agent_and_user_scopes_differ(self):
@@ -114,8 +114,13 @@ class TestStoreDefault:
         assert store._extract_config_values({"collection": "cfg"})[2] == "cfg"
 
     def test_callable_default_gets_config(self):
-        store, _ = _store(lambda cfg: f"co_{cfg['user']['tenant_id']}")
-        assert store._extract_config_values({"user": {"tenant_id": "t1"}})[2] == "co_t1"
+        store, _ = _store(lambda cfg: f"co_{cfg['user']['tenant']['tenant_id']}")
+        assert (
+            store._extract_config_values(
+                {"user": {"user_id": "u1", "tenant": {"tenant_id": "t1"}}}
+            )[2]
+            == "co_t1"
+        )
 
     @pytest.mark.parametrize("bad", ["", None, 3])
     def test_callable_default_bad_result_raises(self, bad):

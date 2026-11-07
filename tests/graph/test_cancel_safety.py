@@ -275,13 +275,11 @@ def test_clear_state_cache_sync_wrapper():
 
 @pytest.mark.asyncio
 async def test_aclear_state_cache_is_owner_checked():
-    from tenxgraph.core.authz import build_authz
-
     def cfg(user_id):
         return {
             "thread_id": "t-own",
             "user_id": user_id,
-            "authz": build_authz(user_id, scope="owner"),
+            "user": {"user_id": user_id, "reach": "own"},
         }
 
     cp = InMemoryCheckpointer()

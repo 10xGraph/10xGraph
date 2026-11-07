@@ -6,6 +6,7 @@ from collections import defaultdict
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import StorageError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
@@ -81,8 +82,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         self._threads: dict[str, dict[str, Any]] = {}
 
         # Thread ownership: config-key (thread_id) -> owner user_id. The first writer of a
-        # thread owns it. Used to enforce owner-only access when the request policy
-        # (config["authz"]) asks for it -- see _owner_denied / _record_owner.
+        # thread owns it. Used to enforce owner-only access when the caller identity
+        # (config["user"]) asks for it -- see _owner_denied / _record_owner.
         self._thread_owner: dict[str, str] = {}
 
         # Tool execution ledger (idempotency): (thread, tool_call_id) -> result
@@ -123,7 +124,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
     def _record_owner(self, config: dict[str, Any]) -> None:
         """Record the caller as the thread's owner on first write (needs a user_id)."""
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         if user_id:
             self._thread_owner.setdefault(self._get_config_key(config), str(user_id))
 
@@ -133,7 +134,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         A thread with no recorded owner (brand new) is never denied -- the caller becomes
         its owner on write, and reads simply find nothing.
         """
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         if not self._isolation_enabled(config, user_id):
             return False
         owner = self._thread_owner.get(self._get_config_key(config))
@@ -669,12 +670,12 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         _reject_filters("InMemoryCheckpointer", filters)
         start, limit = validate_page(offset, limit)
         end = (start + limit) if limit else None
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         isolate = self._isolation_enabled(config, user_id)
         async with self._threads_lock:
             threads: list[dict[str, Any]] = list(self._threads.values())
 
-            # Owner-scope the listing when the policy asks for it.
+            # Owner-scope the listing when the identity asks for it.
             if isolate:
                 threads = [t for t in threads if str(t.get("user_id")) == str(user_id)]
 

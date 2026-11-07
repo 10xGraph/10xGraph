@@ -1004,36 +1004,35 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     def _isolation_enabled(self, config: dict[str, Any] | None, user_id: Any) -> bool:
         """Whether this operation must be scoped to ``user_id``.
 
-        Driven by the trusted ``config["authz"]`` policy (see :mod:`tenxgraph.core.authz`):
+        Driven by the identity in ``config["user"]`` (see :mod:`tenxgraph.core.authz`):
 
-        - ``scope == "owner"``, or a column list with ``user_id`` -> isolate (when a
-          ``user_id`` is present to scope by);
-        - ``scope == "none"``, or a column list without ``user_id`` -> no user filter;
-        - no policy (e.g. a direct SDK call with no API in front) -> fall back to this
+        - reach ``own`` -> isolate (when a ``user_id`` is present to scope by);
+        - reach ``tenant`` or ``all`` -> no user filter;
+        - no identity (e.g. a direct SDK call with no API in front) -> fall back to this
           backend's own ``enforce_user_isolation`` setting (default off for backends that
           do not define one).
 
-        A column list naming a tenant column this backend does not declare raises
-        ``ValueError``. Tenant columns themselves are applied by backends that declare them
+        Reach ``tenant`` raises ``ValueError`` on a backend without tenant columns. Tenant
+        columns themselves are applied by backends that declare them
         (``PgCheckpointer(tenant_columns=...)``).
         """
-        columns = self._isolation_columns(config)
+        columns = self._filter_columns(config)
         if columns is None:
             return bool(getattr(self, "enforce_user_isolation", False) and user_id)
         return "user_id" in columns and bool(user_id)
 
-    def _isolation_columns(self, config: dict[str, Any] | None) -> tuple[str, ...] | None:
-        """The columns the request's authz scope picks; ``None`` when there is no policy."""
-        from tenxgraph.core.authz import isolation_columns
+    def _filter_columns(self, config: dict[str, Any] | None) -> tuple[str, ...] | None:
+        """The columns the caller's reach picks; ``None`` when there is no identity."""
+        from tenxgraph.core.authz import filter_columns
 
-        return isolation_columns(config, getattr(self, "tenant_column_names", ()))
+        return filter_columns(config, getattr(self, "tenant_column_names", ()))
 
     async def aget_thread_scope(self, thread_id: str | int) -> dict[str, Any] | None:
         """Return the thread's isolation values (``user_id`` plus tenant columns), globally.
 
         Like :meth:`aget_thread_owner`, this is not scoped to the caller: an authorization
         layer uses it to decide whether a caller may act on the thread (the thread's values
-        must match the caller's on every column the caller's scope picks). Returns ``None``
+        must match the caller's on every column the caller's reach picks). Returns ``None``
         when the thread does not exist. This default covers backends without tenant columns
         (``{"user_id": owner}``); ``PgCheckpointer`` adds its tenant columns.
         """

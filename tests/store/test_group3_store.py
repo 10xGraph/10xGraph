@@ -111,7 +111,9 @@ async def test_qdrant_payload_timestamps_are_timezone_aware(qdrant, client):
 @pytest.mark.asyncio
 async def test_qdrant_search_honors_max_tokens(qdrant, client):
     points = [
-        MagicMock(id=str(i), score=0.9, payload={"content": "word " * 200, "user_id": "u"}, vector=None)
+        MagicMock(
+            id=str(i), score=0.9, payload={"content": "word " * 200, "user_id": "u"}, vector=None
+        )
         for i in range(5)
     ]
     client.query_points.return_value = MagicMock(points=points)

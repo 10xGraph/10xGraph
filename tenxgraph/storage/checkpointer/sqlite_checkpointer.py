@@ -31,6 +31,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
 
+from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import StorageError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
@@ -122,7 +123,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_af_cache_namespace ON af_cache (namespace)",
     # Thread ownership: first writer of a thread owns it. Used to enforce owner-only
-    # access when the request policy (config["authz"]) asks for it.
+    # access when the caller identity (config["user"]) asks for it.
     """
     CREATE TABLE IF NOT EXISTS af_thread_owner (
         thread_id TEXT NOT NULL PRIMARY KEY,
@@ -227,7 +228,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         both passed the unlocked pre-check cannot both think they own the thread. Returns
         False when isolation is active and another user owns it.
         """
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         if not user_id:
             return True
         key = self._get_config_key(config)
@@ -245,7 +246,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
 
     async def _owner_denied(self, config: dict[str, Any]) -> bool:
         """True when isolation is active and the caller does not own this thread."""
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         if not self._isolation_enabled(config, user_id):
             return False
         conn = await self._get_conn()
@@ -761,12 +762,12 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         _reject_filters("SqliteCheckpointer", filters)
         start, limit = validate_page(offset, limit)
         await self._ensure_setup()
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         isolate = self._isolation_enabled(config, user_id)
         conn = await self._get_conn()
         sql = "SELECT thread_data FROM af_threads"
         params: list[Any] = []
-        # Owner-scope the listing when the policy asks for it.
+        # Owner-scope the listing when the identity asks for it.
         if isolate:
             sql += " WHERE CAST(json_extract(thread_data, '$.user_id') AS TEXT) = ?"
             params.append(str(user_id))

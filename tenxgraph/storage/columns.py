@@ -3,13 +3,14 @@
 ``PgCheckpointer`` and ``PgVectorStore`` accept two opt-in column sets:
 
 - **tenant columns** (``tenant_columns=``) isolate data. Every read, update and delete is
-  filtered by the tenant columns the request's isolation scope picks, so ``org_id`` /
+  filtered by the tenant columns the caller's reach picks, so ``org_id`` /
   ``project_id`` act like ``user_id`` does today. Required by default.
 - **extra columns** (``extra_columns=``) are plain data stored with each row (and, from Sprint
   3b, filterable). Optional by default.
 
-Trusted-source rule: tenant and extra column values come only from ``config["user"]``. ``user``
-is a reserved config key: clients cannot set it. Your auth class fills it
+Trusted-source rule: tenant and extra column values come only from ``config["user"]`` (an
+``Identity``, or a dict that validates into one: tenant values live under its ``tenant``
+key). ``user`` is a reserved config key: clients cannot set it. Your auth class fills it
 (``BaseAuth.authenticate()`` result or JWT claims). Return ``org_id``, ``project_id``,
 ``public_id`` there. Never read them from request config, metadata, state or model output.
 
@@ -62,6 +63,8 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
+
+from tenxgraph.core.authz import Identity, get_identity
 
 
 __all__ = [
@@ -174,11 +177,9 @@ _INT_RANGES = {
 _SPEC_KEYS = frozenset({"type", "required"})
 # ``user_id`` is a scope column name in every backend, so it can never be declared.
 _ALWAYS_RESERVED = frozenset({"user_id"})
-#: Keys of ``config["user"]`` that carry authorization data, not tenant or extra values: the
-#: API stamps ``authz`` (the isolation policy) into the identity and reads ``scope`` /
-#: ``scopes`` (granted scopes) and ``role`` / ``roles`` (role-based authorization) from it.
-#: A column with one of these names would store that data, so they cannot be declared.
-RESERVED_USER_KEYS = frozenset({"authz", "scope", "scopes", "role", "roles"})
+#: Fields of ``Identity`` (``config["user"]``) that carry authorization data, not tenant or extra
+#: values. A column with one of these names would shadow that data, so they cannot be declared.
+RESERVED_USER_KEYS = frozenset({"kind", "tenant", "roles", "permissions", "reach", "claims"})
 # Index names follow the table-name rule (uppercase allowed), unlike column names.
 _INDEX_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 # A server-rendered ``regclass::text`` of an index: optionally schema-qualified, each part a
@@ -442,7 +443,7 @@ class ColumnSet:
         ``write=True`` a required column without a value raises
         ``MissingColumnValueError``; otherwise a missing value is ``None``.
         """
-        user = config.get("user") if isinstance(config, Mapping) else None
+        user = get_identity(config)
         values: dict[str, Any] = {}
         for spec in self.all:
             value = spec.convert(user_value(user, spec.name))
@@ -459,7 +460,7 @@ class ColumnSet:
         """The tenant columns an isolation scope picks, in declaration order.
 
         ``picked`` is the resolved scope column list (``user_id`` is ignored here; backends
-        handle it). ``None`` means no authz policy: every tenant column applies.
+        handle it). ``None`` means no identity: every tenant column applies.
         """
         if picked is None:
             return self.tenant
@@ -468,10 +469,11 @@ class ColumnSet:
 
 
 def user_value(user: Any, name: str) -> Any:
-    """``user[name]`` for a mapping, ``getattr(user, name)`` for an object, else ``None``."""
+    """``user[name]`` for a mapping or ``Identity``, ``getattr(user, name)`` for an object,
+    else ``None``."""
     if user is None:
         return None
-    if isinstance(user, Mapping):
+    if isinstance(user, Mapping | Identity):
         return user.get(name)
     return getattr(user, name, None)
 
@@ -567,8 +569,8 @@ def parse_columns(
         if spec.name in RESERVED_USER_KEYS:
             raise ValueError(
                 f"Column {spec.name!r} is reserved: config['user'][{spec.name!r}] carries "
-                "authorization data (the isolation policy, granted scopes or roles), not a "
-                "tenant or extra value. Pick another name."
+                "authorization data (the identity's kind, tenant, roles, permissions, reach or "
+                "claims), not a tenant or extra value. Pick another name."
             )
         if spec.name in reserved_names:
             raise ValueError(

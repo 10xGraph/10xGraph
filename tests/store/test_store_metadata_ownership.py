@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tenxgraph.core.authz import SCOPE_NONE, build_authz
 from tenxgraph.storage.store.qdrant_store import QdrantStore
 from tenxgraph.storage.store.store_schema import MemoryType
 
@@ -87,8 +86,7 @@ async def test_qdrant_new_memory_id_is_allowed(qdrant, client):
 
 @pytest.mark.asyncio
 async def test_qdrant_memory_id_check_skipped_without_isolation(qdrant, client):
-    # scope="none" (allow_all) deliberately shares memories across users.
+    # reach "all" deliberately shares memories across users.
     client.retrieve.return_value = [_existing_point("someone")]
-    config = {"user_id": "u1", "user": {"authz": build_authz("u1", scope=SCOPE_NONE)}}
+    config = {"user_id": "u1", "user": {"user_id": "u1", "reach": "all"}}
     assert await qdrant.astore(config, "x", memory_id="shared") == "shared"
-

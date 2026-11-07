@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tenxgraph.core.authz import SCOPE_NONE, build_authz
 from tenxgraph.prebuilt.tools.memory import _memory_scope_config
 from tenxgraph.storage.store import (
     SYSTEM_USER_PREFIX,
@@ -82,8 +81,8 @@ async def test_qdrant_read_filters_by_user(qdrant, client):
 
 
 @pytest.mark.asyncio
-async def test_qdrant_scope_none_reads_all_users(qdrant, client):
-    config = {"user_id": "", "user": {"authz": build_authz("admin", scope=SCOPE_NONE)}}
+async def test_qdrant_reach_all_reads_all_users(qdrant, client):
+    config = {"user": {"user_id": "admin", "reach": "all"}}
     await qdrant.asearch(config, "q")
     assert client.query_points.call_args.kwargs["query_filter"] is None
     await qdrant.aget_all(config)
@@ -91,13 +90,11 @@ async def test_qdrant_scope_none_reads_all_users(qdrant, client):
 
 
 @pytest.mark.asyncio
-async def test_qdrant_scope_none_write_still_needs_owner(qdrant, client):
-    config = {"user": {"authz": build_authz("admin", scope=SCOPE_NONE)}}
-    with pytest.raises(ValueError, match="user_id is required"):
-        await qdrant.astore(config, "x")
-    with pytest.raises(ValueError, match="user_id is required"):
-        await qdrant.aforget_memory(config)
-    client.upsert.assert_not_called()
+async def test_qdrant_identity_user_id_wins_over_config_user_id(qdrant, client):
+    config = {"user_id": "forged", "user": {"user_id": "admin", "reach": "all"}}
+    await qdrant.astore(config, "x")
+    point = client.upsert.call_args.kwargs["points"][0]
+    assert point.payload["user_id"] == "admin"
     client.delete.assert_not_called()
 
 

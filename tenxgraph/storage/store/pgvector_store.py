@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from tenxgraph.core.authz import filter_columns, get_identity, owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import (
     ColumnSpec,
@@ -252,9 +253,11 @@ class _TenantContext:
 
     ``values`` holds every declared column's value from ``config["user"]`` (``None`` when
     missing); ``conditions`` the tenant columns the scope picks with their values; ``settings``
-    the RLS ``set_config`` pairs (``None`` when RLS is off).
+    the RLS ``set_config`` pairs (``None`` when RLS is off); ``owner_scoped`` whether the
+    caller's reach filters by ``user_id``.
     """
 
+    owner_scoped: bool = True
     values: dict[str, Any] = field(default_factory=dict)
     conditions: list[tuple[ColumnSpec, Any]] = field(default_factory=list)
     settings: list[tuple[str, str]] | None = None
@@ -266,7 +269,7 @@ class PgVectorStore(BaseStore):
     One table holds every collection (``collection`` is a column, part of the primary key).
     Owner rules match ``QdrantStore``: every operation needs a non-empty ``user_id`` (use
     ``system_user_id(name)`` for shared data); reads, updates and deletes are filtered by it
-    unless the authz policy is ``scope="none"``; writes and ``aforget_memory`` always name an
+    unless the caller's reach is ``all``; writes and ``aforget_memory`` always name an
     owner.
 
     Example:
@@ -352,8 +355,8 @@ class PgVectorStore(BaseStore):
                 ``{"org_id": "uuid", "project_id": "text"}`` (or a list of names for ``text``
                 columns). Each becomes a real column with a B-tree index. Every write stores
                 the caller's values; every read, update, delete, forget and search is filtered
-                by the tenant columns the request's isolation scope picks (all of them when
-                there is no authz policy, see ``tenxgraph.core.authz``). A picked column whose
+                by the tenant columns the caller's reach picks (all of them when
+                there is no identity, see ``tenxgraph.core.authz``). A picked column whose
                 value is missing raises, it is never dropped from the filter. Required by
                 default; ``{"type": ..., "required": False}`` makes a column optional for
                 writes. Tenant columns are scalar ids: ``text``, ``bigint``, ``integer`` or
@@ -1148,7 +1151,7 @@ class PgVectorStore(BaseStore):
 
     def _extract_config_values(self, config: dict[str, Any]) -> tuple[Any, Any, str]:
         """Return ``(user_id, thread_id, collection)`` from the config (same rules as Qdrant)."""
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
         thread_id = config.get("thread_id")
         collection = config.get("collection")
         if collection is None:
@@ -1164,16 +1167,31 @@ class PgVectorStore(BaseStore):
     ) -> _TenantContext:
         """Resolve the declared columns' values and the tenant isolation for one call.
 
-        Values come only from ``config["user"]``. The scope is the request's authz scope
-        (``tenxgraph.core.authz.isolation_columns``); with no policy every tenant column
+        Values come only from ``config["user"]``. The filter columns are the caller's reach
+        (``tenxgraph.core.authz.filter_columns``); with no identity every tenant column
         applies. ``write=True`` raises when a required column has no value; any call raises
         when a column the scope picks has no value, except with ``strict=False`` (``astore``
-        only), where a missing optional value is matched with ``IS NOT DISTINCT FROM``. A
-        scope naming an undeclared column raises even when the store declares no columns.
+        only), where a missing optional value is matched with ``IS NOT DISTINCT FROM``. Reach
+        ``tenant`` raises when the store declares no tenant columns.
         """
-        picked = self._isolation_columns(config)
+        names = self.tenant_column_names
+        optional_missing: tuple[str, ...] = ()
+        identity = get_identity(config)
+        if not strict and identity is not None:
+            # A write may lack a value for an optional tenant column (matched with IS NOT
+            # DISTINCT FROM): keep it in the filter columns without requiring the value.
+            optional_missing = tuple(
+                s.name
+                for s in self.columns.tenant
+                if not s.required and s.name not in identity.tenant
+            )
+            names = tuple(n for n in names if n not in optional_missing)
+        picked = filter_columns(config, names)
+        if picked and optional_missing:
+            picked = (*picked, *optional_missing)
+        owner_scoped = picked is None or "user_id" in picked
         if not self.columns:
-            return _TenantContext()
+            return _TenantContext(owner_scoped=owner_scoped)
         values = self.columns.resolve(config, write=write)
         specs = self.columns.scope_specs(picked)
         conditions = (
@@ -1182,7 +1200,9 @@ class PgVectorStore(BaseStore):
         settings = (
             rls_settings(self.columns.tenant, specs, values) if self.row_level_security else None
         )
-        return _TenantContext(values=values, conditions=conditions, settings=settings)
+        return _TenantContext(
+            owner_scoped=owner_scoped, values=values, conditions=conditions, settings=settings
+        )
 
     def _search_settings(self, ctx: _TenantContext, vector_search: bool) -> list[tuple[str, str]]:
         """Settings for a search: RLS values plus ``hnsw.iterative_scan`` for vector scans."""
@@ -1412,11 +1432,11 @@ class PgVectorStore(BaseStore):
         """Store a memory and return its id, in one statement.
 
         A record always has an owner: an empty ``user_id`` raises, even under
-        ``scope="none"``. Use ``system_user_id(name)`` for shared data.
+        reach ``all``. Use ``system_user_id(name)`` for shared data.
 
         Without a ``memory_key`` it is an upsert on ``(collection, id)``: a ``memory_id`` you
         pass that belongs to another user raises ``PermissionError`` (the update's ``WHERE``
-        matches no row), unless isolation is off (``scope="none"``). With a ``memory_key``
+        matches no row), unless isolation is off (reach ``all``). With a ``memory_key``
         (keyword argument or ``metadata["memory_key"]``) it is an atomic upsert on
         ``(collection, user_id, memory_type, memory_key)``: the existing memory with that key is
         updated (metadata merged) and its id returned.
@@ -1431,8 +1451,8 @@ class PgVectorStore(BaseStore):
         memory_key = self._memory_key(kwargs.get("memory_key"), metadata)
         requested_id = kwargs.get("memory_id")
         memory_id = str(requested_id) if requested_id else await self.generate_framework_id()
-        check_owner = self._scope_user_id(config, owner) is not None
         ctx = self._tenant_context(config, write=True, strict=False)
+        check_owner = ctx.owner_scoped
         vector = await self._embed(text, query=False, metric=self.distance_metric)
 
         params: list[Any] = [
@@ -1648,7 +1668,7 @@ class PgVectorStore(BaseStore):
     ) -> None:
         """Delete the memories of one user, optionally narrowed (same rules as ``QdrantStore``).
 
-        ``user_id`` is required, also under ``scope="none"``. ``thread_id`` (from config),
+        ``user_id`` is required, also under reach ``all``. ``thread_id`` (from config),
         ``memory_type``, ``category`` and ``filters`` (keyword arguments) narrow the delete, all
         combined with AND. ``filters`` follows the same rules as ``asearch`` (column operators
         through ``tenxgraph.storage.sql_filter``, exact match on metadata keys).

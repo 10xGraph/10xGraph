@@ -404,14 +404,12 @@ async def test_aget_thread_owner_sqlite(cp):
 
 
 # ---------------------------------------------------------------------------
-# Owner-only isolation driven by config["authz"] policy
+# Owner-only isolation driven by the config["user"] identity
 # ---------------------------------------------------------------------------
 
 
 def _sqlite_owner_cfg(thread_id, user_id):
-    from tenxgraph.core.authz import build_authz
-
-    return {"thread_id": thread_id, "user_id": user_id, "authz": build_authz(user_id, scope="owner")}
+    return {"thread_id": thread_id, "user": {"user_id": user_id, "reach": "own"}}
 
 
 @pytest.mark.asyncio
@@ -452,6 +450,20 @@ async def test_sqlite_owner_only_messages(cp):
     await cp.aput_messages(_sqlite_owner_cfg("t1", "A"), [Message.text_message("hi", role="user")])
     assert await cp.alist_messages(_sqlite_owner_cfg("t1", "B")) == []
     assert len(await cp.alist_messages(_sqlite_owner_cfg("t1", "A"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_sqlite_identity_user_id_wins_over_config_user_id(cp):
+    await cp.aput_state(_sqlite_owner_cfg("t1", "A"), MyState())
+    spoof = {"thread_id": "t1", "user_id": "A", "user": {"user_id": "B", "reach": "own"}}
+    assert await cp.aget_state(spoof) is None
+
+
+@pytest.mark.asyncio
+async def test_sqlite_reach_tenant_raises(cp):
+    cfg = {"thread_id": "t1", "user": {"user_id": "A", "reach": "tenant"}}
+    with pytest.raises(ValueError, match="tenant"):
+        await cp.aget_state(cfg)
 
 
 @pytest.mark.asyncio

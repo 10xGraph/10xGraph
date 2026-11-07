@@ -12,9 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tenxgraph.core.authz import build_authz
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
-from tenxgraph.storage.columns import MissingColumnValueError
 
 
 TENANTS = {"org_id": "text", "project_id": "text"}
@@ -27,10 +25,8 @@ def _cp(**kw):
     return PgCheckpointer(postgres_dsn="postgresql://x/y", redis=MagicMock(), **kw)
 
 
-def _cfg(user="admin", org="A", project="P2", scope=("org_id",), run_id=None):
-    identity = {"user_id": user, "org_id": org, "project_id": project}
-    if scope is not None:
-        identity["authz"] = build_authz(user, scope=list(scope))
+def _cfg(user="admin", org="A", project="P2", reach="tenant", run_id=None):
+    identity = {"user_id": user, "tenant": {"org_id": org, "project_id": project}, "reach": reach}
     cfg = {"thread_id": "t1", "user_id": user, "user": identity}
     if run_id:
         cfg["run_id"] = run_id
@@ -110,14 +106,14 @@ class TestCacheRead:
         cp.redis.get = AsyncMock(
             return_value=json.dumps({"context": [], "__checkpoint_version__": 3})
         )
-        cfg = _cfg()
+        cfg = _cfg(project="P1")
         assert await cp.aget_state_cache(cfg) is not None
         cp.redis.get.assert_awaited_once_with(IDENTITY_KEY)
         _method, sql, args = conn.calls[0]
-        # The identity read carries the caller's scope (org only), not the thread id alone.
+        # The identity read carries the caller's tenant values, not the thread id alone.
         assert sql.startswith('SELECT user_id, "org_id", "project_id", (SELECT COALESCE(MAX(')
-        assert sql.endswith('WHERE thread_id = $1 AND "org_id" = $2')
-        assert args == ("t1", "A")
+        assert sql.endswith('WHERE thread_id = $1 AND "org_id" = $2 AND "project_id" = $3')
+        assert args == ("t1", "A", "P1")
         assert cfg["_checkpoint_version"] == 3
 
     async def test_version_mismatch_drops_the_shared_entry(self):
@@ -146,8 +142,8 @@ class TestCacheRead:
         conn = _wire(cp, _Conn())
         cp.redis.get = AsyncMock()
         cfg = _cfg()
-        cfg["user"]["org_id"] = None
-        with pytest.raises(MissingColumnValueError):
+        del cfg["user"]["tenant"]["org_id"]
+        with pytest.raises(ValueError, match="org_id"):
             await cp.aget_state_cache(cfg)
         assert conn.calls == []
         cp.redis.get.assert_not_awaited()
@@ -173,7 +169,7 @@ class TestDeleteMessage:
             ),
         )
         cp.redis.delete = AsyncMock()
-        cfg = _cfg(user="owner", project="P2", scope=("user_id", "org_id"))
+        cfg = _cfg(user="owner", project="P2", reach="own")
         await cp.adelete_message(cfg, "gone")
         lock = conn.calls[0]
         assert lock[1].startswith('SELECT user_id, "org_id", "project_id" FROM')
@@ -196,7 +192,7 @@ class TestDeleteMessage:
             ),
         )
         cp.redis.delete = AsyncMock()
-        await cp.adelete_message(_cfg(user="owner", scope=("user_id", "org_id")), "gone")
+        await cp.adelete_message(_cfg(user="owner", reach="own"), "gone")
         assert not [c for c in conn.calls if "SET version" in c[1]]
 
 

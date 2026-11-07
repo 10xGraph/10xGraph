@@ -340,7 +340,7 @@ Some examples still use pre-rename import paths; the canonical paths are listed 
 - The rename from Agentflow resets brand recognition; "10xGraph" has no search history yet.
 - LangGraph has stronger visual tooling (Studio, LangSmith observability).
 - Requires Python 3.12 or newer (tested on 3.12 to 3.15). Code-first, not a no-code builder.
-- Automatic per-tool permissions (user A may call `refund`, user B may not) are not built in. Tools can check the caller's verified scopes with `tenxgraph.core.authz.has_scope`.
+- Automatic per-tool permissions (user A may call `refund`, user B may not) are not built in. Tools can check the caller's permissions with `tenxgraph.core.authz.can(config, "resource:action")`.
 
 ---
 

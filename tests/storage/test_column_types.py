@@ -340,7 +340,14 @@ class TestBackendSql:
             tenant_columns=["org_id"],
             extra_columns={"settings": "jsonb", "tags": "text[]"},
         )
-        cfg = {"user_id": "u1", "user": {"org_id": "A", "settings": {"a": 1}, "tags": ["x"]}}
+        cfg = {
+            "user_id": "u1",
+            "user": {
+                "user_id": "u1",
+                "tenant": {"org_id": "A"},
+                "claims": {"settings": {"a": 1}, "tags": ["x"]},
+            },
+        }
         isolation = cp._isolation(cfg, write=True)
         sql, params = cp._thread_insert_sql("t1", "n", "u1", "{}", isolation, "")
         assert "VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)" in sql
@@ -360,7 +367,10 @@ class TestBackendSql:
         store._setup_done = True
         store._index_metric = store.distance_metric
         conn.fetchrow_results = [{"id": "m1"}]
-        cfg = {"user_id": "u1", "user": {"settings": ["a"], "due": "2026-01-01"}}
+        cfg = {
+            "user_id": "u1",
+            "user": {"user_id": "u1", "claims": {"settings": ["a"], "due": "2026-01-01"}},
+        }
         await store.astore(cfg, "hello", memory_id="m1")
         sql = conn.sql("fetchrow")[0]
         n = len(conn.calls[0][2])

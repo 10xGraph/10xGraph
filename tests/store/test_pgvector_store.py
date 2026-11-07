@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from tenxgraph.core.authz import SCOPE_NONE, build_authz
 from tenxgraph.core.state import Message
 from tenxgraph.prebuilt.tools.memory import (
     _memory_scope_retrieval_strategy,
@@ -33,7 +32,7 @@ from tenxgraph.storage.store.store_schema import DistanceMetric, MemoryType, Ret
 
 
 CFG = {"user_id": "u1", "thread_id": "t1"}
-ADMIN = {"user": {"authz": build_authz("admin", scope=SCOPE_NONE)}}
+ADMIN = {"user": {"user_id": "admin", "reach": "all"}}
 
 
 class _Embedding:
@@ -434,10 +433,12 @@ class TestStore:
         with pytest.raises(ValueError, match="user_id is required"):
             await store.astore({}, "x")
 
-    async def test_store_requires_owner_even_under_scope_none(self):
-        store, _, _ = _store()
-        with pytest.raises(ValueError, match="user_id is required"):
-            await store.astore(dict(ADMIN), "x")
+    async def test_store_under_reach_all_writes_as_identity_user(self):
+        store, conn, _ = _store()
+        conn.fetchrow_results = [{"id": "m1"}]
+        await store.astore({"user_id": "forged", **ADMIN}, "x", memory_id="m1")
+        args = conn.calls[0][2]
+        assert "admin" in args and "forged" not in args
 
     async def test_store_inserts_with_ownership_guard(self):
         store, conn, _ = _store()
@@ -645,10 +646,11 @@ class TestUpdateDelete:
         conn.fetchrow_results = [{"id": "m1"}]
         await store.adelete(CFG, "m1")
 
-    async def test_forget_requires_owner_even_under_scope_none(self):
-        store, _, _ = _store()
-        with pytest.raises(ValueError, match="user_id is required"):
-            await store.aforget_memory(dict(ADMIN))
+    async def test_forget_under_reach_all_names_the_identity_user(self):
+        store, conn, _ = _store()
+        await store.aforget_memory({"user_id": "forged", **ADMIN})
+        args = conn.calls[0][2]
+        assert "admin" in args and "forged" not in args
 
     async def test_forget_narrowing(self):
         store, conn, _ = _store()
@@ -714,8 +716,8 @@ class TestReads:
         assert args == ("agentflow_memories", "u1", 5)
 
     async def test_collection_precedence(self):
-        store, conn, _ = _store(collection=lambda cfg: f"org_{cfg['user']['org']}")
-        await store.aget({"user_id": "u1", "user": {"org": "a"}}, "m1")
+        store, conn, _ = _store(collection=lambda cfg: f"org_{cfg['user']['tenant']['org']}")
+        await store.aget({"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org": "a"}}}, "m1")
         assert conn.calls[-1][2][0] == "org_a"
         await store.aget({"user_id": "u1", "collection": "explicit"}, "m1")
         assert conn.calls[-1][2][0] == "explicit"

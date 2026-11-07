@@ -12,6 +12,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from tenxgraph.core.authz import owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.storage.media.url_policy import redact_url
 
@@ -184,7 +185,7 @@ class QdrantStore(BaseStore):
 
     def _extract_config_values(self, config: dict[str, Any]) -> tuple[str | None, str | None, str]:
         """Extract user_id, thread_id, and collection from config."""
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
         thread_id = config.get("thread_id")
         collection = config.get("collection")
         if collection is None:
@@ -407,7 +408,7 @@ class QdrantStore(BaseStore):
 
         ``astore`` upserts, so without this check a chosen id would silently replace another
         user's memory. Reusing one of your own ids (an intentional overwrite) is still
-        allowed, as is any id when isolation is off (``scope="none"``).
+        allowed, as is any id when isolation is off (reach ``all``).
         """
         scoped_user_id = self._scope_user_id(config, user_id)
         if not scoped_user_id:
@@ -431,7 +432,7 @@ class QdrantStore(BaseStore):
         """Store a new memory.
 
         A record always has an owner: an empty ``user_id`` raises, even under
-        ``scope="none"``. Use ``system_user_id(name)`` for shared data.
+        reach ``all``. Use ``system_user_id(name)`` for shared data.
         """
         user_id, thread_id, collection = self._extract_config_values(config)
         user_id = self._require_owner_id(config, user_id)
@@ -533,7 +534,7 @@ class QdrantStore(BaseStore):
             raise ValueError("Embedding service returned invalid vector")
 
         # Build filter — search by user only; thread_id is excluded. The user filter is
-        # dropped when the authz policy is scope="none" (allow_all).
+        # dropped when the caller's reach is "all".
         search_filter = self._build_qdrant_filter(
             user_id=scoped_user_id,
             memory_type=memory_type,
@@ -586,7 +587,7 @@ class QdrantStore(BaseStore):
             result = self._point_to_search_result(point)
 
             # Verify user access only — thread_id is intentionally not checked
-            # because long-term memory is cross-thread. Skipped under scope="none".
+            # because long-term memory is cross-thread. Skipped under reach "all".
             if scoped_user_id and result.user_id != scoped_user_id:
                 return None
 
@@ -609,7 +610,7 @@ class QdrantStore(BaseStore):
         # Ensure collection exists
         await self._ensure_collection_exists(collection)
 
-        # Build filter (user filter dropped under scope="none").
+        # Build filter (user filter dropped under reach "all").
         search_filter = self._build_qdrant_filter(user_id=scoped_user_id)
 
         # Listing needs no vector, so scroll through the filtered points (payloads are
@@ -734,7 +735,7 @@ class QdrantStore(BaseStore):
     ) -> None:
         """Delete the memories of one user, optionally narrowed.
 
-        ``user_id`` is required (also under ``scope="none"``): forgetting is always for a named
+        ``user_id`` is required (also under reach ``all``): forgetting is always for a named
         owner, never the whole collection. With no narrowing every memory of that user in the
         collection goes. ``thread_id`` (from config), ``memory_type``, ``category`` and
         ``filters`` (keyword arguments) narrow the delete, all combined with AND. A ``filters``

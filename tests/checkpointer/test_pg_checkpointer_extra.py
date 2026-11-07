@@ -842,12 +842,12 @@ async def test_aget_tool_result_skips_the_owner_join_when_isolation_is_off(cp):
 
 
 @pytest.mark.asyncio
-async def test_aget_tool_result_follows_the_authz_scope_over_the_setting(cp):
+async def test_aget_tool_result_follows_the_reach_over_the_setting(cp):
     conn = _mock_conn()
     conn.fetchrow = AsyncMock(return_value=None)
     _bind_conn(cp, conn)
 
-    config = {"thread_id": "t1", "user_id": "u1", "authz": {"scope": "none"}}
+    config = {"thread_id": "t1", "user_id": "u1", "user": {"user_id": "u1", "reach": "all"}}
     await cp.aget_tool_result(config, "msg_1:call_1")
 
     query, *_ = conn.fetchrow.await_args.args

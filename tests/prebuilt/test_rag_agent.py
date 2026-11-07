@@ -177,9 +177,9 @@ class TestCohereReranker:
     def test_default_model(self):
         with patch(
             "builtins.__import__",
-            side_effect=lambda name, *a, **k: MagicMock()
-            if name == "cohere"
-            else __import__(name, *a, **k),
+            side_effect=lambda name, *a, **k: (
+                MagicMock() if name == "cohere" else __import__(name, *a, **k)
+            ),
         ):
             try:
                 r = CohereReranker.__new__(CohereReranker)
@@ -413,80 +413,62 @@ class TestRetrieveNode:
         assert store.asearch.call_args.kwargs["config"]["user_id"] == "__system__:knowledge_base"
 
     @pytest.mark.asyncio
-    async def test_user_forwarded_authz_not(self):
+    async def test_user_forwarded_pinned_to_kb_owner(self):
+        from tenxgraph.core.authz import Identity, Reach, filter_columns
+
         store = FakeStore()
         store.asearch = AsyncMock(return_value=[])
         rag = RAGAgent(store=store, agent=_fake_agent())
-        user = {"user_id": "alice", "org_id": "o1"}
-        authz = {"scope": ["org_id"]}
-        await rag._make_retrieve_node()(
-            _state_with(_msg("q")), {**RUN, "user": user, "authz": authz}
-        )
+        user = {"user_id": "alice", "tenant": {"org_id": "o1"}}
+        await rag._make_retrieve_node()(_state_with(_msg("q")), {**RUN, "user": user})
         sent = store.asearch.call_args.kwargs["config"]
-        assert sent["user"] == user
-        assert "authz" not in sent  # a caller scope never widens the knowledge-base search
         assert sent["user_id"] == "__system__:knowledge_base"
+        assert isinstance(sent["user"], Identity)
+        assert sent["user"].user_id == "__system__:knowledge_base"
+        assert sent["user"].tenant == {"org_id": "o1"}
+        assert sent["user"].reach is Reach.OWN
+        assert filter_columns(sent, ("org_id",)) == ("user_id", "org_id")
         assert "user" not in rag._store_config
+        assert user["user_id"] == "alice"  # the caller's run config is not mutated
 
     @pytest.mark.asyncio
-    async def test_api_shape_caller_none_scope_does_not_widen(self):
-        """The API stamps authz inside config["user"]; it must not reach the KB search."""
-        from tenxgraph.core.authz import build_authz, get_authz, isolation_columns
+    async def test_caller_reach_all_does_not_widen(self):
+        from tenxgraph.core.authz import filter_columns
 
         store = FakeStore()
         store.asearch = AsyncMock(return_value=[])
         rag = RAGAgent(store=store, agent=_fake_agent())
-        user = {"user_id": "admin", "org_id": "o1", "authz": build_authz("admin", scope="none")}
-        await rag._make_retrieve_node()(
-            _state_with(_msg("q")), {**RUN, "user": user, "user_id": "admin"}
-        )
+        user = {"user_id": "admin", "tenant": {"org_id": "o1"}, "reach": "all"}
+        await rag._make_retrieve_node()(_state_with(_msg("q")), {**RUN, "user": user})
         sent = store.asearch.call_args.kwargs["config"]
-        assert sent["user"] == {"user_id": "admin", "org_id": "o1"}
-        assert get_authz(sent) is None  # store default applies, not the caller's "none"
-        assert isolation_columns(sent, ("org_id",)) is None
-        assert "authz" in user  # the caller's run config is not mutated
-
-    @pytest.mark.asyncio
-    async def test_api_shape_store_config_authz_applies(self):
-        """A developer's store_config["authz"] sets the KB scope even with an API-stamped user."""
-        from tenxgraph.core.authz import build_authz, get_authz, isolation_columns
-
-        store = FakeStore()
-        store.asearch = AsyncMock(return_value=[])
-        kb_authz = build_authz(None, scope=["user_id"])
-        rag = RAGAgent(store=store, agent=_fake_agent(), store_config={"authz": kb_authz})
-        user = {"user_id": "alice", "org_id": "o1", "authz": build_authz("alice", scope="owner")}
-        await rag._make_retrieve_node()(
-            _state_with(_msg("q")), {**RUN, "user": user, "user_id": "alice"}
-        )
-        sent = store.asearch.call_args.kwargs["config"]
-        assert get_authz(sent)["scope"] == ["user_id"]
-        assert isolation_columns(sent, ("org_id",)) == ("user_id",)
+        assert filter_columns(sent, ("org_id",)) == ("user_id", "org_id")
 
     @pytest.mark.asyncio
     async def test_explicit_store_config_user_wins(self):
         store = FakeStore()
         store.asearch = AsyncMock(return_value=[])
-        rag = RAGAgent(store=store, agent=_fake_agent(), store_config={"user": {"org_id": "kb"}})
-        await rag._make_retrieve_node()(
-            _state_with(_msg("q")), {**RUN, "user": {"org_id": "caller"}}
-        )
-        assert store.asearch.call_args.kwargs["config"]["user"] == {"org_id": "kb"}
+        kb_user = {"user_id": "kb", "tenant": {"org_id": "kb"}}
+        rag = RAGAgent(store=store, agent=_fake_agent(), store_config={"user": kb_user})
+        caller = {"user_id": "c", "tenant": {"org_id": "caller"}}
+        await rag._make_retrieve_node()(_state_with(_msg("q")), {**RUN, "user": caller})
+        sent_user = store.asearch.call_args.kwargs["config"]["user"]
+        assert sent_user.tenant == {"org_id": "kb"}
 
     @pytest.mark.asyncio
-    async def test_builder_user_wins_and_run_authz_ignored(self):
+    async def test_builder_user_wins(self):
         store = FakeStore()
         store.asearch = AsyncMock(return_value=[])
         rag = RAGAgent(
             store=store,
             agent=_fake_agent(),
-            store_config_builder=lambda cfg: {"user_id": "u", "user": {"org_id": "b"}},
+            store_config_builder=lambda cfg: {
+                "user_id": "u",
+                "user": {"user_id": "u", "tenant": {"org_id": "b"}},
+            },
         )
-        cfg = {**RUN, "user": {"org_id": "caller"}, "authz": {"scope": []}}
+        cfg = {**RUN, "user": {"user_id": "c", "tenant": {"org_id": "caller"}}}
         await rag._make_retrieve_node()(_state_with(_msg("q")), cfg)
-        sent = store.asearch.call_args.kwargs["config"]
-        assert sent["user"] == {"org_id": "b"}
-        assert "authz" not in sent
+        assert store.asearch.call_args.kwargs["config"]["user"].tenant == {"org_id": "b"}
 
     @pytest.mark.asyncio
     async def test_nothing_forwarded_without_run_config_user(self):
@@ -496,7 +478,6 @@ class TestRetrieveNode:
         await rag._make_retrieve_node()(_state_with(_msg("q")), {**RUN, "user_id": "alice"})
         sent = store.asearch.call_args.kwargs["config"]
         assert "user" not in sent
-        assert "authz" not in sent
 
     @pytest.mark.asyncio
     async def test_store_config_builder_receives_run_config(self):
@@ -528,10 +509,10 @@ class TestRetrieveNode:
             agent=_fake_agent(),
             store_config_builder=lambda cfg: {
                 "user_id": cfg["user_id"],
-                "collection": f"company_{cfg['user']['tenant_id']}",
+                "collection": f"company_{cfg['user']['tenant']['tenant_id']}",
             },
         )
-        cfg = {**RUN, "user_id": "u7", "user": {"tenant_id": "acme"}}
+        cfg = {**RUN, "user_id": "u7", "user": {"user_id": "u7", "tenant": {"tenant_id": "acme"}}}
         await rag._make_retrieve_node()(_state_with(_msg("q")), cfg)
         assert store.asearch.call_args.kwargs["config"]["collection"] == "company_acme"
 
@@ -759,7 +740,5 @@ class TestRerankerFailure:
             async def arerank(self, query, documents, top_n):
                 raise RuntimeError("cohere is down")
 
-        rag = RAGAgent(
-            store=_fake_store(), agent=_fake_agent(), reranker=BrokenReranker(), top_n=2
-        )
+        rag = RAGAgent(store=_fake_store(), agent=_fake_agent(), reranker=BrokenReranker(), top_n=2)
         assert await rag._rerank_docs("q", ["a", "b", "c"]) == ["a", "b"]
