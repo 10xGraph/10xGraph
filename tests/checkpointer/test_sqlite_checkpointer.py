@@ -80,7 +80,7 @@ async def test_put_state_upserts(cp, cfg1):
 @pytest.mark.asyncio
 async def test_clear_state(cp, cfg1):
     await cp.aput_state(cfg1, MyState(counter=1))
-    assert await cp.aclear_state(cfg1) is True
+    assert await cp.aclear_state(cfg1) == 1
     assert await cp.aget_state(cfg1) is None
 
 
@@ -240,15 +240,14 @@ async def test_put_messages_upsert(cp, cfg1):
 @pytest.mark.asyncio
 async def test_delete_message(cp, cfg1):
     await cp.aput_messages(cfg1, [_msg("m1"), _msg("m2")])
-    assert await cp.adelete_message(cfg1, "m1") is True
+    assert await cp.adelete_message(cfg1, "m1") == 1
     remaining = [str(m.message_id) for m in await cp.alist_messages(cfg1)]
     assert remaining == ["m2"]
 
 
 @pytest.mark.asyncio
-async def test_delete_message_missing_raises(cp, cfg1):
-    with pytest.raises(IndexError):
-        await cp.adelete_message(cfg1, "nope")
+async def test_delete_message_missing_returns_zero(cp, cfg1):
+    assert await cp.adelete_message(cfg1, "nope") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +292,7 @@ async def test_clean_thread_cascades(cp, cfg1):
     await cp.aput_state_cache(cfg1, MyState(counter=2))
     await cp.aput_messages(cfg1, [_msg("m1")])
     await cp.aput_thread(cfg1, ThreadInfo(thread_id="thread-1"))
-    assert await cp.aclean_thread(cfg1) is True
+    assert await cp.aclean_thread(cfg1) == 1
     assert await cp.aget_state(cfg1) is None
     assert await cp.aget_state_cache(cfg1) is None
     assert await cp.alist_messages(cfg1) == []
@@ -377,8 +376,8 @@ def test_sync_state_message_thread_roundtrip():
     assert cp.get_cache_value("ns", "k") == 1
     cp.clear_cache_value("ns", "k")
     assert cp.get_cache_value("ns", "k") is None
-    assert cp.clear_state(cfg) is True
-    assert cp.clean_thread(cfg) is True
+    assert cp.clear_state(cfg) == 1
+    assert cp.clean_thread(cfg) == 1
     assert cp.release() is True
 
 
@@ -388,9 +387,7 @@ def test_sync_state_message_thread_roundtrip():
 
 
 def test_missing_aiosqlite_raises(monkeypatch):
-    monkeypatch.setattr(
-        "tenxgraph.storage.checkpointer.sqlite_checkpointer.HAS_AIOSQLITE", False
-    )
+    monkeypatch.setattr("tenxgraph.storage.checkpointer.sqlite_checkpointer.HAS_AIOSQLITE", False)
     with pytest.raises(ImportError, match="aiosqlite"):
         SqliteCheckpointer(":memory:")
 

@@ -85,8 +85,24 @@ async def test_qdrant_new_memory_id_is_allowed(qdrant, client):
 
 
 @pytest.mark.asyncio
-async def test_qdrant_memory_id_check_skipped_without_isolation(qdrant, client):
-    # reach "all" deliberately shares memories across users.
-    client.retrieve.return_value = [_existing_point("someone")]
-    config = {"user_id": "u1", "user": {"user_id": "u1", "reach": "all"}}
-    assert await qdrant.astore(config, "x", memory_id="shared") == "shared"
+async def test_qdrant_reach_all_cannot_overwrite_another_users_memory(qdrant, client):
+    # AR-CORE-01: reach "all" widens reads and deletes, never writes.
+    client.retrieve.return_value = [_existing_point("victim")]
+    config = {"user": {"user_id": "admin", "reach": "all"}}
+    with pytest.raises(PermissionError):
+        await qdrant.astore(config, "x", memory_id="victim-memory")
+    with pytest.raises(PermissionError):
+        await qdrant.aupdate(config, "victim-memory", "x")
+    client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_qdrant_reach_tenant_cannot_write_without_tenant_columns(qdrant, client):
+    # Qdrant declares no tenant columns: a reach "tenant" update is refused before any write.
+    client.retrieve.return_value = [_existing_point("victim")]
+    config = {"user": {"user_id": "admin", "tenant": {"org_id": "A"}, "reach": "tenant"}}
+    with pytest.raises((PermissionError, ValueError)):
+        await qdrant.aupdate(config, "victim-memory", "x")
+    with pytest.raises(PermissionError):
+        await qdrant.astore(config, "x", memory_id="victim-memory")
+    client.upsert.assert_not_called()

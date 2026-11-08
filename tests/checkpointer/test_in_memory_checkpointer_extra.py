@@ -18,6 +18,7 @@ from tenxgraph.utils.thread_info import ThreadInfo
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cp():
     return InMemoryCheckpointer()
@@ -51,6 +52,7 @@ def _make_thread(tid="t1") -> ThreadInfo:
 # setup / asetup
 # ---------------------------------------------------------------------------
 
+
 class TestSetup:
     def test_setup_runs_without_error(self, cp):
         cp.setup()  # should not raise
@@ -63,6 +65,7 @@ class TestSetup:
 # ---------------------------------------------------------------------------
 # Sync State Methods
 # ---------------------------------------------------------------------------
+
 
 class TestSyncStateMethods:
     def test_put_get_state(self, cp, config_t1):
@@ -79,13 +82,13 @@ class TestSyncStateMethods:
         state = _make_state()
         cp.put_state(config_t1, state)
         cleared = cp.clear_state(config_t1)
-        assert cleared is True
+        assert cleared == 1
         assert cp.get_state(config_t1) is None
 
     def test_clear_state_nonexistent(self, cp, config_t1):
-        # clearing nonexistent key should still return True
+        # clearing a nonexistent key removes nothing
         result = cp.clear_state(config_t1)
-        assert result is True
+        assert result == 0
 
     def test_put_get_state_cache(self, cp, config_t1):
         state = _make_state()
@@ -109,6 +112,7 @@ class TestSyncStateMethods:
 # ---------------------------------------------------------------------------
 # Sync Message Methods
 # ---------------------------------------------------------------------------
+
 
 class TestSyncMessageMethods:
     def test_put_get_message(self, cp, config_t1):
@@ -156,13 +160,12 @@ class TestSyncMessageMethods:
         msg = _make_message("msg-del", "delete me")
         cp.put_messages(config_t1, [msg])
         deleted = cp.delete_message(config_t1, "msg-del")
-        assert deleted is True
+        assert deleted == 1
         with pytest.raises(IndexError):
             cp.get_message(config_t1, "msg-del")
 
-    def test_delete_message_not_found_raises(self, cp, config_t1):
-        with pytest.raises(IndexError):
-            cp.delete_message(config_t1, "no-such-message")
+    def test_delete_message_not_found_returns_zero(self, cp, config_t1):
+        assert cp.delete_message(config_t1, "no-such-message") == 0
 
     def test_put_messages_with_metadata(self, cp, config_t1):
         msg = _make_message("msg-x")
@@ -180,6 +183,7 @@ class TestSyncMessageMethods:
 # ---------------------------------------------------------------------------
 # Sync Thread Methods
 # ---------------------------------------------------------------------------
+
 
 class TestSyncThreadMethods:
     def test_put_get_thread(self, cp, config_t1):
@@ -214,17 +218,18 @@ class TestSyncThreadMethods:
     def test_clean_thread(self, cp, config_t1):
         cp.put_thread(config_t1, _make_thread("t1"))
         cleaned = cp.clean_thread(config_t1)
-        assert cleaned is True
+        assert cleaned == 1
         assert cp.get_thread(config_t1) is None
 
-    def test_clean_thread_nonexistent_returns_false(self, cp, config_t1):
+    def test_clean_thread_nonexistent_returns_zero(self, cp, config_t1):
         result = cp.clean_thread(config_t1)
-        assert result is False
+        assert result == 0
 
 
 # ---------------------------------------------------------------------------
 # Sync Release
 # ---------------------------------------------------------------------------
+
 
 class TestSyncRelease:
     def test_release_clears_all(self, cp, config_t1):
@@ -243,6 +248,7 @@ class TestSyncRelease:
 # ---------------------------------------------------------------------------
 # Async State Methods
 # ---------------------------------------------------------------------------
+
 
 class TestAsyncStateMethods:
     @pytest.mark.asyncio
@@ -275,6 +281,7 @@ class TestAsyncStateMethods:
 # Async Message Methods
 # ---------------------------------------------------------------------------
 
+
 class TestAsyncMessageMethods:
     @pytest.mark.asyncio
     async def test_aput_aget_message(self, cp, config_t1):
@@ -290,10 +297,13 @@ class TestAsyncMessageMethods:
 
     @pytest.mark.asyncio
     async def test_alist_messages_with_search(self, cp, config_t1):
-        await cp.aput_messages(config_t1, [
-            _make_message("m1", "search me"),
-            _make_message("m2", "not matching"),
-        ])
+        await cp.aput_messages(
+            config_t1,
+            [
+                _make_message("m1", "search me"),
+                _make_message("m2", "not matching"),
+            ],
+        )
         result = await cp.alist_messages(config_t1, search="search")
         assert len(result) == 1
 
@@ -308,19 +318,19 @@ class TestAsyncMessageMethods:
         msg = _make_message("del-msg", "delete")
         await cp.aput_messages(config_t1, [msg])
         result = await cp.adelete_message(config_t1, "del-msg")
-        assert result is True
+        assert result == 1
         with pytest.raises(IndexError):
             await cp.aget_message(config_t1, "del-msg")
 
     @pytest.mark.asyncio
     async def test_adelete_message_not_found(self, cp, config_t1):
-        with pytest.raises(IndexError):
-            await cp.adelete_message(config_t1, "no-msg")
+        assert await cp.adelete_message(config_t1, "no-msg") == 0
 
 
 # ---------------------------------------------------------------------------
 # Async Thread Methods
 # ---------------------------------------------------------------------------
+
 
 class TestAsyncThreadMethods:
     @pytest.mark.asyncio
@@ -360,18 +370,19 @@ class TestAsyncThreadMethods:
     async def test_aclean_thread(self, cp, config_t1):
         await cp.aput_thread(config_t1, _make_thread("t1"))
         cleaned = await cp.aclean_thread(config_t1)
-        assert cleaned is True
+        assert cleaned == 1
         assert await cp.aget_thread(config_t1) is None
 
     @pytest.mark.asyncio
     async def test_aclean_thread_nonexistent(self, cp, config_t1):
         result = await cp.aclean_thread(config_t1)
-        assert result is False
+        assert result == 0
 
 
 # ---------------------------------------------------------------------------
 # Async Release
 # ---------------------------------------------------------------------------
+
 
 class TestAsyncRelease:
     @pytest.mark.asyncio

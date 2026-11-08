@@ -132,7 +132,7 @@ class TestInMemoryCheckpointer:
         state = {"data": "test"}
         await checkpointer.aput_state(config, state)
         result = await checkpointer.aclear_state(config)
-        assert result is True  # noqa: S101
+        assert result == 1  # noqa: S101
         loaded = await checkpointer.aget_state(config)
         assert loaded is None  # noqa: S101
 

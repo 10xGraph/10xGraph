@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from injectq import InjectQ
 
+from tenxgraph.core.authz import Identity, can_reach, get_identity
 from tenxgraph.core.exceptions.closed_error import GraphClosedError
 from tenxgraph.core.exceptions.graph_error import GraphError
 from tenxgraph.core.graph.base_agent import BaseAgent
@@ -215,7 +216,11 @@ class CompiledGraph[StateT: AgentState]:
         self, cfg: dict[str, Any], kind: str, heartbeat: bool = True
     ) -> tuple[RunHandle, contextvars.Token, contextvars.Token]:
         """Register this run and bind its handle and task manager to the current context."""
-        handle = RunHandle(str(cfg.get("run_id")), cfg.get("thread_id"), kind)
+        identity = get_identity(cfg)
+        owner, tenant = (
+            (identity.user_id, identity.tenant) if identity else (cfg.get("user_id"), {})
+        )
+        handle = RunHandle(str(cfg.get("run_id")), cfg.get("thread_id"), kind, owner, tenant)
         if heartbeat:
             handle.heartbeat = self._start_heartbeat(cfg)
         self._runs.register(handle)
@@ -285,7 +290,11 @@ class CompiledGraph[StateT: AgentState]:
 
         if "is_stream" not in cfg:
             cfg["is_stream"] = is_stream
-        if "user_id" not in cfg:
+        identity = get_identity(cfg)
+        if identity is not None:
+            # The identity is the owner (authz.owner_id), so every key a run uses agrees.
+            cfg["user_id"] = identity.user_id
+        elif "user_id" not in cfg:
             # Was "test-user-id" -- a placeholder that looks like a real user. With
             # per-user isolation enabled that silently filed every un-authenticated
             # run under one fake account. "anonymous" matches what the API layer
@@ -521,11 +530,20 @@ class CompiledGraph[StateT: AgentState]:
           no checkpointer and when the cache write fails
         - If no active thread or no checkpointer, returns not-running
         - If state exists and is running, set stop_requested flag in thread info
+        - With an identity in ``config["user"]``, only runs whose owner the caller's reach
+          covers are stopped (``own``: same user and tenant values, ``tenant``: same tenant
+          values, ``all``: any), and the cross-process flag is written under the thread
+          owner's keys, which the running worker polls. A refused stop answers exactly like a
+          thread with no run. With no identity every run on the thread is stopped.
         """
         cfg = self._prepare_config(config, is_stream=bool((config or {}).get("is_stream", False)))
         # Runs of this graph in this process stop through their in-process flag. It acts at
         # once and needs neither a checkpointer nor a reachable cache.
-        local = self._runs.for_thread(cfg.get("thread_id"))
+        local = [
+            h
+            for h in self._runs.for_thread(cfg.get("thread_id"))
+            if can_reach(cfg, h.owner, h.tenant)
+        ]
         for handle in local:
             handle.request_stop()
         if not self._checkpointer:
@@ -533,7 +551,12 @@ class CompiledGraph[StateT: AgentState]:
                 return {"ok": True, "running": True, "local": True}
             return {"ok": False, "reason": "no-checkpointer"}
         try:
-            return await self._request_stop_in_cache(cfg, local=bool(local))
+            stop_cfg = await self._owner_stop_config(cfg)
+            if stop_cfg is None:  # the caller may not stop runs on this thread
+                if local:
+                    return {"ok": True, "running": True, "local": True}
+                return {"ok": False, "running": False, "reason": "no-state"}
+            return await self._request_stop_in_cache(stop_cfg, local=bool(local))
         except Exception as e:
             if not local:
                 raise
@@ -545,6 +568,49 @@ class CompiledGraph[StateT: AgentState]:
                 e,
             )
             return {"ok": True, "running": True, "local": True}
+
+    async def _owner_stop_config(self, cfg: dict[str, Any]) -> dict[str, Any] | None:
+        """The config a cross-process stop is read and written with: the thread owner's.
+
+        Stop and active-run keys belong to the user who runs on the thread, so a stop by
+        another user the caller's reach covers (an admin) must use the owner's identity to
+        reach them. Returns ``cfg`` unchanged with no identity, or when the backend cannot
+        name the owner (then only the caller's own keys are used). Returns ``None`` when the
+        thread has no row or the caller's reach does not cover its owner: nothing is read or
+        written then. In-process runs are stopped by their handles before this is called.
+        """
+        if get_identity(cfg) is None:
+            return cfg
+        assert self._checkpointer is not None  # noqa: S101
+        try:
+            scope = await self._checkpointer.aget_thread_scope(cfg["thread_id"])
+        except NotImplementedError:
+            return cfg
+        if scope is None:
+            return None
+        owner = scope["user_id"]
+        tenant = {k: v for k, v in scope.items() if k != "user_id"}
+        caller = cfg
+        columns = getattr(self._checkpointer, "columns", None)
+        if tenant and columns is not None:
+            # Compare in the form storage uses: values converted by the column type, as text
+            # (a UUID claim in upper case or an integer claim "007" matches its row).
+            specs = {spec.name: spec for spec in columns.tenant}
+            values = columns.resolve(cfg)
+            identity = get_identity(cfg)
+            assert identity is not None  # noqa: S101
+            claims = {
+                k: specs[k].to_setting(v) for k, v in values.items() if k in specs and v is not None
+            }
+            caller = {**cfg, "user": identity.model_copy(update={"tenant": claims})}
+            tenant = {k: None if v is None else specs[k].to_setting(v) for k, v in tenant.items()}
+        if not can_reach(caller, owner, tenant):
+            return None
+        # A tenant value missing on the row stays missing: the owner's keys mark it as such.
+        identity = Identity(
+            user_id=str(owner), tenant={k: str(v) for k, v in tenant.items() if v is not None}
+        )
+        return {**cfg, "user_id": owner, "user": identity}
 
     async def _request_stop_in_cache(self, cfg: dict[str, Any], local: bool) -> dict[str, Any]:
         """Record a stop in the checkpointer so a run in another process sees it."""

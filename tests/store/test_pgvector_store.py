@@ -479,12 +479,12 @@ class TestStore:
         with pytest.raises(PermissionError, match="belongs to another user"):
             await store.astore(CFG, "x", memory_id="theirs")
 
-    async def test_scope_none_overwrite_has_no_owner_guard(self):
+    async def test_reach_all_overwrite_keeps_owner_guard(self):
         store, conn, _ = _store()
         conn.fetchrow_results = [{"id": "m1"}]
         cfg = {**ADMIN, "user_id": "admin"}
         await store.astore(cfg, "x", memory_id="m1")
-        assert "WHERE m.user_id" not in conn.calls[-1][1]
+        assert "WHERE m.user_id = EXCLUDED.user_id" in conn.calls[-1][1]
 
     async def test_generated_id_used_when_absent(self):
         store, conn, _ = _store()
@@ -621,11 +621,12 @@ class TestUpdateDelete:
         with pytest.raises(ValueError, match="not found"):
             await store.aupdate(CFG, "theirs", "x")
 
-    async def test_update_scope_none_has_no_user_filter(self):
+    async def test_update_reach_all_still_filters_by_owner(self):
         store, conn, _ = _store()
         conn.fetchrow_results = [{"id": "m1"}]
         await store.aupdate(dict(ADMIN), "m1", "x")
-        assert '"user_id"' not in conn.calls[-1][1]
+        assert '"user_id" = $2' in conn.calls[-1][1]
+        assert conn.calls[-1][2][1] == "admin"
 
     async def test_update_requires_user_id(self):
         store, _, _ = _store()

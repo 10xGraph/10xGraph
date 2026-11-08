@@ -29,12 +29,26 @@ SHUTDOWN_CANCEL_REASON = "shutdown"
 
 
 class RunHandle:
-    """State of one active run. Safe to use from threads other than the run's loop."""
+    """State of one active run. Safe to use from threads other than the run's loop.
 
-    def __init__(self, run_id: str, thread_id: Any, kind: str = "invoke"):
+    ``owner`` and ``tenant`` are who the run belongs to (the run's ``Identity``, or
+    ``config["user_id"]`` with no tenant values when there is none); ``astop()`` stops a run
+    only for a caller whose reach covers them.
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        thread_id: Any,
+        kind: str = "invoke",
+        owner: Any = None,
+        tenant: dict[str, str] | None = None,
+    ):
         self.run_id = run_id
         self.thread_id = thread_id
         self.kind = kind
+        self.owner = owner
+        self.tenant = dict(tenant or {})
         self.loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self.task: asyncio.Task | None = asyncio.current_task()
         self.heartbeat: asyncio.Task | None = None

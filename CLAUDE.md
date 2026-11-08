@@ -106,7 +106,8 @@ Note: the root `tenxgraph/__init__.py` exports `StateGraph`, `Agent`, `ToolNode`
   resources by the ownership rules. Defaults split `shutdown_timeout` 50/25/25. Returns stats with
   `runs` counts. Twice is a no-op. Runs are tracked in `core/graph/utils/run_registry.py`
   (`RunHandle`, `current_run`); `astop()` also sets the in-process flag, so stop works with no
-  checkpointer or a failing cache. Core installs no signal handlers; the opt-in
+  checkpointer or a failing cache. `astop` is owner-scoped: a caller stops only runs on threads it can
+  see, and a cross-process stop uses the owner's keys. Core installs no signal handlers; the opt-in
   `tenxgraph.utils.shutdown.install_shutdown_signals(graph)` connects SIGTERM and SIGINT to `aclose()`.
 - Pause from inside a node or tool with `tenxgraph.utils.interrupt(value, message=..., ...)`; the
   run saves the thread paused before that node. Resume with `invoke({"resume": value}, config)`:

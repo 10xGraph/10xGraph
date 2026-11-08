@@ -21,7 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.exceptions import StorageError
+from tenxgraph.core.exceptions import ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer import PgCheckpointer
 from tenxgraph.storage.checkpointer.pg_checkpointer import CURRENT_SCHEMA_VERSION
@@ -183,26 +183,25 @@ class TestTenantIsolation:
         assert await cp.aget_state(b()) is None
         assert await cp.aget_state_cache(b()) is None  # a cache hit must not bypass isolation
         assert cp._get_thread_key(thread, "alice", a) != cp._get_thread_key(thread, "alice", b())
-        await cp.aclear_state(b())
-        with pytest.raises(StorageError) as err:
+        assert await cp.aclear_state(b()) == 0
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_state(b(), _state("hijack"))
-        assert err.value.error_code == "STORAGE_001"  # wraps STORAGE_FORBIDDEN_001
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_checkpoint(b(), _state("hijack"), [])
-        with pytest.raises(StorageError, match="different tenant"):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_messages(b(), [Message.text_message("x", role="user")])
         with pytest.raises(ValueError, match="not found"):
             await cp.aget_message(b(), msg.message_id)
         assert await cp.alist_messages(b()) == []
-        await cp.adelete_message(b(), msg.message_id)
+        assert await cp.adelete_message(b(), msg.message_id) == 0
         assert await cp.aupdate_message_metadata(b(), msg.message_id, {"x": 1}) is None
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_thread(b(), ThreadInfo(thread_id=thread, thread_name="hijack"))
         assert await cp.aget_thread(b()) is None
         assert thread not in {t.thread_id for t in await cp.alist_threads(b())}
-        await cp.aclean_thread(b())
+        assert await cp.aclean_thread(b()) == 0
         assert await cp.aget_tool_result(b(), "call-1") is None
-        with pytest.raises(StorageError, match="different tenant"):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_tool_result(b(), "call-2", {"ok": False})
 
         # Tenant A still has everything, unchanged.
@@ -251,6 +250,29 @@ class TestTenantIsolation:
                 got = await cp.aget_state(_cfg(thread, reach=reach))
                 assert (got is not None) == (thread in want), (reach, seed)
 
+    async def test_wide_reach_reads_and_deletes_but_never_writes(self, make_cp):
+        cp = await make_cp()
+        thread = _tid()
+        owner = _cfg(thread, "bob")
+        await cp.aput_state(owner, _state("bob's"))
+        await cp.aput_thread(owner, ThreadInfo(thread_id=thread, thread_name="bob thread"))
+        for reach in ("tenant", "all"):
+            admin = lambda: _cfg(thread, "alice", reach=reach)  # noqa: B023, E731
+            assert (await cp.aget_thread(admin())).user_id == "bob"  # the row owner
+            assert (await cp.aget_state(admin())).context[0].text() == "bob's"
+            with pytest.raises(ThreadNotFoundError):
+                await cp.aput_state(admin(), _state("admin"))
+            with pytest.raises(ThreadNotFoundError):
+                await cp.aput_messages(admin(), [Message.text_message("x", role="user")])
+            with pytest.raises(ThreadNotFoundError):
+                await cp.aput_thread(admin(), ThreadInfo(thread_id=thread, thread_name="x"))
+        assert (await cp.aget_thread(owner)).thread_name == "bob thread"
+        assert await cp.aclean_thread(_cfg(thread, "alice", reach="all")) == 1
+        assert await cp.aget_thread(owner) is None
+        # No tombstone: another user can create the same id again.
+        await cp.aput_state(_cfg(thread, "carol"), _state("carol's"))
+        assert (await cp.aget_thread(_cfg(thread, "carol"))).user_id == "carol"
+
     async def test_concurrent_thread_creation(self, make_cp):
         cp = await make_cp()
         for _ in range(10):
@@ -261,7 +283,7 @@ class TestTenantIsolation:
                 return_exceptions=True,
             )
             errors = [r for r in results if isinstance(r, BaseException)]
-            assert len(errors) == 1 and isinstance(errors[0], StorageError)
+            assert len(errors) == 1 and isinstance(errors[0], ThreadNotFoundError)
             owner = await cp.aget_thread_scope(thread)
             winner = "A" if not isinstance(results[0], BaseException) else "B"
             assert owner["org_id"] == winner
@@ -335,7 +357,7 @@ class TestRowLevelSecurity:
             "org_id": "B",
             "project_id": "P1",
         }
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_state(_cfg(ta, org="B"), _state("hijack"))
 
         for table in ("threads", "states", "messages", "tool_executions"):

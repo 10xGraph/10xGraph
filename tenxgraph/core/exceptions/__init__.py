@@ -11,6 +11,7 @@ This package provides:
         - InterruptPendingError: A new message was sent to a thread paused at interrupt().
         - ResumeValidationError: A resume value does not match the interrupt's response schema.
         - StorageError: Base exception for storage-related errors.
+        - ThreadNotFoundError: A write named a thread of another user or tenant (404).
         - TransientStorageError: Exception for retryable storage errors.
         - SerializationError: Exception for serialization/deserialization errors.
         - SchemaVersionError: Exception for schema version mismatch errors.
@@ -34,6 +35,7 @@ from .storage_exceptions import (
     SerializationError,
     StaleStateError,
     StorageError,
+    ThreadNotFoundError,
     TransientStorageError,
 )
 from .stored_state_error import StateFormatVersionError, StoredNodeMissingError
@@ -60,5 +62,6 @@ __all__ = [
     "StateFormatVersionError",
     "StoredNodeMissingError",
     "StorageError",
+    "ThreadNotFoundError",
     "TransientStorageError",
 ]

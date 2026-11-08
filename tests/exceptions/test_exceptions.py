@@ -287,3 +287,22 @@ def test_exceptions_module_imports():
     assert SerializationError is not None  # noqa: S101
     assert SchemaVersionError is not None  # noqa: S101
     assert MetricsError is not None  # noqa: S101
+
+
+def test_thread_not_found_error_does_not_log_at_error_level(caplog):
+    """A missing thread is a normal 404 path, not an error worth a traceback in the logs."""
+    import logging
+
+    from tenxgraph.core.exceptions import ResourceNotFoundError, ThreadNotFoundError
+
+    with caplog.at_level(logging.DEBUG, logger="tenxgraph.exceptions"):
+        error = ThreadNotFoundError("t1")
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert isinstance(error, ResourceNotFoundError)
+    assert error.error_code == "STORAGE_NOT_FOUND_001"
+    assert error.context == {"thread_id": "t1"}
+    assert str(error) == "[STORAGE_NOT_FOUND_001] Thread not found"
+
+    with caplog.at_level(logging.DEBUG, logger="tenxgraph.exceptions"):
+        ResourceNotFoundError("other")
+    assert [r for r in caplog.records if r.levelno == logging.ERROR]

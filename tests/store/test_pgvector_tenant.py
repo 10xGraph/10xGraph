@@ -189,6 +189,25 @@ class TestWrites:
         )
         assert conn.calls[0][2][-2:] == ("A", None)
 
+    @pytest.mark.parametrize("reach", ["tenant", "all"])
+    async def test_wide_reach_cannot_overwrite_another_users_memory(self, reach):
+        # AR-CORE-01: reach tenant / all widen reads and deletes, never writes.
+        store, conn = _store(tenant_columns=TENANTS)
+        conn.fetchrow_results = [None, None]  # the guarded WHERE matches no foreign row
+        with pytest.raises(PermissionError, match="belongs to another user"):
+            await store.astore(_cfg(user="admin", reach=reach), "x", memory_id="theirs")
+        with pytest.raises(ValueError, match="not found"):
+            await store.aupdate(_cfg(user="admin", reach=reach), "theirs", "x")
+        upsert, update = conn.sql("fetchrow")
+        assert (
+            'WHERE m.user_id = EXCLUDED.user_id AND m."org_id" IS NOT DISTINCT FROM '
+            'EXCLUDED."org_id" AND m."project_id" IS NOT DISTINCT FROM EXCLUDED."project_id"'
+        ) in upsert
+        assert (
+            'WHERE "collection" = $1 AND "user_id" = $2 AND "org_id" = $3 AND "project_id" = $4'
+        ) in update
+        assert conn.calls[1][2][:4] == ("agentflow_memories", "admin", "A", "P1")
+
     async def test_update_sets_only_present_extras_never_tenants(self):
         store, conn = _store(
             tenant_columns=TENANTS, extra_columns={"public_id": "text", "plan": "text"}

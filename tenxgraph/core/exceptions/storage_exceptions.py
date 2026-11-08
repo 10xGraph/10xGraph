@@ -233,6 +233,28 @@ class ResourceNotFoundError(StorageError):
         super().__init__(message, error_code, context)
 
 
+class ThreadNotFoundError(ResourceNotFoundError):
+    """Raised when a write names a thread the caller cannot write.
+
+    The thread belongs to another user or tenant. Writes always stay with the caller's own
+    threads, whatever their reach. The message is the one a missing thread would give, so it
+    never reveals that the id exists; the API answers 404.
+    """
+
+    def __init__(self, thread_id: Any = None):
+        """Initialize a ThreadNotFoundError.
+
+        Args:
+            thread_id: The thread the caller named.
+        """
+        # A normal 404 path, so skip the error-level logging of the parent constructors.
+        self.message = "Thread not found"
+        self.error_code = "STORAGE_NOT_FOUND_001"
+        self.context = {"thread_id": thread_id}
+        logger.debug("ThreadNotFoundError [%s]: %s", self.error_code, redact_context(self.context))
+        Exception.__init__(self, self.message)
+
+
 class MetricsError(Exception):
     """Raised when metrics emission fails (should normally be swallowed/logged).
 

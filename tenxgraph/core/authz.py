@@ -19,9 +19,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 
 class Reach(StrEnum):
@@ -45,7 +45,8 @@ class Identity(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    user_id: str
+    # Never empty: a blank owner would turn isolation off in backends that skip a falsy id.
+    user_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     kind: Literal["user", "system"] = "user"
     tenant: dict[str, str] = {}
     roles: frozenset[str] = frozenset()
@@ -111,6 +112,7 @@ def owner_filter(
     tenant_columns: Sequence[str] = (),
     *,
     owner: str | None = None,
+    reach: Reach | None = None,
 ) -> dict[str, str] | None:
     """Column filters a storage query must apply for this caller.
 
@@ -122,6 +124,9 @@ def owner_filter(
     RAG knowledge bases). It pins ``user_id`` to that owner on every reach, so a wider reach
     never reads other users' rows through a shared-data query.
 
+    ``reach`` replaces the identity's reach for this call. Writes pass ``Reach.OWN``: reach
+    ``tenant`` and ``all`` widen reads, lists and deletes only, never writes.
+
     Raises:
         ValueError: a tenant column has no value in ``Identity.tenant``, or reach is
             ``tenant`` and the backend has no tenant columns.
@@ -129,12 +134,13 @@ def owner_filter(
     identity = get_identity(config)
     if identity is None:
         return None
-    if identity.reach is Reach.ALL and owner is None:
+    reach = reach or identity.reach
+    if reach is Reach.ALL and owner is None:
         return {}
     tenant = _tenant_values(identity, tenant_columns)
     if owner is not None:
         return {"user_id": owner, **tenant}
-    if identity.reach is Reach.TENANT:
+    if reach is Reach.TENANT:
         if not tenant_columns:
             raise ValueError(
                 "reach 'tenant' needs a backend with tenant columns; this backend declares none"
@@ -148,10 +154,38 @@ def filter_columns(
     tenant_columns: Sequence[str] = (),
     *,
     owner: str | None = None,
+    reach: Reach | None = None,
 ) -> tuple[str, ...] | None:
     """Column names of :func:`owner_filter`, or None when there is no identity."""
-    filters = owner_filter(config, tenant_columns, owner=owner)
+    filters = owner_filter(config, tenant_columns, owner=owner, reach=reach)
     return None if filters is None else tuple(filters)
+
+
+def can_reach(config: Any, user_id: Any, tenant: dict[str, Any] | None = None) -> bool:
+    """Whether the caller's reach covers data owned by ``user_id`` with ``tenant`` values.
+
+    The in-memory form of :func:`owner_filter`, for checks with no storage query behind them
+    (stopping a run). True when there is no identity. ``tenant`` is the owner's tenant values,
+    compared as text: reach ``own`` needs the same user and those values, ``tenant`` needs
+    those values (and at least one, as storage refuses reach ``tenant`` without tenant
+    columns), ``all`` covers everything. A ``None`` value (a row written before the column
+    existed) matches only a caller on reach ``own`` without that value, as storage writes
+    compare a missing value.
+    """
+    identity = get_identity(config)
+    if identity is None or identity.reach is Reach.ALL:
+        return True
+    tenant = tenant or {}
+    for k, v in tenant.items():
+        claim = identity.tenant.get(k)
+        if v is None:
+            if claim is not None or identity.reach is not Reach.OWN:
+                return False
+        elif claim != str(v):
+            return False
+    if identity.reach is Reach.TENANT:
+        return bool(tenant)
+    return str(identity.user_id) == str(user_id)
 
 
 def _tenant_values(identity: Identity, tenant_columns: Sequence[str]) -> dict[str, str]:

@@ -398,26 +398,19 @@ class QdrantStore(BaseStore):
     # --- BaseStore abstract method implementations ---
 
     async def _ensure_can_write_id(
-        self,
-        config: dict[str, Any],
-        collection: str,
-        user_id: str | None,
-        memory_id: str,
+        self, collection: str, user_id: str | int, memory_id: str
     ) -> None:
         """Refuse a caller-chosen ``memory_id`` that already belongs to another user.
 
         ``astore`` upserts, so without this check a chosen id would silently replace another
         user's memory. Reusing one of your own ids (an intentional overwrite) is still
-        allowed, as is any id when isolation is off (reach ``all``).
+        allowed. Checked on every reach: writes stay reach ``own``.
         """
-        scoped_user_id = self._scope_user_id(config, user_id)
-        if not scoped_user_id:
-            return
         points = await self.client.retrieve(collection_name=collection, ids=[memory_id])
         if not points:
             return
         owner = (getattr(points[0], "payload", None) or {}).get("user_id")
-        if owner != scoped_user_id:
+        if owner != user_id:
             raise PermissionError(f"memory_id '{memory_id}' belongs to another user")
 
     async def astore(
@@ -452,7 +445,7 @@ class QdrantStore(BaseStore):
         )
         requested_id = kwargs.get("memory_id")
         if requested_id:
-            await self._ensure_can_write_id(config, collection, user_id, requested_id)
+            await self._ensure_can_write_id(collection, user_id, requested_id)
         record.id = requested_id or await self.generate_framework_id()
 
         # Generate embedding
@@ -639,7 +632,7 @@ class QdrantStore(BaseStore):
         from qdrant_client.http.models import PointStruct
 
         user_id, _thread_id, collection = self._extract_config_values(config)
-        scoped_user_id = self._require_user_id(config, user_id)
+        owner = self._require_owner_id(config, user_id)  # writes stay reach own
 
         # Get existing memory
         existing = await self.aget(config, memory_id)
@@ -648,7 +641,7 @@ class QdrantStore(BaseStore):
 
         # Verify user access only — thread_id is not an access-control boundary
         # for long-term memory (memories are shared across all threads for a user).
-        if scoped_user_id and existing.user_id != scoped_user_id:
+        if existing.user_id != owner:
             raise PermissionError("User does not have permission to update this memory")
 
         # Prepare new content

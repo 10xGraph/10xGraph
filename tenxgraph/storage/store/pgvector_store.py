@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from tenxgraph.core.authz import filter_columns, get_identity, owner_id
+from tenxgraph.core.authz import Reach, filter_columns, get_identity, owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import (
     ColumnSpec,
@@ -268,9 +268,9 @@ class PgVectorStore(BaseStore):
 
     One table holds every collection (``collection`` is a column, part of the primary key).
     Owner rules match ``QdrantStore``: every operation needs a non-empty ``user_id`` (use
-    ``system_user_id(name)`` for shared data); reads, updates and deletes are filtered by it
-    unless the caller's reach is ``all``; writes and ``aforget_memory`` always name an
-    owner.
+    ``system_user_id(name)`` for shared data); reads and deletes are filtered by the caller's
+    reach; writes (``astore``, ``aupdate``) always stay reach ``own``, and ``aforget_memory``
+    always names an owner.
 
     Example:
         ```python
@@ -1169,7 +1169,8 @@ class PgVectorStore(BaseStore):
 
         Values come only from ``config["user"]``. The filter columns are the caller's reach
         (``tenxgraph.core.authz.filter_columns``); with no identity every tenant column
-        applies. ``write=True`` raises when a required column has no value; any call raises
+        applies. ``write=True`` pins reach ``own`` (writes never widen, A13) and raises when a
+        required column has no value; any call raises
         when a column the scope picks has no value, except with ``strict=False`` (``astore``
         only), where a missing optional value is matched with ``IS NOT DISTINCT FROM``. Reach
         ``tenant`` raises when the store declares no tenant columns.
@@ -1186,7 +1187,7 @@ class PgVectorStore(BaseStore):
                 if not s.required and s.name not in identity.tenant
             )
             names = tuple(n for n in names if n not in optional_missing)
-        picked = filter_columns(config, names)
+        picked = filter_columns(config, names, reach=Reach.OWN if write else None)
         if picked and optional_missing:
             picked = (*picked, *optional_missing)
         owner_scoped = picked is None or "user_id" in picked
@@ -1436,7 +1437,7 @@ class PgVectorStore(BaseStore):
 
         Without a ``memory_key`` it is an upsert on ``(collection, id)``: a ``memory_id`` you
         pass that belongs to another user raises ``PermissionError`` (the update's ``WHERE``
-        matches no row), unless isolation is off (reach ``all``). With a ``memory_key``
+        matches no row), on every reach: writes stay reach ``own``. With a ``memory_key``
         (keyword argument or ``metadata["memory_key"]``) it is an atomic upsert on
         ``(collection, user_id, memory_type, memory_key)``: the existing memory with that key is
         updated (metadata merged) and its id returned.
@@ -1585,7 +1586,7 @@ class PgVectorStore(BaseStore):
         found), as on ``QdrantStore``.
         """
         user_id, _thread_id, collection = self._extract_config_values(config)
-        scoped_user_id = self._require_user_id(config, user_id)
+        scoped_user_id = self._require_owner_id(config, user_id)  # writes stay reach own
         text = content.text() if isinstance(content, Message) else content
         if not isinstance(text, str):
             raise ValueError("memory content must be a string or a Message")

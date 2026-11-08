@@ -20,7 +20,9 @@ def cp(monkeypatch):
             self.get = AsyncMock(return_value=None)
             self.delete = AsyncMock(return_value=1)
             self.eval = AsyncMock(return_value=1)  # version-guarded cache CAS
-            self.scan = AsyncMock(side_effect=[(1, [b"generic_cache:ns:a"]), (0, [b"generic_cache:ns:b"])])
+            self.scan = AsyncMock(
+                side_effect=[(1, [b"generic_cache:ns:a"]), (0, [b"generic_cache:ns:b"])]
+            )
 
     redis = _Redis()
     c = PgCheckpointer(postgres_dsn="postgres://x", redis=redis)
@@ -96,7 +98,7 @@ def test_row_to_message_handles_string_and_bytes_json(cp):
     assert msg.metadata["k"] == "v"
 
     row2 = dict(row)
-    row2["content"] = b"{\"type\": \"text\", \"text\": \"hi\"}"
+    row2["content"] = b'{"type": "text", "text": "hi"}'
     row2["tool_calls"] = b"invalid-json"
     row2["usages"] = b"invalid-json"
     row2["meta"] = b"invalid-json"
@@ -173,7 +175,20 @@ async def test_thread_methods_cover_insert_update_and_list(cp):
     conn = AsyncMock()
     # 1) insert-returning (created), 2) insert conflict -> None,
     # 3) owner-scoped UPDATE ... RETURNING (thread is ours), 4) aget_thread row.
-    conn.fetchrow = AsyncMock(side_effect=[{"thread_id": "t1"}, None, {"thread_id": "t1"}, {"meta": json.dumps({"run_id": "r1"}), "thread_name": "T", "updated_at": None}])
+    conn.fetchrow = AsyncMock(
+        side_effect=[
+            {"thread_id": "t1"},
+            None,
+            {"thread_id": "t1"},
+            {
+                "thread_id": "t1",
+                "user_id": "u1",
+                "meta": json.dumps({"run_id": "r1"}),
+                "thread_name": "T",
+                "updated_at": None,
+            },
+        ]
+    )
     conn.fetch = AsyncMock(
         return_value=[
             {
@@ -193,7 +208,9 @@ async def test_thread_methods_cover_insert_update_and_list(cp):
 
     from tenxgraph.utils.thread_info import ThreadInfo
 
-    created = await cp.aput_thread({"thread_id": "t1", "user_id": "u1"}, ThreadInfo(thread_id="t1", thread_name="T"))
+    created = await cp.aput_thread(
+        {"thread_id": "t1", "user_id": "u1"}, ThreadInfo(thread_id="t1", thread_name="T")
+    )
     assert created is True
 
     created2 = await cp.aput_thread(
@@ -203,7 +220,7 @@ async def test_thread_methods_cover_insert_update_and_list(cp):
     assert created2 is False
 
     thr = await cp.aget_thread({"thread_id": "t1", "user_id": "u1"})
-    assert thr is None or thr.thread_id == "t1"
+    assert thr is not None and thr.thread_id == "t1" and thr.user_id == "u1"
 
     listed = await cp.alist_threads({"user_id": "u1"}, search="T", offset=1, limit=1)
     assert len(listed) == 1
@@ -245,10 +262,10 @@ def test_schema_name_validation_on_init(monkeypatch):
 def test_init_with_pools(monkeypatch):
     monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
     monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
-    
+
     mock_pg_pool = MagicMock()
     mock_redis_pool = MagicMock()
-    
+
     with patch("tenxgraph.storage.checkpointer.pg_checkpointer.Redis") as mock_redis_class:
         cp = PgCheckpointer(pg_pool=mock_pg_pool, redis_pool=mock_redis_pool)
         assert cp._pg_pool is mock_pg_pool
@@ -258,7 +275,7 @@ def test_init_with_pools(monkeypatch):
 def test_create_redis_pool_no_url(monkeypatch):
     monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
     monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
-    
+
     cp = PgCheckpointer(postgres_dsn="postgres://x", redis=MagicMock())
     with pytest.raises(ValueError):
         cp._create_redis_pool(redis=None, redis_pool=None, redis_url=None, redis_pool_config={})
@@ -267,12 +284,13 @@ def test_create_redis_pool_no_url(monkeypatch):
 def test_create_pg_pool(cp):
     mock_pool = MagicMock()
     assert cp._create_pg_pool(pg_pool=mock_pool, postgres_dsn=None, pool_config={}) is mock_pool
-    
+
     with patch("asyncpg.create_pool") as mock_create_pool:
         cp._create_pg_pool(pg_pool=None, postgres_dsn="postgres://url", pool_config={"min_size": 5})
         mock_create_pool.assert_called_once_with(
             dsn="postgres://url", command_timeout=60.0, timeout=30.0, min_size=5
         )
+
 
 class _NoopTxn:
     async def __aenter__(self):
@@ -286,14 +304,15 @@ class _NoopTxn:
 async def test_get_pg_pool_lazy(monkeypatch):
     monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_ASYNCPG", True)
     monkeypatch.setattr("tenxgraph.storage.checkpointer.pg_checkpointer.HAS_REDIS", True)
-    
+
     cp = PgCheckpointer(postgres_dsn="postgres://dsn", redis=MagicMock())
     assert cp._pg_pool is None
-    
+
     mock_pool = MagicMock()
+
     async def mock_create_pool(*args, **kwargs):
         return mock_pool
-        
+
     monkeypatch.setattr(cp, "_create_pg_pool", mock_create_pool)
     pool = await cp._get_pg_pool()
     assert pool is mock_pool
@@ -302,14 +321,16 @@ async def test_get_pg_pool_lazy(monkeypatch):
 
 def test_json_serializer_fast_json_importers(monkeypatch, cp):
     monkeypatch.setenv("FAST_JSON", "1")
-    
+
     import builtins
+
     real_import = builtins.__import__
+
     def mock_import(name, *args, **kwargs):
         if name in ("orjson", "msgspec"):
             raise ImportError
         return real_import(name, *args, **kwargs)
-        
+
     with patch("builtins.__import__", side_effect=mock_import):
         serializer = cp._get_json_serializer()
         assert serializer == json.dumps
@@ -367,11 +388,11 @@ async def test_initialize_schema_error(cp):
 def test_serialize_state_enum_handler(cp):
     class MockEnum(Enum):
         VAL = "enum_val"
-        
+
     class MockObj:
         def __str__(self):
             return "str_obj"
-            
+
     mock_state = MagicMock()
     mock_state.model_dump.return_value = {"enum": MockEnum.VAL, "obj": MockObj()}
     serialized = cp._serialize_state(mock_state)
@@ -804,7 +825,6 @@ async def test_schema_init_takes_advisory_lock(cp):
 
     executed = [c.args[0] for c in conn.execute.await_args_list]
     assert any("pg_advisory_lock" in sql for sql in executed)
-
 
 
 # ---------------------------------------------------------------------------

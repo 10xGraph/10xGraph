@@ -42,6 +42,19 @@ def test_extra_and_unknown_reach_refused():
         get_identity({"user": {"email": "x"}})
 
 
+@pytest.mark.parametrize("user_id", ["", "   ", "\t"])
+def test_blank_user_id_refused(user_id):
+    # AR-CORE-02: a blank owner would turn isolation off in backends that skip a falsy id.
+    with pytest.raises(ValidationError):
+        Identity(user_id=user_id)
+    with pytest.raises(ValidationError):
+        get_identity({"user": {"user_id": user_id}})
+
+
+def test_user_id_whitespace_stripped():
+    assert Identity(user_id="  u1 ").user_id == "u1"
+
+
 def test_frozen():
     ident = Identity(user_id="u1")
     with pytest.raises(ValidationError):

@@ -24,7 +24,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.exceptions import StaleStateError, StorageError
+from tenxgraph.core.exceptions import StaleStateError, ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 
 
@@ -67,14 +67,12 @@ class TestSchemaAndMigrations:
 
             # The v2/v3 migrations must have actually produced their objects.
             cols = await conn.fetch(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'states'"
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'states'"
             )
             assert "version" in {c["column_name"] for c in cols}
 
             tables = await conn.fetch(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public'"
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
             )
             assert "tool_executions" in {t["table_name"] for t in tables}
 
@@ -157,7 +155,7 @@ class TestUserIsolation:
         await cp.aput_state(cfg, AgentState())
 
         intruder = {"thread_id": cfg["thread_id"], "user_id": "someone-else"}
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_state(intruder, AgentState())
 
     async def test_other_user_cannot_read_messages(self, cp, cfg):

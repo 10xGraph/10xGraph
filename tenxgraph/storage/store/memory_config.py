@@ -67,8 +67,7 @@ class _MemoryScopeConfig(BaseModel):
         result = self.collection(run_config)
         if not isinstance(result, str) or not result.strip():
             raise ValueError(
-                "memory scope collection function must return a non-empty string, "
-                f"got {result!r}"
+                f"memory scope collection function must return a non-empty string, got {result!r}"
             )
         return result.strip()
 
@@ -103,7 +102,12 @@ class _MemoryScopeConfig(BaseModel):
 
 
 class UserMemoryConfig(_MemoryScopeConfig):
-    """User-scoped memory that the model may search and write."""
+    """User-scoped memory that the model may search and write.
+
+    ``user_id`` fixes the memory owner for runs without an identity (``config["user_id"]``
+    is replaced). With an identity in ``config["user"]`` the identity's ``user_id`` wins, so
+    user memory stays each authenticated caller's own.
+    """
 
     user_id: str | None = None
 
