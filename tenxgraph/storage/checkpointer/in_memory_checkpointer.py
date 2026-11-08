@@ -134,6 +134,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """
         user_id = owner_id(config)
         key = self._get_config_key(config)
+        owner: str | None
         if user_id:
             owner = self._thread_owner.setdefault(key, str(user_id))
         else:

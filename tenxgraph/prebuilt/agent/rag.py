@@ -434,9 +434,10 @@ class RAGAgent[StateT: AgentState]:
             # The identity's user_id wins over config["user_id"] in storage; pin it to the
             # knowledge-base owner and reach "own" so a wider caller reach cannot widen the search.
             identity = get_identity({"user": user})
-            store_config["user"] = identity.model_copy(
-                update={"user_id": str(owner), "reach": Reach.OWN}
-            )
+            if identity is not None:
+                store_config["user"] = identity.model_copy(
+                    update={"user_id": str(owner), "reach": Reach.OWN}
+                )
         logger.debug("RAGAgent RETRIEVE: query=%r top_k=%d", query, self._top_k)
         results = await self._store.asearch(
             config=store_config,
