@@ -138,7 +138,7 @@ def _expected(col, op, py):
 
 
 def _identity(name_values, org="A", user="alice"):
-    return {"user_id": user, "org_id": org, **dict(name_values)}
+    return {"user_id": user, "tenant": {"org_id": org}, "claims": dict(name_values)}
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ async def _filled_store(pool, table):  # noqa: F811
     return store
 
 
-ALICE_A = {"user_id": "alice", "user": {"user_id": "alice", "org_id": "A"}}
+ALICE_A = {"user_id": "alice", "user": {"user_id": "alice", "tenant": {"org_id": "A"}}}
 
 
 def _labels(results):
@@ -216,7 +216,7 @@ class TestStoreReal:
         for filters in wide:
             got = _labels(await store.aget_all(ALICE_A, limit=50, filters=filters))
             assert "x0" not in got
-        bob = {"user_id": "bob", "user": {"user_id": "bob", "org_id": "A"}}
+        bob = {"user_id": "bob", "user": {"user_id": "bob", "tenant": {"org_id": "A"}}}
         assert await store.aget_all(bob, filters={"plan": {"nin": ["x"]}}) == []
         with pytest.raises(FilterError, match="isolation column"):
             await store.aget_all(ALICE_A, filters={"org_id": "B"})
@@ -228,7 +228,7 @@ class TestStoreReal:
         await store.aforget_memory(ALICE_A, filters={"seats": {"gt": 2}})
         assert _labels(await store.aget_all(ALICE_A)) == {"r1", "r3"}
         # The org B row with the same values survives.
-        b = {"user_id": "alice", "user": {"user_id": "alice", "org_id": "B"}}
+        b = {"user_id": "alice", "user": {"user_id": "alice", "tenant": {"org_id": "B"}}}
         assert _labels(await store.aget_all(b)) == {"x0"}
 
     async def test_injection_leaves_table_intact(self, pool, table):  # noqa: F811
@@ -276,7 +276,7 @@ async def _filled_cp(make_cp):  # noqa: F811
 
 
 def _cfg_a():
-    return {"user_id": "alice", "user": {"user_id": "alice", "org_id": "A"}}
+    return {"user_id": "alice", "user": {"user_id": "alice", "tenant": {"org_id": "A"}}}
 
 
 def _names(threads, ids):
@@ -309,7 +309,7 @@ class TestCheckpointerReal:
         cp, ids = await _filled_cp(make_cp)
         for filters in ({"plan": {"nin": ["x"]}}, {"thread_name": {"like": "%"}}, {}):
             assert "x0" not in _names(await cp.alist_threads(_cfg_a(), filters=filters), ids)
-        bob = {"user_id": "bob", "user": {"user_id": "bob", "org_id": "A"}}
+        bob = {"user_id": "bob", "user": {"user_id": "bob", "tenant": {"org_id": "A"}}}
         assert await cp.alist_threads(bob, filters={"plan": {"ne": "x"}}) == []
         with pytest.raises(FilterError, match="isolation column"):
             await cp.alist_threads(_cfg_a(), filters={"org_id": "B"})
