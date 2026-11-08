@@ -1,8 +1,9 @@
 """Sprint 7 review fixes in PgCheckpointer against a REAL Postgres + Redis.
 
-S1: under a scope subset a deleted message (or a cleared state) never comes back from the Redis
-state cache; callers allowed to see a thread share its cache entry and its stop key; isolation
-still holds on a hit. S2/S6: setup with everything in place does not wait behind open writes,
+S1: a deleted message (or a cleared state) never comes back from the Redis
+state cache, even when the caller's project differs; callers allowed to see a thread share
+its cache entry and its stop key; isolation still holds on a hit. S2/S6: setup with
+everything in place does not wait behind open writes,
 ``ddl_lock_timeout`` raises a clear error, and missing indexes on a live table are built
 concurrently (an invalid leftover is rebuilt).
 
@@ -24,7 +25,6 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.authz import build_authz
 from tenxgraph.core.exceptions import StaleStateError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer import PgCheckpointer
@@ -37,9 +37,10 @@ POSTGRES_DSN = os.environ.get(
     "POSTGRES_DSN", "postgresql://test:test@localhost:5432/test_agentflow"
 )
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/1")
-TENANTS = {"org_id": "text", "project_id": "text"}
-USER_ORG = ["user_id", "org_id"]
-ORG_ADMIN = ["org_id"]
+TENANTS = {"org_id": "text"}
+EXTRAS = {"project_id": "text"}
+OWN = "own"
+ORG_ADMIN = "tenant"
 
 
 @pytest_asyncio.fixture
@@ -69,7 +70,9 @@ async def make_cp(schema):
     prefix = f"rftest:{uuid.uuid4().hex[:8]}:"
 
     async def make(**kw):
-        kw.setdefault("tenant_columns", TENANTS)
+        if "tenant_columns" not in kw:
+            kw["tenant_columns"] = TENANTS
+            kw["extra_columns"] = EXTRAS
         cp = PgCheckpointer(
             postgres_dsn=POSTGRES_DSN,
             redis_url=REDIS_URL,
@@ -91,9 +94,13 @@ async def make_cp(schema):
         await cp.arelease()
 
 
-def _cfg(thread, user="alice", org="A", project="P1", scope=USER_ORG, run_id=None):
-    identity = {"user_id": user, "org_id": org, "project_id": project}
-    identity["authz"] = build_authz(user, scope=list(scope))
+def _cfg(thread, user="alice", org="A", project="P1", scope=OWN, run_id=None):
+    identity = {
+        "user_id": user,
+        "tenant": {"org_id": org},
+        "claims": {"project_id": project},
+        "reach": scope,
+    }
     cfg = {"thread_id": thread, "user_id": user, "user": identity}
     if run_id:
         cfg["run_id"] = run_id
@@ -123,7 +130,7 @@ class TestS1DeletedMessageCache:
         await cp.asetup()
         thread = f"t-{uuid.uuid4()}"
         _keep, secret = await _seed(cp, thread)
-        # Same user, same org, now in project P2 (the scope does not pick project_id).
+        # Same user, same org, now in project P2 (project_id is an extra column, never a filter).
         await cp.adelete_message(_cfg(thread, project="P2"), secret.message_id)
         assert _texts(await cp.aget_state(_cfg(thread, project="P2"))) == ["keep me"]
         assert _texts(await cp.aget_state_cache(_cfg(thread, project="P1"))) == ["keep me"]
@@ -155,7 +162,7 @@ class TestS1DeletedMessageCache:
         forged["_thread_identity"] = {
             "thread_id": thread,
             "user_id": "alice",
-            "tenant": {"org_id": "A", "project_id": "P1"},
+            "tenant": {"org_id": "A"},
         }
         assert await cp.aget_state_cache(forged) is None
 

@@ -2,7 +2,6 @@
 
 import pytest
 
-from tenxgraph.core.authz import SCOPE_NONE, build_authz
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
@@ -13,7 +12,11 @@ from tests.store.test_pgvector_store import CFG, _store
 
 TENANT = {"org_id": "text"}
 EXTRA = {"plan": "text", "seats": "integer"}
-USER = {"user_id": "u1", "org_id": "A", "plan": "pro", "seats": 3}
+USER = {
+    "user_id": "u1",
+    "tenant": {"org_id": "A"},
+    "claims": {"plan": "pro", "seats": 3},
+}
 TCFG = {"user_id": "u1", "thread_id": "t1", "user": USER}
 
 
@@ -214,9 +217,9 @@ class TestPgCheckpointerFilters:
         assert args == ("%a%",)
 
     @pytest.mark.asyncio
-    async def test_scope_none_still_only_narrows(self, monkeypatch):
+    async def test_reach_all_still_only_narrows(self, monkeypatch):
         cp, conn = _cp(monkeypatch, tenant_columns=TENANT, extra_columns=EXTRA)
-        cfg = {"user_id": "admin", "user": {"authz": build_authz("admin", scope=SCOPE_NONE)}}
+        cfg = {"user_id": "admin", "user": {"user_id": "admin", "reach": "all"}}
         await cp.alist_threads(cfg, filters={"seats": {"in": [1, 2]}})
         sql, args = conn.calls[-1]
         assert 'WHERE TRUE AND "seats" = ANY($1) ORDER BY' in sql

@@ -8,11 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tenxgraph.core.authz import build_authz
-from tenxgraph.core.exceptions import StorageError
-from tenxgraph.core.state import AgentState
+from tenxgraph.core.exceptions import ThreadNotFoundError
+from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
-from tenxgraph.storage.columns import MissingColumnValueError
 
 
 TENANTS = {"org_id": "text", "project_id": "text"}
@@ -22,10 +20,13 @@ def _cp(**kw):
     return PgCheckpointer(postgres_dsn="postgresql://x/y", redis=MagicMock(), **kw)
 
 
-def _cfg(thread="t1", user="u1", org="A", project="P1", scope=None, **extra):
-    identity = {"user_id": user, "org_id": org, "project_id": project, **extra}
-    if scope is not None:
-        identity["authz"] = build_authz(user, scope=scope)
+def _cfg(thread="t1", user="u1", org="A", project="P1", reach="own", **extra):
+    identity = {
+        "user_id": user,
+        "tenant": {"org_id": org, "project_id": project},
+        "reach": reach,
+        "claims": extra,
+    }
     return {"thread_id": thread, "user_id": user, "user": identity}
 
 
@@ -136,21 +137,31 @@ class TestScopeSql:
         assert query.endswith('WHERE user_id = $3 AND "org_id" = $4 AND "project_id" = $5)')
         assert params == ["m1", "t1", "u1", "A", "P1"]
 
-    def test_scope_without_user_id(self):
+    def test_reach_tenant_has_no_user_filter(self):
         cp = _cp(tenant_columns=TENANTS)
-        sql, params = cp._thread_row_scope("t1", "u1", _cfg(scope=["org_id"]))
-        assert sql == 'thread_id = $1 AND "org_id" = $2'
-        assert params == ["t1", "A"]
+        sql, params = cp._thread_row_scope("t1", "u1", _cfg(reach="tenant"))
+        assert sql == 'thread_id = $1 AND "org_id" = $2 AND "project_id" = $3'
+        assert params == ["t1", "A", "P1"]
+
+    def test_reach_all_has_no_filter_at_all(self):
+        cp = _cp(tenant_columns=TENANTS)
+        sql, params = cp._thread_row_scope("t1", "u1", _cfg(reach="all"))
+        assert sql == "thread_id = $1"
+        assert params == ["t1"]
 
     def test_tenant_columns_apply_even_when_user_isolation_is_off(self):
         cp = _cp(tenant_columns=TENANTS, enforce_user_isolation=False)
-        sql, _ = cp._thread_row_scope("t1", "u1", _cfg())
+        sql, _ = cp._thread_row_scope("t1", "u1", _cfg(reach="tenant"))
         assert sql == 'thread_id = $1 AND "org_id" = $2 AND "project_id" = $3'
 
     def test_missing_picked_value_raises(self):
         cp = _cp(tenant_columns=TENANTS)
-        cfg = {"thread_id": "t1", "user_id": "u1", "user": {"org_id": "A"}}
-        with pytest.raises(MissingColumnValueError, match="project_id"):
+        cfg = {
+            "thread_id": "t1",
+            "user_id": "u1",
+            "user": {"user_id": "u1", "tenant": {"org_id": "A"}},
+        }
+        with pytest.raises(ValueError, match="project_id"):
             cp._thread_scope("t1", "u1", cfg)
 
     def test_insert_carries_values(self):
@@ -177,7 +188,9 @@ class TestCacheKeys:
         b = cp._get_thread_key("t1", "u1", _cfg(org="B"))
         assert a == "state_cache:t1:u1:t:org_id=A:project_id=P1"
         assert a != b
-        missing = cp._get_thread_key("t1", "u1", {"user": {"project_id": "P1"}})
+        missing = cp._get_thread_key(
+            "t1", "u1", {"user": {"user_id": "u1", "tenant": {"project_id": "P1"}}}
+        )
         assert missing.endswith(":t:org_id!:project_id=P1")
         # A value cannot forge another column's part of the key.
         tricky = cp._get_thread_key("t1", "u1", _cfg(org="A:project_id=P1"))
@@ -203,9 +216,8 @@ class TestWritesAndRls:
     async def test_thread_of_other_tenant_is_forbidden(self):
         cp = _cp(tenant_columns=TENANTS)
         conn = _wire(cp, _Conn(row={"user_id": "u1", "org_id": "B", "project_id": "P1"}))
-        with pytest.raises(StorageError) as err:
+        with pytest.raises(ThreadNotFoundError):
             await cp._ensure_thread_exists("t1", "u1", _cfg(org="A"))
-        assert err.value.error_code == "STORAGE_FORBIDDEN_001"
         assert conn.calls[0][1].startswith('INSERT INTO "public"."threads"')
         assert conn.calls[1][1] == (
             'SELECT user_id, "org_id", "project_id" FROM "public"."threads" WHERE thread_id = $1'
@@ -220,33 +232,45 @@ class TestWritesAndRls:
     async def test_old_thread_with_null_tenant_is_forbidden_on_write(self):
         cp = _cp(tenant_columns=TENANTS)
         conn = _wire(cp, _Conn(row={"user_id": "u1", "org_id": None, "project_id": None}))
-        with pytest.raises(StorageError, match="different tenant"):
+        with pytest.raises(ThreadNotFoundError):
             await cp._lock_thread_for_write(conn, "t1", "u1", _cfg())
 
     async def test_missing_required_value_raises_before_storage_error_wrapping(self):
         cp = _cp(tenant_columns=TENANTS)
         _wire(cp, _Conn())
         cfg = {"thread_id": "t1", "user_id": "u1", "user": {"user_id": "u1"}}
-        with pytest.raises(MissingColumnValueError):
+        with pytest.raises(ValueError, match="org_id"):
             await cp.aput_state(cfg, AgentState())
-        with pytest.raises(MissingColumnValueError):
+        with pytest.raises(ValueError, match="org_id"):
             await cp.aput_checkpoint(cfg, AgentState())
 
     async def test_rls_sets_values_in_a_transaction(self):
         cp = _cp(tenant_columns=TENANTS, row_level_security=True)
         conn = _wire(cp, _Conn())
-        await cp.aget_state(_cfg(scope=["user_id", "project_id"]))
+        await cp.aget_state(_cfg(reach="tenant"))
         assert conn.transactions == 1
         _method, sql, args = conn.calls[0]
         assert sql.startswith("SELECT set_config($1, $2, true)")
         assert args == (
             "tenxgraph.scope",
-            "+,project_id",
+            "+,org_id,project_id",
             "tenxgraph.org_id",
-            "",
+            "A",
             "tenxgraph.project_id",
             "P1",
         )
+
+    async def test_rls_writes_run_at_reach_own(self):
+        # AR-CORE-03: an admin's write gets the own-reach backstop, not "+" (all rows).
+        cp = _cp(tenant_columns=TENANTS, row_level_security=True)
+        conn = _wire(cp, _Conn(row={"user_id": "u1", "org_id": "A", "project_id": "P1"}))
+        own = ("tenxgraph.scope", "+,org_id,project_id", "tenxgraph.org_id", "A")
+        await cp.aput_messages(_cfg(reach="all"), [Message.text_message("hi")])
+        await cp.aput_tool_result(_cfg(reach="all"), "tc1", {"a": 1})
+        await cp.aput_state(_cfg(reach="all"), AgentState())
+        await cp.aput_checkpoint(_cfg(reach="all"), AgentState())
+        settings = [c[2] for c in conn.calls if c[1].startswith("SELECT set_config")]
+        assert len(settings) >= 4 and all(args[:4] == own for args in settings)
 
     async def test_rls_global_lookups_see_every_tenant(self):
         cp = _cp(tenant_columns=TENANTS, row_level_security=True)
@@ -263,9 +287,8 @@ class TestWritesAndRls:
     async def test_rls_invisible_thread_is_forbidden(self):
         cp = _cp(tenant_columns=TENANTS, row_level_security=True)
         _wire(cp, _Conn(row=None))
-        with pytest.raises(StorageError) as err:
+        with pytest.raises(ThreadNotFoundError):
             await cp._ensure_thread_exists("t1", "u1", _cfg())
-        assert err.value.error_code == "STORAGE_FORBIDDEN_001"
 
     async def test_setup_manages_columns_and_policies(self):
         cp = _cp(tenant_columns={"org_id": "uuid"}, row_level_security=True)

@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from injectq import Inject
 
+from tenxgraph.core.authz import Reach, get_identity
 from tenxgraph.storage.store.base_store import BaseStore, system_user_id
 from tenxgraph.storage.store.long_term_memory import (
     _do_write,
@@ -74,6 +75,20 @@ def _memory_scope_retrieval_strategy(memory_config: Any, scope_config: Any) -> A
     return memory_config.retrieval_strategy
 
 
+def _pin_identity(cfg: dict[str, Any], owner: str | None) -> None:
+    """Set the identity in ``cfg`` to reach ``own``, with ``owner`` as its user when given.
+
+    Tenant values are kept. Without an identity, ``cfg`` is left as it is.
+    """
+    identity = get_identity(cfg)
+    if identity is None:
+        return
+    update: dict[str, Any] = {"reach": Reach.OWN}
+    if owner is not None:
+        update["user_id"] = owner
+    cfg["user"] = identity.model_copy(update=update)
+
+
 def _memory_scope_config(
     runtime_config: dict[str, Any] | None,
     memory_config: Any,
@@ -97,7 +112,11 @@ def _memory_scope_config(
     if scope == "user":
         user_id = getattr(scope_config, "user_id", None)
         if user_id:
+            # Used only without an identity: with one, the identity is the owner (owner_id)
+            # so a fixed id never shares one user's memory with every authenticated caller.
             cfg["user_id"] = user_id
+        # User memory is always the caller's own, whatever their reach.
+        _pin_identity(cfg, None)
         return cfg
 
     agent_id = getattr(scope_config, "agent_id", None)
@@ -109,6 +128,8 @@ def _memory_scope_config(
     if not owner:
         raise ValueError("Agent memory needs agent_id or app_id to name its shared owner")
     cfg["user_id"] = system_user_id(owner)
+    # A wider reach must not turn the shared-data query into one over other users' rows.
+    _pin_identity(cfg, cfg["user_id"])
     if agent_id:
         cfg["agent_id"] = agent_id
         # Existing Qdrant-backed stores use ``thread_id`` as the secondary

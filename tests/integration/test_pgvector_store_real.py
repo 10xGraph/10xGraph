@@ -24,7 +24,6 @@ import zlib
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.authz import SCOPE_NONE, build_authz
 from tenxgraph.storage.store import PgVectorStore
 from tenxgraph.storage.store.long_term_memory import _do_write
 from tenxgraph.storage.store.pgvector_store import CURRENT_SCHEMA_VERSION
@@ -174,11 +173,11 @@ class TestCrudAndOwnership:
         await store.astore(_cfg(), "v2", memory_id="mine")
         assert (await store.aget(_cfg(), "mine")).content == "v2"
 
-    async def test_scope_none_reads_every_user(self, pool, table):
+    async def test_reach_all_reads_every_user(self, pool, table):
         store = _store(pool, table)
         await store.astore(_cfg("alice"), "alpha")
         await store.astore(_cfg("bob"), "beta")
-        admin = {"user": {"authz": build_authz("admin", scope=SCOPE_NONE)}}
+        admin = {"user": {"user_id": "admin", "reach": "all"}}
         assert len(await store.aget_all(admin)) == 2
 
     async def test_forget_memory_narrowing(self, pool, table):

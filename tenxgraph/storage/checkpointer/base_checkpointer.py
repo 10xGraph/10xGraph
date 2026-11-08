@@ -2,6 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, TypeVar, get_args
 
+from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import run_coroutine
@@ -109,6 +110,16 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         - If a subclass provides only a sync `def`, it will be executed in a worker thread
             automatically using `asyncio.run`.
         - Callers always use the async APIs (`await cp.put_state(...)`, etc.).
+
+    Ownership (when ``config["user"]`` holds an identity, see :mod:`tenxgraph.core.authz`):
+
+        - Reads, lists and deletes follow the identity's reach (``own``, ``tenant``, ``all``).
+          A thread outside it reads as missing; a delete of it removes nothing and returns 0.
+        - Writes (thread info, state, messages, tool results) always stay ``own``, whatever
+          the reach. A write to a thread of another user or tenant raises
+          :class:`~tenxgraph.core.exceptions.ThreadNotFoundError` and writes nothing. The first
+          writer of a new thread owns it; of two writers racing to create one id, the loser
+          gets ``ThreadNotFoundError``, never a merge.
 
     Type Args:
         StateT: Type of agent state (must inherit from AgentState).
@@ -280,7 +291,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def aclear_state(self, config: dict[str, Any]) -> Any:
+    async def aclear_state(self, config: dict[str, Any]) -> int:
         """
         Clear agent state asynchronously.
 
@@ -288,7 +299,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             config (dict): Configuration dictionary.
 
         Returns:
-            Any: Implementation-defined result.
+            int: The number of state rows removed; 0 when the caller's scope matched nothing.
+            0 is not "thread not found": the caller's own thread with no state also gives 0.
         """
         raise NotImplementedError
 
@@ -392,7 +404,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         return run_coroutine(self.aget_state(config))
 
-    def clear_state(self, config: dict[str, Any]) -> Any:
+    def clear_state(self, config: dict[str, Any]) -> int:
         """
         Clear agent state synchronously.
 
@@ -400,7 +412,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             config (dict): Configuration dictionary.
 
         Returns:
-            Any: Implementation-defined result.
+            int: The number of state rows removed (see :meth:`aclear_state`).
         """
         return run_coroutine(self.aclear_state(config))
 
@@ -538,9 +550,10 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """Build the per-thread stop-request key.
 
         Scoped by user as well as thread so one user cannot stop another user's
-        run by guessing a thread_id, matching how state and messages are scoped.
+        run by guessing a thread_id, matching how state and messages are scoped. The user is
+        :func:`~tenxgraph.core.authz.owner_id` (the identity wins over ``config["user_id"]``).
         """
-        return f"{config.get('thread_id')}:{config.get('user_id')}"
+        return f"{config.get('thread_id')}:{owner_id(config)}"
 
     async def aget_active_run(self, config: dict[str, Any]) -> str | None:
         """Return the id of the run currently marked active on this thread, if any."""
@@ -784,7 +797,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> Any | None:
+    async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> int:
         """
         Delete a specific message asynchronously.
 
@@ -793,7 +806,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             message_id (str|int): Message identifier.
 
         Returns:
-            Any | None: Implementation-defined result.
+            int: The number of messages removed; 0 when the message does not exist or the
+            caller's scope does not reach its thread.
         """
         raise NotImplementedError
 
@@ -896,7 +910,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         return run_coroutine(self.alist_messages(config, search, offset, limit))
 
-    def delete_message(self, config: dict[str, Any], message_id: str | int) -> Any | None:
+    def delete_message(self, config: dict[str, Any], message_id: str | int) -> int:
         """
         Delete a specific message synchronously.
 
@@ -905,7 +919,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             message_id (str|int): Message identifier.
 
         Returns:
-            Any | None: Implementation-defined result.
+            int: The number of messages removed (see :meth:`adelete_message`).
         """
         return run_coroutine(self.adelete_message(config, message_id))
 
@@ -921,12 +935,18 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         Store thread info asynchronously.
 
+        The caller (``config``) becomes the owner of a new thread; ``thread_info.user_id``
+        never assigns one.
+
         Args:
             config (dict): Configuration dictionary.
             thread_info (ThreadInfo): Thread information object.
 
         Returns:
             Any | None: Implementation-defined result.
+
+        Raises:
+            ThreadNotFoundError: The thread belongs to another user or tenant (any reach).
         """
         raise NotImplementedError
 
@@ -942,7 +962,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             config (dict): Configuration dictionary.
 
         Returns:
-            ThreadInfo | None: Thread information object or None.
+            ThreadInfo | None: Thread information object or None. ``user_id`` is the thread's
+            owner, not the caller (they differ under reach ``tenant`` or ``all``).
         """
         raise NotImplementedError
 
@@ -972,15 +993,17 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def aclean_thread(self, config: dict[str, Any]) -> Any | None:
+    async def aclean_thread(self, config: dict[str, Any]) -> int:
         """
-        Clean/delete thread asynchronously.
+        Delete a thread and all of its data asynchronously.
 
         Args:
             config (dict): Configuration dictionary.
 
         Returns:
-            Any | None: Implementation-defined result.
+            int: 1 when anything of the thread was removed (its record or any of its data,
+            also for a thread that never got a record); 0 when nothing of it exists or the
+            caller's scope does not reach it. A deleted id can be created again by anyone.
         """
         raise NotImplementedError
 
@@ -1001,39 +1024,48 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         raise NotImplementedError
 
-    def _isolation_enabled(self, config: dict[str, Any] | None, user_id: Any) -> bool:
+    def _isolation_enabled(
+        self, config: dict[str, Any] | None, user_id: Any, *, write: bool = False
+    ) -> bool:
         """Whether this operation must be scoped to ``user_id``.
 
-        Driven by the trusted ``config["authz"]`` policy (see :mod:`tenxgraph.core.authz`):
+        Driven by the identity in ``config["user"]`` (see :mod:`tenxgraph.core.authz`):
 
-        - ``scope == "owner"``, or a column list with ``user_id`` -> isolate (when a
-          ``user_id`` is present to scope by);
-        - ``scope == "none"``, or a column list without ``user_id`` -> no user filter;
-        - no policy (e.g. a direct SDK call with no API in front) -> fall back to this
+        - a write (``write=True``) with an identity -> isolate: writes always stay ``own``;
+        - reach ``own`` -> isolate (when a ``user_id`` is present to scope by);
+        - reach ``tenant`` or ``all`` -> no user filter;
+        - no identity (e.g. a direct SDK call with no API in front) -> fall back to this
           backend's own ``enforce_user_isolation`` setting (default off for backends that
           do not define one).
 
-        A column list naming a tenant column this backend does not declare raises
-        ``ValueError``. Tenant columns themselves are applied by backends that declare them
+        Reach ``tenant`` raises ``ValueError`` on a backend without tenant columns. Tenant
+        columns themselves are applied by backends that declare them
         (``PgCheckpointer(tenant_columns=...)``).
         """
-        columns = self._isolation_columns(config)
+        columns = self._filter_columns(config, write=write)
         if columns is None:
             return bool(getattr(self, "enforce_user_isolation", False) and user_id)
         return "user_id" in columns and bool(user_id)
 
-    def _isolation_columns(self, config: dict[str, Any] | None) -> tuple[str, ...] | None:
-        """The columns the request's authz scope picks; ``None`` when there is no policy."""
-        from tenxgraph.core.authz import isolation_columns
+    def _filter_columns(
+        self, config: dict[str, Any] | None, *, write: bool = False
+    ) -> tuple[str, ...] | None:
+        """The columns the caller's reach picks (``own`` for a write); ``None`` when there is
+        no identity."""
+        from tenxgraph.core.authz import Reach, filter_columns
 
-        return isolation_columns(config, getattr(self, "tenant_column_names", ()))
+        return filter_columns(
+            config,
+            getattr(self, "tenant_column_names", ()),
+            reach=Reach.OWN if write else None,
+        )
 
     async def aget_thread_scope(self, thread_id: str | int) -> dict[str, Any] | None:
         """Return the thread's isolation values (``user_id`` plus tenant columns), globally.
 
         Like :meth:`aget_thread_owner`, this is not scoped to the caller: an authorization
         layer uses it to decide whether a caller may act on the thread (the thread's values
-        must match the caller's on every column the caller's scope picks). Returns ``None``
+        must match the caller's on every column the caller's reach picks). Returns ``None``
         when the thread does not exist. This default covers backends without tenant columns
         (``{"user_id": owner}``); ``PgCheckpointer`` adds its tenant columns.
         """
@@ -1094,15 +1126,15 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             return run_coroutine(self.alist_threads(config, search, offset, limit))
         return run_coroutine(self.alist_threads(config, search, offset, limit, filters=filters))
 
-    def clean_thread(self, config: dict[str, Any]) -> Any | None:
+    def clean_thread(self, config: dict[str, Any]) -> int:
         """
-        Clean/delete thread synchronously.
+        Delete a thread and all of its data synchronously.
 
         Args:
             config (dict): Configuration dictionary.
 
         Returns:
-            Any | None: Implementation-defined result.
+            int: The number of threads removed (see :meth:`aclean_thread`).
         """
         return run_coroutine(self.aclean_thread(config))
 

@@ -24,6 +24,7 @@ from .exceptions import (
     SchemaVersionError,
     SerializationError,
     StorageError,
+    ThreadNotFoundError,
     TransientStorageError,
 )
 
@@ -164,6 +165,7 @@ __all__ = [
     "StreamChunk",
     "StreamEvent",
     "TextBlock",
+    "ThreadNotFoundError",
     "TokenUsages",
     "ToolCallBlock",
     "ToolNode",

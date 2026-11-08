@@ -18,7 +18,7 @@ from .test_pgvector_store import CFG, FakeConn, FakePool, _Embedding, _row, _sto
 
 
 SQL_NAMES = ("tsq", "q", "score", "similarity", "rnk", "rrf", "m", "f", "vec", "txt", "fused")
-TCFG = {"user_id": "u1", "user": {"user_id": "u1", "org_id": "A"}}
+TCFG = {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "A"}}}
 
 
 def _unqualified(sql: str, name: str) -> bool:

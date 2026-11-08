@@ -89,7 +89,7 @@ async def table(pool):
 
 
 def _cfg(user="alice", org="A"):
-    return {"user_id": user, "user": {"user_id": user, "org_id": org}}
+    return {"user_id": user, "user": {"user_id": user, "tenant": {"org_id": org}}}
 
 
 async def _connect():

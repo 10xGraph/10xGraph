@@ -1,6 +1,6 @@
 """PgCheckpointer tenant and extra columns against a REAL Postgres + Redis.
 
-Covers the v5 -> v6 migration with data, every subset of scope columns, cross-tenant denial on
+Covers the v5 -> v6 migration with data, each reach (own, tenant, all), cross-tenant denial on
 every method (including Redis cache hits), the same user_id in two tenants, concurrent thread
 creation, values fixed at creation, and native RLS with a non-superuser role.
 
@@ -14,7 +14,6 @@ afterwards) and its own Redis key prefix.
 # ruff: noqa: S608
 
 import asyncio
-import itertools
 import os
 import uuid
 from urllib.parse import urlsplit, urlunsplit
@@ -22,12 +21,10 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.authz import SCOPE_NONE, build_authz
-from tenxgraph.core.exceptions import StorageError
+from tenxgraph.core.exceptions import ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer import PgCheckpointer
 from tenxgraph.storage.checkpointer.pg_checkpointer import CURRENT_SCHEMA_VERSION
-from tenxgraph.storage.columns import MissingColumnValueError
 from tenxgraph.utils import ThreadInfo
 
 
@@ -38,7 +35,6 @@ POSTGRES_DSN = os.environ.get(
 )
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/1")
 TENANTS = {"org_id": "text", "project_id": "text"}
-SCOPE_COLUMNS = ("user_id", "org_id", "project_id")
 
 
 @pytest_asyncio.fixture
@@ -86,10 +82,13 @@ async def make_cp(schema):
         await cp.arelease()
 
 
-def _cfg(thread, user="alice", org="A", project="P1", scope=None, **extra):
-    identity = {"user_id": user, "org_id": org, "project_id": project, **extra}
-    if scope is not None:
-        identity["authz"] = build_authz(user, scope=scope)
+def _cfg(thread, user="alice", org="A", project="P1", reach="own", **extra):
+    identity = {
+        "user_id": user,
+        "tenant": {"org_id": org, "project_id": project},
+        "reach": reach,
+        "claims": extra,
+    }
     return {"thread_id": thread, "user_id": user, "user": identity}
 
 
@@ -137,7 +136,7 @@ class TestMigration:
         }
         assert {"idx_threads_org_id", "idx_threads_project_id", "idx_threads_public_id"} <= indexes
 
-        # The old thread has NULL tenant values: invisible to a scope that picks them...
+        # The old thread has NULL tenant values: invisible to a reach that filters on them...
         assert await cp.aget_state(_cfg(thread)) is None
         assert await cp.alist_messages(_cfg(thread)) == []
         assert await cp.aget_thread_scope(thread) == {
@@ -145,8 +144,8 @@ class TestMigration:
             "org_id": None,
             "project_id": None,
         }
-        # ...and visible to one that does not.
-        user_only = _cfg(thread, scope=["user_id"])
+        # ...and visible to reach all.
+        user_only = _cfg(thread, reach="all")
         assert (await cp.aget_state(user_only)).context[0].text() == "legacy"
         assert len(await cp.alist_messages(user_only)) == 1
 
@@ -184,26 +183,25 @@ class TestTenantIsolation:
         assert await cp.aget_state(b()) is None
         assert await cp.aget_state_cache(b()) is None  # a cache hit must not bypass isolation
         assert cp._get_thread_key(thread, "alice", a) != cp._get_thread_key(thread, "alice", b())
-        await cp.aclear_state(b())
-        with pytest.raises(StorageError) as err:
+        assert await cp.aclear_state(b()) == 0
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_state(b(), _state("hijack"))
-        assert err.value.error_code == "STORAGE_001"  # wraps STORAGE_FORBIDDEN_001
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_checkpoint(b(), _state("hijack"), [])
-        with pytest.raises(StorageError, match="different tenant"):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_messages(b(), [Message.text_message("x", role="user")])
         with pytest.raises(ValueError, match="not found"):
             await cp.aget_message(b(), msg.message_id)
         assert await cp.alist_messages(b()) == []
-        await cp.adelete_message(b(), msg.message_id)
+        assert await cp.adelete_message(b(), msg.message_id) == 0
         assert await cp.aupdate_message_metadata(b(), msg.message_id, {"x": 1}) is None
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_thread(b(), ThreadInfo(thread_id=thread, thread_name="hijack"))
         assert await cp.aget_thread(b()) is None
         assert thread not in {t.thread_id for t in await cp.alist_threads(b())}
-        await cp.aclean_thread(b())
+        assert await cp.aclean_thread(b()) == 0
         assert await cp.aget_tool_result(b(), "call-1") is None
-        with pytest.raises(StorageError, match="different tenant"):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_tool_result(b(), "call-2", {"ok": False})
 
         # Tenant A still has everything, unchanged.
@@ -225,7 +223,7 @@ class TestTenantIsolation:
         assert (await cp.aget_state_cache(_cfg(ta, org="A"))).context[0].text() == "A"
         assert (await cp.aget_state_cache(_cfg(tb, org="B"))).context[0].text() == "B"
 
-    async def test_every_subset_of_scope_columns(self, make_cp):
+    async def test_each_reach(self, make_cp):
         cp = await make_cp()
         seeds = [
             ("alice", "A", "P1"),
@@ -239,28 +237,41 @@ class TestTenantIsolation:
             thread = _tid()
             threads[(user, org, project)] = thread
             await cp.aput_state(_cfg(thread, user, org, project), _state(thread))
-        caller = {"user_id": "alice", "org_id": "A", "project_id": "P1"}
-        for size in range(len(SCOPE_COLUMNS) + 1):
-            for scope in itertools.combinations(SCOPE_COLUMNS, size):
-                want = {
-                    threads[seed]
-                    for seed in seeds
-                    if all(
-                        dict(zip(SCOPE_COLUMNS, seed, strict=True))[c] == caller[c] for c in scope
-                    )
-                }
-                listed = await cp.alist_threads(_cfg(None, scope=list(scope)), limit=100)
-                assert {t.thread_id for t in listed} & set(threads.values()) == want, scope
-                for seed, thread in threads.items():
-                    got = await cp.aget_state(_cfg(thread, scope=list(scope)))
-                    assert (got is not None) == (thread in want), (scope, seed)
+        wanted = {
+            "own": {("alice", "A", "P1")},
+            "tenant": {("alice", "A", "P1"), ("bob", "A", "P1")},
+            "all": set(seeds),
+        }
+        for reach, seed_set in wanted.items():
+            want = {threads[seed] for seed in seed_set}
+            listed = await cp.alist_threads(_cfg(None, reach=reach), limit=100)
+            assert {t.thread_id for t in listed} & set(threads.values()) == want, reach
+            for seed, thread in threads.items():
+                got = await cp.aget_state(_cfg(thread, reach=reach))
+                assert (got is not None) == (thread in want), (reach, seed)
 
-    async def test_none_scope_sees_every_tenant(self, make_cp):
+    async def test_wide_reach_reads_and_deletes_but_never_writes(self, make_cp):
         cp = await make_cp()
         thread = _tid()
-        await cp.aput_state(_cfg(thread, org="B", user="bob"), _state("B"))
-        admin = _cfg(thread, user="admin", org="A", scope=SCOPE_NONE)
-        assert (await cp.aget_state(admin)).context[0].text() == "B"
+        owner = _cfg(thread, "bob")
+        await cp.aput_state(owner, _state("bob's"))
+        await cp.aput_thread(owner, ThreadInfo(thread_id=thread, thread_name="bob thread"))
+        for reach in ("tenant", "all"):
+            admin = lambda: _cfg(thread, "alice", reach=reach)  # noqa: B023, E731
+            assert (await cp.aget_thread(admin())).user_id == "bob"  # the row owner
+            assert (await cp.aget_state(admin())).context[0].text() == "bob's"
+            with pytest.raises(ThreadNotFoundError):
+                await cp.aput_state(admin(), _state("admin"))
+            with pytest.raises(ThreadNotFoundError):
+                await cp.aput_messages(admin(), [Message.text_message("x", role="user")])
+            with pytest.raises(ThreadNotFoundError):
+                await cp.aput_thread(admin(), ThreadInfo(thread_id=thread, thread_name="x"))
+        assert (await cp.aget_thread(owner)).thread_name == "bob thread"
+        assert await cp.aclean_thread(_cfg(thread, "alice", reach="all")) == 1
+        assert await cp.aget_thread(owner) is None
+        # No tombstone: another user can create the same id again.
+        await cp.aput_state(_cfg(thread, "carol"), _state("carol's"))
+        assert (await cp.aget_thread(_cfg(thread, "carol"))).user_id == "carol"
 
     async def test_concurrent_thread_creation(self, make_cp):
         cp = await make_cp()
@@ -272,7 +283,7 @@ class TestTenantIsolation:
                 return_exceptions=True,
             )
             errors = [r for r in results if isinstance(r, BaseException)]
-            assert len(errors) == 1 and isinstance(errors[0], StorageError)
+            assert len(errors) == 1 and isinstance(errors[0], ThreadNotFoundError)
             owner = await cp.aget_thread_scope(thread)
             winner = "A" if not isinstance(results[0], BaseException) else "B"
             assert owner["org_id"] == winner
@@ -295,17 +306,12 @@ class TestTenantIsolation:
     async def test_missing_tenant_value_raises(self, make_cp):
         cp = await make_cp()
         cfg = {"thread_id": _tid(), "user_id": "alice", "user": {"user_id": "alice"}}
-        with pytest.raises(MissingColumnValueError):
+        with pytest.raises(ValueError, match="tenant value"):
             await cp.aput_state(cfg, _state("x"))
-        with pytest.raises(MissingColumnValueError):
+        with pytest.raises(ValueError, match="tenant value"):
             await cp.aget_state(cfg)
-        with pytest.raises(MissingColumnValueError):
+        with pytest.raises(ValueError, match="tenant value"):
             await cp.aget_state_cache(cfg)
-
-    async def test_unknown_scope_column_raises(self, make_cp):
-        cp = await make_cp()
-        with pytest.raises(ValueError, match="does not declare"):
-            await cp.aget_state(_cfg(_tid(), scope=["user_id", "region"]))
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +357,7 @@ class TestRowLevelSecurity:
             "org_id": "B",
             "project_id": "P1",
         }
-        with pytest.raises(StorageError):
+        with pytest.raises(ThreadNotFoundError):
             await cp.aput_state(_cfg(ta, org="B"), _state("hijack"))
 
         for table in ("threads", "states", "messages", "tool_executions"):

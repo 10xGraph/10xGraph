@@ -6,7 +6,6 @@ The SQL runs against a real database in tests/integration/test_pgvector_tenant_r
 import asyncpg
 import pytest
 
-from tenxgraph.core.authz import build_authz
 from tenxgraph.storage.columns import ColumnValueError, MissingColumnValueError
 from tenxgraph.storage.store.pgvector_store import PgVectorStore
 from tests.store.test_pgvector_store import FakeConn, FakePool, _Embedding, _row
@@ -24,10 +23,10 @@ def _store(ready=True, **kw):
     return store, conn
 
 
-def _cfg(user="u1", org="A", project="P1", scope=None, **extra):
-    identity = {"user_id": user, "org_id": org, "project_id": project, **extra}
-    if scope is not None:
-        identity["authz"] = build_authz(user, scope=scope)
+def _cfg(user="u1", org="A", project="P1", reach=None, **extra):
+    identity = {"user_id": user, "tenant": {"org_id": org, "project_id": project}, "claims": extra}
+    if reach is not None:
+        identity["reach"] = reach
     return {"user_id": user, "user": identity}
 
 
@@ -67,13 +66,18 @@ class TestReads:
         ) in sql
         assert conn.calls[0][2][:4] == ("agentflow_memories", "u1", "A", "P1")
 
-    async def test_scope_subset_picks_columns(self):
+    async def test_reach_tenant_filters_by_tenant_columns_only(self):
         store, conn = _store(tenant_columns=TENANTS)
-        await store.aget_all(_cfg(scope=["project_id"]))
-        sql = conn.sql("fetch")[0]
-        assert '"project_id" = $2' in sql
-        assert '"user_id"' not in sql.split("WHERE")[1].split("ORDER")[0]
-        assert '"org_id" =' not in sql
+        await store.aget_all(_cfg(reach="tenant"))
+        where = conn.sql("fetch")[0].split("WHERE")[1].split("ORDER")[0]
+        assert '"org_id" = $2' in where and '"project_id" = $3' in where
+        assert '"user_id"' not in where
+
+    async def test_reach_all_has_no_user_or_tenant_filter(self):
+        store, conn = _store(tenant_columns=TENANTS)
+        await store.aget_all(_cfg(reach="all"))
+        where = conn.sql("fetch")[0].split("WHERE")[1].split("ORDER")[0]
+        assert '"user_id"' not in where and '"org_id"' not in where
 
     async def test_every_read_path_carries_the_tenant_filter(self):
         store, conn = _store(tenant_columns=TENANTS)
@@ -94,7 +98,7 @@ class TestReads:
 
     async def test_missing_picked_value_raises_before_any_sql(self):
         store, conn = _store(tenant_columns=TENANTS)
-        cfg = {"user_id": "u1", "user": {"user_id": "u1", "org_id": "A"}}
+        cfg = {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "A"}}}
         for call in (
             store.aget(cfg, "m1"),
             store.aget_all(cfg),
@@ -102,26 +106,39 @@ class TestReads:
             store.adelete(cfg, "m1"),
             store.aforget_memory(cfg),
         ):
-            with pytest.raises(MissingColumnValueError, match="project_id"):
+            with pytest.raises(ValueError, match="project_id"):
                 await call
         assert conn.calls == []
 
     async def test_values_from_request_config_are_ignored(self):
         store, conn = _store(tenant_columns=TENANTS)
-        cfg = {"user_id": "u1", "org_id": "FORGED", "project_id": "FORGED", "user": {}}
-        with pytest.raises(MissingColumnValueError):
+        cfg = {
+            "user_id": "u1",
+            "org_id": "FORGED",
+            "project_id": "FORGED",
+            "user": {"user_id": "u1"},
+        }
+        with pytest.raises(ValueError, match="no tenant value"):
             await store.aget_all(cfg)
         assert conn.calls == []
 
     async def test_bad_value_type_raises(self):
         store, _ = _store(tenant_columns={"org_id": "uuid"})
         with pytest.raises(ColumnValueError):
-            await store.aget_all({"user_id": "u1", "user": {"org_id": "not-a-uuid"}})
+            await store.aget_all(
+                {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "not-a-uuid"}}}
+            )
 
-    async def test_unknown_scope_column_raises_even_without_columns(self):
+    async def test_reach_tenant_without_tenant_columns_raises(self):
         store, _ = _store()
-        with pytest.raises(ValueError, match="does not declare"):
-            await store.aforget_memory(_cfg(scope=["user_id", "org_id"]))
+        with pytest.raises(ValueError, match="tenant columns"):
+            await store.aforget_memory(_cfg(reach="tenant"))
+
+    async def test_identity_user_id_wins_over_config_user_id(self):
+        store, conn = _store()
+        cfg = {"user_id": "forged", "user": {"user_id": "real"}}
+        await store.aget_all(cfg)
+        assert "real" in conn.calls[0][2] and "forged" not in conn.calls[0][2]
 
 
 @pytest.mark.asyncio
@@ -165,8 +182,31 @@ class TestWrites:
             tenant_columns={"org_id": "text", "team": {"type": "text", "required": False}}
         )
         conn.fetchrow_results = [{"id": "m1"}]
-        await store.astore({"user_id": "u1", "user": {"org_id": "A"}}, "x", memory_id="m1")
+        await store.astore(
+            {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "A"}}},
+            "x",
+            memory_id="m1",
+        )
         assert conn.calls[0][2][-2:] == ("A", None)
+
+    @pytest.mark.parametrize("reach", ["tenant", "all"])
+    async def test_wide_reach_cannot_overwrite_another_users_memory(self, reach):
+        # AR-CORE-01: reach tenant / all widen reads and deletes, never writes.
+        store, conn = _store(tenant_columns=TENANTS)
+        conn.fetchrow_results = [None, None]  # the guarded WHERE matches no foreign row
+        with pytest.raises(PermissionError, match="belongs to another user"):
+            await store.astore(_cfg(user="admin", reach=reach), "x", memory_id="theirs")
+        with pytest.raises(ValueError, match="not found"):
+            await store.aupdate(_cfg(user="admin", reach=reach), "theirs", "x")
+        upsert, update = conn.sql("fetchrow")
+        assert (
+            'WHERE m.user_id = EXCLUDED.user_id AND m."org_id" IS NOT DISTINCT FROM '
+            'EXCLUDED."org_id" AND m."project_id" IS NOT DISTINCT FROM EXCLUDED."project_id"'
+        ) in upsert
+        assert (
+            'WHERE "collection" = $1 AND "user_id" = $2 AND "org_id" = $3 AND "project_id" = $4'
+        ) in update
+        assert conn.calls[1][2][:4] == ("agentflow_memories", "admin", "A", "P1")
 
     async def test_update_sets_only_present_extras_never_tenants(self):
         store, conn = _store(
@@ -183,7 +223,7 @@ class TestWrites:
 class TestRlsAndIterativeScan:
     async def test_rls_sets_values_in_a_transaction(self):
         store, conn = _store(tenant_columns=TENANTS, row_level_security=True)
-        await store.aget_all(_cfg(scope=["user_id", "org_id"]))
+        await store.aget_all(_cfg())
         _method, sql, args = conn.calls[0]
         assert (
             sql == "SELECT set_config($1, $2, true), set_config($3, $4, true), "
@@ -191,11 +231,11 @@ class TestRlsAndIterativeScan:
         )
         assert args == (
             "tenxgraph.scope",
-            "+,org_id",
+            "+,org_id,project_id",
             "tenxgraph.org_id",
             "A",
             "tenxgraph.project_id",
-            "",
+            "P1",
         )
         assert conn.transactions == 1
 

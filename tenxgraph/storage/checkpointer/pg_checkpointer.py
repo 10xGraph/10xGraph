@@ -13,11 +13,13 @@ from urllib.parse import quote, unquote
 
 from injectq import InjectQ
 
+from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.exceptions.storage_exceptions import (
     SchemaVersionError,
     StaleStateError,
     StorageError,
+    ThreadNotFoundError,
     TransientStorageError,
 )
 from tenxgraph.storage.columns import (
@@ -284,6 +286,14 @@ def _same_value(spec: ColumnSpec, stored: Any, wanted: Any) -> bool:
     return stored == wanted
 
 
+def _rows_affected(status: Any) -> int:
+    """Rows affected from an asyncpg command tag such as ``"DELETE 3"``."""
+    try:
+        return int(str(status).rsplit(" ", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 class PgCheckpointer(BaseCheckpointer[StateT]):
     """
     Implements a checkpointer using PostgreSQL and Redis for persistent and cached state management.
@@ -328,7 +338,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
               columns). Set once from the caller when the thread is created and never
               changed. Every query that touches a thread (threads, states, messages, tool
               executions) is filtered through the thread row by the tenant columns the
-              request's isolation scope picks (all of them when there is no authz policy).
+              caller's reach picks (all of them when there is no identity).
               A picked column whose value is missing raises; it is never dropped from the
               filter. Required by default (a write without the value raises);
               ``{"type": ..., "required": False}`` opts out. Tenant columns are scalar ids:
@@ -1210,7 +1220,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             ValueError: If required fields are missing.
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
         if not user_id:
             raise ValueError("user_id must be provided in config")
 
@@ -1372,7 +1382,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         if not self.columns.tenant or self._thread_identity(config) is not None:
             return
-        thread_id, user_id = config.get("thread_id"), config.get("user_id")
+        thread_id, user_id = config.get("thread_id"), owner_id(config)
         if not thread_id or not user_id:
             return
         try:
@@ -1389,7 +1399,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         if not self.columns.tenant:
             return super()._stop_request_key(config)
-        owner, suffix = self._key_identity(config.get("user_id"), config)
+        owner, suffix = self._key_identity(owner_id(config), config)
         return f"{config.get('thread_id')}:{owner}{suffix}"
 
     async def aget_active_run(self, config: dict[str, Any]) -> str | None:
@@ -1615,15 +1625,16 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
     def _isolation(self, config: dict[str, Any] | None, *, write: bool = False) -> _Isolation:
         """Resolve the declared columns' values and the tenant isolation for one call.
 
-        Values come only from ``config["user"]``. The picked tenant columns follow the request's
-        authz scope (``tenxgraph.core.authz.isolation_columns``); with no policy every tenant
-        column applies, whatever ``enforce_user_isolation`` says (that setting is about
-        ``user_id`` only). ``write=True`` (thread creation) raises when a required column has
-        no value; a read raises when a picked column has no value. On a write (thread
-        creation) a missing optional value is compared as "no value" instead, so a caller
-        without it owns only threads that have none either.
+        Values come only from ``config["user"]``. The picked tenant columns follow the caller's
+        reach (``tenxgraph.core.authz.filter_columns``), and a write always picks reach ``own``
+        (every tenant column); with no identity every tenant column applies, whatever
+        ``enforce_user_isolation`` says (that setting is about ``user_id`` only).
+        ``write=True`` raises when a required column has no value; a read raises when a picked
+        column has no value. On a write a missing optional value is compared as "no value"
+        instead, so a caller without it owns only threads that have none either.
         """
-        picked = self._isolation_columns(config)  # validates the scope even with no columns
+        # Validates the reach even with no columns.
+        picked = self._filter_columns(config, write=write)
         if not self.columns:
             return _NO_ISOLATION
         values = self.columns.resolve(config, write=write)
@@ -1636,11 +1647,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         )
         return _Isolation(values=values, conditions=conditions, settings=settings)
 
-    def _rls(self, config: dict[str, Any] | None) -> list[tuple[str, str]] | None:
-        """The RLS settings for a call (``None`` when RLS is off)."""
+    def _rls(
+        self, config: dict[str, Any] | None, *, write: bool = False
+    ) -> list[tuple[str, str]] | None:
+        """The RLS settings for a call (``None`` when RLS is off). Writes pass ``write=True``
+        so the backstop runs at reach ``own``, like the SQL owner checks."""
         if not self.row_level_security:
             return None
-        return self._isolation(config).settings
+        return self._isolation(config, write=write).settings
 
     def _thread_filter(
         self,
@@ -1648,15 +1662,18 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         config: dict[str, Any] | None,
         params: list[Any],
         isolation: _Isolation | None = None,
+        *,
+        write: bool = False,
     ) -> str:
         """Conditions on the ``threads`` row for this caller: owner and picked tenant columns.
 
         Appends the values to ``params`` and returns ``user_id = $n AND "org_id" = $m ...``,
         or an empty string when nothing applies (isolation off, no tenant columns).
+        ``write=True`` scopes to the caller's own threads whatever the reach.
         """
-        isolation = isolation if isolation is not None else self._isolation(config)
+        isolation = isolation if isolation is not None else self._isolation(config, write=write)
         parts: list[str] = []
-        if self._isolation_active(user_id, config):
+        if self._isolation_active(user_id, config, write=write):
             params.append(user_id)
             parts.append(f"user_id = ${len(params)}")
         tenant_sql = build_isolation_where(isolation.conditions, params)
@@ -1688,15 +1705,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         params: list[Any],
         user_id: str | int | None,
         config: dict[str, Any] | None,
+        *,
+        write: bool = False,
     ) -> str:
         """Append the thread-ownership filter to a ``messages`` query when active.
 
         Mutates ``params`` in place (appending ``user_id`` and tenant values) and returns
         the query with the extra ``AND thread_id IN (...)`` clause. A no-op when isolation
         is off and no tenant column applies, so a single-tenant caller does not pay for the
-        join.
+        join. ``write=True`` scopes to the caller's own threads whatever the reach.
         """
-        owner = self._thread_filter(user_id, config, params)
+        owner = self._thread_filter(user_id, config, params, write=write)
         if owner:
             query += (
                 f" AND thread_id IN (SELECT thread_id FROM {self._get_table_name('threads')} "  # noqa: S608
@@ -1744,10 +1763,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         *,
         lock: bool,
     ) -> None:
-        """Read the thread row back and refuse a caller outside its owner or tenant scope.
+        """Read the thread row back and refuse a writer who does not own it.
 
         Reading what is actually in the table after the insert-if-absent is race-safe: when a
-        concurrent request created the thread, we see the winner's values.
+        concurrent request created the thread, we see the winner's values. Writes always stay
+        ``own`` (``isolation`` comes from ``_isolation(config, write=True)``).
+
+        Raises:
+            ThreadNotFoundError: The thread belongs to another user or tenant.
         """
         threads = self._get_table_name("threads")
         suffix = " FOR UPDATE" if lock else ""
@@ -1773,11 +1796,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if owner is None:
             if self.row_level_security:
                 # Under RLS a thread of another tenant is invisible rather than mismatched.
-                raise StorageError(
-                    message="Thread belongs to a different tenant",
-                    error_code="STORAGE_FORBIDDEN_001",
-                    context={"thread_id": thread_id},
-                )
+                raise ThreadNotFoundError(thread_id)
             raise StorageError(
                 message=(
                     "Thread row disappeared during write" if lock else "Thread could not be created"
@@ -1785,19 +1804,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 error_code="STORAGE_002",
                 context={"thread_id": thread_id},
             )
-        if self._isolation_active(user_id, config) and str(owner) != str(user_id):
-            raise StorageError(
-                message="Thread is owned by a different user",
-                error_code="STORAGE_FORBIDDEN_001",
-                context={"thread_id": thread_id},
-            )
+        if self._isolation_active(user_id, config, write=True) and str(owner) != str(user_id):
+            raise ThreadNotFoundError(thread_id)
         for spec, value in isolation.conditions:
             if not _same_value(spec, row[spec.name] if row is not None else None, value):
-                raise StorageError(
-                    message="Thread belongs to a different tenant",
-                    error_code="STORAGE_FORBIDDEN_001",
-                    context={"thread_id": thread_id},
-                )
+                raise ThreadNotFoundError(thread_id)
         # The caller passed the check: later cache and stop keys of this call use the thread's
         # own identity (see _key_identity).
         self._remember_identity(config, thread_id, row)
@@ -1894,8 +1905,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """Build the WHERE fragment + params selecting a thread's rows.
 
         ``states``/``messages`` carry a ``thread_id`` but no ``user_id`` of their
-        own; ownership lives on ``threads``. When isolation is active (per the request
-        policy, or ``enforce_user_isolation`` when there is no policy) we scope through the
+        own; ownership lives on ``threads``. When isolation is active (per the caller's
+        reach, or ``enforce_user_isolation`` when there is no identity) we scope through the
         parent table, so a caller can only touch threads they own. Otherwise we key on
         ``thread_id`` alone and skip the join entirely.
 
@@ -1914,16 +1925,21 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         return ("thread_id = $1", params)
 
     def _isolation_active(
-        self, user_id: str | int | None, config: dict[str, Any] | None = None
+        self,
+        user_id: str | int | None,
+        config: dict[str, Any] | None = None,
+        *,
+        write: bool = False,
     ) -> bool:
         """Whether ownership scoping should be applied for this call.
 
-        Driven by the trusted ``config["authz"]`` policy when present, falling back to this
-        checkpointer's ``enforce_user_isolation`` setting otherwise (so ``config`` is
-        optional and a caller that omits it keeps the historical behaviour). Scoping still
-        requires an actual ``user_id`` -- scoping on a missing one would match nothing.
+        Driven by the identity in ``config["user"]`` when present (a write is always scoped
+        to its own user), falling back to this checkpointer's ``enforce_user_isolation``
+        setting otherwise (so ``config`` is optional and a caller that omits it keeps the
+        historical behaviour). Scoping still requires an actual ``user_id`` -- scoping on a
+        missing one would match nothing.
         """
-        return self._isolation_enabled(config, user_id)
+        return self._isolation_enabled(config, user_id, write=write)
 
     def _thread_owned_by_sql(self, user_param: int) -> str:
         """Return a SQL fragment requiring the row's thread to belong to a user.
@@ -1959,7 +1975,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             int: The highest existing state ``version`` for the thread (0 if none).
 
         Raises:
-            StorageError: If the thread is owned by a different user or tenant.
+            ThreadNotFoundError: If the thread is owned by a different user or tenant.
         """
         isolation = self._isolation(config, write=True)
         insert_sql, insert_params = self._thread_insert_sql(
@@ -2104,6 +2120,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             StorageError: If storing fails.
             StaleStateError: If the optimistic version check fails.
+            ThreadNotFoundError: The thread belongs to another user or tenant.
         """
         thread_id, user_id = self._validate_config(config)
         # A missing or malformed tenant value is a config error: raise it as is, before the
@@ -2133,7 +2150,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     )
 
                 new_version = await self._run_scoped(
-                    _store_state, in_transaction=True, settings=self._rls(config)
+                    _store_state, in_transaction=True, settings=self._rls(config, write=True)
                 )
                 config[STATE_VERSION_CONFIG_KEY] = new_version
                 logger.debug("State stored for thread_id=%s at version=%s", thread_id, new_version)
@@ -2154,6 +2171,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 # same doomed expected version.
                 await self._invalidate_state_cache(thread_id, user_id, config=config)
                 raise
+            except ThreadNotFoundError:
+                raise  # another user's thread: nothing was written, the API answers 404
             except Exception as e:
                 metrics.counter("pg_checkpointer.save_state.error").inc()
                 logger.error("Failed to store state for thread_id=%s: %s", thread_id, e)
@@ -2207,6 +2226,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             StorageError: If storing fails.
             StaleStateError: If the optimistic version check fails.
+            ThreadNotFoundError: The thread belongs to another user or tenant.
         """
         thread_id, user_id = self._validate_config(config)
         self._isolation(config, write=True)  # config errors raise as is (see aput_state)
@@ -2235,7 +2255,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     return version
 
                 new_version = await self._run_scoped(
-                    _store_checkpoint, in_transaction=True, settings=self._rls(config)
+                    _store_checkpoint, in_transaction=True, settings=self._rls(config, write=True)
                 )
                 config[STATE_VERSION_CONFIG_KEY] = new_version
                 logger.debug(
@@ -2253,6 +2273,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 # is not wedged into failing every subsequent compare-and-swap.
                 await self._invalidate_state_cache(thread_id, user_id, config=config)
                 raise
+            except ThreadNotFoundError:
+                raise  # another user's thread: nothing was written, the API answers 404
             except Exception as e:
                 metrics.counter("pg_checkpointer.save_checkpoint.error").inc()
                 logger.error("Failed to store checkpoint for thread_id=%s: %s", thread_id, e)
@@ -2313,15 +2335,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.error("Failed to retrieve state for thread_id=%s: %s", thread_id, e)
             raise
 
-    async def aclear_state(self, config: dict[str, Any]) -> Any:
+    async def aclear_state(self, config: dict[str, Any]) -> int:
         """
-        Clear state from PostgreSQL and Redis cache (scoped to the owning user).
+        Clear state from PostgreSQL and Redis cache (scoped by the caller's reach).
 
         Args:
             config (dict): Configuration dictionary.
 
         Returns:
-            Any: None
+            int: The number of state rows (versions) removed; 0 when the caller's scope
+            matched nothing. 0 is not "thread not found": the caller's own thread with no
+            state also gives 0.
 
         Raises:
             Exception: If clearing fails.
@@ -2338,7 +2362,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
             # Clear from PostgreSQL with retry logic, scoped to the owner.
             query = f"DELETE FROM {self._get_table_name('states')} WHERE {scope_sql}"  # noqa: S608
-            await self._run_scoped(
+            status = await self._run_scoped(
                 lambda conn: conn.execute(query, *scope_params), settings=self._rls(config)
             )
 
@@ -2347,6 +2371,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             config.pop(STATE_VERSION_CONFIG_KEY, None)
 
             logger.debug("State cleared for thread_id=%s", thread_id)
+            return _rows_affected(status)
 
         except Exception as e:
             logger.error("Failed to clear state for thread_id=%s: %s", thread_id, e)
@@ -2751,8 +2776,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         node finished, and the node is now being replayed), so the tool must NOT
         be called again -- we return what it returned last time.
 
-        Scoped to the thread's owner when isolation is on (``config["authz"]`` scope
-        ``owner``, else ``enforce_user_isolation``), like the message reads, so a caller
+        Scoped to the thread's owner when isolation is on (identity reach
+        ``own``, else ``enforce_user_isolation``), like the message reads, so a caller
         naming another user's thread gets no record. With isolation off it skips the join.
         """
         thread_id, user_id = self._validate_config(config)
@@ -2817,7 +2842,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             """  # noqa: S608
         await self._run_scoped(
             lambda conn: conn.execute(query, thread_id, str(tool_call_id), json.dumps(result)),
-            settings=self._rls(config),
+            settings=self._rls(config, write=True),
         )
         logger.debug(
             "Recorded tool execution thread_id=%s tool_call_id=%s", thread_id, tool_call_id
@@ -2910,7 +2935,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             await self._run_scoped(
                 lambda conn: self._insert_messages(conn, thread_id, messages, metadata),
                 in_transaction=True,
-                settings=self._rls(config),
+                settings=self._rls(config, write=True),
             )
             logger.debug("Stored %d messages for thread_id=%s", len(messages), thread_id)
 
@@ -2933,7 +2958,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             Exception: If retrieval fails.
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         # Message ids are unique per thread only, so the thread is part of the key.
         if not thread_id:
@@ -2991,7 +3016,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         offset, limit = validate_page(offset, limit)
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         if not thread_id:
             raise ValueError("thread_id must be provided in config")
@@ -3044,7 +3069,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         self,
         config: dict[str, Any],
         message_id: str | int,
-    ) -> Any | None:
+    ) -> int:
         """
         Delete a message by ID.
 
@@ -3059,13 +3084,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             message_id (str|int): Message identifier.
 
         Returns:
-            Any | None: None
+            int: The number of messages removed; 0 when the message does not exist or the
+            caller's scope does not reach its thread.
 
         Raises:
             Exception: If deletion fails.
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         # Message ids are unique per thread only, so the thread is part of the key.
         if not thread_id:
@@ -3104,7 +3130,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                         f"SELECT 1 FROM {threads} WHERE thread_id = $1 FOR UPDATE",  # noqa: S608
                         thread_id,
                     )
-                await conn.execute(query, *params)
+                deleted = _rows_affected(await conn.execute(query, *params))
                 # The message also lives inside every retained state version; leaving it
                 # there brings it back on the next run and in GET state.
                 rows = await conn.fetch(
@@ -3132,14 +3158,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                         int(latest["version"]) + 1,
                         latest["state_id"],
                     )
+                return deleted
 
-            await self._run_scoped(_delete, in_transaction=True, settings=self._rls(config))
+            deleted = await self._run_scoped(
+                _delete, in_transaction=True, settings=self._rls(config)
+            )
             # The cached state carries the message too. Dropping it makes the next read
             # rebuild from Postgres.
             if user_id:
                 await self._invalidate_state_cache(thread_id, user_id, retries=1, config=config)
-            logger.debug("Deleted message_id=%s", message_id)
-            return None
+            logger.debug("Deleted message_id=%s (%d row)", message_id, deleted)
+            return deleted
 
         except Exception as e:
             logger.error("Failed to delete message_id=%s: %s", message_id, e)
@@ -3161,10 +3190,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         Returns:
             Message | None: The updated message, or None if it does not exist in this
-            thread (or the caller does not own the thread).
+            thread (or the caller does not own the thread: a write stays own whatever the
+            reach).
         """
         thread_id = config.get("thread_id")
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         if not thread_id:
             raise ValueError("thread_id must be provided in config")
@@ -3178,9 +3208,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 WHERE message_id = $1 AND thread_id = $2
             """  # noqa: S608
             params: list[Any] = [message_id, thread_id, json.dumps(metadata)]
-            # Owner scoping: same rule as aget_message, a thread you do not own is
-            # reported as "not found".
-            query = self._append_owner_scope(query, params, user_id, config)
+            # Owner scoping: a thread you do not own is reported as "not found". A write, so
+            # it stays own whatever the reach.
+            query = self._append_owner_scope(query, params, user_id, config, write=True)
             query += """
                 RETURNING message_id, thread_id, role, content, tool_calls,
                           tool_call_id, created_at, total_tokens,
@@ -3188,7 +3218,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             """
 
             row = await self._run_scoped(
-                lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
+                lambda conn: conn.fetchrow(query, *params), settings=self._rls(config, write=True)
             )
             return self._row_to_message(row) if row else None
 
@@ -3295,11 +3325,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             config (dict): Configuration dictionary.
             thread_info (ThreadInfo): Thread information object.
 
+        The caller becomes the owner of a new thread (``thread_info.user_id`` is ignored).
+        An update stays own whatever the caller's reach.
+
         Returns:
             bool: True if thread was created (inserted).
                   False if thread already existed and was updated.
 
         Raises:
+            ThreadNotFoundError: The thread belongs to another user or tenant.
             Exception: If storing fails.
         """
         # Ensure schema is initialized before accessing tables
@@ -3310,7 +3344,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             thread_name = thread_info.thread_name
             meta = thread_info.metadata or {}
-            user_id = thread_info.user_id or user_id
             meta.update(
                 {
                     "run_id": thread_info.run_id,
@@ -3338,11 +3371,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     return True
 
                 # Insert did nothing (conflict) -> update the existing row.
-                # When isolation is on, the UPDATE is scoped by user_id too:
-                # without that, any caller could rename or re-tag another
-                # user's thread. RETURNING lets us detect that case.
+                # When isolation is on, the UPDATE is scoped by user_id too (whatever the
+                # reach: writes stay own): without that, any caller could rename or re-tag
+                # another user's thread. RETURNING lets us detect that case.
                 # Only set thread_name when a non-None value is provided.
-                scoped = self._isolation_active(user_id, config)
+                scoped = self._isolation_active(user_id, config, write=True)
 
                 if thread_name is None:
                     sets, params = "meta = $1, updated_at = NOW()", [json.dumps(meta)]
@@ -3371,12 +3404,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 )
 
                 if updated is None and scoped:
-                    # The thread exists but is owned by someone else.
-                    raise StorageError(
-                        message="Thread is owned by a different user",
-                        error_code="STORAGE_FORBIDDEN_001",
-                        context={"thread_id": thread_id},
-                    )
+                    # The thread exists but is owned by someone else (or was deleted since
+                    # the insert): never revealed, the API answers 404.
+                    raise ThreadNotFoundError(thread_id)
 
                 return False
 
@@ -3423,15 +3453,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
 
             if row:
-                meta_dict = self._loads_jsonb(row["meta"]) if row["meta"] else {}
-                return ThreadInfo(
-                    thread_id=thread_id,
-                    thread_name=row["thread_name"],
-                    user_id=user_id,
-                    metadata=meta_dict,
-                    run_id=meta_dict.get("run_id"),
-                    updated_at=row["updated_at"],
-                )
+                # The row's owner, not the caller: they differ under reach tenant or all.
+                return self._row_to_thread_info(row)
 
             logger.debug("Thread not found for thread_id=%s, user_id=%s", thread_id, user_id)
             return None
@@ -3470,7 +3493,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """Return ``{"user_id": ..., <tenant column>: ...}`` for a thread, globally.
 
         Not scoped to any caller (like :meth:`aget_thread_owner`): an authorization layer
-        compares these values with the caller's on every column the caller's scope picks.
+        compares these values with the caller's on every column the caller's reach picks.
         Tenant values written before a column existed are ``None``. Returns ``None`` when the
         thread does not exist.
         """
@@ -3525,7 +3548,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         offset, limit = validate_page(offset, limit)
         conditions = validate_filters(filters, self.filter_schema)
-        user_id = config.get("user_id")
+        user_id = owner_id(config)
 
         # `user_id = user_id or "test-user"` used to sit here, which made the check
         # below dead code and silently listed a fake user's threads whenever the
@@ -3585,15 +3608,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.error("Failed to list threads for user_id=%s: %s", user_id, e)
             raise
 
-    async def aclean_thread(self, config: dict[str, Any]) -> Any | None:
+    async def aclean_thread(self, config: dict[str, Any]) -> int:
         """
-        Clean/delete a thread and all associated data.
+        Clean/delete a thread and all associated data (scoped by the caller's reach).
 
         Args:
             config (dict): Configuration dictionary.
 
         Returns:
-            Any | None: None
+            int: 1 when the thread was deleted, 0 when there is none the caller may see.
 
         Raises:
             Exception: If cleaning fails.
@@ -3613,14 +3636,16 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             if self.columns.tenant:
                 # The deleted row's identity names the thread's shared cache entry.
                 query += f" RETURNING {self._identity_columns_sql()}"
-                deleted = await self._run_scoped(
+                row = await self._run_scoped(
                     lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
                 )
-                self._remember_identity(config, thread_id, deleted)
+                self._remember_identity(config, thread_id, row)
+                deleted = 0 if row is None else 1
             else:
-                await self._run_scoped(
+                status = await self._run_scoped(
                     lambda conn: conn.execute(query, *params), settings=self._rls(config)
                 )
+                deleted = _rows_affected(status)
 
             # Postgres is the source of truth and is already gone. A Redis failure here
             # must not turn a completed delete into an error; the stale cache entry is
@@ -3629,6 +3654,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             await self._invalidate_state_cache(thread_id, user_id, retries=1, config=config)
 
             logger.debug("Thread cleaned: thread_id=%s, user_id=%s", thread_id, user_id)
+            return deleted
 
         except Exception as e:
             logger.error("Failed to clean thread thread_id=%s: %s", thread_id, e)

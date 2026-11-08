@@ -13,7 +13,6 @@ DSN from POSTGRES_DSN. Each test uses its own table (and role, for RLS) and drop
 # ruff: noqa: S608
 
 import asyncio
-import itertools
 import math
 import os
 import random
@@ -24,7 +23,6 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 import pytest_asyncio
 
-from tenxgraph.core.authz import SCOPE_NONE, SCOPE_OWNER, build_authz
 from tenxgraph.storage.columns import MissingColumnValueError
 from tenxgraph.storage.store import PgVectorStore, system_user_id
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
@@ -37,7 +35,6 @@ POSTGRES_DSN = os.environ.get(
 )
 DIM = 8
 TENANTS = {"org_id": "text", "project_id": "text"}
-SCOPE_COLUMNS = ("user_id", "org_id", "project_id")
 
 
 class WordEmbedding:
@@ -89,10 +86,10 @@ def _store(pool, table, **kw):
     return PgVectorStore(WordEmbedding(), pool=pool, table=table, **kw)
 
 
-def _cfg(user="alice", org="A", project="P1", scope=None, **user_extra):
-    identity = {"user_id": user, "org_id": org, "project_id": project, **user_extra}
-    if scope is not None:
-        identity["authz"] = build_authz(user, scope=scope)
+def _cfg(user="alice", org="A", project="P1", reach=None, **claims):
+    identity = {"user_id": user, "tenant": {"org_id": org, "project_id": project}, "claims": claims}
+    if reach is not None:
+        identity["reach"] = reach
     return {"user_id": user, "user": identity}
 
 
@@ -153,8 +150,8 @@ class TestSchema:
         # Old rows hold NULL tenant values: invisible to scopes that pick tenant columns...
         assert await store.aget(_cfg(), legacy) is None
         assert await store.aget_all(_cfg()) == []
-        # ...and visible to a scope that does not.
-        got = await store.aget(_cfg(scope=["user_id"]), legacy)
+        # ...and visible to reach all.
+        got = await store.aget(_cfg(reach="all"), legacy)
         assert got is not None and got.content == "legacy fact"
         # A new key index with the tenant columns was built next to the old one, which is kept
         # for processes still running the previous version (their ON CONFLICT needs it).
@@ -226,7 +223,7 @@ class TestTenantIsolation:
         await store.aforget_memory(a)
         assert await store.aget(a, mem) is None
 
-    async def test_every_subset_of_scope_columns(self, pool, table):
+    async def test_reach_own_tenant_all(self, pool, table):
         store = _store(pool, table)
         seeds = [
             ("alice", "A", "P1"),
@@ -240,42 +237,44 @@ class TestTenantIsolation:
             ids[(user, org, project)] = await store.astore(
                 _cfg(user, org, project), f"note {user} {org} {project}"
             )
-        caller = {"user_id": "alice", "org_id": "A", "project_id": "P1"}
-        for size in range(len(SCOPE_COLUMNS) + 1):
-            for scope in itertools.combinations(SCOPE_COLUMNS, size):
-                cfg = _cfg("alice", "A", "P1", scope=list(scope))
-                want = {
-                    ids[seed]
-                    for seed in seeds
-                    if all(
-                        dict(zip(SCOPE_COLUMNS, seed, strict=True))[c] == caller[c] for c in scope
-                    )
-                }
-                got = {m.id for m in await store.aget_all(cfg)}
-                assert got == want, scope
-                found = await store.asearch(
-                    cfg, "note", retrieval_strategy=RetrievalStrategy.TEXT, limit=10
-                )
-                assert {r.id for r in found} == want, scope
+        want = {
+            "own": {ids[("alice", "A", "P1")]},
+            "tenant": {ids[("alice", "A", "P1")], ids[("bob", "A", "P1")]},
+            "all": set(ids.values()),
+        }
+        for reach, expected in want.items():
+            cfg = _cfg("alice", "A", "P1", reach=reach)
+            assert {m.id for m in await store.aget_all(cfg)} == expected, reach
+            found = await store.asearch(
+                cfg, "note", retrieval_strategy=RetrievalStrategy.TEXT, limit=10
+            )
+            assert {r.id for r in found} == expected, reach
 
-    async def test_owner_and_none_shortcuts(self, pool, table):
+    async def test_identity_user_id_wins_over_config_user_id(self, pool, table):
+        store = _store(pool, table)
+        cfg = _cfg("alice")
+        cfg["user_id"] = "forged"
+        mem = await store.astore(cfg, "mine")
+        assert (await store.aget(_cfg("alice"), mem)).content == "mine"
+
+    async def test_owner_and_all_shortcuts(self, pool, table):
         store = _store(pool, table)
         await store.astore(_cfg("alice", "A", "P1"), "one")
         await store.astore(_cfg("bob", "B", "P2"), "two")
-        owner = await store.aget_all(_cfg("alice", "A", "P1", scope=SCOPE_OWNER))
+        owner = await store.aget_all(_cfg("alice", "A", "P1"))
         assert [m.content for m in owner] == ["one"]
-        everyone = await store.aget_all(_cfg("alice", "A", "P1", scope=SCOPE_NONE))
+        everyone = await store.aget_all(_cfg("alice", "A", "P1", reach="all"))
         assert {m.content for m in everyone} == {"one", "two"}
 
     async def test_missing_value_for_picked_column_raises(self, pool, table):
         store = _store(pool, table)
-        no_org = {"user_id": "alice", "user": {"user_id": "alice", "project_id": "P1"}}
-        with pytest.raises(MissingColumnValueError):
+        no_org = {"user_id": "alice", "user": {"user_id": "alice", "tenant": {"project_id": "P1"}}}
+        with pytest.raises(ValueError, match="org_id"):
             await store.astore(no_org, "x")
-        with pytest.raises(MissingColumnValueError):
+        with pytest.raises(ValueError, match="org_id"):
             await store.aget_all(no_org)
-        # A scope that does not pick org_id reads fine.
-        no_org["user"]["authz"] = build_authz("alice", scope=["user_id", "project_id"])
+        # Reach all needs no tenant value for reads.
+        no_org["user"]["reach"] = "all"
         assert await store.aget_all(no_org) == []
 
     async def test_optional_tenant_column(self, pool, table):
@@ -284,13 +283,13 @@ class TestTenantIsolation:
             table,
             tenant_columns={"org_id": "text", "team": {"type": "text", "required": False}},
         )
-        cfg = {"user_id": "alice", "user": {"user_id": "alice", "org_id": "A"}}
+        cfg = {"user_id": "alice", "user": {"user_id": "alice", "tenant": {"org_id": "A"}}}
         first = await store.astore(cfg, "v1", memory_key="k")
         # NULLS NOT DISTINCT: a keyed write with the optional column NULL still dedupes.
         assert await store.astore(cfg, "v2", memory_key="k") == first
-        with pytest.raises(MissingColumnValueError):
-            await store.aget_all(cfg)  # the default scope picks team, which has no value
-        cfg["user"]["authz"] = build_authz("alice", scope=["user_id", "org_id"])
+        with pytest.raises(ValueError, match="team"):
+            await store.aget_all(cfg)  # reads need every tenant value, team has none
+        cfg["user"]["reach"] = "all"
         assert [m.content for m in await store.aget_all(cfg)] == ["v2"]
 
     async def test_extra_columns_stored_required_and_updated(self, pool, table):
@@ -315,12 +314,15 @@ class TestTenantIsolation:
     async def test_typed_columns(self, pool, table):
         store = _store(pool, table, tenant_columns={"org_id": "uuid", "tier": "integer"})
         org = uuid.uuid4()
-        cfg = {"user_id": "alice", "user": {"user_id": "alice", "org_id": str(org), "tier": "3"}}
+        cfg = {
+            "user_id": "alice",
+            "user": {"user_id": "alice", "tenant": {"org_id": str(org), "tier": "3"}},
+        }
         mem = await store.astore(cfg, "typed")
         assert (await store.aget(cfg, mem)).content == "typed"
         other = {
             "user_id": "alice",
-            "user": {"user_id": "alice", "org_id": str(uuid.uuid4()), "tier": 3},
+            "user": {"user_id": "alice", "tenant": {"org_id": str(uuid.uuid4()), "tier": "3"}},
         }
         assert await store.aget(other, mem) is None
 
@@ -331,16 +333,17 @@ class TestTenantIsolation:
         def shared(user, org):
             cfg = _cfg(user, org)
             cfg["user_id"] = kb
+            cfg["user"]["user_id"] = kb
             return cfg
 
         await store.astore(shared("alice", "A"), "refund policy for org A")
         assert len(await store.aget_all(shared("bob", "A"))) == 1  # same tenant, other user
         assert await store.aget_all(shared("alice", "B")) == []  # other tenant
 
-    async def test_unknown_scope_column_raises(self, pool, table):
-        store = _store(pool, table)
-        with pytest.raises(ValueError, match="does not declare"):
-            await store.aget_all(_cfg(scope=["user_id", "region"]))
+    async def test_reach_tenant_without_tenant_columns_raises(self, pool, table):
+        store = _store(pool, table, tenant_columns=None)
+        with pytest.raises(ValueError, match="tenant columns"):
+            await store.aget_all(_cfg(reach="tenant"))
 
 
 class _FixedEmbedding:
@@ -476,7 +479,7 @@ class TestRowLevelSecurity:
         store = _store(role_pool, table, row_level_security=True)
         await store.astore(_cfg(org="A"), "one")
         await store.astore(_cfg(org="B"), "two")
-        admin = _cfg(org="A", scope=["user_id"])
+        admin = _cfg(org="A", reach="all")
         assert {m.content for m in await store.aget_all(admin)} == {"one", "two"}
         await pool.execute(f'UPDATE "public"."{table}" SET embedding = NULL')
         assert await store.abackfill_embeddings() == 2

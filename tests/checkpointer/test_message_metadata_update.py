@@ -10,8 +10,8 @@ from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 from tenxgraph.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
 
 
-OWNER = {"thread_id": "t1", "user_id": "alice", "authz": {"scope": "owner"}}
-OTHER = {"thread_id": "t1", "user_id": "bob", "authz": {"scope": "owner"}}
+OWNER = {"thread_id": "t1", "user_id": "alice", "user": {"user_id": "alice", "reach": "own"}}
+OTHER = {"thread_id": "t1", "user_id": "bob", "user": {"user_id": "bob", "reach": "own"}}
 
 
 def _msg(mid: str, **metadata) -> Message:

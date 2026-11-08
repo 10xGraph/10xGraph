@@ -42,7 +42,7 @@ class _LockTimeout(Exception):
 
 
 class TestReservedUserKeys:
-    @pytest.mark.parametrize("name", ["authz", "scope", "scopes", "role", "roles"])
+    @pytest.mark.parametrize("name", ["kind", "tenant", "roles", "permissions", "reach", "claims"])
     @pytest.mark.parametrize("kind", ["tenant", "extra"])
     def test_refused_for_both_kinds(self, name, kind):
         declared = {name: "text"}
@@ -50,11 +50,11 @@ class TestReservedUserKeys:
         with pytest.raises(ValueError, match="carries authorization data"):
             parse_columns(*args)
 
-    def test_set_matches_the_api_keys(self):
-        assert {"authz", "scope", "scopes", "role", "roles"} == RESERVED_USER_KEYS
+    def test_set_matches_the_identity_fields(self):
+        assert {"kind", "tenant", "roles", "permissions", "reach", "claims"} == RESERVED_USER_KEYS
 
     def test_other_names_still_allowed(self):
-        cols = parse_columns(["org_id"], {"role_label": "text", "scoped": "text"})
+        cols = parse_columns(["org_id"], {"role_label": "text", "scoped": "text", "scope": "text"})
         assert cols.tenant_names == ("org_id",)
 
 

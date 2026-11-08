@@ -139,13 +139,12 @@ async def test_in_memory_has_a_ledger_and_does_not_warn(caplog):
 
 @pytest.mark.asyncio
 async def test_in_memory_ledger_is_scoped_to_the_thread_owner():
-    from tenxgraph.core.authz import build_authz
     from tenxgraph.core.exceptions import StorageError
     from tenxgraph.storage.checkpointer.in_memory_checkpointer import InMemoryCheckpointer
 
     mem = InMemoryCheckpointer()
-    owner = {"thread_id": "t1", "user_id": "u1", "authz": build_authz("u1", scope="owner")}
-    other = {"thread_id": "t1", "user_id": "u2", "authz": build_authz("u2", scope="owner")}
+    owner = {"thread_id": "t1", "user_id": "u1", "user": {"user_id": "u1", "reach": "own"}}
+    other = {"thread_id": "t1", "user_id": "u2", "user": {"user_id": "u2", "reach": "own"}}
     await mem.aput_tool_result(owner, "c1", {"output": "secret"})
     assert await mem.aget_tool_result(other, "c1") is None
     with pytest.raises(StorageError):

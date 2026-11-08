@@ -37,6 +37,64 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Breaking changes: identity and reach
+
+This replaces the `config["authz"]` isolation block. The unreleased `Isolation`, `isolation_scope()`,
+`isolation_columns()` and list-scope entries further down describe the block this section removes.
+
+- **The `authz` block is gone.** `build_authz`, `get_authz`, `isolation_scope`, `isolation_columns`,
+  `has_scope`, `Isolation`, `SCOPE_OWNER` and `SCOPE_NONE` are removed from
+  `tenxgraph.core.authz`, and storage no longer reads `config["authz"]`. Migration: put an
+  `Identity` (or a dict that validates into one) in `config["user"]`; set `reach` to `own`
+  (default), `tenant` or `all` instead of a scope string or column list.
+- **`config["user"]` is validated as an `Identity`.** Unknown fields are refused (`extra="forbid"`)
+  and `user_id` must be a non-empty string. The tenant values moved from top-level keys of the user
+  dict to `Identity.tenant`; raw claims go in `Identity.claims`. `identity.get(key)` and
+  `identity[key]` still read the merged view. A malformed identity raises, it never means "no checks".
+- **Reserved column names changed.** `RESERVED_USER_KEYS` is now `kind`, `tenant`, `roles`,
+  `permissions`, `reach`, `claims`; a tenant or extra column cannot use them (`authz`, `scope`,
+  `scopes`, `role` are free again).
+- **Writes always reach `own`.** Whatever the identity's reach, thread info, state, message and tool
+  result writes, and memory `astore` / `aupdate`, only touch the caller's own rows. Reach widens
+  reads, lists and deletes only.
+- **Foreign writes raise `ThreadNotFoundError`** (new, subclass of `ResourceNotFoundError`, error
+  code `STORAGE_NOT_FOUND_001`, the message of a missing thread; the API answers 404) on every
+  checkpointer, and nothing is written. The first writer of a new thread owns it; of two writers
+  racing to create one id, the loser gets the error. `thread_info.user_id` never assigns an owner.
+  Migration: catch `ThreadNotFoundError` where you wrote to a thread id you did not create.
+- **Return values of deletes are counts.** `aclear_state` / `clear_state`, `adelete_message` /
+  `delete_message` return the number of rows removed (`int`, 0 when the caller's scope matches
+  nothing), and `aclean_thread` returns 1 when anything of the thread was removed, else 0. They
+  returned implementation-defined values before. A custom `BaseCheckpointer` must follow this.
+- **`aget_thread` reports the thread's owner** as `user_id`, not the caller (they differ under reach
+  `tenant` or `all`).
+- **`astop()` is owner-scoped.** With an identity it stops only runs whose owner the caller's reach
+  covers (same user and tenant values for `own`, same tenant values for `tenant`, any for `all`), and
+  a cross-process stop is written under the thread owner's keys. A refused stop answers like a
+  thread with no run. Without an identity every run on the thread is stopped, as before.
+- **The identity is the owner key.** With an identity, `config["user_id"]` is overwritten by
+  `identity.user_id` for the run, and the stop and active-run cache keys use it. `UserMemoryConfig`'s
+  fixed `user_id` applies only to runs without an identity.
+- **Store writes are forced to `own`** in `PgVectorStore` and `QdrantStore`; overwriting another
+  user's `memory_id` raises `PermissionError` on every reach. Reads and deletes follow the reach, and
+  reach `tenant` on a store without tenant columns raises `ValueError`, as does a missing tenant value.
+- **Shared data is pinned.** The memory tools and `RAGAgent` knowledge-base searches (owner
+  `__system__:<name>`) run with reach `own` and the shared owner, so a caller with reach `tenant` or
+  `all` cannot read other users' rows through them. Tenant values still apply. A knowledge base
+  shared across tenants now needs a store without tenant columns and `allow_tenant_mismatch=True`
+  (a scope list that skipped the tenant columns no longer exists).
+
+### Added: identity and reach
+
+- `tenxgraph.core.authz`: `Identity` (frozen pydantic model: `user_id`, `kind` `user` or `system`,
+  `tenant`, `roles`, `permissions`, `reach`, `claims`; `can(permission)` with `*` and `resource:*`
+  wildcards, `None` permissions meaning unrestricted), `Reach` (`OWN`, `TENANT`, `ALL`),
+  `get_identity`, `owner_id` (the identity's `user_id`, else `config["user_id"]`), `can`,
+  `owner_filter`, `filter_columns` and `can_reach` (the in-memory form of the same rule, used by
+  `astop`). Reach `tenant` on a backend without tenant columns, a missing tenant value, and an
+  unknown reach all raise; nothing widens silently. `Identity` is exported for API code.
+- `ThreadNotFoundError`, exported from `tenxgraph.core` and `tenxgraph.core.exceptions`.
+
 ### Deprecated
 
 - `PgVectorStore.adrop_legacy_key_index()` and the legacy key index handling (setup keeps the

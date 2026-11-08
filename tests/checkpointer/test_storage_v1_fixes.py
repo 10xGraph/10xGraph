@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from tenxgraph.core.authz import build_authz
 from tenxgraph.core.exceptions import StorageError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
@@ -90,8 +89,8 @@ async def test_sqlite_two_first_writers_second_is_refused():
     cannot write into a thread the first one just claimed."""
     cp = _sqlite()
     await cp.asetup()
-    a = {"thread_id": "race", "user_id": "a", "authz": build_authz("a", scope="owner")}
-    b = {"thread_id": "race", "user_id": "b", "authz": build_authz("b", scope="owner")}
+    a = {"thread_id": "race", "user_id": "a", "user": {"user_id": "a", "reach": "own"}}
+    b = {"thread_id": "race", "user_id": "b", "user": {"user_id": "b", "reach": "own"}}
     # Simulate B having passed the unlocked pre-check before A claimed the thread.
     async def _never_denied(_config):
         return False

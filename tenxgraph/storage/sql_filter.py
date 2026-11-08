@@ -133,8 +133,8 @@ MEMORY_FILTER_COLUMNS: dict[str, str] = {
 }
 
 # Names shown in error messages; anything else is described, never echoed.
-_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,63}$")
-_ALIAS_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+_SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_]{1,63}")
+_ALIAS_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 _TEXT_INT_RANGE = (-(2**63), 2**63 - 1)
 _MAX_TYPE_LABEL = 128
 
@@ -145,7 +145,7 @@ class FilterError(ValueError):
 
 def _label(name: Any) -> str:
     """``'name'`` for a well-formed name, a neutral description otherwise (never raw input)."""
-    if isinstance(name, str) and _SAFE_NAME_RE.match(name):
+    if isinstance(name, str) and _SAFE_NAME_RE.fullmatch(name):
         return repr(name)
     return "(invalid name)"
 
@@ -377,7 +377,7 @@ def compile_filters(
     Returns an empty string for no conditions. ``alias`` is a table alias chosen by the
     backend, never input; it is checked anyway.
     """
-    if alias is not None and not _ALIAS_RE.match(alias):
+    if alias is not None and not _ALIAS_RE.fullmatch(alias):
         raise ValueError(f"Invalid table alias: {alias!r}")
     prefix = f"{alias}." if alias else ""
     clauses: list[str] = []

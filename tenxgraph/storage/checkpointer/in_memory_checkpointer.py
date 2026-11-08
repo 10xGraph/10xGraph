@@ -6,7 +6,8 @@ from collections import defaultdict
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from tenxgraph.core.exceptions import StorageError
+from tenxgraph.core.authz import owner_id
+from tenxgraph.core.exceptions import ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.thread_info import ThreadInfo
@@ -81,8 +82,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         self._threads: dict[str, dict[str, Any]] = {}
 
         # Thread ownership: config-key (thread_id) -> owner user_id. The first writer of a
-        # thread owns it. Used to enforce owner-only access when the request policy
-        # (config["authz"]) asks for it -- see _owner_denied / _record_owner.
+        # thread owns it. Used to enforce owner-only access when the caller identity
+        # (config["user"]) asks for it -- see _owner_denied / _claim.
         self._thread_owner: dict[str, str] = {}
 
         # Tool execution ledger (idempotency): (thread, tool_call_id) -> result
@@ -121,20 +122,40 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         thread_id = config.get("thread_id", "")
         return str(thread_id)
 
-    def _record_owner(self, config: dict[str, Any]) -> None:
-        """Record the caller as the thread's owner on first write (needs a user_id)."""
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+    def _claim(self, config: dict[str, Any]) -> str | None:
+        """Make the caller the owner of a new thread, or refuse a write to someone else's.
+
+        Call it right before the write, with no ``await`` in between: checking and recording
+        are then one step on the event loop, so of two writers racing to create one thread
+        the loser is refused instead of writing into the winner's. Returns the owner.
+
+        Raises:
+            ThreadNotFoundError: Another user owns the thread (writes always stay own).
+        """
+        user_id = owner_id(config)
+        key = self._get_config_key(config)
+        owner: str | None
         if user_id:
-            self._thread_owner.setdefault(self._get_config_key(config), str(user_id))
+            owner = self._thread_owner.setdefault(key, str(user_id))
+        else:
+            owner = self._thread_owner.get(key)
+        if (
+            self._isolation_enabled(config, user_id, write=True)
+            and owner is not None
+            and owner != str(user_id)
+        ):
+            raise ThreadNotFoundError(config.get("thread_id"))
+        return owner
 
-    def _owner_denied(self, config: dict[str, Any]) -> bool:
-        """True when isolation is active and the caller does not own this thread.
+    def _owner_denied(self, config: dict[str, Any], *, write: bool = False) -> bool:
+        """True when isolation is active and the caller may not see this thread.
 
-        A thread with no recorded owner (brand new) is never denied -- the caller becomes
+        Reads and deletes follow the caller's reach; ``write=True`` checks the caller owns
+        it. A thread with no recorded owner (brand new) is never denied: the caller becomes
         its owner on write, and reads simply find nothing.
         """
-        user_id = config.get("user_id") if isinstance(config, dict) else None
-        if not self._isolation_enabled(config, user_id):
+        user_id = owner_id(config)
+        if not self._isolation_enabled(config, user_id, write=write):
             return False
         owner = self._thread_owner.get(self._get_config_key(config))
         return owner is not None and str(owner) != str(user_id)
@@ -153,18 +174,17 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             StateT: The stored state object.
         """
-        if self._owner_denied(config):
-            raise StorageError("Thread is owned by a different user")
         key = self._get_config_key(config)
+        # Store copies: loaders merge new input into the state they get back, so sharing one
+        # object would let a request that is later rejected (a paused thread) change what is
+        # stored. Copied before the claim, so a state that cannot be copied claims nothing.
+        stored, cached = copy.deepcopy(state), copy.deepcopy(state)
         async with self._state_lock:
-            self._record_owner(config)
-            # Store copies: loaders merge new input into the state they get back, so
-            # sharing one object would let a request that is later rejected (a paused
-            # thread) change what is stored.
-            self._states[key] = copy.deepcopy(state)
+            self._claim(config)
+            self._states[key] = stored
             # Write-through: a run reads the cache first, so leaving it behind would
             # start the next run from the state this write replaced.
-            self._state_cache[key] = copy.deepcopy(state)
+            self._state_cache[key] = cached
             logger.debug(f"Stored state for key: {key}")
             return state
 
@@ -186,7 +206,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             logger.debug(f"Retrieved state for key: {key}, found: {state is not None}")
             return copy.deepcopy(state)
 
-    async def aclear_state(self, config: dict[str, Any]) -> bool:
+    async def aclear_state(self, config: dict[str, Any]) -> int:
         """
         Clear state asynchronously.
 
@@ -194,18 +214,18 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             config (dict): Configuration dictionary.
 
         Returns:
-            bool: True if cleared.
+            int: 1 when a state was removed, 0 when there was none the caller may see.
+            0 is not "thread not found": the caller's own thread with no state also gives 0.
         """
-        if self._owner_denied(config):
-            return True  # not the owner -> no-op, do not reveal existence
         key = self._get_config_key(config)
         async with self._state_lock:
-            if key in self._states:
-                del self._states[key]
-                logger.debug(f"Cleared state for key: {key}")
+            if self._owner_denied(config):
+                return 0  # outside the caller's reach: no-op, do not reveal existence
+            removed = self._states.pop(key, None) is not None
             # A run reads the cache first, so a cached copy would bring the state back.
             self._state_cache.pop(key, None)
-            return True
+        logger.debug(f"Cleared state for key: {key}")
+        return int(removed)
 
     async def aput_state_cache(self, config: dict[str, Any], state: StateT) -> StateT:
         """
@@ -218,14 +238,16 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             StateT: The cached state object.
         """
-        # Same rule as aput_state: a non-owner's write is dropped, and the first writer of a
-        # thread becomes its owner, so a cached state can only be read back by its writer.
-        if self._owner_denied(config):
-            return state
+        # Same rule as aput_state, but a non-owner's write is dropped instead of raising: the
+        # first writer of a thread becomes its owner, so only its owner can read it back.
         key = self._get_config_key(config)
+        cached = copy.deepcopy(state)
         async with self._state_lock:
-            self._record_owner(config)
-            self._state_cache[key] = copy.deepcopy(state)
+            try:
+                self._claim(config)
+            except ThreadNotFoundError:
+                return state
+            self._state_cache[key] = cached
             logger.debug(f"Stored state cache for key: {key}")
             return state
 
@@ -307,10 +329,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         result: dict[str, Any],
     ) -> Any | None:
         """Record that a tool call completed, with its result."""
-        if self._owner_denied(config):
-            raise StorageError("Thread is owned by a different user")
         async with self._tool_lock:
-            self._record_owner(config)
+            self._claim(config)
             self._tool_results[self._tool_key(config, tool_call_id)] = result
             return True
 
@@ -373,7 +393,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """Retrieve state synchronously."""
         return run_coroutine(self.aget_state(config))
 
-    def clear_state(self, config: dict[str, Any]) -> bool:
+    def clear_state(self, config: dict[str, Any]) -> int:
         """Clear state synchronously."""
         return run_coroutine(self.aclear_state(config))
 
@@ -405,11 +425,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             bool: True if stored.
         """
-        if self._owner_denied(config):
-            raise StorageError("Thread is owned by a different user")
         key = self._get_config_key(config)
         async with self._messages_lock:
-            self._record_owner(config)
+            self._claim(config)
             # Upsert by message id, as the SQL backends do: a run that re-sends messages it
             # already stored (a resume, the final save after a step checkpoint) must not
             # duplicate them.
@@ -466,9 +484,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             metadata (dict): Keys to set; a key replaces the same stored key.
 
         Returns:
-            Message | None: The updated message, or None if not found or not accessible.
+            Message | None: The updated message, or None if not found or not the caller's
+            (a write: it stays own whatever the reach).
         """
-        if self._owner_denied(config):
+        if self._owner_denied(config, write=True):
             return None
         key = self._get_config_key(config)
         async with self._messages_lock:
@@ -518,7 +537,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             # Apply offset and limit
             return messages[start:end]
 
-    async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> bool:
+    async def adelete_message(self, config: dict[str, Any], message_id: str | int) -> int:
         """
         Delete a specific message asynchronously.
 
@@ -527,15 +546,12 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             message_id (str|int): Message identifier.
 
         Returns:
-            bool: True if deleted.
-
-        Raises:
-            IndexError: If message not found.
+            int: 1 when deleted, 0 when there is no such message the caller may see.
         """
         key = self._get_config_key(config)
-        if self._owner_denied(config):
-            raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
         async with self._messages_lock:
+            if self._owner_denied(config):
+                return 0
             messages = self._messages.get(key, [])
             for msg in messages:
                 if msg.message_id == message_id:
@@ -543,14 +559,14 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                     logger.debug(f"Deleted message with ID {message_id} for key: {key}")
                     break
             else:
-                raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+                return 0
         # The state (and its cache copy) carries the message too; a deleted message must not
         # come back on the next run or in GET state.
         async with self._state_lock:
             for store in (self._states, self._state_cache):
                 if key in store:
                     self._strip_message_from_state(store[key], message_id)
-        return True
+        return 1
 
     # -------------------------
     # Message methods sync
@@ -578,7 +594,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """List messages synchronously with optional filtering."""
         return run_coroutine(self.alist_messages(config, search, offset, limit))
 
-    def delete_message(self, config: dict[str, Any], message_id: str | int) -> bool:
+    def delete_message(self, config: dict[str, Any], message_id: str | int) -> int:
         """Delete a specific message synchronously."""
         return run_coroutine(self.adelete_message(config, message_id))
 
@@ -599,13 +615,17 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
         Returns:
             bool: True if stored.
+
+        Raises:
+            ThreadNotFoundError: Another user owns the thread.
         """
-        if self._owner_denied(config):
-            raise StorageError("Thread is owned by a different user")
         key = self._get_config_key(config)
+        record = thread_info.model_dump()
         async with self._threads_lock:
-            self._record_owner(config)
-            self._threads[key] = thread_info.model_dump()
+            owner = self._claim(config)
+            if owner is not None and str(record.get("user_id")) != owner:
+                record["user_id"] = owner  # the stored owner, never one named by thread_info
+            self._threads[key] = record
             logger.debug(f"Stored thread info for key: {key}")
             return True
 
@@ -613,9 +633,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """Return the owner ``user_id`` of ``thread_id``, or None if unknown.
 
         Threads are keyed by ``thread_id`` here, so the stored record's ``user_id``
-        is the owner. Note the in-memory registry is only populated by explicit
-        ``aput_thread`` calls; a thread that only ever had state written is not
-        recorded, so this returns None for it.
+        is the owner (``aput_thread`` stores the owner there). Note the in-memory registry
+        is only populated by explicit ``aput_thread`` calls; a thread that only ever had
+        state written is not recorded, so this returns None for it.
         """
         async with self._threads_lock:
             record = self._threads.get(str(thread_id))
@@ -669,12 +689,12 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         _reject_filters("InMemoryCheckpointer", filters)
         start, limit = validate_page(offset, limit)
         end = (start + limit) if limit else None
-        user_id = config.get("user_id") if isinstance(config, dict) else None
+        user_id = owner_id(config)
         isolate = self._isolation_enabled(config, user_id)
         async with self._threads_lock:
             threads: list[dict[str, Any]] = list(self._threads.values())
 
-            # Owner-scope the listing when the policy asks for it.
+            # Owner-scope the listing when the identity asks for it.
             if isolate:
                 threads = [t for t in threads if str(t.get("user_id")) == str(user_id)]
 
@@ -690,37 +710,41 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             # Apply offset and limit
             return [ThreadInfo.model_validate(t) for t in islice(threads, start, end)]
 
-    async def aclean_thread(self, config: dict[str, Any]) -> bool:
+    async def aclean_thread(self, config: dict[str, Any]) -> int:
         """
-        Clean/delete thread asynchronously.
+        Delete a thread and all of its data asynchronously.
+
+        The data goes first and the owner record last, so until the delete ends no other
+        user can claim the thread and write into data that is about to be removed.
 
         Args:
             config (dict): Configuration dictionary.
 
         Returns:
-            bool: True if cleaned.
+            int: 1 when anything of the thread was deleted (its record or any of its data,
+            also for a thread that never got a record), 0 when there is nothing the caller
+            may see.
         """
-        if self._owner_denied(config):
-            return False  # not the owner -> no-op
         key = self._get_config_key(config)
-        async with self._threads_lock:
-            if key not in self._threads:
-                return False
-            del self._threads[key]
-            self._thread_owner.pop(key, None)
+        if self._owner_denied(config):
+            return 0  # outside the caller's reach: no-op
         # The thread's data goes with it, as on the SQLite and Postgres checkpointers;
         # a cached state left behind would also be the next run's starting point.
         async with self._state_lock:
-            self._states.pop(key, None)
-            self._state_cache.pop(key, None)
+            found = self._states.pop(key, None) is not None
+            found = self._state_cache.pop(key, None) is not None or found
         async with self._tool_lock:
             for ledger_key in [k for k in self._tool_results if k[0] == key]:
                 del self._tool_results[ledger_key]
+                found = True
         async with self._messages_lock:
-            self._messages.pop(key, None)
-            self._message_metadata.pop(key, None)
+            found = self._messages.pop(key, None) is not None or found
+            found = self._message_metadata.pop(key, None) is not None or found
+        async with self._threads_lock:
+            found = self._threads.pop(key, None) is not None or found
+            found = self._thread_owner.pop(key, None) is not None or found
         logger.debug(f"Cleaned thread for key: {key}")
-        return True
+        return 1 if found else 0
 
     # -------------------------
     # Thread methods sync
@@ -744,7 +768,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """List all threads synchronously with optional filtering."""
         return run_coroutine(self.alist_threads(config, search, offset, limit, filters))
 
-    def clean_thread(self, config: dict[str, Any]) -> bool:
+    def clean_thread(self, config: dict[str, Any]) -> int:
         """Clean/delete thread synchronously."""
         return run_coroutine(self.aclean_thread(config))
 
@@ -775,6 +799,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             self._messages.clear()
             self._message_metadata.clear()
             self._threads.clear()
+            self._thread_owner.clear()
             self._tool_results.clear()
             logger.info("Released all in-memory resources")
             return True

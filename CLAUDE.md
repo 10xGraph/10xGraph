@@ -106,7 +106,8 @@ Note: the root `tenxgraph/__init__.py` exports `StateGraph`, `Agent`, `ToolNode`
   resources by the ownership rules. Defaults split `shutdown_timeout` 50/25/25. Returns stats with
   `runs` counts. Twice is a no-op. Runs are tracked in `core/graph/utils/run_registry.py`
   (`RunHandle`, `current_run`); `astop()` also sets the in-process flag, so stop works with no
-  checkpointer or a failing cache. Core installs no signal handlers; the opt-in
+  checkpointer or a failing cache. `astop` is owner-scoped: a caller stops only runs on threads it can
+  see, and a cross-process stop uses the owner's keys. Core installs no signal handlers; the opt-in
   `tenxgraph.utils.shutdown.install_shutdown_signals(graph)` connects SIGTERM and SIGINT to `aclose()`.
 - Pause from inside a node or tool with `tenxgraph.utils.interrupt(value, message=..., ...)`; the
   run saves the thread paused before that node. Resume with `invoke({"resume": value}, config)`:
@@ -176,7 +177,7 @@ layer) for production; requires `[pg_checkpoint]`.
 run's `run_id`) and injects a fenced `<user_memories_xxx>` block into the latest user message of
 the request. The graph-level API (`MemoryIntegration`, `create_memory_preload_node`,
 `memory_tool`) was removed. Collection precedence: the scope's `collection` (name or function of the run config) always wins, then a `collection` in developer-built config, then the store default (`QdrantStore` / `PgVectorStore`, name or function). Every store operation needs a non-empty `user_id` (it raises
-otherwise; only authz `scope="none"` skips the read filter). Shared data (agent/app memory, RAG
+otherwise; only an identity with reach `all` skips the read filter). Shared data (agent/app memory, RAG
 knowledge bases) is owned by a reserved `__system__` prefixed id from `system_user_id(name)`
 (`"__system__:<name>"`; `is_system_user_id()` tests for it). Agent memory uses the agent's
 `agent_id` (else `app_id`; `Agent` setup raises if agent memory is enabled with neither), RAG
@@ -191,13 +192,16 @@ vector and `abackfill_embeddings()` fills it later. `PgCheckpointer` and `PgVect
 (data: any Postgres type, resolved on the server; filters on non-builtin types allow `is_null`
 only) and opt-in `row_level_security`, all in `storage/columns.py`. Values come only from
 `config["user"]` (set by the auth class), never from request config, metadata or state. The
-isolation scope in `config["authz"]["scope"]` is `"owner"`, `"none"` (`core.authz.Isolation`) or a
-list of columns (`isolation_columns()`); an unknown scope raises. `compile()` refuses a
+caller is an `Identity` (`core/authz.py`) in `config["user"]` (model or dict; tenant values under
+`tenant`, extra column values under `claims`, unknown keys refused). Its `reach` (`own`, `tenant`,
+`all`) picks the filter via `owner_filter()` / `filter_columns()`; `owner_id()` is the storage owner
+key (identity wins over `config["user_id"]`); reach `tenant` raises on backends without tenant
+columns. `compile()` refuses a
 checkpointer and store with different tenant columns under `MODE=production`
 (`allow_tenant_mismatch=True` opts out). Client `filters` go through `storage/sql_filter.py`
 (`validate_filters`, bind parameters only, tenant columns rejected). `BaseCheckpointer.
-aget_thread_scope()` returns a thread's `user_id` plus tenant values. `RAGAgent` forwards only
-`config["user"]`, never `authz`. Guides: docs `guides/use-pgvector-store`, `guides/multi-tenant-data`.
+aget_thread_scope()` returns a thread's `user_id` plus tenant values. `RAGAgent` forwards
+`config["user"]` pinned to the knowledge-base owner with reach `own`. Guides: docs `guides/use-pgvector-store`, `guides/multi-tenant-data`.
 
 **Skills.** Implements the Agent Skills spec (agentskills.io): `SkillConfig(skills_dir=...)`
 discovers `<dir>/<name>/SKILL.md` skills. Two modes: `on-demand` (an `<available_skills>` catalog
