@@ -11,6 +11,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 from tenxgraph.core.authz import Identity, can_reach
 from tenxgraph.core.graph import StateGraph
@@ -159,9 +160,12 @@ async def test_run_without_identity_is_owned_by_its_user_id():
 # --- cross-process stop (two graphs sharing one checkpointer) -------------------------------
 
 
-@pytest.fixture(params=["memory", "sqlite"])
-def shared_cp(request):
-    return InMemoryCheckpointer() if request.param == "memory" else SqliteCheckpointer(":memory:")
+@pytest_asyncio.fixture(params=["memory", "sqlite"])
+async def shared_cp(request):
+    cp = InMemoryCheckpointer() if request.param == "memory" else SqliteCheckpointer(":memory:")
+    yield cp
+    # The graphs do not own it; an open aiosqlite connection keeps a non-daemon thread alive.
+    await cp.arelease()
 
 
 async def _two_workers(cp, owner_cfg: dict) -> tuple[Rig, Rig, asyncio.Task]:
