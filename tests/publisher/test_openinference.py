@@ -1,6 +1,7 @@
 """OpenInference attributes, span timing, status and level gating on real spans."""
 
 import asyncio
+import json
 import os
 
 import pytest
@@ -60,6 +61,34 @@ def test_llm_standard_and_output_attrs():
     key = "llm.output_messages.0.message.tool_calls.0.tool_call.function.name"
     assert out[key] == "f" and out[oi.OUTPUT_MIME] == oi.JSON_MIME
     assert oi.llm_output_attrs({}) == {}
+
+
+def test_output_tool_call_id():
+    out = oi.llm_output_attrs(
+        {"output_tool_calls": [{"id": "call_1", "name": "f", "arguments": "{}"}]}
+    )
+    assert out["llm.output_messages.0.message.tool_calls.0.tool_call.id"] == "call_1"
+
+
+def test_input_attrs_keep_tool_calls_and_call_id():
+    msgs = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": '{"a":1}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "done"},
+    ]
+    attrs = oi.llm_input_attrs(msgs)
+    p = "llm.input_messages.1.message.tool_calls.0.tool_call"
+    assert attrs[f"{p}.id"] == "c1"
+    assert attrs[f"{p}.function.name"] == "f"
+    assert attrs[f"{p}.function.arguments"] == '{"a":1}'
+    assert attrs["llm.input_messages.2.message.tool_call_id"] == "c1"
+    assert "tool_calls" in json.loads(attrs[oi.INPUT_VALUE])[1]
 
 
 def test_tool_attrs():
@@ -134,7 +163,23 @@ async def test_full_level_timing_status_kinds_and_content():
     assert a[oi.OUTPUT_VALUE] == "the answer"
     assert a["llm.output_messages.0.message.role"] == "assistant"
     assert a[oi.TOKENS_TOTAL] == 12 and a[oi.LLM_MODEL_NAME] == "gpt-4o-mini"
-    assert a["gen_ai.output.messages"] == '[{"role":"assistant","content":"the answer"}]'
+    assert json.loads(a["gen_ai.output.messages"]) == [
+        {
+            "role": "assistant",
+            "parts": [{"type": "text", "content": "the answer"}],
+            "finish_reason": "stop",
+        }
+    ]
+    assert json.loads(a["gen_ai.input.messages"])[-1] == {
+        "role": "user",
+        "parts": [{"type": "text", "content": "what?"}],
+    }
+    assert a["langsmith.span.kind"] == "llm"
+    assert graph.attributes["langsmith.span.kind"] == "chain"
+    assert a["langsmith.metadata.thread_id"] == "t1"
+    for s in spans.values():
+        if s is not llm:
+            assert not any(k.startswith("gen_ai.usage.") for k in s.attributes)
 
 
 @pytest.mark.asyncio

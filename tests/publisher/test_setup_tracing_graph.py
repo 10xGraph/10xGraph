@@ -52,6 +52,10 @@ async def test_setup_tracing_emits_spans():
     assert names, "no spans emitted"
     assert "tenxgraph.graph" in names
     assert "tenxgraph.node" in names
+    for span in exporter.get_finished_spans():
+        assert span.attributes["langsmith.span.kind"] == "chain"
+        assert span.attributes["langsmith.metadata.thread_id"] == "t1"
+        assert not any(k.startswith("gen_ai.usage.") for k in span.attributes)
 
 
 @pytest.mark.asyncio

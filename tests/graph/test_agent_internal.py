@@ -42,6 +42,7 @@ from tenxgraph.core.graph.agent_internal.execution import (
     _extract_response_id,
     _extract_response_model,
     _extract_response_text,
+    _extract_tool_calls,
 )
 
 
@@ -2771,3 +2772,63 @@ class TestLlmSpanClosed:
         seen = await self._run(stream=True, response=MagicMock())
         # The END comes from the converter's on_stream_end hook, once the stream was read.
         assert [t for t, _ in seen] == ["start"]
+
+
+class TestProviderOutputExtraction:
+    def test_anthropic_text_and_tool_use(self):
+        types = pytest.importorskip("anthropic.types")
+        resp = types.Message(
+            id="m",
+            model="claude",
+            role="assistant",
+            type="message",
+            content=[
+                types.TextBlock(type="text", text="Hello "),
+                types.ToolUseBlock(
+                    type="tool_use", id="tu_1", name="get_w", input={"city": "Paris"}
+                ),
+            ],
+            stop_reason="tool_use",
+            usage=types.Usage(input_tokens=1, output_tokens=1),
+        )
+        assert _extract_response_text(resp) == "Hello"
+        assert _extract_tool_calls(resp) == [
+            {"id": "tu_1", "name": "get_w", "arguments": '{"city": "Paris"}'}
+        ]
+
+    def test_responses_function_call(self):
+        rt = pytest.importorskip("openai.types.responses")
+        resp = SimpleNamespace(
+            output=[
+                rt.ResponseFunctionToolCall(
+                    type="function_call", call_id="c1", name="f", arguments='{"a": 1}'
+                )
+            ]
+        )
+        assert _extract_tool_calls(resp) == [{"id": "c1", "name": "f", "arguments": '{"a": 1}'}]
+
+    def test_google_function_call(self):
+        gt = pytest.importorskip("google.genai.types")
+        part = gt.Part(function_call=gt.FunctionCall(name="f", args={"x": 2}))
+        resp = gt.GenerateContentResponse(
+            candidates=[gt.Candidate(content=gt.Content(role="model", parts=[part]))]
+        )
+        assert _extract_tool_calls(resp) == [{"id": "", "name": "f", "arguments": '{"x": 2}'}]
+        assert _extract_response_text(resp) == ""
+
+    def test_stream_hook_sets_output(self):
+        from tenxgraph.core.graph.agent_internal.execution import _make_stream_end_hook
+        from tenxgraph.core.state import Message
+        from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock
+        from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+
+        final = Message(
+            role="assistant",
+            content=[TextBlock(text="hi"), ToolCallBlock(id="t1", name="f", args={"k": "v"})],
+        )
+        ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
+        with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
+            _make_stream_end_hook(ev)(final, None)
+        data = pub.call_args.args[0].data
+        assert data["output_response"] == "hi"
+        assert data["output_tool_calls"] == [{"id": "t1", "name": "f", "arguments": '{"k": "v"}'}]

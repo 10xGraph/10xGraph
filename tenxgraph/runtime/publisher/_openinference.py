@@ -75,12 +75,31 @@ def kind_attrs(kind: str) -> dict[str, Any]:
     return {SPAN_KIND: kind}
 
 
-def llm_request_messages(input_messages: Any, system_prompt: Any = None) -> list[dict[str, str]]:
-    """Request messages as ``[{"role", "content"}]``; the system prompt is added when absent."""
-    out: list[dict[str, str]] = []
+def _call_fields(call: Any) -> tuple[str, str, str]:
+    """``(id, name, arguments)`` of a tool call in OpenAI request form or ``{"id","name",...}``."""
+    if not isinstance(call, dict):
+        return "", "", ""
+    fn = call.get("function") if isinstance(call.get("function"), dict) else call
+    args = fn.get("arguments")
+    if args is not None and not isinstance(args, str):
+        args = _dumps(args)
+    return str(call.get("id") or ""), str(fn.get("name", "")), args or ""
+
+
+def llm_request_messages(input_messages: Any, system_prompt: Any = None) -> list[dict[str, Any]]:
+    """Request messages as ``[{"role", "content"}]``; the system prompt is added when absent.
+
+    Assistant ``tool_calls`` and a tool message's ``tool_call_id`` are kept when present.
+    """
+    out: list[dict[str, Any]] = []
     for m in input_messages if isinstance(input_messages, list) else []:
         if isinstance(m, dict):
-            out.append({"role": str(m.get("role", "")), "content": message_text(m)})
+            msg: dict[str, Any] = {"role": str(m.get("role", "")), "content": message_text(m)}
+            if m.get("tool_calls"):
+                msg["tool_calls"] = m["tool_calls"]
+            if m.get("tool_call_id"):
+                msg["tool_call_id"] = m["tool_call_id"]
+            out.append(msg)
     if system_prompt and not any(m["role"] == "system" for m in out):
         text = system_prompt if isinstance(system_prompt, str) else content_text(system_prompt)
         out.insert(0, {"role": "system", "content": text})
@@ -114,6 +133,15 @@ def llm_input_attrs(input_messages: Any, system_prompt: Any = None) -> dict[str,
     for i, m in enumerate(messages):
         attrs[f"llm.input_messages.{i}.message.role"] = m["role"]
         attrs[f"llm.input_messages.{i}.message.content"] = m["content"]
+        if m.get("tool_call_id"):
+            attrs[f"llm.input_messages.{i}.message.tool_call_id"] = m["tool_call_id"]
+        for j, call in enumerate(m.get("tool_calls", [])):
+            prefix = f"llm.input_messages.{i}.message.tool_calls.{j}.tool_call"
+            call_id, name, arguments = _call_fields(call)
+            if call_id:
+                attrs[f"{prefix}.id"] = call_id
+            attrs[f"{prefix}.function.name"] = name
+            attrs[f"{prefix}.function.arguments"] = arguments
     return attrs
 
 
@@ -142,9 +170,11 @@ def llm_output_attrs(data: dict[str, Any]) -> dict[str, Any]:
         OUTPUT_MIME: TEXT_MIME,
     }
     for j, call in enumerate(msg.get("tool_calls", [])):
-        prefix = f"llm.output_messages.0.message.tool_calls.{j}.tool_call.function"
-        attrs[f"{prefix}.name"] = str(call.get("name", ""))
-        attrs[f"{prefix}.arguments"] = str(call.get("arguments", ""))
+        prefix = f"llm.output_messages.0.message.tool_calls.{j}.tool_call"
+        if call.get("id"):
+            attrs[f"{prefix}.id"] = str(call["id"])
+        attrs[f"{prefix}.function.name"] = str(call.get("name", ""))
+        attrs[f"{prefix}.function.arguments"] = str(call.get("arguments", ""))
     if not msg["content"]:
         attrs[OUTPUT_VALUE] = _dumps(msg.get("tool_calls", []))
         attrs[OUTPUT_MIME] = JSON_MIME

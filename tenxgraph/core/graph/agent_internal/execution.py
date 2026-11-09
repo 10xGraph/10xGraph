@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import contextvars
 import copy
+import json
 import logging
 import random
 import re
@@ -234,6 +235,19 @@ def _make_stream_end_hook(llm_event: Any, started: float | None = None) -> Any:
                 getattr(usages, "cache_creation_input_tokens", 0) or 0
             )
             llm_event.data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
+        if error is None and callable(getattr(final, "text", None)):
+            llm_event.data["output_response"] = final.text().strip()
+            llm_event.data["output_tool_calls"] = [
+                {
+                    "id": str(b.id),
+                    "name": str(b.name),
+                    "arguments": b.args
+                    if isinstance(b.args, str)
+                    else json.dumps(b.args, default=str),
+                }
+                for b in final.content or []
+                if getattr(b, "type", None) == "tool_call"
+            ]
         meta = getattr(final, "metadata", None) or {}
         if meta.get("finish_reason"):
             llm_event.data["finish_reason"] = str(meta["finish_reason"])
@@ -363,13 +377,43 @@ def _extract_response_model(response: Any) -> str:
     return str(v) if v else ""
 
 
+def _typed_blocks(response: Any) -> list[Any]:
+    """Anthropic-style ``response.content`` blocks (a list of objects carrying ``.type``)."""
+    content = getattr(response, "content", None)
+    if isinstance(content, list) and all(hasattr(b, "type") for b in content):
+        return content
+    return []
+
+
+def _google_parts(response: Any) -> list[Any]:
+    """First Google genai candidate parts, read directly (``response.text`` warns on tool calls)."""
+    candidates = getattr(response, "candidates", None)
+    if not isinstance(candidates, list) or not candidates:
+        return []
+    parts = getattr(getattr(candidates[0], "content", None), "parts", None)
+    return list(parts) if isinstance(parts, list) else []
+
+
 def _extract_response_text(response: Any) -> str:
+    parts = _google_parts(response)
+    if parts:
+        texts = [
+            p.text
+            for p in parts
+            if isinstance(getattr(p, "text", None), str) and not getattr(p, "thought", None)
+        ]
+        return "".join(texts).strip()
     text = getattr(response, "text", None)
     if text:
         return str(text).strip()
     output_text = getattr(response, "output_text", None)
     if output_text:
         return str(output_text).strip()
+    blocks = _typed_blocks(response)
+    if blocks:
+        return "".join(
+            str(getattr(b, "text", "") or "") for b in blocks if b.type == "text"
+        ).strip()
     choices = getattr(response, "choices", None)
     if choices:
         return str(getattr(getattr(choices[0], "message", None), "content", "") or "").strip()
@@ -377,15 +421,48 @@ def _extract_response_text(response: Any) -> str:
 
 
 def _extract_tool_calls(response: Any) -> list[dict[str, str]]:
-    """Tool calls of an OpenAI-style chat completion as ``{"name", "arguments"}`` dicts."""
+    """Tool calls as ``{"id", "name", "arguments"}`` dicts (arguments is a JSON string).
+
+    Handles OpenAI chat, OpenAI Responses, Anthropic and Google genai responses.
+    """
+    calls: list[dict[str, str]] = []
+    for part in _google_parts(response):
+        fc = getattr(part, "function_call", None)
+        if fc is not None:
+            calls.append(
+                {
+                    "id": str(getattr(fc, "id", None) or ""),
+                    "name": str(getattr(fc, "name", None) or ""),
+                    "arguments": json.dumps(getattr(fc, "args", None) or {}, default=str),
+                }
+            )
+    for block in _typed_blocks(response):
+        if block.type == "tool_use":
+            calls.append(
+                {
+                    "id": str(getattr(block, "id", "") or ""),
+                    "name": str(getattr(block, "name", "")),
+                    "arguments": json.dumps(getattr(block, "input", None) or {}, default=str),
+                }
+            )
+    output = getattr(response, "output", None)
+    for item in output if isinstance(output, list) else []:
+        if getattr(item, "type", None) == "function_call":
+            calls.append(
+                {
+                    "id": str(getattr(item, "call_id", "") or ""),
+                    "name": str(getattr(item, "name", "")),
+                    "arguments": str(getattr(item, "arguments", "")),
+                }
+            )
     choices = getattr(response, "choices", None)
     message = getattr(choices[0], "message", None) if choices else None
-    calls = []
     for call in getattr(message, "tool_calls", None) or []:
         fn = getattr(call, "function", None)
         if fn is not None:
             calls.append(
                 {
+                    "id": str(getattr(call, "id", "") or ""),
                     "name": str(getattr(fn, "name", "")),
                     "arguments": str(getattr(fn, "arguments", "")),
                 }

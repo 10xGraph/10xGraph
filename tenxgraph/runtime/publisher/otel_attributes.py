@@ -6,6 +6,7 @@ https://opentelemetry.io/docs/specs/semconv/gen-ai/
 # ── gen_ai core ──────────────────────────────────────────────────────────────
 GEN_AI_SYSTEM = "gen_ai.system"
 GEN_AI_OPERATION = "gen_ai.operation.name"
+GEN_AI_PROVIDER_NAME = "gen_ai.provider.name"
 
 # ── gen_ai request attributes (standard semconv) ─────────────────────────────
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
@@ -26,6 +27,11 @@ GEN_AI_RESPONSE_FINISH_REASONS = "gen_ai.response.finish_reasons"
 # ── gen_ai usage — base (STANDARD level) ────────────────────────────────────
 GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
 GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+
+# Token counts on graph and node spans. Kept off gen_ai.usage.* so backends that sum
+# descendant spans count only the LLM spans.
+USAGE_INPUT_TOKENS = "tenxgraph.usage.input_tokens"
+USAGE_OUTPUT_TOKENS = "tenxgraph.usage.output_tokens"
 
 # ── gen_ai usage — extended token types ──────────────────────────────────────
 # Prompt caching (Anthropic + OpenAI)
@@ -59,6 +65,16 @@ NODE_STEP = "tenxgraph.node.step"
 # ── tenxgraph.tool span attributes ───────────────────────────────────────────
 TOOL_NAME = "tenxgraph.tool.name"
 TOOL_TYPE = "tenxgraph.tool.type"  # "local" | "mcp"
+
+TOOL_REMOTE = "tenxgraph.tool.remote"  # True when the tool runs on the client
+
+# ── span display names and LangSmith run fields ──────────────────────────────
+LOGFIRE_MSG = "logfire.msg"
+LANGSMITH_TRACE_NAME = "langsmith.trace.name"
+LANGSMITH_SPAN_KIND = "langsmith.span.kind"
+LANGSMITH_THREAD_ID = "langsmith.metadata.thread_id"
+LANGSMITH_USER_ID = "langsmith.metadata.user_id"
+SPAN_UNFINISHED = "tenxgraph.span.unfinished"
 
 # ── lifecycle annotation (added as span event attribute) ─────────────────────
 LIFECYCLE = "tenxgraph.lifecycle"
