@@ -376,6 +376,23 @@ def _extract_response_text(response: Any) -> str:
     return ""
 
 
+def _extract_tool_calls(response: Any) -> list[dict[str, str]]:
+    """Tool calls of an OpenAI-style chat completion as ``{"name", "arguments"}`` dicts."""
+    choices = getattr(response, "choices", None)
+    message = getattr(choices[0], "message", None) if choices else None
+    calls = []
+    for call in getattr(message, "tool_calls", None) or []:
+        fn = getattr(call, "function", None)
+        if fn is not None:
+            calls.append(
+                {
+                    "name": str(getattr(fn, "name", "")),
+                    "arguments": str(getattr(fn, "arguments", "")),
+                }
+            )
+    return calls
+
+
 class AgentExecutionMixin:
     """Execution flow, tool resolution, and provider dispatch helpers."""
 
@@ -1134,6 +1151,7 @@ class AgentExecutionMixin:
             # (see ``on_stream_end`` below), with the usage from the last chunks.
             llm_event.event_type = EventType.END  # type: ignore[assignment]
             llm_event.data["output_response"] = _extract_response_text(response)
+            llm_event.data["output_tool_calls"] = _extract_tool_calls(response)
             llm_event.data["input_tokens"] = _extract_input_tokens(response)
             llm_event.data["output_tokens"] = _extract_output_tokens(response)
             llm_event.data["cache_read_tokens"] = _extract_cache_read_tokens(response)

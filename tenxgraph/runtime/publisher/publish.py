@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from injectq import Inject
@@ -142,5 +143,13 @@ def publish_event(
     # ``state`` is cut to a bounded summary (see ``bound_state_snapshot``).
     if "state" in data:
         data["state"] = bound_state_snapshot(data["state"], _state_limit(publisher))
-    snapshot = event.model_copy(update={"data": data, "metadata": dict(event.metadata)})
+    # The same reuse means ``timestamp`` is stale on the second publish of an event, so the
+    # snapshot carries the moment of this publish (publish happens when the thing happens).
+    snapshot = event.model_copy(
+        update={
+            "data": data,
+            "metadata": dict(event.metadata),
+            "timestamp": datetime.now().timestamp(),
+        }
+    )
     task_manager.create_task(_publish_event_task(snapshot, publisher))
