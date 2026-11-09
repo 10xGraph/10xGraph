@@ -147,13 +147,15 @@ def test_llm_span_attributes_and_graph_node_usage():
     assert llm["gen_ai.usage.input_tokens"] == 5
     assert llm["logfire.msg"] == llm["langsmith.trace.name"] == "chat gpt-4o-mini"
     assert llm["langsmith.span.kind"] == "llm"
+    # Every span carries the thread as session.id, not only the root (Phoenix span filters).
+    assert llm["session.id"] == "th1"
 
     node = _by_name(exporter, "tenxgraph.node")[0].attributes
     graph = _by_name(exporter, "tenxgraph.graph")[0].attributes
     for attrs, kind, name in ((node, "chain", "MAIN"), (graph, "chain", "graph run")):
         assert attrs["langsmith.span.kind"] == kind
         assert attrs["logfire.msg"] == attrs["langsmith.trace.name"] == name
-        assert attrs["langsmith.metadata.thread_id"] == "th1"
+        assert attrs["langsmith.metadata.thread_id"] == attrs["session.id"] == "th1"
         assert attrs["langsmith.metadata.user_id"] == "u1"
         assert not any(k.startswith("gen_ai.usage.") for k in attrs)
     assert node["tenxgraph.usage.input_tokens"] == 5
@@ -185,6 +187,7 @@ def test_parallel_calls_of_one_tool_get_separate_spans():
     tools = _by_name(exporter, "tenxgraph.tool")
     assert len(tools) == 2
     assert all(s.attributes["langsmith.span.kind"] == "tool" for s in tools)
+    assert all(s.attributes["session.id"] == "th1" for s in tools)
     assert tools[0].attributes["logfire.msg"] == "tool search"
     assert not pub._registry._children
 

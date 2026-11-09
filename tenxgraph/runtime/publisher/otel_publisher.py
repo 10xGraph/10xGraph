@@ -302,8 +302,6 @@ class OtelPublisher(BasePublisher):
             user_text = oi.graph_input_text(event.data)
             if user_text:
                 _set_attrs(span, {oi.INPUT_VALUE: user_text, oi.INPUT_MIME: oi.TEXT_MIME})
-        # Expose thread_id as session.id so Langfuse groups multi-turn conversations
-        span.set_attribute(SESSION_ID, str(event.thread_id))
         self._registry.set_graph(event.run_id, span)
 
     def _on_graph_end(self, event: EventModel) -> None:
@@ -769,7 +767,7 @@ def _tool_key(event: EventModel) -> str:
 def _set_kind(
     span: Span, kind: str, event: EventModel, user_id_mode: UserIdMode, display_name: str
 ) -> None:
-    """Span kind, display name, thread and user id for OpenInference, Logfire and LangSmith.
+    """Span kind, display name, session (thread) and user id for OpenInference, Logfire, LangSmith.
 
     The user id has the same value and mode as the graph user id.
     """
@@ -777,6 +775,9 @@ def _set_kind(
     span.set_attribute(LANGSMITH_SPAN_KIND, kind.lower())
     span.set_attribute(LOGFIRE_MSG, display_name)
     span.set_attribute(LANGSMITH_TRACE_NAME, display_name)
+    # The thread id as session.id on every span, so Phoenix and Langfuse group a thread's runs
+    # and a span filter by session finds node, LLM and tool spans too, not only the root.
+    span.set_attribute(SESSION_ID, str(event.thread_id))
     span.set_attribute(LANGSMITH_THREAD_ID, str(event.thread_id))
     if event.user_id is not None:
         user_id = transform_user_id(event.user_id, user_id_mode)

@@ -304,6 +304,11 @@ def _create_google_client(*, use_vertex_ai: bool, timeout: float | None = None) 
             "for the Google provider."
         )
     logger.info("Creating Google GenAI client (API key)")
+    # google-genai 3.x defaults the Developer API to "v1", which rejects function calling
+    # (400 "Function calling is not enabled for api version v1"). Pin "v1beta", the 2.x
+    # default, unless GOOGLE_GENAI_API_VERSION picks one.
+    if not os.getenv("GOOGLE_GENAI_API_VERSION"):
+        http_options.api_version = "v1beta"
     # Pass vertexai=False explicitly: google-genai's Client() otherwise reads the
     # GOOGLE_GENAI_USE_VERTEXAI env var and silently switches to Vertex mode,
     # which rejects API keys (401 UNAUTHENTICATED). The caller asked for the
