@@ -8,11 +8,18 @@ from .base_publisher import BasePublisher
 from .composite_publisher import CompositePublisher
 from .console_publisher import ConsolePublisher
 from .events import ContentType, Event, EventModel, EventType
-from .exporters import setup_langsmith, setup_logfire, setup_observability
+from .exporters import (
+    setup_langsmith,
+    setup_logfire,
+    setup_observability,
+    setup_otlp,
+    setup_phoenix,
+)
 from .kafka_publisher import KafkaPublisher
 from .langsmith_publisher import LangsmithPublisher
 from .logfire_publisher import LogfirePublisher
 from .otel_publisher import ObservabilityLevel, OtelPublisher, setup_tracing
+from .phoenix_publisher import PhoenixPublisher
 from .publish import publish_event
 from .rabbitmq_publisher import RabbitMQPublisher
 from .redis_publisher import RedisPublisher
@@ -31,11 +38,14 @@ __all__ = [
     "LogfirePublisher",
     "ObservabilityLevel",
     "OtelPublisher",
+    "PhoenixPublisher",
     "RabbitMQPublisher",
     "RedisPublisher",
     "publish_event",
     "setup_langsmith",
     "setup_logfire",
     "setup_observability",
+    "setup_otlp",
+    "setup_phoenix",
     "setup_tracing",
 ]

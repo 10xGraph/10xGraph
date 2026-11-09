@@ -27,5 +27,5 @@ def test_mcp_floor():
 
 
 def test_opentelemetry_floor():
-    for extra in ("otel", "langsmith"):
+    for extra in ("otel", "langsmith", "phoenix", "otlp"):
         assert _floor(_extras()[extra], "opentelemetry-api") >= (1, 45, 1)

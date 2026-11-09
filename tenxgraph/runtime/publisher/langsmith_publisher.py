@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .exporters import _build_langsmith_processor
+from ._backends import _build_langsmith_processor
 from .otel_publisher import ObservabilityLevel, OtelPublisher
 
 

@@ -133,8 +133,18 @@ langsmith = [
     "opentelemetry-sdk>=1.45.1",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
 ]
+phoenix = [
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+]
+otlp = [
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+]
 observability = [
-    "10xgraph[otel,logfire,langsmith]",
+    "10xgraph[otel,logfire,langsmith,phoenix,otlp]",
 ]
 
 all_publishers = [

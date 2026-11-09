@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import ssl
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -99,11 +100,18 @@ class TestSetupObservability:
         assert lf.call_args.kwargs["user_id_mode"] == "mask"
 
     def test_passes_through_langsmith(self):
-        with patch("tenxgraph.runtime.publisher.exporters.setup_langsmith") as ls:
+        with (
+            patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as tracing,
+            patch("tenxgraph.runtime.publisher.exporters._build_langsmith_processor"),
+            patch("tenxgraph.runtime.publisher.exporters._new_tracer_provider"),
+            patch.dict(
+                sys.modules, {"opentelemetry": MagicMock(), "opentelemetry.trace": MagicMock()}
+            ),
+        ):
             setup_observability(
                 MagicMock(), {"user_id_mode": "hash", "langsmith": {"enabled": True}}
             )
-        assert ls.call_args.kwargs["user_id_mode"] == "hash"
+        assert tracing.call_args.kwargs["user_id_mode"] == "hash"
 
     def test_passes_through_both(self):
         with (
