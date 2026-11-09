@@ -4,7 +4,7 @@ This package exposes publishers that handle event delivery to various outputs,
 such as console, Redis, Kafka, and RabbitMQ.
 """
 
-from .base_publisher import BasePublisher
+from .base_publisher import BasePublisher, PublisherKind
 from .composite_publisher import CompositePublisher
 from .console_publisher import ConsolePublisher
 from .events import ContentType, Event, EventModel, EventType
@@ -39,6 +39,7 @@ __all__ = [
     "ObservabilityLevel",
     "OtelPublisher",
     "PhoenixPublisher",
+    "PublisherKind",
     "RabbitMQPublisher",
     "RedisPublisher",
     "publish_event",

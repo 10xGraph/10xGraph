@@ -186,6 +186,8 @@ class OtelPublisher(BasePublisher):
         compiled = graph.compile(...)
     """
 
+    kind = "observability"
+
     def __init__(
         self,
         tracer: Tracer | None = None,
