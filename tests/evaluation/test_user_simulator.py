@@ -400,3 +400,36 @@ async def test_agent_sees_each_user_message_once(checkpointer):
         ["m1", "next user message"],
         ["m1", "next user message", "next user message"],
     ]
+
+
+def _config_capture_graph(seen: list):
+    graph = MagicMock(spec=CompiledGraph)
+
+    async def ainvoke(input_data, config=None):
+        seen.append(config)
+        return {"messages": [Message.text_message("ok", role="assistant")]}
+
+    graph.ainvoke = ainvoke
+    return graph
+
+
+@pytest.mark.asyncio
+async def test_scenario_config_reaches_graph_and_explicit_config_wins():
+    user = {"user_id": "u1", "org_id": "acme", "roles": ["agent"]}
+    scenario = ConversationScenario(
+        scenario_id="cfg", starting_prompt="hi", goals=[], max_turns=1,
+        config={"user": user, "tag": "scenario"},
+    )
+    sim = UserSimulator()
+
+    seen: list = []
+    await sim.run(_config_capture_graph(seen), scenario)
+    assert seen[0]["user"] == user
+    assert seen[0]["thread_id"].startswith("cfg-")
+
+    seen = []
+    await sim.run(_config_capture_graph(seen), scenario, {"tag": "explicit", "thread_id": "t9"})
+    assert seen[0]["user"] == user
+    assert seen[0]["tag"] == "explicit"
+    assert seen[0]["thread_id"] == "t9"
+    assert scenario.config["tag"] == "scenario"

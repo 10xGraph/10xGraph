@@ -90,6 +90,9 @@ class ConversationScenario(BaseModel):
         conversation_plan: High-level plan of conversation flow.
         goals: List of goals to achieve during conversation.
         max_turns: Maximum number of conversation turns.
+        config: Run config for the simulated conversation, e.g.
+            ``{"user": {"user_id": "u1", "org_id": "acme", "roles": ["agent"]}}`` so tools
+            that read ``config["user"]`` work. An explicit ``config`` passed to ``run`` wins.
     """
 
     scenario_id: str = ""
@@ -98,6 +101,7 @@ class ConversationScenario(BaseModel):
     conversation_plan: str = ""
     goals: list[str] = Field(default_factory=list)
     max_turns: int = 10
+    config: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -254,7 +258,7 @@ class UserSimulator:
 
         # Each simulation gets its own thread_id so checkpointer state
         # doesn't bleed between concurrent or sequential runs.
-        run_config = dict(config or {})
+        run_config = {**scenario.config, **(config or {})}
         run_config.setdefault("thread_id", f"{scenario.scenario_id}-{uuid.uuid4().hex[:8]}")
 
         try:

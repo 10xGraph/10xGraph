@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet, ToolCall
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, EvalSet, SessionInput, ToolCall
 
 
 class EvalSetBuilder:
@@ -36,6 +36,7 @@ class EvalSetBuilder:
         expected_node_order: list[str] | None = None,
         name: str = "",
         description: str = "",
+        session_input: SessionInput | None = None,
     ) -> EvalSetBuilder:
         """Add a single-turn test case.
 
@@ -47,6 +48,7 @@ class EvalSetBuilder:
             expected_node_order: Expected node execution order.
             name: Human-readable name for the case.
             description: Description of the test case.
+            session_input: Initial session (user_id, state, run config) for the case.
 
         Returns:
             Self for method chaining.
@@ -63,6 +65,8 @@ class EvalSetBuilder:
             name=name,
             description=description,
         )
+        if session_input is not None:
+            case.session_input = session_input
         self.cases.append(case)
         return self
 
@@ -73,6 +77,7 @@ class EvalSetBuilder:
         expected_tools: list[str | ToolCall] | None = None,
         name: str = "",
         description: str = "",
+        session_input: SessionInput | None = None,
     ) -> EvalSetBuilder:
         """Add a multi-turn conversation case.
 
@@ -82,6 +87,7 @@ class EvalSetBuilder:
             expected_tools: Expected tool calls across the conversation.
             name: Human-readable name for the case.
             description: Description of the test case.
+            session_input: Initial session (user_id, state, run config) for the case.
 
         Returns:
             Self for method chaining.
@@ -96,6 +102,8 @@ class EvalSetBuilder:
             name=name,
             description=description,
         )
+        if session_input is not None:
+            case.session_input = session_input
         self.cases.append(case)
         return self
 
@@ -106,6 +114,7 @@ class EvalSetBuilder:
         tool_args: dict[str, Any] | None = None,
         expected_response: str | None = None,
         case_id: str | None = None,
+        session_input: SessionInput | None = None,
     ) -> EvalSetBuilder:
         """Add a test case focused on a single tool call.
 
@@ -115,6 +124,7 @@ class EvalSetBuilder:
             tool_args: Expected tool arguments.
             expected_response: Expected final response (optional).
             case_id: Optional case ID.
+            session_input: Initial session (user_id, state, run config) for the case.
 
         Returns:
             Self for method chaining.
@@ -128,6 +138,8 @@ class EvalSetBuilder:
             expected_response=expected_response or f"Result from {tool_name}",
             expected_tools=[tool_call],
         )
+        if session_input is not None:
+            case.session_input = session_input
         self.cases.append(case)
         return self
 
