@@ -37,3 +37,25 @@ def test_google_client_honours_explicit_timeout(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     client = client_factory.create_llm_client("google", timeout=12)
     assert client._api_client._http_options.timeout == 12000
+
+
+def test_google_client_pins_v1beta(monkeypatch):
+    """google-genai 3.x defaults to "v1", which rejects function calling."""
+    pytest.importorskip("google.genai")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.delenv("GOOGLE_GENAI_API_VERSION", raising=False)
+    client = client_factory.create_llm_client("google")
+    assert client._api_client._http_options.api_version == "v1beta"
+
+
+def test_google_client_keeps_env_api_version(monkeypatch):
+    pytest.importorskip("google.genai")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1alpha")
+    from google import genai
+
+    seen = {}
+    monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw))
+    client_factory.create_llm_client("google")
+    # Left to the SDK, which reads the env variable (3.x).
+    assert seen["http_options"].api_version is None

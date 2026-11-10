@@ -1,6 +1,6 @@
-"""Logfire and LangSmith observability helpers for Agentflow.
+"""Logfire, LangSmith, Phoenix and generic OTLP observability helpers for 10xGraph.
 
-Both backends are OpenTelemetry-native, so neither needs a bespoke publisher.
+All backends are OpenTelemetry-native, so none needs a bespoke publisher.
 They attach as span processors to the TracerProvider that OtelPublisher already
 feeds, then `setup_tracing` is called as normal.
 
@@ -14,112 +14,54 @@ Usage:
     from tenxgraph.runtime.publisher import setup_langsmith
     setup_langsmith(graph, project="my-project")
 
-    # Both at once (shares one TracerProvider)
+    # Arize Phoenix only (local Phoenix needs no API key)
+    from tenxgraph.runtime.publisher import setup_phoenix
+    setup_phoenix(graph, project="my-project")
+
+    # Any OTLP HTTP endpoint (collector, Grafana Tempo, Jaeger, ...)
+    # Auth headers come from OTEL_EXPORTER_OTLP_HEADERS.
+    from tenxgraph.runtime.publisher import setup_otlp
+    setup_otlp(graph, endpoint="http://collector:4318")
+
+    # Any mix at once (shares one TracerProvider)
     from tenxgraph.runtime.publisher import setup_observability
     setup_observability(graph, {
         "logfire":   {"enabled": True, "service_name": "my-agent"},
         "langsmith": {"enabled": True, "project": "my-project"},
+        "phoenix":   {"enabled": True, "project": "my-project"},
+        "otlp":      {"enabled": True, "endpoint": "http://collector:4318"},
     })
 
 Requires extras:
   pip install '10xgraph[logfire]'       # Logfire
   pip install '10xgraph[langsmith]'     # LangSmith
-  pip install '10xgraph[observability]' # both
+  pip install '10xgraph[phoenix]'       # Phoenix
+  pip install '10xgraph[otlp]'          # generic OTLP HTTP
+  pip install '10xgraph[observability]' # all of them
 """
 
 from __future__ import annotations
 
-import os
+import logging
 from typing import TYPE_CHECKING, Any
 
+from ._backends import (
+    _build_langsmith_processor,
+    _build_otlp_processor,
+    _build_phoenix_processor,
+    _guard_logfire,
+    _logfire_accepts_resource_attributes,
+    _new_tracer_provider,
+    _phoenix_project,
+)
 from .identity import UserIdMode, validate_user_id_mode
 from .otel_publisher import ObservabilityLevel, setup_tracing
 
 
+logger = logging.getLogger("tenxgraph.runtime.publisher.exporters")
+
 if TYPE_CHECKING:
     from tenxgraph.core.graph.state_graph import StateGraph
-
-
-# ── Guard helpers ─────────────────────────────────────────────────────────────
-
-
-def _guard_logfire() -> None:
-    try:
-        import logfire  # noqa: F401
-    except ImportError as exc:
-        raise ImportError(
-            "Logfire is required for logfire tracing. "
-            "Install with: pip install '10xgraph[logfire]'"
-        ) from exc
-
-
-def _guard_otlp_http() -> None:
-    try:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,  # noqa: F401
-        )
-    except ImportError as exc:
-        raise ImportError(
-            "opentelemetry-exporter-otlp-proto-http is required for LangSmith tracing. "
-            "Install with: pip install '10xgraph[langsmith]'"
-        ) from exc
-
-
-def _guard_otel_sdk() -> None:
-    try:
-        from opentelemetry.sdk.trace import TracerProvider  # noqa: F401
-    except ImportError as exc:
-        raise ImportError(
-            "opentelemetry-sdk is required for observability. "
-            "Install with: pip install '10xgraph[otel]'"
-        ) from exc
-
-
-def _build_langsmith_processor(
-    *,
-    api_key: str | None = None,
-    project: str | None = None,
-    endpoint: str = "https://api.smith.langchain.com/otel",
-) -> Any:
-    """Build a ``BatchSpanProcessor`` exporting to LangSmith's OTLP endpoint.
-
-    Resolves the API key from ``LANGSMITH_API_KEY`` when ``api_key`` is not
-    passed, sets the ``x-api-key`` and (optionally) ``Langsmith-Project``
-    headers, and appends ``/v1/traces`` to ``endpoint``.
-
-    Args:
-        api_key: LangSmith API key. Falls back to ``LANGSMITH_API_KEY``.
-        project: LangSmith project name, sent as the ``Langsmith-Project`` header.
-        endpoint: Base OTEL endpoint URL. ``/v1/traces`` is appended automatically.
-
-    Returns:
-        A ``BatchSpanProcessor`` wrapping the LangSmith OTLP HTTP exporter.
-
-    Raises:
-        ImportError: If ``opentelemetry-sdk`` or the OTLP HTTP exporter are missing.
-        ValueError: If no API key is available.
-    """
-    _guard_otel_sdk()
-    _guard_otlp_http()
-
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-    resolved_key = api_key or os.environ.get("LANGSMITH_API_KEY")
-    if not resolved_key:
-        raise ValueError(
-            "A LangSmith API key is required. Pass api_key= or set the "
-            "LANGSMITH_API_KEY environment variable."
-        )
-
-    headers: dict[str, str] = {"x-api-key": resolved_key}
-    if project:
-        headers["Langsmith-Project"] = project
-
-    # The LangSmith OTLP endpoint expects /v1/traces
-    traces_endpoint = endpoint.rstrip("/") + "/v1/traces"
-    exporter = OTLPSpanExporter(endpoint=traces_endpoint, headers=headers)
-    return BatchSpanProcessor(exporter)
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
@@ -244,11 +186,120 @@ def setup_langsmith(
         setup_tracing(graph, level=level, user_id_mode=user_id_mode)
 
 
-def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> None:
+def setup_phoenix(
+    graph: StateGraph | None = None,
+    *,
+    api_key: str | None = None,
+    project: str | None = None,
+    endpoint: str | None = None,
+    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    tracer_provider: Any = None,
+    user_id_mode: UserIdMode = "raw",
+) -> None:
+    """Attach an Arize Phoenix OTLP HTTP exporter and instrument the graph.
+
+    Builds an ``OTLPSpanExporter`` pointing at Phoenix's ``/v1/traces`` endpoint,
+    wraps it in a ``BatchSpanProcessor``, and attaches it to either the supplied
+    ``tracer_provider`` or a fresh ``TracerProvider`` set as the global provider.
+    Then calls ``setup_tracing`` so ``OtelPublisher`` feeds into it.
+
+    Must be called **before** ``graph.compile()``.
+
+    Args:
+        graph: The StateGraph to instrument.
+        api_key: Phoenix API key. Falls back to ``PHOENIX_API_KEY``. Optional:
+            local Phoenix needs none.
+        project: Phoenix project name. Falls back to ``PHOENIX_PROJECT``, then
+            ``PHOENIX_PROJECT_NAME``. Phoenix reads it from the
+            ``openinference.project.name`` resource attribute, so it is applied
+            only when a fresh ``TracerProvider`` is created here. A supplied
+            ``tracer_provider`` has a fixed resource: set
+            ``OTEL_RESOURCE_ATTRIBUTES=openinference.project.name=<name>`` before
+            it is created instead.
+        endpoint: Phoenix base URL. Falls back to ``PHOENIX_COLLECTOR_ENDPOINT``,
+            then ``http://localhost:6006``. ``/v1/traces`` is appended unless
+            present. Phoenix Cloud looks like
+            ``https://app.phoenix.arize.com/s/<space>``.
+        level: Observability level — SPANS, STANDARD (default), or FULL.
+        tracer_provider: An existing ``TracerProvider`` to attach the processor
+            to.  When ``None`` a new one is created and set as the global
+            provider.
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
+
+    Raises:
+        ImportError: If ``opentelemetry-exporter-otlp-proto-http`` or
+            ``opentelemetry-sdk`` are not installed.
+    """
+    processor = _build_phoenix_processor(api_key=api_key, endpoint=endpoint)
+
+    from opentelemetry import trace
+
+    if tracer_provider is None:
+        provider = _new_tracer_provider(_phoenix_project(project))
+        provider.add_span_processor(processor)
+        trace.set_tracer_provider(provider)
+    else:
+        tracer_provider.add_span_processor(processor)
+
+    # graph is None when only provider configuration is wanted (e.g. the API
+    # bootstrap binds the publisher into the DI container itself).
+    if graph is not None:
+        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+
+
+def setup_otlp(
+    graph: StateGraph | None = None,
+    *,
+    endpoint: str | None = None,
+    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    tracer_provider: Any = None,
+    user_id_mode: UserIdMode = "raw",
+) -> None:
+    """Attach a generic OTLP HTTP exporter (collector, Tempo, Jaeger, ...) and instrument the graph.
+
+    Auth headers are not an argument: set ``OTEL_EXPORTER_OTLP_HEADERS`` (or
+    ``OTEL_EXPORTER_OTLP_TRACES_HEADERS``). Must be called **before** ``graph.compile()``.
+
+    Args:
+        graph: The StateGraph to instrument.
+        endpoint: OTLP HTTP base URL; ``/v1/traces`` is appended unless present. When
+            omitted, ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` must be set
+            (``OTEL_EXPORTER_OTLP_ENDPOINT`` is not used).
+        level: Observability level — SPANS, STANDARD (default), or FULL.
+        tracer_provider: An existing ``TracerProvider`` to attach the processor to.
+            When ``None`` a new one is created and set as the global provider.
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``.
+
+    Raises:
+        ImportError: If the OTLP HTTP exporter or ``opentelemetry-sdk`` is missing.
+        ValueError: If no endpoint is passed and the traces env var is unset.
+    """
+    processor = _build_otlp_processor(endpoint=endpoint)
+
+    from opentelemetry import trace
+
+    if tracer_provider is None:
+        provider = _new_tracer_provider()
+        provider.add_span_processor(processor)
+        trace.set_tracer_provider(provider)
+    else:
+        tracer_provider.add_span_processor(processor)
+
+    # graph is None when only provider configuration is wanted (e.g. the API
+    # bootstrap binds the publisher into the DI container itself).
+    if graph is not None:
+        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+
+
+def setup_observability(  # noqa: PLR0912
+    graph: StateGraph | None, config: dict[str, Any]
+) -> None:
     """Unified observability entry point for declarative ``10xgraph.json`` config.
 
-    Reads the ``observability`` block and enables Logfire and/or LangSmith,
-    ensuring they share one ``TracerProvider`` when both are active.
+    Reads the ``observability`` block and enables Logfire, LangSmith, Phoenix
+    and/or a generic OTLP endpoint, ensuring they share one ``TracerProvider`` when more than one is
+    active.
 
     Pass ``graph=None`` to configure the providers/exporters only, without
     binding an ``OtelPublisher`` onto a graph. The API bootstrap uses this mode
@@ -267,14 +318,27 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
                 "console": False,
             },
             "langsmith": {"enabled": True, "project": "my-project", "endpoint": null},
+            "phoenix": {"enabled": True, "project": "my-project", "endpoint": null},
+            "otlp": {"enabled": True, "endpoint": "http://collector:4318"},
         }
+
+    Other keys in a backend block are ignored. For ``otlp``, a null ``endpoint``
+    needs ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT``; headers come from
+    ``OTEL_EXPORTER_OTLP_HEADERS``.
 
     ``user_id_mode`` (``"raw"`` default, ``"hash"``, ``"mask"``) controls how
     ``user_id`` appears on spans; see ``tenxgraph.runtime.publisher.identity``.
     ``"hash"`` uses HMAC-SHA256 when ``TENXGRAPH_TRACE_USER_ID_KEY`` is set.
 
-    Secrets (``LOGFIRE_TOKEN``, ``LANGSMITH_API_KEY``) must be in environment
-    variables — never in the config dict.
+    With Logfire plus Phoenix, the Phoenix project is forwarded to
+    ``logfire.configure(resource_attributes=...)`` as
+    ``openinference.project.name`` when the installed logfire supports it
+    (logfire>=5). Otherwise a warning is logged, spans go to Phoenix's default
+    project, and ``OTEL_RESOURCE_ATTRIBUTES=openinference.project.name=<name>``
+    is the fallback.
+
+    Secrets (``LOGFIRE_TOKEN``, ``LANGSMITH_API_KEY``, ``PHOENIX_API_KEY``) must
+    be in environment variables — never in the config dict.
 
     Args:
         graph: The StateGraph to instrument.
@@ -282,7 +346,7 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
 
     Raises:
         ImportError: If a requested backend's package is not installed.
-        ValueError: If LangSmith is enabled but no API key is available, or
+        ValueError: If LangSmith has no API key, OTLP has no endpoint, or
             ``user_id_mode`` is not one of ``raw``, ``hash``, ``mask``.
     """
     user_id_mode = validate_user_id_mode(config.get("user_id_mode") or "raw")
@@ -294,51 +358,63 @@ def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> Non
 
     logfire_cfg: dict[str, Any] = config.get("logfire") or {}
     langsmith_cfg: dict[str, Any] = config.get("langsmith") or {}
+    phoenix_cfg: dict[str, Any] = config.get("phoenix") or {}
+    otlp_cfg: dict[str, Any] = config.get("otlp") or {}
 
     logfire_on = bool(logfire_cfg.get("enabled", False))
     langsmith_on = bool(langsmith_cfg.get("enabled", False))
+    phoenix_on = bool(phoenix_cfg.get("enabled", False))
+    otlp_on = bool(otlp_cfg.get("enabled", False))
 
-    if not logfire_on and not langsmith_on:
+    if not (logfire_on or langsmith_on or phoenix_on or otlp_on):
         return
 
-    if logfire_on and langsmith_on:
-        # Both enabled: build the LangSmith processor first, pass it to logfire
-        # so they share the single TracerProvider that logfire installs.
-        _guard_logfire()
-
-        ls_endpoint = langsmith_cfg.get("endpoint") or "https://api.smith.langchain.com/otel"
-        ls_processor = _build_langsmith_processor(
-            project=langsmith_cfg.get("project"),
-            endpoint=ls_endpoint,
-        )
-
-        setup_logfire(
-            graph,
-            service_name=logfire_cfg.get("service_name"),
-            send_to_logfire=bool(logfire_cfg.get("send_to_logfire", True)),
-            console=logfire_cfg.get("console"),
-            level=level,
-            additional_span_processors=[ls_processor],
-            user_id_mode=user_id_mode,
-        )
-        return
+    ls_endpoint = langsmith_cfg.get("endpoint") or "https://api.smith.langchain.com/otel"
+    logfire_kwargs: dict[str, Any] = {
+        "service_name": logfire_cfg.get("service_name"),
+        "send_to_logfire": bool(logfire_cfg.get("send_to_logfire", True)),
+        "console": logfire_cfg.get("console"),
+    }
 
     if logfire_on:
-        setup_logfire(
-            graph,
-            service_name=logfire_cfg.get("service_name"),
-            send_to_logfire=bool(logfire_cfg.get("send_to_logfire", True)),
-            console=logfire_cfg.get("console"),
-            level=level,
-            user_id_mode=user_id_mode,
+        _guard_logfire()
+
+    processors: list[Any] = []
+    phoenix_project: str | None = None
+    if langsmith_on:
+        processors.append(
+            _build_langsmith_processor(project=langsmith_cfg.get("project"), endpoint=ls_endpoint)
         )
+    if phoenix_on:
+        processors.append(_build_phoenix_processor(endpoint=phoenix_cfg.get("endpoint")))
+        phoenix_project = _phoenix_project(phoenix_cfg.get("project"))
+    if otlp_on:
+        processors.append(_build_otlp_processor(endpoint=otlp_cfg.get("endpoint") or None))
+
+    if logfire_on:
+        # Logfire installs the single TracerProvider and attaches the processors.
+        extra: dict[str, Any] = {}
+        if processors:
+            extra["additional_span_processors"] = processors
+        if phoenix_project:
+            if _logfire_accepts_resource_attributes():
+                extra["resource_attributes"] = {"openinference.project.name": phoenix_project}
+            else:
+                logger.warning(
+                    "Phoenix project %r is ignored: logfire.configure() has no "
+                    "resource_attributes before logfire 5.0. Upgrade logfire to >=5 or set "
+                    "OTEL_RESOURCE_ATTRIBUTES=openinference.project.name=<name>. Spans go to "
+                    "Phoenix's default project.",
+                    phoenix_project,
+                )
+        setup_logfire(graph, level=level, user_id_mode=user_id_mode, **logfire_kwargs, **extra)
         return
 
-    # LangSmith only
-    setup_langsmith(
-        graph,
-        project=langsmith_cfg.get("project"),
-        endpoint=langsmith_cfg.get("endpoint") or "https://api.smith.langchain.com/otel",
-        level=level,
-        user_id_mode=user_id_mode,
-    )
+    from opentelemetry import trace
+
+    provider = _new_tracer_provider(phoenix_project)
+    for processor in processors:
+        provider.add_span_processor(processor)
+    trace.set_tracer_provider(provider)
+    if graph is not None:
+        setup_tracing(graph, level=level, user_id_mode=user_id_mode)

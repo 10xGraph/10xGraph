@@ -42,6 +42,7 @@ from tenxgraph.core.graph.agent_internal.execution import (
     _extract_response_id,
     _extract_response_model,
     _extract_response_text,
+    _extract_tool_calls,
 )
 
 
@@ -1991,6 +1992,97 @@ class TestExecute:
         assert sent.event_type == EventType.ERROR
         assert sent.data["error"] == "RuntimeError"
 
+    async def _run_execute_for_metrics(self, *, stream, response):
+        agent = _make_openai_agent()
+        state = AgentState()
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=response)
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value=None)
+        base = "tenxgraph.core.graph.agent_internal.execution"
+        with patch(f"{base}.convert_messages", return_value=[]), \
+             patch(f"{base}.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch(f"{base}.ModelResponseConverter") as mock_converter, \
+             patch(f"{base}.metrics") as mock_metrics:
+            await agent.execute(state, {"_node_name": "AGENT", "is_stream": stream})
+            hook = mock_converter.return_value.on_stream_end
+            return agent, mock_metrics, hook
+
+    async def test_llm_metrics_recorded_on_non_stream_success(self):
+        response = SimpleNamespace(
+            id="r1", model="gpt-4o", text="ok",
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=5),
+        )
+        agent, m, _ = await self._run_execute_for_metrics(stream=False, response=response)
+        observe = m.timer.return_value.metric.observe
+        assert m.timer.call_args.args == ("tenxgraph.llm.duration",)
+        attrs = observe.call_args.args[1]
+        assert attrs["status"] == "success"
+        assert attrs["model"] == str(agent.model)
+        assert observe.call_args.args[0] >= 0
+        token_calls = {c.args[1]["type"]: c.args[0] for c in m.counter.return_value.inc.call_args_list}
+        assert token_calls == {"input": 12, "output": 5}
+        m.counter.assert_called_with("tenxgraph.llm.tokens")
+
+    async def test_llm_metrics_error_status(self):
+        agent = _make_openai_agent()
+        state = AgentState()
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(side_effect=RuntimeError("boom"))
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value=None)
+        base = "tenxgraph.core.graph.agent_internal.execution"
+        with patch(f"{base}.convert_messages", return_value=[]), \
+             patch(f"{base}.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch(f"{base}.metrics") as m:
+            with pytest.raises(RuntimeError):
+                await agent.execute(state, {"_node_name": "AGENT", "is_stream": False})
+        assert m.timer.return_value.metric.observe.call_args.args[1]["status"] == "error"
+        m.counter.assert_not_called()
+
+    async def test_llm_metrics_recorded_when_stream_ends(self):
+        _, m, hook = await self._run_execute_for_metrics(stream=True, response=MagicMock())
+        m.timer.assert_not_called()
+        final = SimpleNamespace(
+            usages=SimpleNamespace(prompt_tokens=9, completion_tokens=0), metadata={}
+        )
+        with patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.metrics", m):
+            hook(final, None)
+        assert m.timer.return_value.metric.observe.call_args.args[1]["status"] == "success"
+        # zero output tokens are not recorded
+        assert [c.args[1]["type"] for c in m.counter.return_value.inc.call_args_list] == ["input"]
+
+    async def test_llm_metrics_failure_does_not_break_call(self):
+        response = SimpleNamespace(
+            id="r1", model="gpt-4o", text="ok",
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+        agent = _make_openai_agent()
+        state = AgentState()
+        agent._trim_context = AsyncMock(return_value=state)
+        agent._resolve_media_in_messages = AsyncMock(side_effect=lambda msgs: msgs)
+        agent._resolve_tools = AsyncMock(return_value=[])
+        agent._call_llm_with_retry = AsyncMock(return_value=response)
+        agent._build_skill_prompts = MagicMock(return_value=[])
+        agent._build_memory_block = AsyncMock(return_value=None)
+        base = "tenxgraph.core.graph.agent_internal.execution"
+        with patch(f"{base}.convert_messages", return_value=[]), \
+             patch(f"{base}.strip_media_blocks", side_effect=lambda msgs: msgs), \
+             patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch(f"{base}.ModelResponseConverter"), \
+             patch(f"{base}.metrics") as m:
+            m.timer.side_effect = RuntimeError("meter down")
+            m.counter.side_effect = RuntimeError("meter down")
+            result = await agent.execute(state, {"_node_name": "AGENT", "is_stream": False})
+        assert result is not None
+
     async def test_execute_with_multimodal_config_skips_strip(self):
         agent = _make_openai_agent(multimodal_config=MagicMock())
         state = AgentState()
@@ -2680,3 +2772,63 @@ class TestLlmSpanClosed:
         seen = await self._run(stream=True, response=MagicMock())
         # The END comes from the converter's on_stream_end hook, once the stream was read.
         assert [t for t, _ in seen] == ["start"]
+
+
+class TestProviderOutputExtraction:
+    def test_anthropic_text_and_tool_use(self):
+        types = pytest.importorskip("anthropic.types")
+        resp = types.Message(
+            id="m",
+            model="claude",
+            role="assistant",
+            type="message",
+            content=[
+                types.TextBlock(type="text", text="Hello "),
+                types.ToolUseBlock(
+                    type="tool_use", id="tu_1", name="get_w", input={"city": "Paris"}
+                ),
+            ],
+            stop_reason="tool_use",
+            usage=types.Usage(input_tokens=1, output_tokens=1),
+        )
+        assert _extract_response_text(resp) == "Hello"
+        assert _extract_tool_calls(resp) == [
+            {"id": "tu_1", "name": "get_w", "arguments": '{"city": "Paris"}'}
+        ]
+
+    def test_responses_function_call(self):
+        rt = pytest.importorskip("openai.types.responses")
+        resp = SimpleNamespace(
+            output=[
+                rt.ResponseFunctionToolCall(
+                    type="function_call", call_id="c1", name="f", arguments='{"a": 1}'
+                )
+            ]
+        )
+        assert _extract_tool_calls(resp) == [{"id": "c1", "name": "f", "arguments": '{"a": 1}'}]
+
+    def test_google_function_call(self):
+        gt = pytest.importorskip("google.genai.types")
+        part = gt.Part(function_call=gt.FunctionCall(name="f", args={"x": 2}))
+        resp = gt.GenerateContentResponse(
+            candidates=[gt.Candidate(content=gt.Content(role="model", parts=[part]))]
+        )
+        assert _extract_tool_calls(resp) == [{"id": "", "name": "f", "arguments": '{"x": 2}'}]
+        assert _extract_response_text(resp) == ""
+
+    def test_stream_hook_sets_output(self):
+        from tenxgraph.core.graph.agent_internal.execution import _make_stream_end_hook
+        from tenxgraph.core.state import Message
+        from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock
+        from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+
+        final = Message(
+            role="assistant",
+            content=[TextBlock(text="hi"), ToolCallBlock(id="t1", name="f", args={"k": "v"})],
+        )
+        ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
+        with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
+            _make_stream_end_hook(ev)(final, None)
+        data = pub.call_args.args[0].data
+        assert data["output_response"] == "hi"
+        assert data["output_tool_calls"] == [{"id": "t1", "name": "f", "arguments": '{"k": "v"}'}]

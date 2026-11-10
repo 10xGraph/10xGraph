@@ -439,11 +439,16 @@ class ToolNode(
         event.node_name = name
         # Attach structured tool call block
         event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
-        publish_event(event)
-        # Check this is available in remote tools
-        if self._is_remote_call(name, config):
+        # Set the routing metadata before the single START publish, so listeners see it.
+        is_remote = self._is_remote_call(name, config)
+        if is_remote:
             event.metadata["is_remote"] = True
-            publish_event(event)
+        elif name in self.mcp_tools:
+            event.metadata["is_mcp"] = True
+        elif name in self._funcs:
+            event.metadata["is_mcp"] = False
+        publish_event(event)
+        if is_remote:
             # This tool in remote tools, so we can not execute it locally
             # so we will return a message
             # And the graph will be interrupted here
@@ -456,8 +461,6 @@ class ToolNode(
             )
 
         if name in self.mcp_tools:
-            event.metadata["is_mcp"] = True
-            publish_event(event)
             res = await self._mcp_execute(
                 name,
                 args,
@@ -479,8 +482,6 @@ class ToolNode(
             return res
 
         if name in self._funcs:
-            event.metadata["is_mcp"] = False
-            publish_event(event)
             res = await self._internal_execute(
                 name,
                 args,
@@ -606,6 +607,7 @@ class ToolNode(
 
         if name in self.mcp_tools:
             event.metadata["function_type"] = "mcp"
+            event.metadata["is_mcp"] = True
             publish_event(event)
             message = await self._mcp_execute(
                 name,
@@ -626,6 +628,7 @@ class ToolNode(
 
         if name in self._funcs:
             event.metadata["function_type"] = "internal"
+            event.metadata["is_mcp"] = False
             publish_event(event)
 
             result = await self._internal_execute(

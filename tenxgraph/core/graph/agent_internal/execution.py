@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import contextvars
 import copy
+import json
 import logging
 import random
 import re
@@ -27,6 +28,7 @@ from tenxgraph.core.llm.stream_idle import (
 from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.utils import metrics
 from tenxgraph.utils.converter import (
     convert_messages,
     inject_request_blocks,
@@ -193,7 +195,25 @@ def _make_empty_reply_error(node_name: str, model: str) -> Any:
     return build
 
 
-def _make_stream_end_hook(llm_event: Any) -> Any:
+def _record_llm_metrics(llm_event: Any, started: float | None, status: str) -> None:
+    """Record LLM duration and token metrics from a finished LLM event; never raises."""
+    try:
+        data = llm_event.data
+        attrs = {"provider": str(data.get("provider") or ""), "model": str(data.get("model") or "")}
+        if started is not None:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            metrics.timer("tenxgraph.llm.duration").metric.observe(
+                elapsed_ms, {**attrs, "status": status}
+            )
+        for kind, key in (("input", "input_tokens"), ("output", "output_tokens")):
+            tokens = data.get(key) or 0
+            if tokens > 0:
+                metrics.counter("tenxgraph.llm.tokens").inc(tokens, {**attrs, "type": kind})
+    except Exception:
+        logger.debug("LLM metric not recorded", exc_info=True)
+
+
+def _make_stream_end_hook(llm_event: Any, started: float | None = None) -> Any:
     """Build the callback that ends a streaming LLM span with the stream's token usage."""
 
     def hook(final: Any, error: BaseException | None) -> None:
@@ -215,12 +235,26 @@ def _make_stream_end_hook(llm_event: Any) -> Any:
                 getattr(usages, "cache_creation_input_tokens", 0) or 0
             )
             llm_event.data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
+        if error is None and callable(getattr(final, "text", None)):
+            llm_event.data["output_response"] = final.text().strip()
+            llm_event.data["output_tool_calls"] = [
+                {
+                    "id": str(b.id),
+                    "name": str(b.name),
+                    "arguments": b.args
+                    if isinstance(b.args, str)
+                    else json.dumps(b.args, default=str),
+                }
+                for b in final.content or []
+                if getattr(b, "type", None) == "tool_call"
+            ]
         meta = getattr(final, "metadata", None) or {}
         if meta.get("finish_reason"):
             llm_event.data["finish_reason"] = str(meta["finish_reason"])
         if meta.get("model"):
             llm_event.data["response_model"] = str(meta["model"])
         publish_event(llm_event)
+        _record_llm_metrics(llm_event, started, "error" if error is not None else "success")
 
     return hook
 
@@ -343,17 +377,97 @@ def _extract_response_model(response: Any) -> str:
     return str(v) if v else ""
 
 
+def _typed_blocks(response: Any) -> list[Any]:
+    """Anthropic-style ``response.content`` blocks (a list of objects carrying ``.type``)."""
+    content = getattr(response, "content", None)
+    if isinstance(content, list) and all(hasattr(b, "type") for b in content):
+        return content
+    return []
+
+
+def _google_parts(response: Any) -> list[Any]:
+    """First Google genai candidate parts, read directly (``response.text`` warns on tool calls)."""
+    candidates = getattr(response, "candidates", None)
+    if not isinstance(candidates, list) or not candidates:
+        return []
+    parts = getattr(getattr(candidates[0], "content", None), "parts", None)
+    return list(parts) if isinstance(parts, list) else []
+
+
 def _extract_response_text(response: Any) -> str:
+    parts = _google_parts(response)
+    if parts:
+        texts = [
+            p.text
+            for p in parts
+            if isinstance(getattr(p, "text", None), str) and not getattr(p, "thought", None)
+        ]
+        return "".join(texts).strip()
     text = getattr(response, "text", None)
     if text:
         return str(text).strip()
     output_text = getattr(response, "output_text", None)
     if output_text:
         return str(output_text).strip()
+    blocks = _typed_blocks(response)
+    if blocks:
+        return "".join(
+            str(getattr(b, "text", "") or "") for b in blocks if b.type == "text"
+        ).strip()
     choices = getattr(response, "choices", None)
     if choices:
         return str(getattr(getattr(choices[0], "message", None), "content", "") or "").strip()
     return ""
+
+
+def _extract_tool_calls(response: Any) -> list[dict[str, str]]:
+    """Tool calls as ``{"id", "name", "arguments"}`` dicts (arguments is a JSON string).
+
+    Handles OpenAI chat, OpenAI Responses, Anthropic and Google genai responses.
+    """
+    calls: list[dict[str, str]] = []
+    for part in _google_parts(response):
+        fc = getattr(part, "function_call", None)
+        if fc is not None:
+            calls.append(
+                {
+                    "id": str(getattr(fc, "id", None) or ""),
+                    "name": str(getattr(fc, "name", None) or ""),
+                    "arguments": json.dumps(getattr(fc, "args", None) or {}, default=str),
+                }
+            )
+    for block in _typed_blocks(response):
+        if block.type == "tool_use":
+            calls.append(
+                {
+                    "id": str(getattr(block, "id", "") or ""),
+                    "name": str(getattr(block, "name", "")),
+                    "arguments": json.dumps(getattr(block, "input", None) or {}, default=str),
+                }
+            )
+    output = getattr(response, "output", None)
+    for item in output if isinstance(output, list) else []:
+        if getattr(item, "type", None) == "function_call":
+            calls.append(
+                {
+                    "id": str(getattr(item, "call_id", "") or ""),
+                    "name": str(getattr(item, "name", "")),
+                    "arguments": str(getattr(item, "arguments", "")),
+                }
+            )
+    choices = getattr(response, "choices", None)
+    message = getattr(choices[0], "message", None) if choices else None
+    for call in getattr(message, "tool_calls", None) or []:
+        fn = getattr(call, "function", None)
+        if fn is not None:
+            calls.append(
+                {
+                    "id": str(getattr(call, "id", "") or ""),
+                    "name": str(getattr(fn, "name", "")),
+                    "arguments": str(getattr(fn, "arguments", "")),
+                }
+            )
+    return calls
 
 
 class AgentExecutionMixin:
@@ -1092,6 +1206,7 @@ class AgentExecutionMixin:
         publish_event(llm_event)
 
         converter_key_var.set(None)
+        llm_started = time.perf_counter()
         try:
             response = await self._call_llm_with_retry(
                 messages=messages,
@@ -1105,6 +1220,7 @@ class AgentExecutionMixin:
             llm_event.is_error = True
             llm_event.data["error"] = type(exc).__name__
             publish_event(llm_event)
+            _record_llm_metrics(llm_event, llm_started, "error")
             raise
 
         if not is_stream:
@@ -1112,6 +1228,7 @@ class AgentExecutionMixin:
             # (see ``on_stream_end`` below), with the usage from the last chunks.
             llm_event.event_type = EventType.END  # type: ignore[assignment]
             llm_event.data["output_response"] = _extract_response_text(response)
+            llm_event.data["output_tool_calls"] = _extract_tool_calls(response)
             llm_event.data["input_tokens"] = _extract_input_tokens(response)
             llm_event.data["output_tokens"] = _extract_output_tokens(response)
             llm_event.data["cache_read_tokens"] = _extract_cache_read_tokens(response)
@@ -1121,6 +1238,7 @@ class AgentExecutionMixin:
             llm_event.data["response_id"] = _extract_response_id(response)
             llm_event.data["response_model"] = _extract_response_model(response)
             publish_event(llm_event)
+            _record_llm_metrics(llm_event, llm_started, "success")
 
         # The converter must match the attempt that answered, which is not the primary
         # when a fallback on another provider took over.
@@ -1145,7 +1263,7 @@ class AgentExecutionMixin:
         converter.on_empty_reply = _make_empty_reply_logger(node_name, str(self.model))
         converter.empty_reply_error = _make_empty_reply_error(node_name, str(self.model))
         if is_stream:
-            converter.on_stream_end = _make_stream_end_hook(llm_event)
+            converter.on_stream_end = _make_stream_end_hook(llm_event, llm_started)
         if self.tools_tags:
             # Record which tools the model was shown, so dispatch can refuse a call to
             # a tool the tags hid from it.

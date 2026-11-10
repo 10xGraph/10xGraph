@@ -1,7 +1,7 @@
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.otel_publisher import (
@@ -50,7 +50,7 @@ class _Tracer:
 
 def _install_fake_otel():
     trace_mod = types.ModuleType("opentelemetry.trace")
-    trace_mod.StatusCode = SimpleNamespace(ERROR="ERROR")
+    trace_mod.StatusCode = SimpleNamespace(ERROR="ERROR", OK="OK")
     trace_mod.set_span_in_context = lambda span: {"span": span}
     tracer = _Tracer()
     trace_mod.get_tracer = lambda name: tracer
@@ -203,10 +203,11 @@ def test_llm_handlers_and_error_paths():
 
 
 def test_setup_tracing_attaches_publisher():
-    graph = SimpleNamespace(_publisher=None)
+    graph = SimpleNamespace(_publisher=None, _container=MagicMock())
     with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
         pub = setup_tracing(graph)
     assert graph._publisher is pub
+    graph._container.bind_instance.assert_called_once()
 
 
 def test_graph_lifecycle_update_and_error_handlers():

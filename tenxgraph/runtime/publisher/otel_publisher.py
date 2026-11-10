@@ -7,8 +7,9 @@ every publish_event call.
 
 Parent-child relationships are tracked explicitly via SpanRegistry rather than
 relying on contextvars (which do not transfer across asyncio.create_task boundaries).
-Span timing is accurate because EventModel.timestamp is captured at execution time
-and passed as start_time / end_time to the OTEL SDK.
+Span timing is accurate because publish_event stamps each event with the moment it is
+published (events are reused between phases) and that time is passed as start_time /
+end_time to the OTEL SDK.
 
 Requires: pip install '10xgraph[otel]'
 """
@@ -21,7 +22,10 @@ import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from . import _genai
+from . import _openinference as oi
 from .base_publisher import BasePublisher
+from .composite_publisher import CompositePublisher
 from .events import Event, EventModel, EventType
 from .identity import UserIdMode, transform_user_id, validate_user_id_mode
 from .otel_attributes import (
@@ -30,6 +34,7 @@ from .otel_attributes import (
     GEN_AI_OPERATION,
     GEN_AI_OUTPUT_MESSAGES,
     GEN_AI_PROMPT,
+    GEN_AI_PROVIDER_NAME,
     GEN_AI_REQUEST_FREQUENCY_PENALTY,
     GEN_AI_REQUEST_MAX_TOKENS,
     GEN_AI_REQUEST_MODEL,
@@ -53,13 +58,22 @@ from .otel_attributes import (
     GRAPH_THREAD_ID,
     GRAPH_TOTAL_STEPS,
     GRAPH_USER_ID,
+    LANGSMITH_SPAN_KIND,
+    LANGSMITH_THREAD_ID,
+    LANGSMITH_TRACE_NAME,
+    LANGSMITH_USER_ID,
     LIFECYCLE,
+    LOGFIRE_MSG,
     NODE_NAME,
     NODE_STEP,
     PROVIDER_NAME_MAP,
     SESSION_ID,
+    SPAN_UNFINISHED,
     TOOL_NAME,
+    TOOL_REMOTE,
     TOOL_TYPE,
+    USAGE_INPUT_TOKENS,
+    USAGE_OUTPUT_TOKENS,
 )
 
 
@@ -91,7 +105,7 @@ def _guard() -> None:
         import opentelemetry  # noqa: F401
     except ImportError as exc:
         raise ImportError(
-            "OpenTelemetry is required for tracing. " "Install with: pip install '10xgraph[otel]'"
+            "OpenTelemetry is required for tracing. Install with: pip install '10xgraph[otel]'"
         ) from exc
 
 
@@ -143,6 +157,11 @@ class SpanRegistry:
     def pop_child(self, run_id: str, key: str) -> Span | None:
         return self._children.pop((run_id, key), None)
 
+    def pop_children(self, run_id: str) -> list[Span]:
+        """Remove and return every open child span of a run."""
+        keys = [k for k in self._children if k[0] == run_id]
+        return [self._children.pop(k) for k in keys]
+
 
 class OtelPublisher(BasePublisher):
     """Publisher backend that maps EventModel events to OTEL spans.
@@ -166,6 +185,8 @@ class OtelPublisher(BasePublisher):
         setup_tracing(graph, level=ObservabilityLevel.FULL)
         compiled = graph.compile(...)
     """
+
+    kind = "observability"
 
     def __init__(
         self,
@@ -263,6 +284,7 @@ class OtelPublisher(BasePublisher):
             span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
             span.set_attribute(GEN_AI_OPERATION, "graph")
             _set_common_attrs(span, event, self._user_id_mode)
+            _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, "graph run")
             span.set_status(StatusCode.ERROR, "validation_rejected")
             span.add_event("graph.validation_rejected", attributes=_extra_attrs(event))
             span.end(end_time=_ns(event.timestamp))
@@ -275,17 +297,28 @@ class OtelPublisher(BasePublisher):
         span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
         span.set_attribute(GEN_AI_OPERATION, "graph")
         _set_common_attrs(span, event, self._user_id_mode)
-        # Expose thread_id as session.id so Langfuse groups multi-turn conversations
-        span.set_attribute(SESSION_ID, str(event.thread_id))
+        _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, "graph run")
+        if self._level == ObservabilityLevel.FULL:
+            user_text = oi.graph_input_text(event.data)
+            if user_text:
+                _set_attrs(span, {oi.INPUT_VALUE: user_text, oi.INPUT_MIME: oi.TEXT_MIME})
         self._registry.set_graph(event.run_id, span)
 
     def _on_graph_end(self, event: EventModel) -> None:
+        from opentelemetry.trace import StatusCode
+
         span = self._registry.pop_graph(event.run_id)
         if span is None:
             return
+        self._end_unfinished(event)
         total_steps = event.data.get("total_steps") or event.metadata.get("total_steps")
         if total_steps is not None:
             span.set_attribute(GRAPH_TOTAL_STEPS, total_steps)
+        if self._level == ObservabilityLevel.FULL:
+            answer = oi.graph_output_text(event.data)
+            if answer:
+                _set_attrs(span, {oi.OUTPUT_VALUE: answer, oi.OUTPUT_MIME: oi.TEXT_MIME})
+        span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
     def _on_graph_error(self, event: EventModel) -> None:
@@ -298,10 +331,17 @@ class OtelPublisher(BasePublisher):
         span = self._registry.pop_graph(event.run_id)
         if span is None:
             return
+        self._end_unfinished(event)
         error_msg = event.data.get("error", "")
         span.set_status(StatusCode.ERROR, error_msg)
         span.add_event("graph.error", attributes={"error": error_msg})
         span.end(end_time=_ns(event.timestamp))
+
+    def _end_unfinished(self, event: EventModel) -> None:
+        """End child spans of a finished run that never got an END (interrupt, skipped END)."""
+        for child in self._registry.pop_children(event.run_id):
+            child.set_attribute(SPAN_UNFINISHED, True)
+            child.end(end_time=_ns(event.timestamp))
 
     def _on_graph_interrupted(self, event: EventModel) -> None:
         span = self._registry.get_graph(event.run_id)
@@ -357,9 +397,9 @@ class OtelPublisher(BasePublisher):
                 inp = usages.get("prompt_tokens") or 0
                 out = usages.get("completion_tokens") or 0
                 if inp:
-                    span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, int(inp))
+                    span.set_attribute(USAGE_INPUT_TOKENS, int(inp))
                 if out:
-                    span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, int(out))
+                    span.set_attribute(USAGE_OUTPUT_TOKENS, int(out))
             model = last_msg.get("model") if isinstance(last_msg, dict) else None
             if model:
                 span.set_attribute(GRAPH_MODEL, str(model))
@@ -392,6 +432,7 @@ class OtelPublisher(BasePublisher):
             start_time=_ns(event.timestamp),
         )
         span.set_attribute(GEN_AI_OPERATION, "node")
+        _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, event.node_name)
         span.set_attribute(NODE_NAME, event.node_name)
         step = event.data.get("step")
         if step is not None:
@@ -414,6 +455,8 @@ class OtelPublisher(BasePublisher):
         self._registry.set_child(event.run_id, event.node_name, span)
 
     def _on_node_end(self, event: EventModel) -> None:
+        from opentelemetry.trace import StatusCode
+
         span = self._registry.pop_child(event.run_id, event.node_name)
         if span is None:
             return
@@ -426,9 +469,9 @@ class OtelPublisher(BasePublisher):
                 inp = usages.get("prompt_tokens") or 0
                 out = usages.get("completion_tokens") or 0
                 if inp:
-                    span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, int(inp))
+                    span.set_attribute(USAGE_INPUT_TOKENS, int(inp))
                 if out:
-                    span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, int(out))
+                    span.set_attribute(USAGE_OUTPUT_TOKENS, int(out))
             model = event.metadata.get("model")
             if model:
                 span.set_attribute(GRAPH_MODEL, str(model))
@@ -441,6 +484,7 @@ class OtelPublisher(BasePublisher):
                     attributes={GEN_AI_COMPLETION: _to_str(output_messages)},
                 )
 
+        span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
     def _on_node_error(self, event: EventModel) -> None:
@@ -483,9 +527,20 @@ class OtelPublisher(BasePublisher):
             start_time=_ns(event.timestamp),
         )
 
+        _set_kind(
+            span,
+            oi.KIND_LLM,
+            event,
+            self._user_id_mode,
+            f"chat {model}" if model else "chat",
+        )
+        if self._level != ObservabilityLevel.SPANS:
+            _set_attrs(span, oi.llm_standard_attrs({}, model, system_name))
+
         # Standard gen_ai attributes
         if system_name:
             span.set_attribute(GEN_AI_SYSTEM, system_name)
+            span.set_attribute(GEN_AI_PROVIDER_NAME, system_name)
         span.set_attribute(GEN_AI_OPERATION, "chat")
         if model:
             span.set_attribute(GEN_AI_REQUEST_MODEL, model)
@@ -508,7 +563,11 @@ class OtelPublisher(BasePublisher):
                     "gen_ai.content.prompt",
                     attributes={GEN_AI_PROMPT: _to_str(input_messages)},
                 )
-                span.set_attribute(GEN_AI_INPUT_MESSAGES, _to_str(input_messages))
+                semconv_in = _genai.input_messages(input_messages, event.data.get("system_prompt"))
+                span.set_attribute(GEN_AI_INPUT_MESSAGES, _to_str(semconv_in))
+                _set_attrs(
+                    span, oi.llm_input_attrs(input_messages, event.data.get("system_prompt"))
+                )
             system_prompt = event.data.get("system_prompt")
             if system_prompt:
                 span.add_event(
@@ -520,11 +579,14 @@ class OtelPublisher(BasePublisher):
         self._registry.set_child(event.run_id, f"llm:{event.node_name}", span)
 
     def _on_llm_end(self, event: EventModel) -> None:
+        from opentelemetry.trace import StatusCode
+
         span = self._registry.pop_child(event.run_id, f"llm:{event.node_name}")
         if span is None:
             return
 
         if self._level != ObservabilityLevel.SPANS:
+            _set_attrs(span, oi.llm_standard_attrs(event.data, "", ""))
             inp = event.data.get("input_tokens") or 0
             out = event.data.get("output_tokens") or 0
             if inp:
@@ -559,13 +621,17 @@ class OtelPublisher(BasePublisher):
 
         if self._level == ObservabilityLevel.FULL:
             output_text = event.data.get("output_response")
+            output_messages = _genai.output_messages(event.data)
             if output_text:
                 span.add_event(
                     "gen_ai.content.completion",
                     attributes={GEN_AI_COMPLETION: _to_str(output_text)},
                 )
-                span.set_attribute(GEN_AI_OUTPUT_MESSAGES, _to_str(output_text))
+            if output_messages:
+                span.set_attribute(GEN_AI_OUTPUT_MESSAGES, _to_str(output_messages))
+            _set_attrs(span, oi.llm_output_attrs(event.data))
 
+        span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
     def _on_llm_error(self, event: EventModel) -> None:
@@ -593,14 +659,9 @@ class OtelPublisher(BasePublisher):
             parent = self._registry.get_graph(event.run_id)
         ctx = trace.set_span_in_context(parent) if parent else None
 
-        tool_name = (
-            event.data.get("function_name")
-            or event.data.get("tool_name")
-            or event.metadata.get("tool_name", "")
-        )
+        tool_name = _tool_name(event)
         is_mcp = event.metadata.get("is_mcp", False)
         tool_type = "mcp" if is_mcp else "local"
-        span_key = f"tool:{tool_name}"
 
         span = self._get_tracer().start_span(
             "tenxgraph.tool",
@@ -608,6 +669,7 @@ class OtelPublisher(BasePublisher):
             start_time=_ns(event.timestamp),
         )
         span.set_attribute(GEN_AI_OPERATION, "tool_call")
+        _set_kind(span, oi.KIND_TOOL, event, self._user_id_mode, f"tool {tool_name}")
         span.set_attribute(TOOL_NAME, tool_name)
         span.set_attribute(TOOL_TYPE, tool_type)
 
@@ -618,17 +680,19 @@ class OtelPublisher(BasePublisher):
                     "tool.input",
                     attributes={"tool.input": _to_str(tool_input)},
                 )
+                _set_attrs(span, oi.tool_input_attrs(tool_input))
 
-        self._registry.set_child(event.run_id, span_key, span)
+        if event.metadata.get("is_remote"):
+            # The client runs this tool and no END ever arrives, so the span ends now.
+            span.set_attribute(TOOL_REMOTE, True)
+            span.end(end_time=_ns(event.timestamp))
+            return
+        self._registry.set_child(event.run_id, _tool_key(event), span)
 
     def _on_tool_end(self, event: EventModel) -> None:
-        tool_name = (
-            event.data.get("function_name")
-            or event.data.get("tool_name")
-            or event.metadata.get("tool_name", "")
-        )
-        span_key = f"tool:{tool_name}"
-        span = self._registry.pop_child(event.run_id, span_key)
+        from opentelemetry.trace import StatusCode
+
+        span = self._registry.pop_child(event.run_id, _tool_key(event))
         if span is None:
             return
 
@@ -639,19 +703,20 @@ class OtelPublisher(BasePublisher):
                     "tool.output",
                     attributes={"tool.output": _to_str(tool_output)},
                 )
+            _set_attrs(span, oi.tool_output_attrs(event.data))
 
+        error_msg = event.data.get("error")
+        if error_msg:
+            span.set_status(StatusCode.ERROR, str(error_msg))
+            span.add_event("tool.error", attributes={"error": str(error_msg)})
+        else:
+            span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
     def _on_tool_error(self, event: EventModel) -> None:
         from opentelemetry.trace import StatusCode
 
-        tool_name = (
-            event.data.get("function_name")
-            or event.data.get("tool_name")
-            or event.metadata.get("tool_name", "")
-        )
-        span_key = f"tool:{tool_name}"
-        span = self._registry.pop_child(event.run_id, span_key)
+        span = self._registry.pop_child(event.run_id, _tool_key(event))
         if span is None:
             return
         error_msg = event.data.get("error", "")
@@ -684,6 +749,45 @@ def _set_common_attrs(span: Span, event: EventModel, user_id_mode: UserIdMode = 
     span.set_attribute(GRAPH_RUN_ID, str(event.run_id))
     if event.user_id is not None:
         span.set_attribute(GRAPH_USER_ID, transform_user_id(event.user_id, user_id_mode))
+
+
+def _tool_name(event: EventModel) -> str:
+    return (
+        event.data.get("function_name")
+        or event.data.get("tool_name")
+        or event.metadata.get("tool_name", "")
+    )
+
+
+def _tool_key(event: EventModel) -> str:
+    """Registry key of a tool span: the call id, so parallel calls of one tool do not collide."""
+    return f"tool:{event.data.get('tool_call_id') or _tool_name(event)}"
+
+
+def _set_kind(
+    span: Span, kind: str, event: EventModel, user_id_mode: UserIdMode, display_name: str
+) -> None:
+    """Span kind, display name, session (thread) and user id for OpenInference, Logfire, LangSmith.
+
+    The user id has the same value and mode as the graph user id.
+    """
+    span.set_attribute(oi.SPAN_KIND, kind)
+    span.set_attribute(LANGSMITH_SPAN_KIND, kind.lower())
+    span.set_attribute(LOGFIRE_MSG, display_name)
+    span.set_attribute(LANGSMITH_TRACE_NAME, display_name)
+    # The thread id as session.id on every span, so Phoenix and Langfuse group a thread's runs
+    # and a span filter by session finds node, LLM and tool spans too, not only the root.
+    span.set_attribute(SESSION_ID, str(event.thread_id))
+    span.set_attribute(LANGSMITH_THREAD_ID, str(event.thread_id))
+    if event.user_id is not None:
+        user_id = transform_user_id(event.user_id, user_id_mode)
+        span.set_attribute(oi.USER_ID, user_id)
+        span.set_attribute(LANGSMITH_USER_ID, user_id)
+
+
+def _set_attrs(span: Span, attrs: dict[str, Any]) -> None:
+    for key, value in attrs.items():
+        span.set_attribute(key, value)
 
 
 def _extra_attrs(event: EventModel) -> dict[str, Any]:
@@ -746,5 +850,21 @@ def setup_tracing(
     """
     _guard()
     publisher = OtelPublisher(tracer=tracer, level=level, user_id_mode=user_id_mode)
-    graph._publisher = publisher
+    existing = graph._publisher
+    if existing is None:
+        combined: BasePublisher = publisher
+    elif isinstance(existing, CompositePublisher):
+        existing.add_publisher(publisher)
+        combined = existing
+    else:
+        combined = CompositePublisher([existing, publisher])
+    graph._publisher = combined
+    # StateGraph.__init__ already bound BasePublisher in the container (None when the
+    # graph had no publisher), and publish_event resolves it from there.
+    graph._container.bind_instance(
+        BasePublisher,
+        combined,
+        allow_none=True,
+        allow_concrete=True,
+    )
     return publisher

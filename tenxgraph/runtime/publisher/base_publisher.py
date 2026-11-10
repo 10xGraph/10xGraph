@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from .events import EventModel
+
+
+PublisherKind = Literal["events", "observability"]
 
 
 class BasePublisher(ABC):
@@ -17,7 +20,13 @@ class BasePublisher(ABC):
 
     Attributes:
         config: Configuration dictionary for the publisher.
+        kind: What the publisher is for. ``"events"`` (default) is an event stream for your
+            own consumers (Kafka, Redis, RabbitMQ, console, custom). ``"observability"`` is
+            an AI tracing backend (OTEL, Logfire, LangSmith, Phoenix). Callers can send an
+            event to one kind only with ``publish_event(..., only=kind)``.
     """
+
+    kind: PublisherKind = "events"
 
     def __init__(self, config: dict[str, Any]):
         """Initialize the publisher with the given configuration.

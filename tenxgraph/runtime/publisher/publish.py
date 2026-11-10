@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from injectq import Inject
 
-from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.base_publisher import BasePublisher, PublisherKind
+from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
 from tenxgraph.runtime.publisher.events import EventModel
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.injection import fresh
@@ -106,10 +108,19 @@ def bound_state_snapshot(state: Any, limit: int | None) -> Any:
     return summary
 
 
+def _select(publisher: BasePublisher, kind: PublisherKind) -> BasePublisher | None:
+    """The part of ``publisher`` of the given kind, or None. Never changes the bound one."""
+    if isinstance(publisher, CompositePublisher):
+        picked = [p for c in publisher._publishers if (p := _select(c, kind)) is not None]
+        return CompositePublisher(picked) if picked else None
+    return publisher if publisher.kind == kind else None
+
+
 def publish_event(
     event: EventModel,
     publisher: BasePublisher | None = Inject[BasePublisher],
     task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
+    only: PublisherKind | None = None,
 ) -> None:
     """Publish an event asynchronously using the background task manager.
 
@@ -123,12 +134,16 @@ def publish_event(
         event: The event to publish.
         publisher: The publisher instance (injected).
         task_manager: The background task manager (injected).
+        only: Send to publishers of this ``kind`` only (``"events"`` or ``"observability"``).
+            None (default) sends to every publisher.
     """
     publisher = fresh(publisher)
     task_manager = resolve_task_manager(fresh(task_manager))
     # No sink bound -> nothing to publish. Spawning a task per event just to
     # discover there is nowhere to send it cost a task and kept the event alive
     # for no reason, on the hot path of every node in every run.
+    if publisher is not None and only is not None:
+        publisher = _select(publisher, only)
     if publisher is None:
         return
 
@@ -142,5 +157,13 @@ def publish_event(
     # ``state`` is cut to a bounded summary (see ``bound_state_snapshot``).
     if "state" in data:
         data["state"] = bound_state_snapshot(data["state"], _state_limit(publisher))
-    snapshot = event.model_copy(update={"data": data, "metadata": dict(event.metadata)})
+    # The same reuse means ``timestamp`` is stale on the second publish of an event, so the
+    # snapshot carries the moment of this publish (publish happens when the thing happens).
+    snapshot = event.model_copy(
+        update={
+            "data": data,
+            "metadata": dict(event.metadata),
+            "timestamp": datetime.now().timestamp(),
+        }
+    )
     task_manager.create_task(_publish_event_task(snapshot, publisher))
