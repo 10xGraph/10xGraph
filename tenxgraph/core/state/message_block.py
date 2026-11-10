@@ -205,6 +205,8 @@ class ToolResultBlock(BaseModel):
     Attributes:
         type (Literal["tool_result"]): Block type discriminator.
         call_id (str): Tool call ID.
+        name (str | None): Name of the tool that produced the result. ``None`` on results
+            saved before this field existed.
         output (Any): Output from the tool (str, dict, MediaRef, or list of blocks).
         is_error (bool): Whether the result is an error.
         status (Literal["completed", "failed"] | None): Status of the tool call.
@@ -212,6 +214,7 @@ class ToolResultBlock(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     call_id: str
+    name: str | None = None
     output: Any = None  # str | dict | MediaRef | list[ContentBlock-like]
     is_error: bool = False
     status: Literal["completed", "failed"] | None = None

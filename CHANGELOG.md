@@ -43,6 +43,7 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ### Added
 
+- **`ToolResultBlock.name`: the tool that produced the result.** Set by `ToolNode` on every result (local, MCP, skills, handoff, errors); `None` on results saved before. The provider wire format is unchanged.
 - **Eval scenarios and cases can carry a run config.** `ConversationScenario.config` is merged into the run config of the simulated conversation (an explicit `config` passed to `run` wins), so tools that read `config["user"]` work in simulations. `EvalSetBuilder.add_case`, `add_multi_turn` and `add_tool_test` take `session_input=` to set the case's `SessionInput`.
 - **Calling services as the user.** `UserCredential` (`tenxgraph.core.authz`) holds the caller's raw credential in `config["credential"]`: `token: SecretStr` and `scheme` (default `"Bearer"`). It is not a pydantic model, its repr is redacted, `json.dumps` and pickling raise, and copies return the same object. `get_credential(config)` reads it (raises `TypeError` for anything but a `UserCredential`), `public_config(config)` returns the config without it.
 - **Local tools get the credential by name.** A tool parameter named `credential` receives the `UserCredential` (or None), whatever its annotation, and is hidden from the model. An annotation other than `UserCredential` / `UserCredential | None` logs one warning when the tool is registered. Before/after-invoke callbacks never see it in their input data.

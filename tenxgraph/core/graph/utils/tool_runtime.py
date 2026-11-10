@@ -333,7 +333,13 @@ class ToolRuntimeMixin:
             failure = generic_tool_failure(fn_name, call_id, outcome, log=logger)
         return Message.tool_message(
             content=[
-                ToolResultBlock(call_id=call_id, output=failure, is_error=True, status="failed")
+                ToolResultBlock(
+                    call_id=call_id,
+                    name=fn_name or None,
+                    output=failure,
+                    is_error=True,
+                    status="failed",
+                )
             ],
         )
 

@@ -54,6 +54,7 @@ from tenxgraph.utils.interrupt import (
 )
 
 from .run_registry import current_run
+from .tool_dispatch import tool_call_name
 from .utils import (
     CANCELLED_REASON,
     CRASHED_REASON,
@@ -581,6 +582,7 @@ async def close_unanswered_tool_calls(
                 content=[
                     ToolResultBlock(
                         call_id=call_id,
+                        name=tool_call_name(call) or None,
                         output=UNFINISHED_TOOL_CALL_TEXT,
                         is_error=True,
                         status="failed",

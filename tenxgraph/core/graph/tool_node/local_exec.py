@@ -129,6 +129,7 @@ class LocalExecMixin:
         self,
         result: t.Any,
         tool_call_id: str,
+        name: str | None = None,
     ) -> list[ContentBlock]:
         is_error = False
 
@@ -158,6 +159,7 @@ class LocalExecMixin:
         return [
             ToolResultBlock(
                 call_id=tool_call_id,
+                name=name,
                 output=output,
                 status="failed" if is_error else "completed",
                 is_error=is_error,
@@ -170,6 +172,7 @@ class LocalExecMixin:
         state: AgentState,
         tool_call_id: str,
         meta: dict[str, t.Any],
+        name: str | None = None,
     ) -> dict[str, t.Any] | Message:
         if isinstance(result, ToolResult):
             if result.state:
@@ -183,6 +186,7 @@ class LocalExecMixin:
                     content=[
                         ToolResultBlock(
                             call_id=tool_call_id,
+                            name=name,
                             output=result.message,
                             status="failed" if result.is_error else "completed",
                             is_error=result.is_error,
@@ -197,7 +201,7 @@ class LocalExecMixin:
             return result
 
         return Message.tool_message(
-            content=self._build_internal_result_blocks(result, tool_call_id),
+            content=self._build_internal_result_blocks(result, tool_call_id, name),
             meta=meta,
         )
 
@@ -289,7 +293,9 @@ class LocalExecMixin:
                 result,
             )
 
-            msg = self._message_from_internal_result(result, state, tool_call_id, meta)
+            msg = self._message_from_internal_result(
+                result, state, tool_call_id, meta, name
+            )
             if isinstance(msg, Message):
                 self._publish_internal_completion(event, msg, "Internal tool execution complete")
             elif isinstance(msg, dict):
@@ -297,7 +303,7 @@ class LocalExecMixin:
                     event,
                     Message.tool_message(
                         content=self._build_internal_result_blocks(
-                            msg.get("messages"), tool_call_id
+                            msg.get("messages"), tool_call_id, name
                         ),
                         meta=meta,
                     ),
@@ -333,6 +339,7 @@ class LocalExecMixin:
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=error_text,
                         status="failed",
                         is_error=True,

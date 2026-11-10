@@ -112,13 +112,15 @@ class MCPMixin:
         self,
         tool_call_id: str,
         res: t.Any,
+        name: str | None = None,
     ) -> list[ContentBlock]:
-        return self._cap_mcp_result(self._serialize_result_uncapped(tool_call_id, res))
+        return self._cap_mcp_result(self._serialize_result_uncapped(tool_call_id, res, name))
 
     def _serialize_result_uncapped(
         self,
         tool_call_id: str,
         res: t.Any,
+        name: str | None = None,
     ) -> list[ContentBlock]:
         def safe_serialize(obj: t.Any) -> dict[str, t.Any]:
             try:
@@ -146,6 +148,7 @@ class MCPMixin:
                 return [
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=result,
                         is_error=False,
                         status="completed",
@@ -158,6 +161,7 @@ class MCPMixin:
         return [
             ToolResultBlock(
                 call_id=tool_call_id,
+                name=name,
                 output=[
                     {
                         "content": str(res),
@@ -348,6 +352,7 @@ class MCPMixin:
                         ),
                         ToolResultBlock(
                             call_id=tool_call_id,
+                            name=name,
                             output="No MCP client configured",
                             is_error=True,
                             status="failed",
@@ -385,7 +390,7 @@ class MCPMixin:
 
                 res: t.Any = await self._client.call_tool(server_name, input_data, **call_kwargs)
 
-                final_res = self._serialize_result(tool_call_id, res)
+                final_res = self._serialize_result(tool_call_id, res, name)
 
                 result = Message.tool_message(
                     content=final_res,
@@ -426,6 +431,7 @@ class MCPMixin:
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=error_text,
                         is_error=True,
                         status="failed",

@@ -505,6 +505,7 @@ class ToolNode(
             event.content_blocks = [
                 ToolResultBlock(
                     call_id=tool_call_id,
+                    name=name,
                     output=res.model_dump(),
                 )
             ]
@@ -527,6 +528,7 @@ class ToolNode(
                 event.content_blocks = [
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=res.model_dump(),
                     )
                 ]
@@ -537,6 +539,7 @@ class ToolNode(
                     event.content_blocks = [
                         ToolResultBlock(
                             call_id=tool_call_id,
+                            name=name,
                             output=msg.model_dump(),
                         )
                     ]
@@ -556,6 +559,7 @@ class ToolNode(
                 ErrorBlock(message=error_msg),
                 ToolResultBlock(
                     call_id=tool_call_id,
+                    name=name,
                     output=error_msg,
                     is_error=True,
                     status="failed",
@@ -650,7 +654,7 @@ class ToolNode(
             )
             event.data["message"] = message.model_dump()
             event.content_blocks = [
-                ToolResultBlock(call_id=tool_call_id, output=message.model_dump())
+                ToolResultBlock(call_id=tool_call_id, name=name, output=message.model_dump())
             ]
             event.event_type = EventType.END
             event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
@@ -675,14 +679,14 @@ class ToolNode(
             if isinstance(result, Message):
                 event.data["message"] = result.model_dump()
                 event.content_blocks = [
-                    ToolResultBlock(call_id=tool_call_id, output=result.model_dump())
+                    ToolResultBlock(call_id=tool_call_id, name=name, output=result.model_dump())
                 ]
             elif isinstance(result, dict):
                 msg = result.get("messages")
                 if isinstance(msg, Message):
                     event.data["message"] = msg.model_dump()
                     event.content_blocks = [
-                        ToolResultBlock(call_id=tool_call_id, output=msg.model_dump())
+                        ToolResultBlock(call_id=tool_call_id, name=name, output=msg.model_dump())
                     ]
             event.event_type = EventType.END
             event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
@@ -701,6 +705,7 @@ class ToolNode(
                 ErrorBlock(message=error_msg),
                 ToolResultBlock(
                     call_id=tool_call_id,
+                    name=name,
                     output=error_msg,
                     is_error=True,
                     status="failed",
