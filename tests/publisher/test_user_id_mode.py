@@ -95,7 +95,10 @@ class TestOtelPublisher:
 
 class TestSetupObservability:
     def test_passes_through_logfire(self):
-        with patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf:
+        with (
+            patch.dict(sys.modules, {"logfire": MagicMock()}),
+            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
+        ):
             setup_observability(MagicMock(), {"user_id_mode": "mask", "logfire": {"enabled": True}})
         assert lf.call_args.kwargs["user_id_mode"] == "mask"
 
@@ -130,7 +133,10 @@ class TestSetupObservability:
         assert lf.call_args.kwargs["user_id_mode"] == "hash"
 
     def test_default_raw(self):
-        with patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf:
+        with (
+            patch.dict(sys.modules, {"logfire": MagicMock()}),
+            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
+        ):
             setup_observability(MagicMock(), {"logfire": {"enabled": True}})
         assert lf.call_args.kwargs["user_id_mode"] == "raw"
 

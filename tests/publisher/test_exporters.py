@@ -17,6 +17,7 @@ Coverage targets:
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import types
 from types import SimpleNamespace
@@ -466,8 +467,14 @@ class TestSetupLangsmith:
 class TestSetupObservability:
     """Tests for setup_observability()."""
 
+    @contextlib.contextmanager
     def _mock_setup_logfire(self):
-        return patch("tenxgraph.runtime.publisher.exporters.setup_logfire")
+        # _guard_logfire imports logfire, so fake it for installs without the extra.
+        with (
+            patch.dict(sys.modules, {"logfire": _fake_logfire_module()}),
+            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
+        ):
+            yield lf
 
     def _mock_setup_langsmith(self):
         return patch("tenxgraph.runtime.publisher.exporters.setup_langsmith")
@@ -835,7 +842,10 @@ class TestSetupObservabilityPhoenix:
 
     def test_logfire_only_passes_no_processors(self):
         kwargs = None
-        with patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf:
+        with (
+            patch.dict(sys.modules, {"logfire": _fake_logfire_module()}),
+            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
+        ):
             from tenxgraph.runtime.publisher.exporters import setup_observability
 
             setup_observability(_make_graph(), {"logfire": {"enabled": True}})
@@ -848,7 +858,9 @@ class TestOtlp:
     def test_build_processor_appends_traces_path(self):
         from tenxgraph.runtime.publisher._backends import _build_otlp_processor
 
-        with patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter") as exp:
+        fake = _fake_otel_modules()
+        exp = fake["_fake_OTLPSpanExporter"]
+        with patch.dict(sys.modules, fake):
             _build_otlp_processor(endpoint="http://collector:4318/")
             _build_otlp_processor(endpoint="http://collector:4318/v1/traces")
         assert [c.kwargs["endpoint"] for c in exp.call_args_list] == [
@@ -861,14 +873,19 @@ class TestOtlp:
 
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")
-        with pytest.raises(ValueError, match="OTLP tracing needs an endpoint"):
+        with (
+            patch.dict(sys.modules, _fake_otel_modules()),
+            pytest.raises(ValueError, match="OTLP tracing needs an endpoint"),
+        ):
             _build_otlp_processor()
 
     def test_build_processor_reads_traces_env(self, monkeypatch):
         from tenxgraph.runtime.publisher._backends import _build_otlp_processor
 
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://t:4318/v1/traces")
-        with patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter") as exp:
+        fake = _fake_otel_modules()
+        exp = fake["_fake_OTLPSpanExporter"]
+        with patch.dict(sys.modules, fake):
             _build_otlp_processor()
         assert exp.call_args.kwargs["endpoint"] is None
 
