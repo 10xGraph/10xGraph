@@ -1,7 +1,7 @@
 [project]
 name = "10xgraph"
-version = "1.0.0rc4"
-description = "10xGraph (formerly Agentflow) is a Python framework for multi-agent AI systems that stay correct under failure: replay-safe tool calls that are not re-executed after a crash, versioned state writes, real node and tool timeouts, and two-tier Redis plus PostgreSQL checkpointing. MIT licensed, self-hosted, any model (OpenAI, Google Gemini, Anthropic). Pair it with 10xgraph-api to generate the production server around your graph."
+version = "1.0.0rc5"
+description = "Core library of 10xGraph (formerly Agentflow), open-source self-hosted infrastructure for AI applications: graph engine, durable Postgres and Redis state with tenant columns, pgvector memory, replay-safe tools, MCP, tracing and evals. Pair with 10xgraph-api for the API server. MIT, any model."
 readme = "README.md"
 keywords = [
     "agent",
