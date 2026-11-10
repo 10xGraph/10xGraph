@@ -293,9 +293,7 @@ class LocalExecMixin:
                 result,
             )
 
-            msg = self._message_from_internal_result(
-                result, state, tool_call_id, meta, name
-            )
+            msg = self._message_from_internal_result(result, state, tool_call_id, meta, name)
             if isinstance(msg, Message):
                 self._publish_internal_completion(event, msg, "Internal tool execution complete")
             elif isinstance(msg, dict):
