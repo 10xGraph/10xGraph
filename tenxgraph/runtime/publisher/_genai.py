@@ -31,7 +31,8 @@ def _tool_call_parts(calls: Any) -> list[dict[str, Any]]:
     for call in calls if isinstance(calls, list) else []:
         if not isinstance(call, dict):
             continue
-        fn = call.get("function") if isinstance(call.get("function"), dict) else call
+        raw_fn = call.get("function")
+        fn: dict[str, Any] = raw_fn if isinstance(raw_fn, dict) else call
         part: dict[str, Any] = {
             "type": "tool_call",
             "name": str(fn.get("name", "")),

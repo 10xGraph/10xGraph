@@ -79,7 +79,8 @@ def _call_fields(call: Any) -> tuple[str, str, str]:
     """``(id, name, arguments)`` of a tool call in OpenAI request form or ``{"id","name",...}``."""
     if not isinstance(call, dict):
         return "", "", ""
-    fn = call.get("function") if isinstance(call.get("function"), dict) else call
+    raw_fn = call.get("function")
+    fn: dict[str, Any] = raw_fn if isinstance(raw_fn, dict) else call
     args = fn.get("arguments")
     if args is not None and not isinstance(args, str):
         args = _dumps(args)
