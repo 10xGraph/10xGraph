@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import secrets
+import string
 from typing import TYPE_CHECKING, Any, Union
 
 from tenxgraph.core.state.message import Message
@@ -449,14 +450,60 @@ def _convert_dict(message: Message) -> dict[str, Any] | None:
     return result
 
 
+_IDENTIFIER_FIELD = re.compile(r"^[A-Za-z_]\w*(?:\.\w+|\[[^\[\]]*\])*$")
+
+
+def _fill_placeholders(text: str, values: dict[str, Any]) -> str:
+    """Fill ``{field}`` placeholders from ``values`` like ``str.format``, but never fail.
+
+    A field that cannot be resolved or formatted (missing key, bad index, bad format spec,
+    positional ``{}``) stays exactly as written while the others are filled. ``{{`` and ``}}``
+    become ``{`` and ``}``. Text that cannot be parsed is returned unchanged.
+    """
+    formatter = string.Formatter()
+    try:
+        parsed = list(formatter.parse(text))
+    except ValueError:
+        return text
+
+    out: list[str] = []
+    unfilled: list[str] = []
+    for literal, field, spec, conv in parsed:
+        out.append(literal)
+        if field is None:
+            continue
+        original = "{" + field
+        if conv:
+            original += "!" + conv
+        if spec:
+            original += ":" + spec
+        original += "}"
+        if field == "" or field.isdigit():
+            out.append(original)
+            continue
+        try:
+            obj, _ = formatter.get_field(field, (), values)
+            if conv:
+                obj = formatter.convert_field(obj, conv)
+            out.append(format(obj, _fill_placeholders(spec, values) if spec else ""))
+        except Exception:
+            out.append(original)
+            if _IDENTIFIER_FIELD.match(field):
+                unfilled.append(field)
+
+    if unfilled:
+        logger.warning("Placeholders left unfilled (not in the state): %s", ", ".join(unfilled))
+    return "".join(out)
+
+
 def _interpolate_system_prompts(
     system_prompts: list[dict[str, Any]],
     state: Union["AgentState", None],
 ) -> list[dict[str, Any]]:
     """Interpolate state variables into system prompt content.
 
-    Supports placeholders like {field_name} in system prompt strings.
-    Uses model_dump() to get all state fields for interpolation.
+    Supports placeholders like {field_name} in system prompt strings. A field that is not in
+    the state stays as written; the other fields are still filled.
 
     Args:
         system_prompts: List of system prompt dicts with "role" and "content".
@@ -468,39 +515,38 @@ def _interpolate_system_prompts(
     if state is None:
         return system_prompts
 
-    interpolated = []
     state_dict = state.model_dump()
-
+    interpolated = []
     for prompt in system_prompts:
-        if not isinstance(prompt.get("content"), str):
+        content = prompt.get("content")
+        if not isinstance(content, str):
             # Non-string content (e.g., multimodal), pass through as-is
             interpolated.append(prompt)
             continue
-
-        content = prompt["content"]
-        try:
-            # Interpolate placeholders with state variables
-            interpolated_content = content.format(**state_dict)
-            interpolated.append({**prompt, "content": interpolated_content})
-        except KeyError as e:
-            # Missing field in state - log warning and use original
-            logger.warning(
-                "Failed to interpolate system prompt: missing field %s. "
-                "Using original prompt without interpolation.",
-                e,
-            )
-            interpolated.append(prompt)
-        except Exception as e:
-            # Bad format spec, attribute/index access on a field, etc. A bad
-            # placeholder must never fail the run.
-            logger.warning(
-                "Failed to interpolate system prompt due to formatting error: %s. "
-                "Using original prompt without interpolation.",
-                e,
-            )
-            interpolated.append(prompt)
-
+        interpolated.append({**prompt, "content": _fill_placeholders(content, state_dict)})
     return interpolated
+
+
+def _interpolate_message(msg: Message, values: dict[str, Any]) -> Message:
+    """Return a copy of ``msg`` with placeholders filled in its text.
+
+    Only plain string content and ``TextBlock`` text are filled. Other blocks are kept as is.
+    The input message is never changed.
+    """
+    if isinstance(msg.content, str):
+        filled = _fill_placeholders(msg.content, values)
+        return msg if filled == msg.content else msg.model_copy(update={"content": filled})
+
+    changed = False
+    blocks: list[Any] = []
+    for block in msg.content or []:
+        if isinstance(block, TextBlock):
+            filled = _fill_placeholders(block.text, values)
+            if filled != block.text:
+                block = block.model_copy(update={"text": filled})  # noqa: PLW2901
+                changed = True
+        blocks.append(block)
+    return msg.model_copy(update={"content": blocks}) if changed else msg
 
 
 MEMORY_FRAMING_LINE = (
@@ -604,7 +650,8 @@ def convert_messages(
     Args:
         system_prompts (list[dict[str, Any]]): List of system prompt dicts.
         state (AgentState | None): Optional agent state containing context and summary.
-        extra_messages (list[Message] | None): Optional extra messages to include.
+        extra_messages (list[Message] | None): Optional extra messages, added last.
+            ``{field}`` placeholders in their text are filled from ``state``.
         extra_system_prompts (list[dict[str, Any]] | None): Retrieved or loaded system
             text (skills). Added after ``system_prompts`` are interpolated and
             never passed to ``str.format``.
@@ -643,9 +690,12 @@ def convert_messages(
                 res.append(formatted)
 
     if extra_messages:
+        state_values = state.model_dump() if state is not None else None
         for msg in extra_messages:
             if _is_empty_assistant_reply(msg):
                 continue
+            if state_values is not None:
+                msg = _interpolate_message(msg, state_values)  # noqa: PLW2901
             formatted = _convert_dict(msg)
             if formatted:
                 res.append(formatted)

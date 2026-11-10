@@ -148,7 +148,13 @@ class Agent(
                     # Named reference — ToolNode lives as a separate graph node
                     agent = Agent(model="gpt-4o", tool_node="TOOL")
 
-            extra_messages: Additional messages to include in every interaction.
+            extra_messages: Messages sent after the history on every request and never saved
+                to the state. ``{field}`` placeholders in their text are filled from the
+                state like the system prompt; a field that is not in the state stays as
+                written, and ``{{`` / ``}}`` give literal braces. Put changing per-request
+                context here, not in the system prompt, so the cached prefix stays stable.
+                Prefer role ``"user"`` (the Google GenAI and Anthropic adapters move role
+                ``"system"`` to the front).
             trim_context: Whether to trim context using context manager.
             tools_tags: Optional tags to filter tools.
             base_url (via **kwargs): Optional base URL for OpenAI-compatible APIs
