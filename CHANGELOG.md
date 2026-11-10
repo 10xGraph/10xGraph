@@ -37,6 +37,12 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`RabbitMQPublisher` no longer retries forever or hangs shutdown (D-07).** It uses a plain `aio_pika.connect` instead of `connect_robust`, whose own reconnect task retried every 5 seconds forever (also after the broker refused the credentials) and, when a connection attempt was cancelled, was never closed, so the process could not exit. Refused credentials are now logged once and later events are dropped without contacting the broker. After a network failure the next attempt waits `reconnect_interval` seconds (new config key, default 5), and a connection the broker closed is opened again by the next publish. `close()` no longer waits for a connection attempt in progress, and gives the broker at most `connection_timeout` seconds to confirm the close.
+- **`pass_user_info_to_mcp` sends the full caller behind the API.** The API puts an `Identity` model in `config["user"]`, and the MCP path accepted only a dict, so an MCP server received just `{"user_id": ...}` and never the tenant, roles or reach. An `Identity` (any pydantic model) is now sent as its JSON dump in `meta={"user": ...}`: `user_id`, `kind`, `tenant`, `roles`, `permissions`, `reach` and the token `claims`. A dict is still sent as is, and without either, `{"user_id": config["user_id"]}`.
+- **`ToolNode` works with fastmcp 4.x.** It no longer pings the MCP server before listing tools or calling one. fastmcp 4.x negotiates MCP protocol 2026-07-28 by default, which has no `ping` method, so every MCP call failed with "MCP Server not available. Ping failed." A server that is down now fails the listing (no MCP tools offered) or the call (a generic tool error), as before, without the extra round trip per call. Tested with fastmcp 3.3.1 and 4.1.7 over streamable HTTP.
+
 ## [1.0.0rc5] - 2026-11-10
 
 The fifth release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc5. 10xGraph is

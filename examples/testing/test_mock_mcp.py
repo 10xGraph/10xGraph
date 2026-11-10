@@ -67,7 +67,7 @@ async def test_call_assertions(mcp: MockMCPClient):
 
 def test_tool_node_accepts_the_mock(mcp: MockMCPClient):
     # ToolNode takes the mock wherever it takes an MCP client (needs the `mcp` extra).
-    # Note: ToolNode talks to a real fastmcp client (async context manager, ping(),
+    # Note: ToolNode talks to a real fastmcp client (async context manager,
     # tool objects with .name). MockMCPClient only mirrors list_tools/call_tool, so
     # use it to test your own code around the client, not ToolNode's MCP execution.
     node = ToolNode([], client=mcp)

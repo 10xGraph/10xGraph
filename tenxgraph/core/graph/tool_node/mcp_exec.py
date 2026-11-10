@@ -9,6 +9,8 @@ import json
 import logging
 import typing as t
 
+from pydantic import BaseModel
+
 from tenxgraph.core.state import (
     ContentBlock,
     ErrorBlock,
@@ -26,6 +28,22 @@ logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 
 DEFAULT_MCP_CONNECT_TIMEOUT = 30.0
+
+
+def _mcp_user_info(config: dict[str, t.Any]) -> dict[str, t.Any] | None:
+    """The caller info sent as MCP request metadata.
+
+    The API puts an ``Identity`` (a pydantic model) in ``config["user"]``; it is sent whole as
+    JSON (user_id, kind, tenant, roles, permissions, reach, claims). A dict is sent as is
+    (direct SDK use). Otherwise only ``config["user_id"]``, when set.
+    """
+    user = config.get("user")
+    if isinstance(user, BaseModel):
+        return user.model_dump(mode="json")
+    if isinstance(user, dict) and user:
+        return user
+    user_id = config.get("user_id")
+    return {"user_id": user_id} if user_id else None
 
 
 class MCPMixin:
@@ -133,9 +151,9 @@ class MCPMixin:
         if cached is not None and not refresh:
             return cached
         try:
+            # No ping first: list_tools fails on its own when the server is down, and MCP
+            # protocol 2026-07-28 (fastmcp 4.x default) has no ping method.
             async with self._mcp_session():
-                if not await self._client.ping():
-                    return None
                 server_tools = list(await self._client.list_tools())
         except Exception as e:
             logger.exception("Failed to fetch MCP tools: %s", e)
@@ -306,33 +324,12 @@ class MCPMixin:
                 publish_event(event)
                 return res
 
+            # No ping first: call_tool fails on its own when the server is down (handled
+            # below), and MCP protocol 2026-07-28 (fastmcp 4.x default) has no ping method.
             async with self._mcp_session():
-                if not await self._client.ping():
-                    error_result = Message.tool_message(
-                        content=[
-                            ErrorBlock(message="MCP Server not available. Ping failed."),
-                            ToolResultBlock(
-                                call_id=tool_call_id,
-                                output="MCP Server not available. Ping failed.",
-                                is_error=True,
-                                status="failed",
-                            ),
-                        ],
-                        meta=meta,
-                    )
-                    event.event_type = EventType.ERROR
-                    event.metadata["error"] = "MCP server not available, ping failed"
-                    publish_event(event)
-                    return await callback_mgr.execute_after_invoke(
-                        context, input_data, error_result
-                    )
-
                 call_kwargs: dict[str, t.Any] = {}
                 if self._pass_user_info_to_mcp:
-                    mcp_user_info = config.get("user")
-                    if not (mcp_user_info and isinstance(mcp_user_info, dict)):
-                        user_id = config.get("user_id")
-                        mcp_user_info = {"user_id": user_id} if user_id else None
+                    mcp_user_info = _mcp_user_info(config)
                     if mcp_user_info:
                         # Request metadata, not a tool argument: a strict input schema
                         # would reject an extra "user" argument, and a lax one would

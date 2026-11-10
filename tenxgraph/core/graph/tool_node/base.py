@@ -114,9 +114,12 @@ class ToolNode(
                 will be registered with its `__name__` as the tool identifier.
             client: Optional MCP (Model Context Protocol) client for remote tool access.
                 Requires 'fastmcp' and 'mcp' packages to be installed.
-            pass_user_info_to_mcp: If True, extracts the 'user' dictionary from the config
-                and passes it as metadata to MCP tool calls. The user info will be accessible
-                on the MCP server via `ctx.request_context.meta`. Defaults to False.
+            pass_user_info_to_mcp: If True, sends the caller as request metadata
+                (``meta={"user": ...}``) on every MCP tool call, readable on the server via
+                `ctx.request_context.meta`. An ``Identity`` in ``config["user"]`` (what the
+                API sets) is sent as its JSON dump: user_id, kind, tenant, roles,
+                permissions, reach and the token claims. A dict is sent as is; with neither,
+                ``{"user_id": config["user_id"]}``. Defaults to False.
 
             max_result_chars: Optional cap on the text a local tool returns. Longer
                 text is cut and a marker is appended, so one huge result is not saved to
@@ -134,7 +137,7 @@ class ToolNode(
             mcp_max_description_chars: Optional cap on an MCP tool description. ``None``
                 (default) means no cap.
             mcp_cache_tools: When True (default) the server's tool list is fetched once and
-                reused, which saves a connect, ping and list round trip per model call.
+                reused, which saves a connect and list round trip per model call.
                 Call ``await tool_node.refresh_mcp_tools()`` to fetch it again. Set False to
                 list the server on every call.
             mcp_connect_timeout: Seconds to wait for the MCP connection to open (default
