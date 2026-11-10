@@ -39,6 +39,8 @@ from tenxgraph.utils.log_safety import log_safe
 
 from . import deps
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
+from .local_exec import check_credential_annotation
+from .mcp_auth import MCPAuth, install_mcp_auth
 from .mcp_exec import DEFAULT_MCP_CONNECT_TIMEOUT
 from .run_tools import run_remote_tools, tool_name
 from .schema import SchemaMixin
@@ -106,6 +108,7 @@ class ToolNode(
         mcp_max_description_chars: int | None = None,
         mcp_cache_tools: bool = True,
         mcp_connect_timeout: float | None = DEFAULT_MCP_CONNECT_TIMEOUT,
+        mcp_auth: MCPAuth | None = None,
     ) -> None:
         """Initialize ToolNode with functions and optional MCP client.
 
@@ -143,10 +146,28 @@ class ToolNode(
             mcp_connect_timeout: Seconds to wait for the MCP connection to open (default
                 30). Only the connect is bounded, never a tool call. ``None`` waits without
                 a limit.
+            mcp_auth: Optional async callable ``(MCPAuthContext) -> dict[str, str]`` that
+                returns HTTP headers for one MCP request, so each user's calls carry their
+                own auth (token exchange, a self-issued token, ...). It runs before every
+                tool listing and tool call with the run's identity and credential; the
+                headers go on that request only, on top of any transport ``auth=``, and win
+                on the same header name. ``forward_credential`` forwards the caller's token
+                unchanged (only for a server that accepts that same token). Needs
+                fastmcp>=4.1.7 and an HTTP transport (streamable HTTP or SSE). The tool list
+                is cached per node and shared by all users (``mcp_cache_tools``), and is
+                fetched with whichever run asks first: a server must not return a per-user
+                tool list here.
+
+        Tools may take a parameter named ``credential``: it always receives the caller's
+        ``UserCredential`` from ``config["credential"]`` (or None), whatever its annotation,
+        and is hidden from the model.
 
         Raises:
-            ImportError: If MCP client is provided but required packages are not installed.
+            ImportError: If MCP client is provided but required packages are not installed,
+                or ``mcp_auth`` is set with fastmcp older than 4.
             TypeError: If any item in tools is not callable.
+            ValueError: If ``mcp_auth`` is set without a client, or the client's transport
+                cannot send HTTP headers (stdio, in-memory).
 
         Note:
             When using MCP client functionality, ensure you have installed the required
@@ -184,6 +205,13 @@ class ToolNode(
                 )
             logger.debug("ToolNode initialized with MCP client")
 
+        self._mcp_auth: MCPAuth | None = mcp_auth
+        self._mcp_server_url: str | None = None
+        if mcp_auth is not None:
+            if client is None:
+                raise ValueError("mcp_auth needs an MCP client (client=...)")
+            self._mcp_server_url = install_mcp_auth(client)
+
         self._funcs: dict[str, t.Callable] = {}
         self._client: deps.Client | None = client  # type: ignore
         self._pass_user_info_to_mcp: bool = pass_user_info_to_mcp
@@ -216,6 +244,7 @@ class ToolNode(
                 "is replaced.",
                 log_safe(tool.__name__),
             )
+        check_credential_annotation(tool)
         self._funcs[tool.__name__] = tool
 
     def add_tool(self, tool: t.Callable) -> None:
@@ -254,7 +283,7 @@ class ToolNode(
         config: dict[str, t.Any] | None = None,
     ) -> list[dict]:
         tools: list[dict] = self.get_local_tool(tags=tags)
-        tools.extend(await self._get_mcp_tool(tags=tags))
+        tools.extend(await self._get_mcp_tool(tags=tags, config=config))
         tools.extend(self.remote_tools)
         tools.extend(self._run_remote_tools(config, taken={tool_name(x) for x in tools}))
         return tools
@@ -365,7 +394,7 @@ class ToolNode(
         tools: list[dict] = self.get_local_tool(tags=tags)
 
         if self._client:
-            result = asyncio.run(self._get_mcp_tool(tags=tags))
+            result = asyncio.run(self._get_mcp_tool(tags=tags, config=config))
             if result:
                 tools.extend(result)
 

@@ -44,6 +44,7 @@ class AudioAgent[StateT: AgentState]:
         tools: Iterable[Callable] | None = None,
         client: Any = None,
         pass_user_info_to_mcp: bool = False,
+        mcp_auth: Any = None,  # per-call MCP headers, see ToolNode(mcp_auth=...)
         skills: SkillConfig | None = None,
         memory: MemoryConfig | None = None,
         realtime_client_factory: Callable[[], RealtimeClient] | None = None,
@@ -61,6 +62,7 @@ class AudioAgent[StateT: AgentState]:
             tools=list(tools or []),
             client=client,
             pass_user_info_to_mcp=pass_user_info_to_mcp,
+            mcp_auth=mcp_auth,
         )
 
         self._agent = LiveAgent(
@@ -81,10 +83,16 @@ class AudioAgent[StateT: AgentState]:
         tools: list[Callable],
         client: Any,
         pass_user_info_to_mcp: bool,
+        mcp_auth: Any = None,
     ) -> ToolNode | None:
         if not tools and client is None:
             return None
-        return ToolNode(tools, client=client, pass_user_info_to_mcp=pass_user_info_to_mcp)
+        return ToolNode(
+            tools,
+            client=client,
+            pass_user_info_to_mcp=pass_user_info_to_mcp,
+            mcp_auth=mcp_auth,
+        )
 
     def _create_graph(self) -> StateGraph[StateT]:
         return StateGraph[StateT](

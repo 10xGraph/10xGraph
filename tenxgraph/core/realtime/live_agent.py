@@ -28,6 +28,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.graph.agent_internal.memory import AgentMemoryMixin
 from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
 from tenxgraph.core.graph.base_agent import BaseAgent
@@ -922,7 +923,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     ) -> AgentState:
         if not cb._lifecycle_hooks:
             return state
-        return await cb.fire_on_graph_start(GraphLifecycleContext(config=config), state)
+        return await cb.fire_on_graph_start(
+            GraphLifecycleContext(config=public_config(config)), state
+        )
 
     async def _fire_graph_end(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turns: int
@@ -930,21 +933,27 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         if not cb._lifecycle_hooks:
             return
         messages = list(getattr(state, "context", []) or [])
-        await cb.fire_on_graph_end(GraphLifecycleContext(config=config), state, messages, turns)
+        await cb.fire_on_graph_end(
+            GraphLifecycleContext(config=public_config(config)), state, messages, turns
+        )
 
     async def _fire_turn_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int
     ) -> AgentState:
         if not cb._lifecycle_hooks:
             return state
-        return await cb.fire_on_turn_start(GraphLifecycleContext(config=config), state, turn_index)
+        return await cb.fire_on_turn_start(
+            GraphLifecycleContext(config=public_config(config)), state, turn_index
+        )
 
     async def _fire_turn_end(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int
     ) -> AgentState:
         if not cb._lifecycle_hooks:
             return state
-        return await cb.fire_on_turn_end(GraphLifecycleContext(config=config), state, turn_index)
+        return await cb.fire_on_turn_end(
+            GraphLifecycleContext(config=public_config(config)), state, turn_index
+        )
 
     # ------------------------------------------------------------------ #
     # Observability for events ToolNode doesn't already publish.

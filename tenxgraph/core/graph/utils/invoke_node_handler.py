@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
@@ -579,7 +580,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             invocation_type=InvocationType.AI,
             node_name=self.name,
             function_name=getattr(self.func, "__name__", str(self.func)),
-            metadata={"config": config},
+            metadata={"config": public_config(config)},
         )
 
         # Event publishing logic (similar to stream_node_handler)
@@ -712,7 +713,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             invocation_type=InvocationType.AI,
             node_name=self.name,
             function_name=getattr(agent, "__class__", type(agent)).__name__,
-            metadata={"config": config},
+            metadata={"config": public_config(config)},
         )
 
         input_data = {"state": state, "config": config}

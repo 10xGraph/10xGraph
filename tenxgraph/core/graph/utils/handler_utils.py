@@ -25,6 +25,7 @@ from typing import Any, TypeVar
 
 from injectq import Inject
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import StoredNodeMissingError
 from tenxgraph.core.state import AgentState, ExecutionStatus
 from tenxgraph.core.state.execution_state import StopRequestStatus
@@ -102,7 +103,7 @@ async def check_interrupted[StateT: AgentState](
 
         # Fire on_resume hook before clearing the interrupt
         if callback_mgr and callback_mgr._lifecycle_hooks:
-            context = GraphLifecycleContext(config=config)
+            context = GraphLifecycleContext(config=public_config(config))
             resumed_node = state.execution_meta.interrupted_node or ""
             modified = await callback_mgr.fire_on_resume(
                 context,
@@ -214,7 +215,7 @@ async def check_and_handle_interrupt[StateT: AgentState](
 
         # Fire on_interrupt hook
         if callback_mgr and callback_mgr._lifecycle_hooks:
-            context = GraphLifecycleContext(config=config)
+            context = GraphLifecycleContext(config=public_config(config))
             await callback_mgr.fire_on_interrupt(
                 context,
                 interrupted_node=current_node,
@@ -360,7 +361,7 @@ async def interrupt_graph[StateT: AgentState](
 
     # Fire on_interrupt hook
     if callback_mgr and callback_mgr._lifecycle_hooks:
-        context = GraphLifecycleContext(config=config)
+        context = GraphLifecycleContext(config=public_config(config))
         await callback_mgr.fire_on_interrupt(
             context,
             interrupted_node=current_node,
@@ -398,7 +399,7 @@ async def pause_for_interrupt[StateT: AgentState](
     pause_at(state, request)
 
     if callback_mgr and callback_mgr._lifecycle_hooks:
-        context = GraphLifecycleContext(config=config)
+        context = GraphLifecycleContext(config=public_config(config))
         await callback_mgr.fire_on_interrupt(
             context,
             interrupted_node=current_node,
@@ -493,7 +494,7 @@ async def check_stop_requested[StateT: AgentState](
 
         # Fire on_interrupt hook
         if callback_mgr and callback_mgr._lifecycle_hooks:
-            context = GraphLifecycleContext(config=config)
+            context = GraphLifecycleContext(config=public_config(config))
             await callback_mgr.fire_on_interrupt(
                 context,
                 interrupted_node=current_node,

@@ -23,6 +23,8 @@ Parameters:
     publisher: BasePublisher instance for event publishing.
     checkpointer: BaseCheckpointer instance for state persistence.
     store: BaseStore instance for data storage operations.
+    credential: The caller's UserCredential from ``config["credential"]`` (or None),
+        whatever the parameter's annotation says.
 
 Note:
     Tool functions can declare these parameters in their signatures to receive
@@ -50,7 +52,11 @@ INJECTABLE_PARAMS = {
     "checkpointer",
     "store",
     "task_manager",
+    "credential",
 }
+
+# Tool parameter that receives the caller's UserCredential (see local_exec).
+CREDENTIAL_PARAM = "credential"
 
 
 def has_injected_default(param: inspect.Parameter) -> bool:

@@ -23,7 +23,7 @@ def test_pillow_floor():
 
 
 def test_mcp_floor():
-    assert _floor(_extras()["mcp"], "mcp") >= (1, 30, 0)
+    assert _floor(_extras()["mcp"], "mcp") >= (2, 3, 0)
 
 
 def test_opentelemetry_floor():

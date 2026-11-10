@@ -37,7 +37,19 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Breaking
+
+- **The `mcp` extra needs fastmcp 4.1.7 and mcp 2.3 or later** (was fastmcp 2.11.3 / mcp 1.30). Per-call MCP auth depends on mcp 2.x sending each request with the caller's context. `ToolNode` itself still runs on fastmcp 3.x; only `mcp_auth=` refuses it.
+
+### Added
+
+- **Calling services as the user.** `UserCredential` (`tenxgraph.core.authz`) holds the caller's raw credential in `config["credential"]`: `token: SecretStr` and `scheme` (default `"Bearer"`). It is not a pydantic model, its repr is redacted, `json.dumps` and pickling raise, and copies return the same object. `get_credential(config)` reads it (raises `TypeError` for anything but a `UserCredential`), `public_config(config)` returns the config without it.
+- **Local tools get the credential by name.** A tool parameter named `credential` receives the `UserCredential` (or None), whatever its annotation, and is hidden from the model. An annotation other than `UserCredential` / `UserCredential | None` logs one warning when the tool is registered. Before/after-invoke callbacks never see it in their input data.
+- **`ToolNode(mcp_auth=...)`: per-call MCP headers.** An async `(MCPAuthContext) -> dict[str, str]` runs before every MCP tool listing and tool call with the run's `identity`, `credential`, `tool_name` (None for listing), `server`, `thread_id` and `run_id`. Its headers go on that request only, through `MCPCallAuth`, an `httpx2.Auth` installed on the client's streamable HTTP or SSE transport that keeps any existing transport `auth=` underneath. One shared client serves many users at once without mixing their headers. `forward_credential` forwards the caller's own token (only for a server that accepts that same token). Needs fastmcp 4; stdio and in-memory transports are refused. `ReactAgent`, `PlanActReflectAgent`, `StructuredOutputAgent` and `AudioAgent` pass `mcp_auth` through. The MCP tool list stays cached per node and shared by all users, so it must not depend on the user.
+
 ### Fixed
+
+- **The run config no longer leaves the run whole.** The graph start event (`metadata["config"]`), `GraphLifecycleContext.config` and the `config` in AI, tool and MCP `CallbackContext.metadata` now carry `public_config(config)`, so the credential never reaches publishers, OTEL / Phoenix / LangSmith spans or callbacks that ship their context.
 
 - **`RabbitMQPublisher` no longer retries forever or hangs shutdown (D-07).** It uses a plain `aio_pika.connect` instead of `connect_robust`, whose own reconnect task retried every 5 seconds forever (also after the broker refused the credentials) and, when a connection attempt was cancelled, was never closed, so the process could not exit. Refused credentials are now logged once and later events are dropped without contacting the broker. After a network failure the next attempt waits `reconnect_interval` seconds (new config key, default 5), and a connection the broker closed is opened again by the next publish. `close()` no longer waits for a connection attempt in progress, and gives the broker at most `connection_timeout` seconds to confirm the close.
 - **`pass_user_info_to_mcp` sends the full caller behind the API.** The API puts an `Identity` model in `config["user"]`, and the MCP path accepted only a dict, so an MCP server received just `{"user_id": ...}` and never the tenant, roles or reach. An `Identity` (any pydantic model) is now sent as its JSON dump in `meta={"user": ...}`: `user_id`, `kind`, `tenant`, `roles`, `permissions`, `reach` and the token `claims`. A dict is still sent as is, and without either, `{"user_id": config["user_id"]}`.

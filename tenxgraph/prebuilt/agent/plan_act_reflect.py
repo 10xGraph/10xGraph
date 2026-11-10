@@ -420,6 +420,7 @@ class PlanActReflectAgent[StateT: AgentState]:
         # Agent pass-through options
         client: Any = None,
         pass_user_info_to_mcp: bool = False,
+        mcp_auth: Any = None,  # per-call MCP headers, see ToolNode(mcp_auth=...)
         extra_messages: list[Message] | None = None,
         trim_context: bool = False,
         tools_tags: set[str] | None = None,
@@ -472,6 +473,7 @@ class PlanActReflectAgent[StateT: AgentState]:
             tools=list(tools or []),
             client=client,
             pass_user_info_to_mcp=pass_user_info_to_mcp,
+            mcp_auth=mcp_auth,
         )
 
         # Lazy graph handle — recreated on each _configure_graph() call.
@@ -496,10 +498,16 @@ class PlanActReflectAgent[StateT: AgentState]:
         tools: list[Callable],
         client: Any,
         pass_user_info_to_mcp: bool,
+        mcp_auth: Any = None,
     ) -> ToolNode | None:
         if not tools and client is None:
             return None
-        return ToolNode(tools, client=client, pass_user_info_to_mcp=pass_user_info_to_mcp)
+        return ToolNode(
+            tools,
+            client=client,
+            pass_user_info_to_mcp=pass_user_info_to_mcp,
+            mcp_auth=mcp_auth,
+        )
 
     def _build_agent(
         self,

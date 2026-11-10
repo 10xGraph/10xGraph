@@ -28,6 +28,7 @@ from typing import Any, TypeVar
 
 from injectq import Inject
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import GraphError
 from tenxgraph.core.state import AgentState, ExecutionStatus, Message
 from tenxgraph.core.state.base_context import BaseContextManager
@@ -767,7 +768,7 @@ async def sync_data(
 
     # Fire on_checkpoint hook before persisting
     if callback_mgr and callback_mgr._lifecycle_hooks:
-        lifecycle_context = GraphLifecycleContext(config=config)
+        lifecycle_context = GraphLifecycleContext(config=public_config(config))
         new_state, messages = await callback_mgr.fire_on_checkpoint(
             lifecycle_context,
             state=new_state,

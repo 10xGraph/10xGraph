@@ -19,6 +19,7 @@ from collections.abc import Callable
 
 from injectq import inject, Inject
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import GraphRecursionError, GraphStopRequested, NodeTimeoutError
 from tenxgraph.core.graph.edge import Edge
 from tenxgraph.core.graph.node import Node
@@ -267,7 +268,7 @@ class StreamHandler[StateT: AgentState](
             )
 
         # Build lifecycle context (shared across all hooks in this execution)
-        lifecycle_context = GraphLifecycleContext(config=config)
+        lifecycle_context = GraphLifecycleContext(config=public_config(config))
 
         # Create event for graph execution
         event = EventModel.default(
@@ -970,7 +971,7 @@ class StreamHandler[StateT: AgentState](
             state.execution_meta.step,
         )
 
-        cfg = config.copy()
+        cfg = public_config(config)
         if "user" in cfg:
             # This will be available when you are calling
             # vi agentflow api
@@ -997,7 +998,7 @@ class StreamHandler[StateT: AgentState](
 
         # Fire on_graph_start hook before execution begins
         if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-            lc_context = GraphLifecycleContext(config=config)
+            lc_context = GraphLifecycleContext(config=public_config(config))
             state = await self.callback_mgr.fire_on_graph_start(lc_context, state)  # type: ignore
 
         # Now start Execution
