@@ -1,6 +1,6 @@
 [project]
 name = "10xgraph"
-version = "1.0.0rc5"
+version = "1.0.0rc6"
 description = "Core library of 10xGraph (formerly Agentflow), open-source self-hosted infrastructure for AI applications: graph engine, durable Postgres and Redis state with tenant columns, pgvector memory, replay-safe tools, MCP, tracing and evals. Pair with 10xgraph-api for the API server. MIT, any model."
 readme = "README.md"
 keywords = [

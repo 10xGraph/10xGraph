@@ -121,7 +121,7 @@ class TestMigration:
 
         cp = await make_cp(extra_columns={"public_id": "text"})
         await cp.asetup()
-        assert await cp.aget_schema_version() == CURRENT_SCHEMA_VERSION == 6
+        assert await cp.aget_schema_version() == CURRENT_SCHEMA_VERSION
         cols = await admin_pool.fetch(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = $1 AND table_name = 'threads'",
