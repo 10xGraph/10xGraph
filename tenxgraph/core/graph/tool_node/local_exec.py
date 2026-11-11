@@ -32,7 +32,7 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
 
-_CREDENTIAL_HINTS = (UserCredential, UserCredential | None, t.Optional[UserCredential])  # noqa: UP045
+_CREDENTIAL_HINTS = (UserCredential, UserCredential | None, t.Optional[UserCredential])
 
 
 def check_credential_annotation(fn: t.Callable) -> None:

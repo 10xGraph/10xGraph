@@ -112,7 +112,7 @@ def install_mcp_auth(client: t.Any) -> str | None:
         ValueError: the transport cannot carry HTTP headers (stdio, in-memory, multi-server
             config).
     """
-    import fastmcp  # noqa: PLC0415 - only reached with an MCP client
+    import fastmcp  # - only reached with an MCP client
 
     major = int(str(getattr(fastmcp, "__version__", "0")).split(".")[0] or 0)
     if major < _MIN_FASTMCP_MAJOR or httpx2 is None:
@@ -121,7 +121,7 @@ def install_mcp_auth(client: t.Any) -> str | None:
             f"context; fastmcp {getattr(fastmcp, '__version__', '?')} would mix users' "
             "headers). Upgrade with: pip install -U '10xgraph[mcp]'"
         )
-    from fastmcp.client.transports import SSETransport, StreamableHttpTransport  # noqa: PLC0415
+    from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 
     transport = getattr(client, "transport", None)
     if not isinstance(transport, StreamableHttpTransport | SSETransport):

@@ -5,9 +5,9 @@ import os
 import re
 import time
 import uuid
-from datetime import timedelta
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import Enum
 from typing import Any, TypeVar
 from urllib.parse import quote, unquote
@@ -49,6 +49,7 @@ from tenxgraph.storage.columns import (
 from tenxgraph.storage.sql_filter import FilterSchema, compile_filters, validate_filters
 from tenxgraph.utils import ThreadInfo, metrics
 
+
 try:
     import asyncpg
     from asyncpg import Pool
@@ -83,6 +84,7 @@ except ImportError:
 from tenxgraph.core.state import AgentState, Message
 
 from .base_checkpointer import BaseCheckpointer, validate_page
+
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
@@ -470,13 +472,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # one Redis do not read each other's cached state (default: no prefix).
         self.redis_key_prefix = str(kwargs.get("redis_key_prefix", "") or "")
         # Seconds to wait for a free Postgres connection before failing (None waits forever).
-        self.pg_acquire_timeout = kwargs.get(
-            "pg_acquire_timeout", DEFAULT_PG_ACQUIRE_TIMEOUT
-        )
+        self.pg_acquire_timeout = kwargs.get("pg_acquire_timeout", DEFAULT_PG_ACQUIRE_TIMEOUT)
         # Redis circuit breaker (see DEFAULT_REDIS_BREAKER_COOLDOWN); None when disabled.
-        cooldown = float(
-            kwargs.get("redis_breaker_cooldown", DEFAULT_REDIS_BREAKER_COOLDOWN) or 0
-        )
+        cooldown = float(kwargs.get("redis_breaker_cooldown", DEFAULT_REDIS_BREAKER_COOLDOWN) or 0)
         self._redis_breaker = _RedisBreaker(cooldown) if cooldown > 0 else None
         # State cache keys whose invalidation was skipped while Redis was down.
         self._skipped_invalidations: set[str] = set()
@@ -495,9 +493,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         self._owns_redis = False
         # Number of historical state rows to keep per thread (append-only history
         # is pruned to this window on every durable write).
-        self.state_history_limit = kwargs.get(
-            "state_history_limit", DEFAULT_STATE_HISTORY_LIMIT
-        )
+        self.state_history_limit = kwargs.get("state_history_limit", DEFAULT_STATE_HISTORY_LIMIT)
         # Whether ``user_id`` is treated as an ownership boundary.
         #
         # Secure by default: threads, state, and messages are scoped to the
@@ -571,14 +567,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             raise ValueError("Either postgres_dsn or pg_pool must be provided.")
 
         if not redis and not redis_url and not redis_pool:
-            raise ValueError(
-                "Either redis_url, redis_pool or redis instance must be provided."
-            )
+            raise ValueError("Either redis_url, redis_pool or redis instance must be provided.")
 
         # Initialize Redis connection (synchronous)
-        self.redis = self._create_redis_pool(
-            redis, redis_pool, redis_url, redis_pool_config or {}
-        )
+        self.redis = self._create_redis_pool(redis, redis_pool, redis_url, redis_pool_config or {})
 
     def _create_redis_pool(
         self,
@@ -613,9 +605,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # This marks ONLY Redis as ours -- it must not imply anything about the
         # Postgres pool, which the caller may have supplied.
         if not redis_url:
-            raise ValueError(
-                "redis_url must be provided when creating new Redis connection"
-            )
+            raise ValueError("redis_url must be provided when creating new Redis connection")
 
         self._owns_redis = True
         return Redis(
@@ -676,9 +666,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
         return f'"{self.schema}"."{table}"'
 
-    def _create_pg_pool(
-        self, pg_pool: Any, postgres_dsn: str | None, pool_config: dict
-    ) -> Any:
+    def _create_pg_pool(self, pg_pool: Any, postgres_dsn: str | None, pool_config: dict) -> Any:
         """
         Create or use an existing PostgreSQL connection pool.
 
@@ -798,9 +786,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # Message ids are unique per thread, not globally (see migration v4), so the key
         # is declared as a table constraint on (thread_id, message_id).
         message_col = (
-            "message_id SERIAL"
-            if self.id_type == "int"
-            else f"message_id {message_id_type}"
+            "message_id SERIAL" if self.id_type == "int" else f"message_id {message_id_type}"
         )
 
         return [
@@ -1111,9 +1097,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             if self._schema_initialized:
                 return
 
-            async with (await self._get_pg_pool()).acquire(
-                timeout=self.pg_acquire_timeout
-            ) as conn:
+            async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
                 try:
                     # Serialize schema creation ACROSS processes (multiple gunicorn workers /
                     # k8s replicas starting at once). An in-process flag is not enough:
@@ -1137,9 +1121,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                             # Declared tenant/extra columns and RLS policies (idempotent).
                             await self._ensure_declared_columns(conn)
                             # Tables created just now are invisible to others: plain builds.
-                            await self._ensure_indexes(
-                                conn, new_tables, concurrently=False
-                            )
+                            await self._ensure_indexes(conn, new_tables, concurrently=False)
                         # Indexes missing on tables in use are built without blocking them.
                         await self._ensure_indexes(
                             conn, self._index_tables() - new_tables, concurrently=True
@@ -1174,9 +1156,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """Tables whose indexes ``_ensure_indexes`` manages."""
         return {"threads", "states", "messages", "tool_executions"}
 
-    async def _ensure_indexes(
-        self, conn, tables: set[str], *, concurrently: bool
-    ) -> None:
+    async def _ensure_indexes(self, conn, tables: set[str], *, concurrently: bool) -> None:
         """Build the missing or invalid base and declared-column indexes of ``tables``.
 
         Reads the catalog first and skips indexes that are in place: ``CREATE INDEX IF NOT
@@ -1214,9 +1194,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         One cheap indexed query that never creates anything, for readiness checks. Compare it
         with ``CURRENT_SCHEMA_VERSION`` (also ``self._get_current_schema_version()``).
         """
-        async with (await self._get_pg_pool()).acquire(
-            timeout=self.pg_acquire_timeout
-        ) as conn:
+        async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
             exists = await conn.fetchval(
                 "SELECT to_regclass($1) IS NOT NULL",
                 self._get_table_name("schema_version"),
@@ -1327,9 +1305,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         return self._key_identity(None, config)[1]
 
-    def _key_identity(
-        self, user_id: Any, config: dict[str, Any] | None
-    ) -> tuple[Any, str]:
+    def _key_identity(self, user_id: Any, config: dict[str, Any] | None) -> tuple[Any, str]:
         """``(owner, tenant suffix)`` the Redis keys of a thread are built from.
 
         With tenant columns and a ``_thread_identity`` read for this thread, both come from
@@ -1374,9 +1350,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return None
         return identity
 
-    def _remember_identity(
-        self, config: dict[str, Any] | None, thread_id: Any, row: Any
-    ) -> None:
+    def _remember_identity(self, config: dict[str, Any] | None, thread_id: Any, row: Any) -> None:
         """Keep the thread row's owner and tenant values in ``config`` (tenant columns only).
 
         ``row`` must come from a read that passed the caller's scope check.
@@ -1418,9 +1392,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         )
         if row is None:
             if self._thread_identity(config) is not None:
-                config.pop(
-                    _THREAD_IDENTITY_KEY, None
-                )  # no longer visible: own keys again
+                config.pop(_THREAD_IDENTITY_KEY, None)  # no longer visible: own keys again
             return None
         self._remember_identity(config, thread_id, row)
         return row
@@ -1438,13 +1410,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if not thread_id or not user_id:
             return
         try:
-            await self._read_thread_identity(
-                self._db_thread_id(thread_id), user_id, config
-            )
+            await self._read_thread_identity(self._db_thread_id(thread_id), user_id, config)
         except Exception as e:  # the caller's own keys are the safe fallback
-            logger.debug(
-                "Could not read the identity of thread_id=%s: %s", thread_id, e
-            )
+            logger.debug("Could not read the identity of thread_id=%s: %s", thread_id, e)
 
     def _stop_request_key(self, config: dict[str, Any]) -> str:
         """Per-thread stop/active-run key.
@@ -1574,9 +1542,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # Define exception types to catch (only if asyncpg is available)
         exceptions_to_catch: list[type[Exception]] = [ConnectionError]
         if HAS_ASYNCPG and asyncpg:
-            exceptions_to_catch.extend(
-                [asyncpg.PostgresConnectionError, asyncpg.InterfaceError]
-            )
+            exceptions_to_catch.extend([asyncpg.PostgresConnectionError, asyncpg.InterfaceError])
 
         exception_tuple = tuple(exceptions_to_catch)
 
@@ -1640,9 +1606,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         await self._initialize_schema()
 
         async def _operation():
-            async with (await self._get_pg_pool()).acquire(
-                timeout=self.pg_acquire_timeout
-            ) as conn:
+            async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
                 if settings:
                     async with conn.transaction():
                         await apply_settings(conn, settings)
@@ -1682,9 +1646,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return json.loads(value)
         return value
 
-    def _isolation(
-        self, config: dict[str, Any] | None, *, write: bool = False
-    ) -> _Isolation:
+    def _isolation(self, config: dict[str, Any] | None, *, write: bool = False) -> _Isolation:
         """Resolve the declared columns' values and the tenant isolation for one call.
 
         Values come only from ``config["user"]``. The picked tenant columns follow the caller's
@@ -1702,14 +1664,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         values = self.columns.resolve(config, write=write)
         specs = self.columns.scope_specs(picked)
         conditions = (
-            write_conditions(specs, values)
-            if write
-            else isolation_conditions(specs, values)
+            write_conditions(specs, values) if write else isolation_conditions(specs, values)
         )
         settings = (
-            rls_settings(self.columns.tenant, specs, values)
-            if self.row_level_security
-            else None
+            rls_settings(self.columns.tenant, specs, values) if self.row_level_security else None
         )
         return _Isolation(values=values, conditions=conditions, settings=settings)
 
@@ -1737,9 +1695,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         or an empty string when nothing applies (isolation off, no tenant columns).
         ``write=True`` scopes to the caller's own threads whatever the reach.
         """
-        isolation = (
-            isolation if isolation is not None else self._isolation(config, write=write)
-        )
+        isolation = isolation if isolation is not None else self._isolation(config, write=write)
         parts: list[str] = []
         if self._isolation_active(user_id, config, write=write):
             params.append(user_id)
@@ -1819,9 +1775,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         The declared columns follow the four fixed parameters of :meth:`_thread_insert_sql`.
         """
-        return column_value_errors(
-            {5 + i: spec for i, spec in enumerate(self.columns.all)}
-        )
+        return column_value_errors({5 + i: spec for i, spec in enumerate(self.columns.all)})
 
     async def _check_thread_access(
         self,
@@ -1869,21 +1823,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 raise ThreadNotFoundError(thread_id)
             raise StorageError(
                 message=(
-                    "Thread row disappeared during write"
-                    if lock
-                    else "Thread could not be created"
+                    "Thread row disappeared during write" if lock else "Thread could not be created"
                 ),
                 error_code="STORAGE_002",
                 context={"thread_id": thread_id},
             )
-        if self._isolation_active(user_id, config, write=True) and str(owner) != str(
-            user_id
-        ):
+        if self._isolation_active(user_id, config, write=True) and str(owner) != str(user_id):
             raise ThreadNotFoundError(thread_id)
         for spec, value in isolation.conditions:
-            if not _same_value(
-                spec, row[spec.name] if row is not None else None, value
-            ):
+            if not _same_value(spec, row[spec.name] if row is not None else None, value):
                 raise ThreadNotFoundError(thread_id)
         # The caller passed the check: later cache and stop keys of this call use the thread's
         # own identity (see _key_identity).
@@ -1947,9 +1895,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     conn, thread_id, user_id, config, isolation, lock=False
                 )
 
-            await self._run_scoped(
-                _check_and_create_thread, settings=isolation.settings
-            )
+            await self._run_scoped(_check_and_create_thread, settings=isolation.settings)
 
         except Exception as e:
             logger.error("Failed to ensure thread exists: %s", e)
@@ -1964,9 +1910,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         return self._encode_state(state)
 
-    def _deserialize_state_payload(
-        self, data: dict[str, Any], thread_id: Any = None
-    ) -> StateT:
+    def _deserialize_state_payload(self, data: dict[str, Any], thread_id: Any = None) -> StateT:
         """Reconstruct a state from a persisted payload using the bound state class.
 
         The Redis cache copy also carries the checkpoint version, which is not a
@@ -2068,9 +2012,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         )
         with self._insert_value_errors():
             await conn.execute(insert_sql, *insert_params)
-        await self._check_thread_access(
-            conn, thread_id, user_id, config, isolation, lock=True
-        )
+        await self._check_thread_access(conn, thread_id, user_id, config, isolation, lock=True)
 
         version_row = await conn.fetchrow(
             f"SELECT COALESCE(MAX(version), 0) AS v "  # noqa: S608
@@ -2119,18 +2061,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Returns:
             int: The new version assigned to the written row.
         """
-        current_version = await self._lock_thread_for_write(
-            conn, thread_id, user_id, config
-        )
+        current_version = await self._lock_thread_for_write(conn, thread_id, user_id, config)
 
         state_json = json.dumps(self._serialize_state_payload(state))
         if (
             retried
             and expected_version is not None
             and current_version == int(expected_version) + 1
-            and await self._state_row_matches(
-                conn, thread_id, current_version, state_json
-            )
+            and await self._state_row_matches(conn, thread_id, current_version, state_json)
         ):
             logger.warning(
                 "Write for thread_id=%s had already committed before its retry; keeping it",
@@ -2321,9 +2259,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             ThreadNotFoundError: The thread belongs to another user or tenant.
         """
         thread_id, user_id = self._validate_config(config)
-        self._isolation(
-            config, write=True
-        )  # config errors raise as is (see aput_state)
+        self._isolation(config, write=True)  # config errors raise as is (see aput_state)
         messages = messages or []
         expected_version = config.get(STATE_VERSION_CONFIG_KEY)
 
@@ -2373,9 +2309,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 raise  # another user's thread: nothing was written, the API answers 404
             except Exception as e:
                 metrics.counter("pg_checkpointer.save_checkpoint.error").inc()
-                logger.error(
-                    "Failed to store checkpoint for thread_id=%s: %s", thread_id, e
-                )
+                logger.error("Failed to store checkpoint for thread_id=%s: %s", thread_id, e)
                 raise StorageError(
                     message=f"Failed to store checkpoint: {e}",
                     error_code="STORAGE_001",
@@ -2403,9 +2337,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
         thread_id, user_id = self._validate_config(config)
 
-        logger.debug(
-            "Retrieving state for thread_id=%s, user_id=%s", thread_id, user_id
-        )
+        logger.debug("Retrieving state for thread_id=%s, user_id=%s", thread_id, user_id)
 
         try:
             scope_sql, scope_params = self._thread_scope(thread_id, user_id, config)
@@ -2471,9 +2403,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
 
             # Clear from Redis cache (best effort: Postgres is already cleared)
-            await self._invalidate_state_cache(
-                thread_id, user_id, retries=1, config=config
-            )
+            await self._invalidate_state_cache(thread_id, user_id, retries=1, config=config)
             config.pop(STATE_VERSION_CONFIG_KEY, None)
 
             logger.debug("State cleared for thread_id=%s", thread_id)
@@ -2483,9 +2413,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.error("Failed to clear state for thread_id=%s: %s", thread_id, e)
             raise
 
-    async def aput_state_cache(
-        self, config: dict[str, Any], state: StateT
-    ) -> Any | None:
+    async def aput_state_cache(self, config: dict[str, Any], state: StateT) -> Any | None:
         """
         Cache state in Redis with TTL.
 
@@ -2568,25 +2496,17 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             keys = [self._get_thread_key(thread_id, user_id, config)]
             if self._thread_identity(config) is not None:
-                caller_config = {
-                    k: v for k, v in config.items() if k != _THREAD_IDENTITY_KEY
-                }
+                caller_config = {k: v for k, v in config.items() if k != _THREAD_IDENTITY_KEY}
                 caller_key = self._get_thread_key(thread_id, user_id, caller_config)
                 if caller_key not in keys:
                     keys.append(caller_key)
-        except (
-            ValueError
-        ) as e:  # a malformed tenant value: nothing of ours can be cached
-            logger.warning(
-                "Skipped state cache invalidation for thread_id=%s: %s", thread_id, e
-            )
+        except ValueError as e:  # a malformed tenant value: nothing of ours can be cached
+            logger.warning("Skipped state cache invalidation for thread_id=%s: %s", thread_id, e)
             return
         for attempt in range(retries + 1):
             try:
                 await self._redis_call(lambda: self.redis.delete(*keys))
-                logger.debug(
-                    "Invalidated stale state cache for thread_id=%s", thread_id
-                )
+                logger.debug("Invalidated stale state cache for thread_id=%s", thread_id)
                 return
             except _RedisUnavailable:
                 # Redis is down: delete the entry as soon as it is reachable again (see
@@ -2632,9 +2552,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
             return int(durable) == cached_version
         except Exception as e:
-            logger.warning(
-                "Could not verify state cache for thread_id=%s: %s", thread_id, e
-            )
+            logger.warning("Could not verify state cache for thread_id=%s: %s", thread_id, e)
             return True
 
     async def _durable_version_for_cache(
@@ -2652,9 +2570,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             row = await self._read_thread_identity(thread_id, user_id, config)
         except Exception as e:
-            logger.warning(
-                "Could not verify state cache for thread_id=%s: %s", thread_id, e
-            )
+            logger.warning("Could not verify state cache for thread_id=%s: %s", thread_id, e)
             return None
         return int(row["durable_version"]) if row is not None else 0
 
@@ -2690,18 +2606,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # Schema might be needed if we fall back to DB
         thread_id, user_id = self._validate_config(config)
 
-        logger.debug(
-            "Getting cached state for thread_id=%s, user_id=%s", thread_id, user_id
-        )
+        logger.debug("Getting cached state for thread_id=%s, user_id=%s", thread_id, user_id)
 
         # With tenant columns the key is the thread's identity, so the scoped durable read (the
         # thread row and its current state version) comes first. Built outside the try below:
         # a scope this caller cannot satisfy must raise, never fall back to the cache.
         durable_version: int | None = None
         if self.columns.tenant:
-            durable_version = await self._durable_version_for_cache(
-                thread_id, user_id, config
-            )
+            durable_version = await self._durable_version_for_cache(thread_id, user_id, config)
 
         try:
             # Try Redis first
@@ -2718,9 +2630,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 # down), it would load an old state with no version, and the next save,
                 # having nothing to compare, would overwrite the newer durable state.
                 if self.columns.tenant:
-                    current = (
-                        durable_version is None or durable_version == cached_version
-                    )
+                    current = durable_version is None or durable_version == cached_version
                 else:
                     current = await self._cache_matches_durable(
                         thread_id, user_id, config, cached_version
@@ -2736,9 +2646,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                         thread_id,
                         version,
                     )
-                    await self._invalidate_state_cache(
-                        thread_id, user_id, config=config
-                    )
+                    await self._invalidate_state_cache(thread_id, user_id, config=config)
                 else:
                     logger.debug("Cache hit for thread_id=%s", thread_id)
                     if version is not None:
@@ -2746,9 +2654,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     return self._deserialize_state_payload(data, thread_id)
 
             # Cache miss - fallback to PostgreSQL
-            logger.debug(
-                "Cache miss for thread_id=%s, falling back to PostgreSQL", thread_id
-            )
+            logger.debug("Cache miss for thread_id=%s, falling back to PostgreSQL", thread_id)
             state = await self.aget_state(config)
 
             # Cache the result for next time
@@ -2759,9 +2665,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         except Exception as e:
             if not isinstance(e, _RedisUnavailable):  # the breaker already logged it
-                logger.error(
-                    "Failed to get cached state for thread_id=%s: %s", thread_id, e
-                )
+                logger.error("Failed to get cached state for thread_id=%s: %s", thread_id, e)
             # Fallback to PostgreSQL on error
             return await self.aget_state(config)
 
@@ -2782,9 +2686,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         except _RedisUnavailable:
             return None
         except Exception as e:
-            logger.error(
-                "Failed to cache value for namespace=%s key=%s: %s", namespace, key, e
-            )
+            logger.error("Failed to cache value for namespace=%s key=%s: %s", namespace, key, e)
             return None
 
     async def aget_cache_value(self, namespace: str, key: str) -> Any | None:
@@ -2822,9 +2724,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
             return None
 
-    async def aclear_cache_value_if(
-        self, namespace: str, key: str, expected: Any
-    ) -> bool:
+    async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Delete a generic cache value only if it still equals ``expected`` (one Lua call)."""
         try:
             cache_key = self._get_generic_cache_key(namespace, key)
@@ -2857,16 +2757,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             ttl = ttl_seconds or self.cache_ttl
             payload = json.dumps(value)
             return bool(
-                await self._redis_call(
-                    lambda: self.redis.set(cache_key, payload, ex=ttl, nx=True)
-                )
+                await self._redis_call(lambda: self.redis.set(cache_key, payload, ex=ttl, nx=True))
             )
         except _RedisUnavailable:
             return False
         except Exception as e:
-            logger.error(
-                "Failed to cache value for namespace=%s key=%s: %s", namespace, key, e
-            )
+            logger.error("Failed to cache value for namespace=%s key=%s: %s", namespace, key, e)
             return False
 
     async def alist_cache_keys(
@@ -2880,9 +2776,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # Ids are percent-encoded, which leaves no glob characters in them; the
             # namespace prefix may still carry the deployment prefix, so escape that.
             pattern = (
-                re.sub(r"([\\*?\[\]])", r"\\\1", ns_prefix)
-                + quote(prefix or "", safe="")
-                + "*"
+                re.sub(r"([\\*?\[\]])", r"\\\1", ns_prefix) + quote(prefix or "", safe="") + "*"
             )
             keys: list[str] = []
             cursor = 0
@@ -2891,9 +2785,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     lambda c=cursor: self.redis.scan(cursor=c, match=pattern, count=100)
                 )
                 for raw_key in found:
-                    key_str = (
-                        raw_key.decode() if isinstance(raw_key, bytes) else raw_key
-                    )
+                    key_str = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
                     # Strip the namespace prefix to return just the key part
                     if key_str.startswith(ns_prefix):
                         keys.append(unquote(key_str[len(ns_prefix) :]))
@@ -2991,9 +2883,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             ON CONFLICT (thread_id, tool_call_id) DO NOTHING
             """  # noqa: S608
         await self._run_scoped(
-            lambda conn: conn.execute(
-                query, thread_id, str(tool_call_id), json.dumps(result)
-            ),
+            lambda conn: conn.execute(query, thread_id, str(tool_call_id), json.dumps(result)),
             settings=self._rls(config, write=True),
         )
         logger.debug(
@@ -3106,9 +2996,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 message.message_id,
                 thread_id,
                 message.role,
-                json.dumps(
-                    [block.model_dump(mode="json") for block in message.content]
-                ),
+                json.dumps([block.model_dump(mode="json") for block in message.content]),
                 json.dumps(message.tools_calls) if message.tools_calls else None,
                 getattr(message, "tool_call_id", None),
                 message.usages.total_tokens if message.usages else 0,
@@ -3155,17 +3043,13 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 in_transaction=True,
                 settings=self._rls(config, write=True),
             )
-            logger.debug(
-                "Stored %d messages for thread_id=%s", len(messages), thread_id
-            )
+            logger.debug("Stored %d messages for thread_id=%s", len(messages), thread_id)
 
         except Exception as e:
             logger.error("Failed to store messages for thread_id=%s: %s", thread_id, e)
             raise
 
-    async def aget_message(
-        self, config: dict[str, Any], message_id: str | int
-    ) -> Message:
+    async def aget_message(self, config: dict[str, Any], message_id: str | int) -> Message:
         """
         Retrieve a single message by ID.
 
@@ -3340,9 +3224,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 if self.columns.tenant:
                     # Read the thread's identity with the lock, under the caller's scope, so
                     # the cache entry dropped below is the thread's shared one.
-                    row_sql, row_params = self._thread_row_scope(
-                        thread_id, user_id, config
-                    )
+                    row_sql, row_params = self._thread_row_scope(thread_id, user_id, config)
                     owner_row = await conn.fetchrow(
                         f"SELECT {self._identity_columns_sql()} FROM {threads} "  # noqa: S608
                         f"WHERE {row_sql} FOR UPDATE",
@@ -3376,9 +3258,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     # An in-place rewrite keeps MAX(version), so a cached copy of the old
                     # state (under any caller's key) would still pass the version check.
                     # Moving the latest row to a new version makes every such copy stale.
-                    latest = max(
-                        rows, key=lambda r: (int(r["version"]), int(r["state_id"]))
-                    )
+                    latest = max(rows, key=lambda r: (int(r["version"]), int(r["state_id"])))
                     await conn.execute(
                         f"UPDATE {states} SET version = $1 WHERE state_id = $2",  # noqa: S608
                         int(latest["version"]) + 1,
@@ -3392,9 +3272,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # The cached state carries the message too. Dropping it makes the next read
             # rebuild from Postgres.
             if user_id:
-                await self._invalidate_state_cache(
-                    thread_id, user_id, retries=1, config=config
-                )
+                await self._invalidate_state_cache(thread_id, user_id, retries=1, config=config)
             logger.debug("Deleted message_id=%s (%d row)", message_id, deleted)
             return deleted
 
@@ -3427,9 +3305,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if not thread_id:
             raise ValueError("thread_id must be provided in config")
 
-        logger.debug(
-            "Updating metadata of message_id=%s for thread_id=%s", message_id, thread_id
-        )
+        logger.debug("Updating metadata of message_id=%s for thread_id=%s", message_id, thread_id)
 
         try:
             query = f"""
@@ -3454,9 +3330,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return self._row_to_message(row) if row else None
 
         except Exception as e:
-            logger.error(
-                "Failed to update metadata of message_id=%s: %s", message_id, e
-            )
+            logger.error("Failed to update metadata of message_id=%s: %s", message_id, e)
             raise
 
     def _row_to_message(self, row) -> Message:  # noqa: PLR0912, PLR0915
@@ -3508,9 +3382,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 elif isinstance(parsed, dict):
                     content_value = [parsed]
                 else:
-                    content_value = [
-                        {"type": "text", "text": str(parsed), "annotations": []}
-                    ]
+                    content_value = [{"type": "text", "text": str(parsed), "annotations": []}]
             except Exception:
                 content_value = [
                     {
@@ -3528,21 +3400,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 elif isinstance(parsed, dict):
                     content_value = [parsed]
                 else:
-                    content_value = [
-                        {"type": "text", "text": content_raw, "annotations": []}
-                    ]
+                    content_value = [{"type": "text", "text": content_raw, "annotations": []}]
             except Exception:
-                content_value = [
-                    {"type": "text", "text": content_raw, "annotations": []}
-                ]
+                content_value = [{"type": "text", "text": content_raw, "annotations": []}]
         elif isinstance(content_raw, list):
             content_value = content_raw
         elif isinstance(content_raw, dict):
             content_value = [content_raw]
         else:
-            content_value = [
-                {"type": "text", "text": str(content_raw), "annotations": []}
-            ]
+            content_value = [{"type": "text", "text": str(content_raw), "annotations": []}]
 
         return Message(
             message_id=row["message_id"],
@@ -3584,9 +3450,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # Ensure schema is initialized before accessing tables
         thread_id, user_id = self._validate_config(config)
 
-        logger.debug(
-            "Storing thread info for thread_id=%s, user_id=%s", thread_id, user_id
-        )
+        logger.debug("Storing thread info for thread_id=%s, user_id=%s", thread_id, user_id)
 
         try:
             thread_name = thread_info.thread_name
@@ -3658,15 +3522,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 return False
 
             created = await self._run_scoped(_put_thread, settings=isolation.settings)
-            logger.debug(
-                "Thread info stored for thread_id=%s (created=%s)", thread_id, created
-            )
+            logger.debug("Thread info stored for thread_id=%s (created=%s)", thread_id, created)
             return bool(created)
 
         except Exception as e:
-            logger.error(
-                "Failed to store thread info for thread_id=%s: %s", thread_id, e
-            )
+            logger.error("Failed to store thread info for thread_id=%s: %s", thread_id, e)
             raise e
 
     async def aget_thread(
@@ -3688,9 +3548,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         # Ensure schema is initialized before accessing tables
         thread_id, user_id = self._validate_config(config)
 
-        logger.debug(
-            "Retrieving thread info for thread_id=%s, user_id=%s", thread_id, user_id
-        )
+        logger.debug("Retrieving thread info for thread_id=%s, user_id=%s", thread_id, user_id)
 
         try:
             # Owner-scoped unless the developer disabled isolation.
@@ -3709,15 +3567,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 # The row's owner, not the caller: they differ under reach tenant or all.
                 return self._row_to_thread_info(row)
 
-            logger.debug(
-                "Thread not found for thread_id=%s, user_id=%s", thread_id, user_id
-            )
+            logger.debug("Thread not found for thread_id=%s, user_id=%s", thread_id, user_id)
             return None
 
         except Exception as e:
-            logger.error(
-                "Failed to retrieve thread info for thread_id=%s: %s", thread_id, e
-            )
+            logger.error("Failed to retrieve thread info for thread_id=%s: %s", thread_id, e)
             raise e
 
     async def aget_thread_owner(self, thread_id: str | int) -> str | int | None:
@@ -3912,9 +3766,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # must not turn a completed delete into an error; the stale cache entry is
             # ignored on read (its version no longer matches Postgres, see
             # aget_state_cache) and expires with its TTL.
-            await self._invalidate_state_cache(
-                thread_id, user_id, retries=1, config=config
-            )
+            await self._invalidate_state_cache(thread_id, user_id, retries=1, config=config)
 
             logger.debug("Thread cleaned: thread_id=%s, user_id=%s", thread_id, user_id)
             return deleted
@@ -3941,9 +3793,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         """
 
         async def _select_one():
-            async with (await self._get_pg_pool()).acquire(
-                timeout=self.pg_acquire_timeout
-            ) as conn:
+            async with (await self._get_pg_pool()).acquire(timeout=self.pg_acquire_timeout) as conn:
                 return await conn.fetchval("SELECT 1")
 
         await self._retry_on_connection_error(_select_one, max_retries=3)
