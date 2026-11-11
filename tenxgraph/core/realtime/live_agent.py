@@ -665,7 +665,11 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         except Exception:
             payload = repr((event.name, event.args))
         digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
-        key = ToolRuntimeMixin._ledger_key(f"realtime-{scope}-{digest}", event.id)
+        key = (
+            ToolRuntimeMixin._ledger_key(f"realtime-{scope}-{digest}", event.id)
+            if ToolRuntimeMixin._ledger_enabled(checkpointer, tool_node, event.name)
+            else None
+        )
         ledger = _LedgerAccess(self._node_name_or_default())
         if checkpointer is not None and key:
             recorded = await ledger._get_recorded_tool_result(checkpointer, config, key)

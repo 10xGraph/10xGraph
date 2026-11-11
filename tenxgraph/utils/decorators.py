@@ -30,6 +30,7 @@ def tool[F: Callable[..., Any]](
     capabilities: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     parameters: dict[str, Any] | None = None,
+    record_tool_result: bool = True,
 ) -> Callable[[F], F] | F:
     """Decorator to mark a function as a tool with metadata.
 
@@ -65,6 +66,11 @@ def tool[F: Callable[..., Any]](
             provider verbatim. Use it for parameter types the generator rejects, or
             when a specific provider needs a hand-tuned schema. Argument coercion
             still runs off the real annotations, so keep the two in agreement.
+        record_tool_result: Record each finished call in the checkpointer's tool ledger
+            (default True), so a node replayed after a crash or resumed after a pause does
+            not run the tool again. Set False for a read-only tool whose result should be
+            fresh on every run; a checkpointer with ``record_tool_result=False`` turns the
+            ledger off for every tool.
 
     Returns:
         A decorator function that wraps the target function and attaches metadata
@@ -109,6 +115,7 @@ def tool[F: Callable[..., Any]](
           - _py_tool_capabilities: List of capabilities
           - _py_tool_metadata: Additional metadata dict
           - _py_tool_parameters: Explicit parameters JSON Schema, if supplied
+          - _py_tool_record_tool_result: Whether the tool ledger records this tool's calls
         - These attributes are used by ToolNode and schema generation to build
           OpenAI-compatible function calling schemas.
         - Tags are converted to a set for efficient membership testing.
@@ -175,6 +182,8 @@ def tool[F: Callable[..., Any]](
                 raise ValueError(msg)
             target._py_tool_parameters = parameters  # type: ignore[attr-defined]
 
+        target._py_tool_record_tool_result = bool(record_tool_result)  # type: ignore[attr-defined]
+
         return func
 
     # Handle being called without parentheses (@tool)
@@ -203,6 +212,7 @@ def get_tool_metadata(func: Callable) -> dict[str, Any]:
         - capabilities: List of capabilities (or None if not set)
         - metadata: Additional metadata dict (or None if not set)
         - parameters: Explicit parameters JSON Schema (or None if not set)
+        - record_tool_result: Whether the tool ledger records its calls (default True)
 
     Example:
         >>> @tool(name="my_tool", tags=["test"])
@@ -223,6 +233,7 @@ def get_tool_metadata(func: Callable) -> dict[str, Any]:
         "capabilities": getattr(func, "_py_tool_capabilities", None),
         "metadata": getattr(func, "_py_tool_metadata", None),
         "parameters": getattr(func, "_py_tool_parameters", None),
+        "record_tool_result": getattr(func, "_py_tool_record_tool_result", True),
     }
 
 

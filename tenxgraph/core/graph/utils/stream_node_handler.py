@@ -123,7 +123,12 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         function_name = tool_call.get("function", {}).get("name", "")
         tool_call_id = tool_call.get("id", "")
 
-        ledger_key = self._ledger_key(origin_message_id, tool_call_id)
+        # None turns both the replay lookup and the record below off.
+        ledger_key = (
+            self._ledger_key(origin_message_id, tool_call_id)
+            if self._ledger_enabled(checkpointer, self.func, function_name)
+            else None
+        )
         if checkpointer and ledger_key:
             recorded = await self._get_recorded_tool_result(checkpointer, config, ledger_key)
             if recorded is not None:

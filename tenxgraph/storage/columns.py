@@ -103,6 +103,7 @@ __all__ = [
     "rls_policy_expression",
     "rls_policy_name",
     "rls_settings",
+    "role_bypasses_rls",
     "user_value",
     "warn_if_rls_bypassed",
     "write_conditions",
@@ -1042,12 +1043,18 @@ async def ensure_rls(
         await conn.execute(f"ALTER TABLE {table_sql} FORCE ROW LEVEL SECURITY")
 
 
+async def role_bypasses_rls(conn: Any) -> bool:
+    """True when the connected role skips RLS (superuser or ``BYPASSRLS``)."""
+    return bool(
+        await conn.fetchval(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+        )
+    )
+
+
 async def warn_if_rls_bypassed(conn: Any, logger: Any, owner: str) -> None:
     """Log a warning when the connected role skips RLS (superuser or ``BYPASSRLS``)."""
-    bypass = await conn.fetchval(
-        "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
-    )
-    if bypass:
+    if await role_bypasses_rls(conn):
         logger.warning(
             "%s: row_level_security=True, but the database role is a superuser or has "
             "BYPASSRLS, so Postgres skips the policies for it. The WHERE filter still applies; "

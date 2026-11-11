@@ -43,6 +43,7 @@ from tenxgraph.utils import (
     ResponseGranularity,
     add_messages,
 )
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 
@@ -750,14 +751,18 @@ async def sync_data(
     context_manager: BaseContextManager = Inject[BaseContextManager],  # will be auto-injected
     callback_mgr: CallbackManager = Inject[CallbackManager],  # will be auto-injected
     last_save: LastSave | None = None,
+    task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
 ) -> bool:
     """Sync the current state and messages to the checkpointer.
 
-    ``last_save`` records the save this call starts, for the run's cancel cleanup.
+    ``last_save`` records the save this call starts, for the run's cancel cleanup. Once a
+    COMPLETED state is saved, the thread's tool ledger is cleared in the background (see
+    :func:`_schedule_ledger_clear`).
     """
     checkpointer = fresh(checkpointer)
     context_manager = fresh(context_manager)
     callback_mgr = fresh(callback_mgr)
+    task_manager = fresh(task_manager)
     is_context_trimmed = False
 
     new_state = copy.deepcopy(state)
@@ -810,7 +815,49 @@ async def sync_data(
                 logger.warning("Save failed after cancel (%r)", save.exception())
             raise
 
+        if new_state.execution_meta.status == ExecutionStatus.COMPLETED:
+            _schedule_ledger_clear(checkpointer, config, task_manager)
+
     return is_context_trimmed
+
+
+async def _clear_ledger(checkpointer: BaseCheckpointer, config: dict[str, Any]) -> None:
+    try:
+        deleted = await checkpointer.aclear_tool_results(config)
+        logger.debug("Cleared %s tool ledger rows of thread '%s'", deleted, config.get("thread_id"))
+    except Exception as e:
+        logger.warning(
+            "Could not clear the tool ledger of thread '%s' (%r); aprune_tool_results "
+            "removes the rows later",
+            config.get("thread_id"),
+            e,
+        )
+
+
+def _schedule_ledger_clear(
+    checkpointer: BaseCheckpointer,
+    config: dict[str, Any],
+    task_manager: BackgroundTaskManager | None,
+) -> None:
+    """Delete the thread's tool ledger rows after its run completed, without holding the caller.
+
+    A completed run has no node left to replay, so its records are spent. Runs that paused,
+    stopped, failed or were cancelled never save COMPLETED and keep them. The task runs on the
+    graph's own task manager, which ``aclose()`` drains before it releases the checkpointer.
+    """
+    if not getattr(checkpointer, "record_tool_result", True):
+        return
+    manager = resolve_task_manager(task_manager)
+    if manager is None:
+        return
+    # A copy: the caller goes on using (and popping keys from) its config.
+    task = manager.create_task(_clear_ledger(checkpointer, dict(config)), name="clear_tool_ledger")
+    if task is None:
+        logger.debug(
+            "Tool ledger clear of thread '%s' dropped by backpressure; the rows stay until "
+            "pruned",
+            config.get("thread_id"),
+        )
 
 
 def calculate_token_usage(messages: list[Message]) -> dict[str, int]:

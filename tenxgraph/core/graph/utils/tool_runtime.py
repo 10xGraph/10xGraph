@@ -86,6 +86,21 @@ class ToolRuntimeMixin:
         return last_message.model_copy(update={"tools_calls": regular})
 
     @staticmethod
+    def _ledger_enabled(checkpointer: Any, tools: Any, function_name: str) -> bool:
+        """Whether a call of ``function_name`` is read from and written to the tool ledger.
+
+        Off when there is no checkpointer, when the checkpointer has
+        ``record_tool_result=False`` (this wins), or when the local tool was decorated with
+        ``@tool(record_tool_result=False)``. MCP, skill and client tools carry no flag and
+        are recorded.
+        """
+        if not checkpointer or not getattr(checkpointer, "record_tool_result", True):
+            return False
+        funcs = getattr(tools, "_funcs", None)
+        fn = funcs.get(function_name) if isinstance(funcs, dict) else None
+        return getattr(fn, "_py_tool_record_tool_result", True) is not False
+
+    @staticmethod
     def _ledger_key(origin_message_id: str | None, tool_call_id: str) -> str | None:
         """Identity of one tool invocation, for the idempotency ledger.
 

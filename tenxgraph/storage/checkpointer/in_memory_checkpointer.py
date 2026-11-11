@@ -3,6 +3,7 @@ import copy
 import logging
 import time
 from collections import defaultdict
+from datetime import timedelta
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -56,12 +57,15 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         tenant_columns: Any = None,
         extra_columns: Any = None,
         row_level_security: bool = False,
+        record_tool_result: bool = True,
     ):
         """
         Initialize all in-memory storage and locks.
 
         ``tenant_columns``, ``extra_columns`` and ``row_level_security`` exist only to fail
         loudly: they need ``PgCheckpointer``, and passing any of them raises ``ValueError``.
+        ``record_tool_result=False`` turns the tool ledger off for every tool (see
+        :attr:`BaseCheckpointer.record_tool_result`).
         """
         _reject_tenant_options(
             "InMemoryCheckpointer",
@@ -86,8 +90,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # (config["user"]) asks for it -- see _owner_denied / _claim.
         self._thread_owner: dict[str, str] = {}
 
-        # Tool execution ledger (idempotency): (thread, tool_call_id) -> result
-        self._tool_results: dict[tuple[str, str], dict[str, Any]] = {}
+        self.record_tool_result = record_tool_result
+        # Tool execution ledger (idempotency): (thread, tool_call_id) -> (result, recorded at)
+        self._tool_results: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
 
         # Async locks for concurrent access
         self._state_lock = asyncio.Lock()
@@ -320,7 +325,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         if self._owner_denied(config):
             return None  # not the owner -> no record, do not reveal existence
         async with self._tool_lock:
-            return self._tool_results.get(self._tool_key(config, tool_call_id))
+            entry = self._tool_results.get(self._tool_key(config, tool_call_id))
+            return entry[0] if entry is not None else None
 
     async def aput_tool_result(
         self,
@@ -331,8 +337,28 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """Record that a tool call completed, with its result."""
         async with self._tool_lock:
             self._claim(config)
-            self._tool_results[self._tool_key(config, tool_call_id)] = result
+            self._tool_results[self._tool_key(config, tool_call_id)] = (result, time.time())
             return True
+
+    async def aclear_tool_results(self, config: dict[str, Any]) -> int:
+        """Delete the thread's ledger records; returns how many went."""
+        if self._owner_denied(config, write=True):
+            return 0
+        key = self._get_config_key(config)
+        async with self._tool_lock:
+            stale = [k for k in self._tool_results if k[0] == key]
+            for ledger_key in stale:
+                del self._tool_results[ledger_key]
+        return len(stale)
+
+    async def aprune_tool_results(self, older_than: timedelta) -> int:
+        """Delete ledger records of every thread older than ``older_than``."""
+        cutoff = time.time() - older_than.total_seconds()
+        async with self._tool_lock:
+            stale = [k for k, (_, at) in self._tool_results.items() if at < cutoff]
+            for ledger_key in stale:
+                del self._tool_results[ledger_key]
+        return len(stale)
 
     async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
         cache_key = f"{namespace}:{key}"
