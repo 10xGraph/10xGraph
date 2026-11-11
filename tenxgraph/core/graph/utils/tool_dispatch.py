@@ -109,6 +109,7 @@ def hidden_tool_message(tool_call: dict[str, Any]) -> Message:
             ErrorBlock(message=error_msg),
             ToolResultBlock(
                 call_id=tool_call.get("id", ""),
+                name=name or None,
                 output=error_msg,
                 is_error=True,
                 status="failed",
@@ -162,7 +163,12 @@ def handoff_tool_messages(
         )
         answer = Message.tool_message(
             content=[
-                ToolResultBlock(call_id=call.get("id", ""), output=output, status="completed")
+                ToolResultBlock(
+                    call_id=call.get("id", ""),
+                    name=tool_call_name(call) or None,
+                    output=output,
+                    status="completed",
+                )
             ],
         )
         if not_run:
@@ -190,6 +196,7 @@ def invalid_arguments_message(tool_call: dict[str, Any]) -> Message:
         content=[
             ToolResultBlock(
                 call_id=tool_call.get("id", ""),
+                name=tool_call_name(tool_call) or None,
                 output=INVALID_TOOL_ARGUMENTS_MESSAGE,
                 is_error=True,
                 status="failed",

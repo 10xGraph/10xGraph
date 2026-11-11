@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tenxgraph.core.authz import Identity, Reach
 from tenxgraph.core.graph.tool_node.mcp_exec import MCPMixin
 from tenxgraph.core.state import Message
 
@@ -276,12 +278,81 @@ async def test_mcp_tool_list_cache_and_refresh():
 
 @pytest.mark.asyncio
 async def test_mcp_failed_listing_is_not_cached():
-    client = _CountingClient(ping_ok=False, tools=[_MCPTool("a")])
+    class _Flaky(_CountingClient):
+        down = True
+
+        async def list_tools(self):
+            if self.down:
+                raise ConnectionError("server down")
+            return await super().list_tools()
+
+    client = _Flaky(tools=[_MCPTool("a")])
     node = _Node(client=client)
     node._mcp_cache_tools = True
     assert await node._get_mcp_tool() == []
-    client._ping_ok = True
+    client.down = False
     assert len(await node._get_mcp_tool()) == 1
+
+
+class _NoPingClient(_Client):
+    """A server on MCP protocol 2026-07-28 (fastmcp 4.x default): ping is not a method."""
+
+    async def ping(self):
+        raise AssertionError("ToolNode must not ping before listing or calling")
+
+
+@pytest.mark.asyncio
+async def test_list_and_call_do_not_ping():
+    client = _NoPingClient(tools=[_MCPTool("a")], call_result=SimpleNamespace(content={"ok": 1}))
+    node = _Node(client=client)
+    assert [x["function"]["name"] for x in await node._get_mcp_tool()] == ["a"]
+    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
+        result = await node._mcp_execute("a", {}, "tc-np", {}, _callback_manager())
+    assert client.called_with == ("a", {})
+    assert "ok" in result.text()
+
+
+@pytest.mark.asyncio
+async def test_call_against_down_server_returns_generic_tool_error():
+    class _Down(_Client):
+        async def call_tool(self, name, args, *, meta=None):
+            raise ConnectionError("connection refused to 10.0.0.5")
+
+    node = _Node(client=_Down())
+    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
+        result = await node._mcp_execute("a", {}, "tc-down", {}, _callback_manager())
+    block = result.content[0]
+    assert block.is_error and block.status == "failed"
+    assert "10.0.0.5" not in result.text()
+
+
+@pytest.mark.asyncio
+async def test_identity_user_is_sent_whole_to_mcp():
+    identity = Identity(
+        user_id="alice", tenant={"org_id": "acme"}, roles=frozenset({"member"}), reach=Reach.OWN
+    )
+    client = _Client(call_result=SimpleNamespace(content={"ok": True}))
+    node = _Node(client=client, pass_user=True)
+    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
+        await node._mcp_execute(
+            "tool", {}, "tc-id", {"user": identity, "user_id": "alice"}, _callback_manager()
+        )
+    sent = client.meta["user"]
+    assert sent["user_id"] == "alice"
+    assert sent["tenant"] == {"org_id": "acme"}
+    assert sent["roles"] == ["member"]
+    assert sent["reach"] == "own"
+    json.dumps(client.meta)  # JSON-safe: frozensets and enums are dumped
+
+
+@pytest.mark.asyncio
+async def test_dict_user_is_sent_as_is_to_mcp():
+    client = _Client(call_result=SimpleNamespace(content={"ok": True}))
+    node = _Node(client=client, pass_user=True)
+    user = {"id": "user1", "name": "John"}
+    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
+        await node._mcp_execute("tool", {}, "tc-d", {"user": user}, _callback_manager())
+    assert client.meta == {"user": user}
 
 
 @pytest.mark.asyncio

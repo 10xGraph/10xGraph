@@ -9,6 +9,9 @@ import json
 import logging
 import typing as t
 
+from pydantic import BaseModel
+
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.state import (
     ContentBlock,
     ErrorBlock,
@@ -20,12 +23,30 @@ from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
 
 from ._helpers import _normalize_resource_uri, generic_tool_failure
+from .mcp_auth import mcp_call_headers, resolve_mcp_headers
 
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
 
 
 DEFAULT_MCP_CONNECT_TIMEOUT = 30.0
+
+
+def _mcp_user_info(config: dict[str, t.Any]) -> dict[str, t.Any] | None:
+    """The caller info sent as MCP request metadata.
+
+    The API puts an ``Identity`` (a pydantic model) in ``config["user"]``; it is sent whole as
+    JSON (user_id, kind, tenant, roles, permissions, reach, claims). A dict is sent as is
+    (direct SDK use). Otherwise only ``config["user_id"]``, when set. Never the credential:
+    it lives under ``config["credential"]``, not in the identity.
+    """
+    user = config.get("user")
+    if isinstance(user, BaseModel):
+        return user.model_dump(mode="json")
+    if isinstance(user, dict) and user:
+        return user
+    user_id = config.get("user_id")
+    return {"user_id": user_id} if user_id else None
 
 
 class MCPMixin:
@@ -35,9 +56,33 @@ class MCPMixin:
     _pass_user_info_to_mcp: bool  # type: ignore[assignment]
 
     @contextlib.asynccontextmanager
-    async def _mcp_session(self) -> t.AsyncIterator[None]:
-        """Open the MCP client session, bounding only the connect by ``mcp_connect_timeout``."""
+    async def _mcp_session(
+        self,
+        config: dict[str, t.Any] | None = None,
+        tool_name: str | None = None,
+    ) -> t.AsyncIterator[None]:
+        """Open the MCP client session, bounding only the connect by ``mcp_connect_timeout``.
+
+        With ``mcp_auth`` set, its headers for this list or call are held in a ContextVar for
+        the block, where ``MCPCallAuth`` on the transport reads them.
+        """
         timeout = getattr(self, "_mcp_connect_timeout", None)
+        mcp_auth = getattr(self, "_mcp_auth", None)
+        headers_token = None
+        if mcp_auth is not None:
+            headers = await resolve_mcp_headers(
+                mcp_auth, config, tool_name, getattr(self, "_mcp_server_url", None)
+            )
+            headers_token = mcp_call_headers.set(headers)
+        try:
+            async with self._open_mcp_client(timeout):
+                yield
+        finally:
+            if headers_token is not None:
+                mcp_call_headers.reset(headers_token)
+
+    @contextlib.asynccontextmanager
+    async def _open_mcp_client(self, timeout: float | None) -> t.AsyncIterator[None]:
         async with contextlib.AsyncExitStack() as stack:
             if timeout is None:
                 await stack.enter_async_context(self._client)
@@ -67,13 +112,15 @@ class MCPMixin:
         self,
         tool_call_id: str,
         res: t.Any,
+        name: str | None = None,
     ) -> list[ContentBlock]:
-        return self._cap_mcp_result(self._serialize_result_uncapped(tool_call_id, res))
+        return self._cap_mcp_result(self._serialize_result_uncapped(tool_call_id, res, name))
 
     def _serialize_result_uncapped(
         self,
         tool_call_id: str,
         res: t.Any,
+        name: str | None = None,
     ) -> list[ContentBlock]:
         def safe_serialize(obj: t.Any) -> dict[str, t.Any]:
             try:
@@ -101,6 +148,7 @@ class MCPMixin:
                 return [
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=result,
                         is_error=False,
                         status="completed",
@@ -113,6 +161,7 @@ class MCPMixin:
         return [
             ToolResultBlock(
                 call_id=tool_call_id,
+                name=name,
                 output=[
                     {
                         "content": str(res),
@@ -124,18 +173,24 @@ class MCPMixin:
             )
         ]
 
-    async def _list_server_tools(self, refresh: bool = False) -> list[t.Any] | None:
+    async def _list_server_tools(
+        self,
+        refresh: bool = False,
+        config: dict[str, t.Any] | None = None,
+    ) -> list[t.Any] | None:
         """List the server's tools, from the per-node cache when ``mcp_cache_tools`` is on.
 
         Returns None when the server cannot be listed; a failed listing is never cached.
+        The cache is shared by every run of the node, so with ``mcp_auth`` the list must not
+        depend on the user: it is fetched with whichever run asks first.
         """
         cached = getattr(self, "_mcp_tools_cache", None)
         if cached is not None and not refresh:
             return cached
         try:
-            async with self._mcp_session():
-                if not await self._client.ping():
-                    return None
+            # No ping first: list_tools fails on its own when the server is down, and MCP
+            # protocol 2026-07-28 (fastmcp 4.x default) has no ping method.
+            async with self._mcp_session(config):
                 server_tools = list(await self._client.list_tools())
         except Exception as e:
             logger.exception("Failed to fetch MCP tools: %s", e)
@@ -162,7 +217,11 @@ class MCPMixin:
             return name[len(prefix) :]
         return name
 
-    async def _get_mcp_tool(self, tags: set[str] | None = None) -> list[dict]:
+    async def _get_mcp_tool(
+        self,
+        tags: set[str] | None = None,
+        config: dict[str, t.Any] | None = None,
+    ) -> list[dict]:
         """Fetch tools from the MCP client, optionally filtering by tags.
 
         ``mcp_tools`` is rebuilt from the server's full tool list on every call, so it stays
@@ -175,7 +234,7 @@ class MCPMixin:
         if not self._client:
             return tools
 
-        server_tools = await self._list_server_tools()
+        server_tools = await self._list_server_tools(config=config)
         if server_tools is None:
             return tools
 
@@ -251,7 +310,7 @@ class MCPMixin:
             metadata={
                 "tool_call_id": tool_call_id,
                 "args": args,
-                "config": config,
+                "config": public_config(config),
                 "mcp_client": bool(self._client),
             },
         )
@@ -293,6 +352,7 @@ class MCPMixin:
                         ),
                         ToolResultBlock(
                             call_id=tool_call_id,
+                            name=name,
                             output="No MCP client configured",
                             is_error=True,
                             status="failed",
@@ -306,33 +366,13 @@ class MCPMixin:
                 publish_event(event)
                 return res
 
-            async with self._mcp_session():
-                if not await self._client.ping():
-                    error_result = Message.tool_message(
-                        content=[
-                            ErrorBlock(message="MCP Server not available. Ping failed."),
-                            ToolResultBlock(
-                                call_id=tool_call_id,
-                                output="MCP Server not available. Ping failed.",
-                                is_error=True,
-                                status="failed",
-                            ),
-                        ],
-                        meta=meta,
-                    )
-                    event.event_type = EventType.ERROR
-                    event.metadata["error"] = "MCP server not available, ping failed"
-                    publish_event(event)
-                    return await callback_mgr.execute_after_invoke(
-                        context, input_data, error_result
-                    )
-
+            # No ping first: call_tool fails on its own when the server is down (handled
+            # below), and MCP protocol 2026-07-28 (fastmcp 4.x default) has no ping method.
+            server_name = self._mcp_server_name(name)
+            async with self._mcp_session(config, server_name):
                 call_kwargs: dict[str, t.Any] = {}
                 if self._pass_user_info_to_mcp:
-                    mcp_user_info = config.get("user")
-                    if not (mcp_user_info and isinstance(mcp_user_info, dict)):
-                        user_id = config.get("user_id")
-                        mcp_user_info = {"user_id": user_id} if user_id else None
+                    mcp_user_info = _mcp_user_info(config)
                     if mcp_user_info:
                         # Request metadata, not a tool argument: a strict input schema
                         # would reject an extra "user" argument, and a lax one would
@@ -348,11 +388,9 @@ class MCPMixin:
                                 "call_tool accepts meta; user info was not sent."
                             )
 
-                res: t.Any = await self._client.call_tool(
-                    self._mcp_server_name(name), input_data, **call_kwargs
-                )
+                res: t.Any = await self._client.call_tool(server_name, input_data, **call_kwargs)
 
-                final_res = self._serialize_result(tool_call_id, res)
+                final_res = self._serialize_result(tool_call_id, res, name)
 
                 result = Message.tool_message(
                     content=final_res,
@@ -393,6 +431,7 @@ class MCPMixin:
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=error_text,
                         is_error=True,
                         status="failed",

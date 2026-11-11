@@ -74,7 +74,7 @@ def setup_logfire(
     service_name: str | None = None,
     send_to_logfire: bool = True,
     console: Any = None,
-    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    level: ObservabilityLevel = ObservabilityLevel.FULL,
     additional_span_processors: list | None = None,
     user_id_mode: UserIdMode = "raw",
     **configure_kwargs: Any,
@@ -93,7 +93,7 @@ def setup_logfire(
         send_to_logfire: Whether to export spans to logfire.dev.
         console: Console output options. Pass ``False`` to disable, or a
             ``logfire.ConsoleOptions`` instance. ``None`` uses env-var defaults.
-        level: Observability level — SPANS, STANDARD (default), or FULL.
+        level: Observability level — SPANS, STANDARD, or FULL (default).
         additional_span_processors: Extra SpanProcessors to attach alongside
             the Logfire processor (e.g. a LangSmith OTLP processor).
         user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
@@ -133,7 +133,7 @@ def setup_langsmith(
     api_key: str | None = None,
     project: str | None = None,
     endpoint: str = "https://api.smith.langchain.com/otel",
-    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    level: ObservabilityLevel = ObservabilityLevel.FULL,
     tracer_provider: Any = None,
     user_id_mode: UserIdMode = "raw",
 ) -> None:
@@ -155,7 +155,7 @@ def setup_langsmith(
         endpoint: Base OTEL endpoint URL for LangSmith.  The exporter appends
             ``/v1/traces`` automatically.  Override for regional deployments,
             e.g. ``https://eu.api.smith.langchain.com/otel``.
-        level: Observability level — SPANS, STANDARD (default), or FULL.
+        level: Observability level — SPANS, STANDARD, or FULL (default).
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
@@ -192,7 +192,7 @@ def setup_phoenix(
     api_key: str | None = None,
     project: str | None = None,
     endpoint: str | None = None,
-    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    level: ObservabilityLevel = ObservabilityLevel.FULL,
     tracer_provider: Any = None,
     user_id_mode: UserIdMode = "raw",
 ) -> None:
@@ -220,7 +220,7 @@ def setup_phoenix(
             then ``http://localhost:6006``. ``/v1/traces`` is appended unless
             present. Phoenix Cloud looks like
             ``https://app.phoenix.arize.com/s/<space>``.
-        level: Observability level — SPANS, STANDARD (default), or FULL.
+        level: Observability level — SPANS, STANDARD, or FULL (default).
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
@@ -252,7 +252,7 @@ def setup_otlp(
     graph: StateGraph | None = None,
     *,
     endpoint: str | None = None,
-    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    level: ObservabilityLevel = ObservabilityLevel.FULL,
     tracer_provider: Any = None,
     user_id_mode: UserIdMode = "raw",
 ) -> None:
@@ -266,7 +266,7 @@ def setup_otlp(
         endpoint: OTLP HTTP base URL; ``/v1/traces`` is appended unless present. When
             omitted, ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` must be set
             (``OTEL_EXPORTER_OTLP_ENDPOINT`` is not used).
-        level: Observability level — SPANS, STANDARD (default), or FULL.
+        level: Observability level — SPANS, STANDARD, or FULL (default).
         tracer_provider: An existing ``TracerProvider`` to attach the processor to.
             When ``None`` a new one is created and set as the global provider.
         user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``.
@@ -309,7 +309,7 @@ def setup_observability(  # noqa: PLR0912
     Expected ``config`` shape (mirrors ``10xgraph.json``)::
 
         {
-            "level": "standard",
+            "level": "full",
             "user_id_mode": "raw",  # or "hash" / "mask"
             "logfire": {
                 "enabled": True,
@@ -350,11 +350,11 @@ def setup_observability(  # noqa: PLR0912
             ``user_id_mode`` is not one of ``raw``, ``hash``, ``mask``.
     """
     user_id_mode = validate_user_id_mode(config.get("user_id_mode") or "raw")
-    raw_level = config.get("level", "standard")
+    raw_level = config.get("level", "full")
     try:
         level = ObservabilityLevel(raw_level)
     except ValueError:
-        level = ObservabilityLevel.STANDARD
+        level = ObservabilityLevel.FULL
 
     logfire_cfg: dict[str, Any] = config.get("logfire") or {}
     langsmith_cfg: dict[str, Any] = config.get("langsmith") or {}

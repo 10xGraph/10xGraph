@@ -12,7 +12,10 @@ import asyncio
 import importlib
 import json
 import logging
+import time
 from typing import Any
+
+from tenxgraph.storage.media.url_policy import redact_url
 
 from .base_publisher import BasePublisher
 from .events import EventModel
@@ -57,6 +60,8 @@ class RabbitMQPublisher(BasePublisher):
                 - connection_timeout: Connection timeout in seconds (default: 10).
                 - heartbeat: Heartbeat interval in seconds (default: 60).
                 - publish_timeout: Optional seconds to wait for one send (default: none).
+                - reconnect_interval: Seconds to wait after a failed connection before the
+                  next attempt; events in between are dropped (default: 5).
         """
         super().__init__(config or {})
         self.url: str = self.config.get("url", "amqp://guest:guest@localhost/")
@@ -67,17 +72,30 @@ class RabbitMQPublisher(BasePublisher):
         self.durable: bool = self.config.get("durable", True)
         self.connection_timeout: int = self.config.get("connection_timeout", 10)
         self.heartbeat: int = self.config.get("heartbeat", 60)
+        self.reconnect_interval: float = self.config.get("reconnect_interval", 5)
 
         self._conn: Any = None
         self._channel: Any = None
         self._exchange: Any = None
         self._connection_lock = asyncio.Lock()
+        self._auth_failed = False  # broker refused the credentials; never retried
+        self._retry_at = 0.0  # monotonic time of the next connection attempt
 
-    async def _ensure(self):
-        """Ensure the connection, channel, and exchange are initialized with timeouts.
+    async def _ensure(self) -> bool:
+        """Open the connection, channel and exchange when they are not open.
+
+        A plain connection is used, not ``connect_robust``: a robust connection runs its own
+        reconnect task that retries every few seconds forever (also after the broker refused
+        the credentials) and, when the first attempt is cancelled, is never closed. Here a
+        dropped connection is opened again by the next publish instead.
+
+        Returns:
+            True when the exchange is ready. False when the broker refused the credentials:
+            that is permanent, so it is logged once and no further attempt is made.
 
         Raises:
-            RuntimeError: If publisher is closed or connection fails.
+            RuntimeError: If the publisher is closed, or a network failure happened less
+                than ``reconnect_interval`` seconds ago.
         """
         if self._is_closed:
             raise RuntimeError("RabbitMQPublisher is closed")
@@ -85,8 +103,18 @@ class RabbitMQPublisher(BasePublisher):
         async with self._connection_lock:
             if self._is_closed:
                 raise RuntimeError("RabbitMQPublisher is closed")
-            if self._exchange is not None:
-                return
+            if self._auth_failed:
+                return False
+            # The channel (not the connection object) tells when the broker side closed.
+            if self._exchange is not None and not self._channel.is_closed:
+                return True
+            # The broker closed the old connection or channel: drop it and connect again.
+            await self._discard_connection()
+            wait = self._retry_at - time.monotonic()
+            if wait > 0:
+                raise RuntimeError(
+                    f"RabbitMQPublisher is not connected; next attempt in {wait:.1f}s"
+                )
 
             try:
                 aio_pika = importlib.import_module("aio_pika")
@@ -96,26 +124,47 @@ class RabbitMQPublisher(BasePublisher):
                     "'pip install 10xgraph[rabbitmq]' or 'pip install aio-pika'."
                 ) from exc
 
-            # Connect with timeout and heartbeat. A failure after the connection is open
-            # closes it, so the next publish starts clean instead of leaking a half-open
-            # connection.
-            self._conn = await aio_pika.connect_robust(
-                self.url,
-                timeout=self.connection_timeout,
-                heartbeat=self.heartbeat,
-            )
+            # Every step is bounded by connection_timeout. A failure closes the half-open
+            # connection, so the next attempt starts clean.
             try:
+                self._conn = await asyncio.wait_for(
+                    aio_pika.connect(
+                        self.url, timeout=self.connection_timeout, heartbeat=self.heartbeat
+                    ),
+                    timeout=self.connection_timeout,
+                )
                 self._exchange = await asyncio.wait_for(
                     self._open_channel(aio_pika), timeout=self.connection_timeout
                 )
+            except aio_pika.exceptions.ProbableAuthenticationError as exc:
+                await self._discard_connection()
+                self._auth_failed = True
+                logger.error(
+                    "RabbitMQPublisher: the broker at %s refused the credentials (%s). "
+                    "Not retrying; events are dropped until the publisher is created "
+                    "again with valid credentials.",
+                    redact_url(self.url),
+                    exc,
+                )
+                return False
+            except Exception:
+                await self._discard_connection()
+                self._retry_at = time.monotonic() + self.reconnect_interval
+                raise
             except BaseException:
                 await self._discard_connection()
                 raise
+
+            if self._is_closed:
+                # close() ran while this connection was opening.
+                await self._discard_connection()
+                raise RuntimeError("RabbitMQPublisher is closed")
 
             logger.info(
                 "RabbitMQPublisher connected successfully (heartbeat=%ds)",
                 self.heartbeat,
             )
+            return True
 
     async def _open_channel(self, aio_pika: Any) -> Any:
         """Open the channel and return the exchange to publish to."""
@@ -133,15 +182,16 @@ class RabbitMQPublisher(BasePublisher):
         return self._channel.default_exchange
 
     async def _discard_connection(self) -> None:
-        """Close and forget a half-open connection after a failed start."""
+        """Close and forget the connection (and its channel), waiting at most
+        ``connection_timeout`` seconds for the broker."""
         conn, self._conn = self._conn, None
         self._channel = None
         self._exchange = None
         if conn is not None:
             try:
-                await conn.close()
+                await asyncio.wait_for(conn.close(), timeout=self.connection_timeout)
             except Exception:
-                logger.debug("RabbitMQPublisher half-open connection close error", exc_info=True)
+                logger.debug("RabbitMQPublisher connection close error", exc_info=True)
 
     async def publish(self, event: EventModel) -> Any:
         """Publish an event to RabbitMQ.
@@ -150,7 +200,8 @@ class RabbitMQPublisher(BasePublisher):
             event: The event to publish.
 
         Returns:
-            True on success.
+            True on success, False when the event was dropped because the broker
+            refused the credentials.
 
         Raises:
             RuntimeError: If publisher is closed or not initialized.
@@ -158,7 +209,8 @@ class RabbitMQPublisher(BasePublisher):
         if self._is_closed:
             raise RuntimeError("Cannot publish to closed RabbitMQPublisher")
 
-        await self._ensure()
+        if not await self._ensure():
+            return False  # credentials refused: logged once, event dropped
         payload = json.dumps(event.model_dump()).encode("utf-8")
 
         aio_pika = importlib.import_module("aio_pika")
@@ -180,31 +232,18 @@ class RabbitMQPublisher(BasePublisher):
     async def close(self):
         """Close the RabbitMQ connection and channel, releasing resources.
 
+        Returns promptly in any state: it does not wait for a connection attempt in
+        progress (that attempt sees the closed flag and closes its own connection), and
+        the broker gets at most ``connection_timeout`` seconds to confirm the close.
         This method is idempotent and can be called multiple times safely.
         """
         if self._is_closed:
             logger.debug("RabbitMQPublisher already closed")
             return
 
-        async with self._connection_lock:
-            try:
-                if self._channel is not None:
-                    await self._channel.close()
-            except Exception:
-                logger.debug("RabbitMQPublisher channel close error", exc_info=True)
-            finally:
-                self._channel = None
-
-            try:
-                if self._conn is not None:
-                    await self._conn.close()
-            except Exception:
-                logger.debug("RabbitMQPublisher connection close error", exc_info=True)
-            finally:
-                self._conn = None
-                self._exchange = None
-                self._is_closed = True
-                logger.info("RabbitMQPublisher closed successfully")
+        self._is_closed = True
+        await self._discard_connection()
+        logger.info("RabbitMQPublisher closed successfully")
 
     def sync_close(self):
         """Synchronously close the RabbitMQ connection."""

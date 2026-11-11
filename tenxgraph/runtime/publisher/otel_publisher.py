@@ -89,9 +89,12 @@ class ObservabilityLevel(StrEnum):
     """Controls how much data OtelPublisher emits as OTEL span attributes/events.
 
     SPANS    — timing and structure only. No I/O data on spans.
-    STANDARD — adds token counts, model name, request params when available. (default)
+    STANDARD — adds token counts, model name, request params when available, and the graph
+               state on node spans (``input.value`` = state in, ``output.value`` = state
+               after, messages produced, next node).
     FULL     — adds model input messages, output messages, tool I/O, system prompt.
-               May contain PII — use only in controlled environments.
+               The default. Sends message content and graph state to the trace backend;
+               use ``STANDARD`` or ``SPANS`` to keep content out.
     """
 
     SPANS = "spans"
@@ -166,7 +169,7 @@ class SpanRegistry:
 class OtelPublisher(BasePublisher):
     """Publisher backend that maps EventModel events to OTEL spans.
 
-    Usage (minimal — STANDARD level, global TracerProvider):
+    Usage (minimal — FULL level, global TracerProvider):
         from tenxgraph.runtime.publisher.otel_publisher import setup_tracing
 
         setup_tracing(graph)           # call before graph.compile()
@@ -191,7 +194,7 @@ class OtelPublisher(BasePublisher):
     def __init__(
         self,
         tracer: Tracer | None = None,
-        level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+        level: ObservabilityLevel = ObservabilityLevel.FULL,
         user_id_mode: UserIdMode = "raw",
     ) -> None:
         """Create the publisher.
@@ -438,6 +441,10 @@ class OtelPublisher(BasePublisher):
         if step is not None:
             span.set_attribute(NODE_STEP, step)
 
+        if self._level != ObservabilityLevel.SPANS:
+            for key, value in oi.node_input_attrs(event.data).items():
+                span.set_attribute(key, value)
+
         if self._level == ObservabilityLevel.FULL:
             input_messages = event.data.get("input_messages") or event.data.get("messages")
             if input_messages:
@@ -475,6 +482,8 @@ class OtelPublisher(BasePublisher):
             model = event.metadata.get("model")
             if model:
                 span.set_attribute(GRAPH_MODEL, str(model))
+            for key, value in oi.node_output_attrs(event.data).items():
+                span.set_attribute(key, value)
 
         if self._level == ObservabilityLevel.FULL:
             output_messages = event.data.get("messages")
@@ -827,7 +836,7 @@ def _set_request_params(span: Span, params: dict[str, Any]) -> None:
 def setup_tracing(
     graph: StateGraph,
     tracer: Tracer | None = None,
-    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    level: ObservabilityLevel = ObservabilityLevel.FULL,
     user_id_mode: UserIdMode = "raw",
 ) -> OtelPublisher:
     """Register OtelPublisher as the publisher backend on the graph.
@@ -838,8 +847,8 @@ def setup_tracing(
     Args:
         graph: The StateGraph instance to instrument.
         tracer: Optional explicit Tracer. Uses the global TracerProvider if None.
-        level: How much data to emit. STANDARD by default. Use FULL for complete
-               prompt/response visibility (may contain PII).
+        level: How much data to emit. FULL by default (message content and graph
+               state; may contain PII). Use STANDARD or SPANS to keep content out.
         user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``; see ``OtelPublisher``.
 
     Returns:

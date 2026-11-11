@@ -194,7 +194,7 @@ class TestSetupLogfire:
         fake_lf.configure.assert_called_once()
         call_kwargs = fake_lf.configure.call_args[1]
         assert call_kwargs["send_to_logfire"] is True
-        # level defaults to STANDARD — setup_tracing called
+        # level defaults to FULL — setup_tracing called
         mock_setup.assert_called_once()
 
     def test_token_and_service_name_forwarded(self):
@@ -676,9 +676,9 @@ class TestSetupObservability:
                 {"level": "not_a_real_level", "logfire": {"enabled": True}},
             )
             call_kwargs = lf.call_args[1]
-            assert call_kwargs["level"] == ObservabilityLevel.STANDARD
+            assert call_kwargs["level"] == ObservabilityLevel.FULL
 
-    def test_missing_level_defaults_to_standard(self):
+    def test_missing_level_defaults_to_full(self):
         from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         graph = _make_graph()
@@ -687,7 +687,7 @@ class TestSetupObservability:
         with self._mock_setup_logfire() as lf, self._mock_setup_langsmith():
             setup_observability(graph, {"logfire": {"enabled": True}})
             call_kwargs = lf.call_args[1]
-            assert call_kwargs["level"] == ObservabilityLevel.STANDARD
+            assert call_kwargs["level"] == ObservabilityLevel.FULL
 
 
 # ── setup_phoenix tests ────────────────────────────────────────────────────────
@@ -779,6 +779,19 @@ class TestSetupObservabilityPhoenix:
         provider = mods["_fake_TracerProvider"].return_value
         provider.add_span_processor.assert_called_once()
         mods["_fake_trace_mod"].set_tracer_provider.assert_called_once_with(provider)
+
+    def test_phoenix_without_level_uses_full(self):
+        from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
+
+        mods = _fake_otel_modules()
+        with patch.dict(sys.modules, mods), patch.dict("os.environ", {}, clear=True):
+            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as st:
+                from tenxgraph.runtime.publisher.exporters import setup_observability
+
+                setup_observability(
+                    _make_graph(), {"phoenix": {"enabled": True, "endpoint": "http://h:6006"}}
+                )
+        assert st.call_args[1]["level"] == ObservabilityLevel.FULL
 
     def test_langsmith_and_phoenix_share_one_provider(self):
         mods = _fake_otel_modules()

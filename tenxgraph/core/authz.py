@@ -13,6 +13,11 @@ Reach says which rows a caller may see:
 
 A missing tenant value, a tenant reach on a backend without tenant columns, or an unknown reach
 raises. Nothing ever widens silently.
+
+``config["credential"]`` holds the caller's raw credential as a :class:`UserCredential`, for
+calling other services as that user (local tools, ``ToolNode(mcp_auth=...)``). It stays inside
+the run: every copy of the config that leaves it (events, callbacks, logs) goes through
+:func:`public_config`.
 """
 
 from __future__ import annotations
@@ -21,7 +26,10 @@ from collections.abc import Iterator, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, SecretStr, StringConstraints
+
+
+CREDENTIAL_KEY = "credential"
 
 
 class Reach(StrEnum):
@@ -90,6 +98,89 @@ def get_identity(config: Any) -> Identity | None:
     if isinstance(user, Identity):
         return user
     return Identity.model_validate(user)
+
+
+class UserCredential:
+    """The caller's raw credential, for calling other services as that user.
+
+    Not a pydantic model, so a ``model_dump`` of something holding it never writes the token.
+    Its repr and str are redacted, ``json.dumps`` and pickling raise, and copies return the
+    same object (run configs get copied). Immutable. Read the token with
+    ``credential.token.get_secret_value()``.
+    """
+
+    __slots__ = ("_scheme", "_token")
+
+    _scheme: str
+    _token: SecretStr
+
+    def __init__(self, token: SecretStr | str, scheme: str = "Bearer") -> None:
+        if isinstance(token, str):
+            token = SecretStr(token)
+        if not isinstance(token, SecretStr) or not token.get_secret_value():
+            raise ValueError("UserCredential needs a non-empty token")
+        if not isinstance(scheme, str) or not scheme or any(c.isspace() for c in scheme):
+            raise ValueError("UserCredential scheme must be one word, such as 'Bearer'")
+        object.__setattr__(self, "_token", token)
+        object.__setattr__(self, "_scheme", scheme)
+
+    @property
+    def token(self) -> SecretStr:
+        return self._token
+
+    @property
+    def scheme(self) -> str:
+        return self._scheme
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("UserCredential is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("UserCredential is immutable")
+
+    def __repr__(self) -> str:
+        return f"UserCredential(scheme={self._scheme!r}, token='**********')"
+
+    __str__ = __repr__
+
+    def __reduce_ex__(self, protocol: Any) -> Any:
+        raise TypeError("UserCredential cannot be pickled: the token must stay in the run")
+
+    def __reduce__(self) -> Any:
+        raise TypeError("UserCredential cannot be pickled: the token must stay in the run")
+
+    def __copy__(self) -> UserCredential:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> UserCredential:
+        return self
+
+
+def get_credential(config: Any) -> UserCredential | None:
+    """The credential in ``config["credential"]``, or None when absent.
+
+    Raises:
+        TypeError: the value is not a :class:`UserCredential` (a raw string is refused, it
+            would be logged and published like any other config value).
+    """
+    value = config.get(CREDENTIAL_KEY) if isinstance(config, dict) else None
+    if value is None:
+        return None
+    if not isinstance(value, UserCredential):
+        raise TypeError(
+            f"config[{CREDENTIAL_KEY!r}] must be a UserCredential, got {type(value).__name__}"
+        )
+    return value
+
+
+def public_config(config: Any) -> dict[str, Any]:
+    """A shallow copy of the run config without the credential.
+
+    Use it wherever config leaves the run: events, callback contexts, logs, storage.
+    """
+    if not isinstance(config, dict):
+        return {}
+    return {k: v for k, v in config.items() if k != CREDENTIAL_KEY}
 
 
 def owner_id(config: Any) -> Any:

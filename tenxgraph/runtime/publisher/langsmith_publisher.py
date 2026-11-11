@@ -50,8 +50,8 @@ class LangsmithPublisher(OtelPublisher):
         endpoint: Base OTEL endpoint URL for LangSmith.  ``/v1/traces`` is
             appended automatically.  Override for regional deployments, e.g.
             ``https://eu.api.smith.langchain.com/otel``.
-        level: How much data to emit.  ``STANDARD`` by default.  Set to
-            ``FULL`` for complete prompt/response visibility (may contain PII).
+        level: How much data to emit.  ``FULL`` by default (message content and graph state; may
+            contain PII).  Use ``STANDARD`` or ``SPANS`` to keep content out.
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
@@ -78,7 +78,7 @@ class LangsmithPublisher(OtelPublisher):
         api_key: str | None = None,
         project: str | None = None,
         endpoint: str = "https://api.smith.langchain.com/otel",
-        level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+        level: ObservabilityLevel = ObservabilityLevel.FULL,
         tracer_provider: Any = None,
     ) -> None:
         processor = _build_langsmith_processor(api_key=api_key, project=project, endpoint=endpoint)

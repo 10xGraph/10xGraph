@@ -39,6 +39,8 @@ from tenxgraph.utils.log_safety import log_safe
 
 from . import deps
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
+from .local_exec import check_credential_annotation
+from .mcp_auth import MCPAuth, install_mcp_auth
 from .mcp_exec import DEFAULT_MCP_CONNECT_TIMEOUT
 from .run_tools import run_remote_tools, tool_name
 from .schema import SchemaMixin
@@ -106,6 +108,7 @@ class ToolNode(
         mcp_max_description_chars: int | None = None,
         mcp_cache_tools: bool = True,
         mcp_connect_timeout: float | None = DEFAULT_MCP_CONNECT_TIMEOUT,
+        mcp_auth: MCPAuth | None = None,
     ) -> None:
         """Initialize ToolNode with functions and optional MCP client.
 
@@ -114,9 +117,12 @@ class ToolNode(
                 will be registered with its `__name__` as the tool identifier.
             client: Optional MCP (Model Context Protocol) client for remote tool access.
                 Requires 'fastmcp' and 'mcp' packages to be installed.
-            pass_user_info_to_mcp: If True, extracts the 'user' dictionary from the config
-                and passes it as metadata to MCP tool calls. The user info will be accessible
-                on the MCP server via `ctx.request_context.meta`. Defaults to False.
+            pass_user_info_to_mcp: If True, sends the caller as request metadata
+                (``meta={"user": ...}``) on every MCP tool call, readable on the server via
+                `ctx.request_context.meta`. An ``Identity`` in ``config["user"]`` (what the
+                API sets) is sent as its JSON dump: user_id, kind, tenant, roles,
+                permissions, reach and the token claims. A dict is sent as is; with neither,
+                ``{"user_id": config["user_id"]}``. Defaults to False.
 
             max_result_chars: Optional cap on the text a local tool returns. Longer
                 text is cut and a marker is appended, so one huge result is not saved to
@@ -134,16 +140,34 @@ class ToolNode(
             mcp_max_description_chars: Optional cap on an MCP tool description. ``None``
                 (default) means no cap.
             mcp_cache_tools: When True (default) the server's tool list is fetched once and
-                reused, which saves a connect, ping and list round trip per model call.
+                reused, which saves a connect and list round trip per model call.
                 Call ``await tool_node.refresh_mcp_tools()`` to fetch it again. Set False to
                 list the server on every call.
             mcp_connect_timeout: Seconds to wait for the MCP connection to open (default
                 30). Only the connect is bounded, never a tool call. ``None`` waits without
                 a limit.
+            mcp_auth: Optional async callable ``(MCPAuthContext) -> dict[str, str]`` that
+                returns HTTP headers for one MCP request, so each user's calls carry their
+                own auth (token exchange, a self-issued token, ...). It runs before every
+                tool listing and tool call with the run's identity and credential; the
+                headers go on that request only, on top of any transport ``auth=``, and win
+                on the same header name. ``forward_credential`` forwards the caller's token
+                unchanged (only for a server that accepts that same token). Needs
+                fastmcp>=4.1.7 and an HTTP transport (streamable HTTP or SSE). The tool list
+                is cached per node and shared by all users (``mcp_cache_tools``), and is
+                fetched with whichever run asks first: a server must not return a per-user
+                tool list here.
+
+        Tools may take a parameter named ``credential``: it always receives the caller's
+        ``UserCredential`` from ``config["credential"]`` (or None), whatever its annotation,
+        and is hidden from the model.
 
         Raises:
-            ImportError: If MCP client is provided but required packages are not installed.
+            ImportError: If MCP client is provided but required packages are not installed,
+                or ``mcp_auth`` is set with fastmcp older than 4.
             TypeError: If any item in tools is not callable.
+            ValueError: If ``mcp_auth`` is set without a client, or the client's transport
+                cannot send HTTP headers (stdio, in-memory).
 
         Note:
             When using MCP client functionality, ensure you have installed the required
@@ -181,6 +205,13 @@ class ToolNode(
                 )
             logger.debug("ToolNode initialized with MCP client")
 
+        self._mcp_auth: MCPAuth | None = mcp_auth
+        self._mcp_server_url: str | None = None
+        if mcp_auth is not None:
+            if client is None:
+                raise ValueError("mcp_auth needs an MCP client (client=...)")
+            self._mcp_server_url = install_mcp_auth(client)
+
         self._funcs: dict[str, t.Callable] = {}
         self._client: deps.Client | None = client  # type: ignore
         self._pass_user_info_to_mcp: bool = pass_user_info_to_mcp
@@ -213,6 +244,7 @@ class ToolNode(
                 "is replaced.",
                 log_safe(tool.__name__),
             )
+        check_credential_annotation(tool)
         self._funcs[tool.__name__] = tool
 
     def add_tool(self, tool: t.Callable) -> None:
@@ -251,7 +283,7 @@ class ToolNode(
         config: dict[str, t.Any] | None = None,
     ) -> list[dict]:
         tools: list[dict] = self.get_local_tool(tags=tags)
-        tools.extend(await self._get_mcp_tool(tags=tags))
+        tools.extend(await self._get_mcp_tool(tags=tags, config=config))
         tools.extend(self.remote_tools)
         tools.extend(self._run_remote_tools(config, taken={tool_name(x) for x in tools}))
         return tools
@@ -362,7 +394,7 @@ class ToolNode(
         tools: list[dict] = self.get_local_tool(tags=tags)
 
         if self._client:
-            result = asyncio.run(self._get_mcp_tool(tags=tags))
+            result = asyncio.run(self._get_mcp_tool(tags=tags, config=config))
             if result:
                 tools.extend(result)
 
@@ -473,6 +505,7 @@ class ToolNode(
             event.content_blocks = [
                 ToolResultBlock(
                     call_id=tool_call_id,
+                    name=name,
                     output=res.model_dump(),
                 )
             ]
@@ -495,6 +528,7 @@ class ToolNode(
                 event.content_blocks = [
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=res.model_dump(),
                     )
                 ]
@@ -505,6 +539,7 @@ class ToolNode(
                     event.content_blocks = [
                         ToolResultBlock(
                             call_id=tool_call_id,
+                            name=name,
                             output=msg.model_dump(),
                         )
                     ]
@@ -524,6 +559,7 @@ class ToolNode(
                 ErrorBlock(message=error_msg),
                 ToolResultBlock(
                     call_id=tool_call_id,
+                    name=name,
                     output=error_msg,
                     is_error=True,
                     status="failed",
@@ -618,7 +654,7 @@ class ToolNode(
             )
             event.data["message"] = message.model_dump()
             event.content_blocks = [
-                ToolResultBlock(call_id=tool_call_id, output=message.model_dump())
+                ToolResultBlock(call_id=tool_call_id, name=name, output=message.model_dump())
             ]
             event.event_type = EventType.END
             event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
@@ -643,14 +679,14 @@ class ToolNode(
             if isinstance(result, Message):
                 event.data["message"] = result.model_dump()
                 event.content_blocks = [
-                    ToolResultBlock(call_id=tool_call_id, output=result.model_dump())
+                    ToolResultBlock(call_id=tool_call_id, name=name, output=result.model_dump())
                 ]
             elif isinstance(result, dict):
                 msg = result.get("messages")
                 if isinstance(msg, Message):
                     event.data["message"] = msg.model_dump()
                     event.content_blocks = [
-                        ToolResultBlock(call_id=tool_call_id, output=msg.model_dump())
+                        ToolResultBlock(call_id=tool_call_id, name=name, output=msg.model_dump())
                     ]
             event.event_type = EventType.END
             event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
@@ -669,6 +705,7 @@ class ToolNode(
                 ErrorBlock(message=error_msg),
                 ToolResultBlock(
                     call_id=tool_call_id,
+                    name=name,
                     output=error_msg,
                     is_error=True,
                     status="failed",

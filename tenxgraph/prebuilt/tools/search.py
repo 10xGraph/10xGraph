@@ -112,7 +112,6 @@ def _vertex_ai_search_sync(
 
 
 @tool(
-    name="google_web_search",
     description=(
         "Search the public web with Gemini Google Search grounding and return the grounded "
         "answer plus grounding metadata."
@@ -134,7 +133,6 @@ async def google_web_search(
 
 
 @tool(
-    name="vertex_ai_search",
     description=(
         "Search a configured Vertex AI Search datastore with Gemini grounding. "
         "The datastore must be a full Vertex AI Search datastore resource path."
@@ -166,7 +164,6 @@ def create_google_web_search(model: str = _DEFAULT_MODEL):
     """Create a ``google_web_search`` tool with the model fixed, so the LLM cannot pick it."""
 
     @tool(
-        name="google_web_search",
         description=(
             "Search the public web with Gemini Google Search grounding and return the "
             "grounded answer plus grounding metadata."
@@ -174,11 +171,15 @@ def create_google_web_search(model: str = _DEFAULT_MODEL):
         tags=["web", "search", "google"],
         capabilities=["network_access"],
     )
-    async def scoped_google_web_search(query: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
+    async def google_web_search(query: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
         """Search the public web with Gemini Google Search grounding."""
-        return await google_web_search(query, model=model, max_chars=max_chars)
+        if not query:
+            return json.dumps({"error": "query is required"})
+        safe_max_chars = max(1, min(int(max_chars), _DEFAULT_MAX_CHARS))
+        result = await asyncio.to_thread(_google_web_search_sync, query, model, safe_max_chars)
+        return json.dumps(result)
 
-    return scoped_google_web_search
+    return google_web_search
 
 
 def create_vertex_ai_search(datastore: str, model: str = _DEFAULT_MODEL):
@@ -191,13 +192,18 @@ def create_vertex_ai_search(datastore: str, model: str = _DEFAULT_MODEL):
         raise ValueError("datastore is required")
 
     @tool(
-        name="vertex_ai_search",
         description="Search a configured Vertex AI Search datastore with Gemini grounding.",
         tags=["search", "google", "vertex_ai"],
         capabilities=["network_access"],
     )
-    async def scoped_vertex_ai_search(query: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
+    async def vertex_ai_search(query: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
         """Search the configured Vertex AI Search datastore with Gemini grounding."""
-        return await vertex_ai_search(query, datastore=datastore, model=model, max_chars=max_chars)
+        if not query:
+            return json.dumps({"error": "query is required"})
+        safe_max_chars = max(1, min(int(max_chars), _DEFAULT_MAX_CHARS))
+        result = await asyncio.to_thread(
+            _vertex_ai_search_sync, query, datastore, model, safe_max_chars
+        )
+        return json.dumps(result)
 
-    return scoped_vertex_ai_search
+    return vertex_ai_search

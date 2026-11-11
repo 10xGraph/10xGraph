@@ -25,8 +25,9 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
@@ -137,9 +138,16 @@ DDL_STATEMENTS: tuple[str, ...] = (
         thread_id TEXT NOT NULL,
         tool_call_id TEXT NOT NULL,
         result TEXT NOT NULL,
+        created_at REAL NOT NULL DEFAULT 0,
         PRIMARY KEY (thread_id, tool_call_id)
     )
     """,
+)
+
+# Built after the created_at migration in asetup: a file made before the column existed
+# would fail it.
+LEDGER_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_af_tool_executions_created ON af_tool_executions (created_at)"
 )
 
 
@@ -190,6 +198,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         tenant_columns: Any = None,
         extra_columns: Any = None,
         row_level_security: bool = False,
+        record_tool_result: bool = True,
     ) -> None:
         # Tenant/extra columns and RLS need PgCheckpointer: fail loudly instead of ignoring.
         _reject_tenant_options(
@@ -209,6 +218,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         else:
             self.db_path = Path(db_path) if db_path else Path(DEFAULT_DB_PATH or _default_db_path())
 
+        # False turns the tool ledger off (see BaseCheckpointer.record_tool_result).
+        self.record_tool_result = record_tool_result
         self._conn: aiosqlite.Connection | None = None
         self._setup_done = False
         self._setup_lock = asyncio.Lock()
@@ -328,9 +339,27 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         async with self._write_lock:
             for stmt in DDL_STATEMENTS:
                 await conn.execute(stmt)
+            await self._add_ledger_created_at(conn)
+            await conn.execute(LEDGER_INDEX)
             await conn.commit()
         self._setup_done = True
         logger.info("SqliteCheckpointer setup complete: %s", self.db_path)
+
+    @staticmethod
+    async def _add_ledger_created_at(conn: "aiosqlite.Connection") -> None:
+        """Add ``created_at`` to a ledger table made before it existed.
+
+        The rows already there get the current time, so a prune right after the upgrade
+        does not drop the record of a run that is paused now.
+        """
+        async with conn.execute("PRAGMA table_info(af_tool_executions)") as cur:
+            columns = {row["name"] for row in await cur.fetchall()}
+        if "created_at" in columns:
+            return
+        await conn.execute(
+            "ALTER TABLE af_tool_executions ADD COLUMN created_at REAL NOT NULL DEFAULT 0"
+        )
+        await conn.execute("UPDATE af_tool_executions SET created_at = ?", (time.time(),))
 
     # ------------------------------------------------------------------
     # State — async
@@ -857,11 +886,53 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         async with self._write() as conn:
             await self._claim(conn, config)
             await conn.execute(
-                "INSERT OR IGNORE INTO af_tool_executions (thread_id, tool_call_id, result) "
-                "VALUES (?, ?, ?)",
-                (self._get_config_key(config), str(tool_call_id), _dumps(result)),
+                "INSERT OR IGNORE INTO af_tool_executions "
+                "(thread_id, tool_call_id, result, created_at) VALUES (?, ?, ?, ?)",
+                (self._get_config_key(config), str(tool_call_id), _dumps(result), time.time()),
             )
         return True
+
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Delete the thread's ledger rows (only those of ``origin_message_ids`` when given).
+
+        A row belongs to an origin id when its key starts with ``"<id>:"``, compared with
+        ``substr`` on bound values (no LIKE, so ``%`` and ``_`` in ids stay literal).
+        """
+        if origin_message_ids is not None and not origin_message_ids:
+            return 0
+        await self._ensure_setup()
+        thread_id = self._get_config_key(config)
+        async with self._write() as conn:
+            if await self._owner_denied(config, write=True):
+                return 0
+            if origin_message_ids is None:
+                cursor = await conn.execute(
+                    "DELETE FROM af_tool_executions WHERE thread_id = ?", (thread_id,)
+                )
+                return cursor.rowcount
+            deleted = 0
+            for origin in dict.fromkeys(f"{i}:" for i in origin_message_ids):
+                cursor = await conn.execute(
+                    "DELETE FROM af_tool_executions "
+                    "WHERE thread_id = ? AND substr(tool_call_id, 1, length(?)) = ?",
+                    (thread_id, origin, origin),
+                )
+                deleted += cursor.rowcount
+        return deleted
+
+    async def aprune_tool_results(self, older_than: timedelta) -> int:
+        """Delete ledger rows of every thread recorded more than ``older_than`` ago."""
+        await self._ensure_setup()
+        async with self._write() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM af_tool_executions WHERE created_at < ?",
+                (time.time() - older_than.total_seconds(),),
+            )
+        return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Release

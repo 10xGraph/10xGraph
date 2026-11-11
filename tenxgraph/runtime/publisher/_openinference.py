@@ -71,6 +71,37 @@ def last_message_text(messages: Any, role: str) -> str:
     return ""
 
 
+def node_input_attrs(event_data: Any) -> dict[str, Any]:
+    """``input.value`` for a node span: the state going into the node, as JSON.
+
+    Empty when ``event_data`` carries no dict ``state``.
+    """
+    state = event_data.get("state") if isinstance(event_data, dict) else None
+    if not isinstance(state, dict):
+        return {}
+    return {INPUT_VALUE: _dumps(state), INPUT_MIME: JSON_MIME}
+
+
+def node_output_attrs(event_data: Any) -> dict[str, Any]:
+    """``output.value`` for a node span: state after the node, messages produced, next node.
+
+    Keys that are absent or ``None`` are omitted; empty when none remain.
+    """
+    if not isinstance(event_data, dict):
+        return {}
+    state = event_data.get("state")
+    out: dict[str, Any] = {}
+    if isinstance(state, dict):
+        out["state"] = state
+    if event_data.get("messages") is not None:
+        out["messages"] = event_data["messages"]
+    if event_data.get("next_node") is not None:
+        out["next_node"] = event_data["next_node"]
+    if not out:
+        return {}
+    return {OUTPUT_VALUE: _dumps(out), OUTPUT_MIME: JSON_MIME}
+
+
 def kind_attrs(kind: str) -> dict[str, Any]:
     return {SPAN_KIND: kind}
 

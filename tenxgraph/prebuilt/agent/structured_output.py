@@ -356,6 +356,7 @@ class StructuredOutputAgent[StateT: AgentState]:
         output_type: str = "text",
         client: Any = None,
         pass_user_info_to_mcp: bool = False,
+        mcp_auth: Any = None,  # per-call MCP headers, see ToolNode(mcp_auth=...)
         extra_messages: list[Message] | None = None,
         trim_context: bool = False,
         tools_tags: set[str] | None = None,
@@ -400,6 +401,7 @@ class StructuredOutputAgent[StateT: AgentState]:
             tools=list(tools or []),
             client=client,
             pass_user_info_to_mcp=pass_user_info_to_mcp,
+            mcp_auth=mcp_auth,
         )
 
         # Lazy graph handle — created in _configure_graph()
@@ -424,10 +426,16 @@ class StructuredOutputAgent[StateT: AgentState]:
         tools: list[Callable],
         client: Any,
         pass_user_info_to_mcp: bool,
+        mcp_auth: Any = None,
     ) -> ToolNode | None:
         if not tools and client is None:
             return None
-        return ToolNode(tools, client=client, pass_user_info_to_mcp=pass_user_info_to_mcp)
+        return ToolNode(
+            tools,
+            client=client,
+            pass_user_info_to_mcp=pass_user_info_to_mcp,
+            mcp_auth=mcp_auth,
+        )
 
     def _build_generate_agent(self, *, with_schema: bool = True) -> Agent:
         extra: dict[str, Any] = {"output_schema": self._output_schema} if with_schema else {}

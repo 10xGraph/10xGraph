@@ -21,12 +21,12 @@ load_dotenv()
 
 
 # Keep name equal to the function name: ToolNode dispatches calls by function name.
-@tool(name="get_order", description="Look up an order by id.", tags=["orders", "read"])
+@tool(description="Look up an order by id.", tags=["orders", "read"])
 def get_order(order_id: str) -> dict:
     return {"order_id": order_id, "status": "shipped", "total": 59.0}
 
 
-@tool(name="cancel_order", description="Cancel an order by id.", tags=["orders", "write"])
+@tool(description="Cancel an order by id.", tags=["orders", "write"])
 def cancel_order(order_id: str) -> str:
     return f"Order {order_id} cancelled."
 

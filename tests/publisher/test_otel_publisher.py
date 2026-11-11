@@ -3,6 +3,8 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.otel_publisher import (
     ObservabilityLevel,
@@ -202,6 +204,11 @@ def test_llm_handlers_and_error_paths():
     pub._on_llm_error(_evt(Event.NODE_EXECUTION, EventType.ERROR, node="MAIN", data={"error": "boom"}))
 
 
+def test_default_level_is_full():
+    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
+        assert OtelPublisher()._level == ObservabilityLevel.FULL
+
+
 def test_setup_tracing_attaches_publisher():
     graph = SimpleNamespace(_publisher=None, _container=MagicMock())
     with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
@@ -346,3 +353,58 @@ def test_sync_close_runtime_error_branch_no_warning():
     with patch("asyncio.run", side_effect=_raise_runtime):
         pub.sync_close()
     assert pub._is_closed is True
+
+
+def _node_spans(level, start_data, end_data):
+    import json
+
+    tracer = _install_fake_otel()
+    pub = OtelPublisher(level=level)
+    pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.START, data={"step": 1}))
+    pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data=start_data))
+    pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=end_data))
+    node = next(s for s in tracer.spans if s.name == "tenxgraph.node")
+    return node, json
+
+
+_STATE_IN = {"context": [{"role": "user", "content": "hi"}], "execution_meta": {"step": 0}}
+_STATE_OUT = {"context": [{"role": "assistant", "content": "yo"}], "execution_meta": {"step": 1}}
+_END = {
+    "state": _STATE_OUT,
+    "messages": [{"role": "assistant", "content": "yo"}],
+    "next_node": "TOOL",
+}
+
+
+@pytest.mark.parametrize("level", [ObservabilityLevel.STANDARD, ObservabilityLevel.FULL])
+def test_node_span_carries_state_in_and_out(level):
+    node, json = _node_spans(level, {"step": 2, "state": _STATE_IN}, _END)
+    assert json.loads(node.attrs["input.value"]) == _STATE_IN
+    assert node.attrs["input.mime_type"] == "application/json"
+    out = json.loads(node.attrs["output.value"])
+    assert out == {
+        "state": _STATE_OUT,
+        "messages": _END["messages"],
+        "next_node": "TOOL",
+    }
+    assert node.attrs["output.mime_type"] == "application/json"
+    assert isinstance(node.attrs["input.value"], str)
+
+
+def test_node_output_omits_absent_keys():
+    node, json = _node_spans(
+        ObservabilityLevel.STANDARD, {"state": _STATE_IN}, {"state": _STATE_OUT, "next_node": None}
+    )
+    assert json.loads(node.attrs["output.value"]) == {"state": _STATE_OUT}
+
+
+def test_node_span_spans_level_has_no_state():
+    node, _ = _node_spans(ObservabilityLevel.SPANS, {"state": _STATE_IN}, _END)
+    assert not any(k.startswith(("input.", "output.")) for k in node.attrs)
+
+
+@pytest.mark.parametrize("bad", ["text", None, 5, [1]])
+def test_node_span_non_dict_state_is_skipped(bad):
+    node, _ = _node_spans(ObservabilityLevel.STANDARD, {"state": bad}, {"state": bad})
+    assert "input.value" not in node.attrs
+    assert "output.value" not in node.attrs

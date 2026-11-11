@@ -14,7 +14,7 @@ faq:
   - question: Why does pytest warn about TestAgent being collected?
     answer: Pytest collects classes named Test*. Import it under another name, for example "from tenxgraph.qa.testing import TestAgent as CannedAgent", as these files do.
   - question: Does MockMCPClient work end to end inside ToolNode?
-    answer: ToolNode accepts it, but ToolNode drives a real fastmcp client (async context manager, ping and tool objects). MockMCPClient only provides list_tools and call_tool, so use it to test the code around your MCP client rather than ToolNode's MCP execution.
+    answer: ToolNode accepts it, but ToolNode drives a real fastmcp client (async context manager and tool objects). MockMCPClient only provides list_tools and call_tool, so use it to test the code around your MCP client rather than ToolNode's MCP execution.
 ---
 
 # Test 10xGraph agents without an LLM

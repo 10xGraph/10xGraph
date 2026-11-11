@@ -37,10 +37,12 @@ class FakeToolNode:
         tools,
         client=None,
         pass_user_info_to_mcp: bool = False,
+        mcp_auth=None,
     ):
         self.tools = list(tools)
         self.client = client
         self.pass_user_info_to_mcp = pass_user_info_to_mcp
+        self.mcp_auth = mcp_auth
 
 
 class TestReactAgent:
@@ -207,6 +209,20 @@ class TestReactAgent:
         assert react_agent._tool_node.tools == []
         assert react_agent._tool_node.client is client
         assert react_agent._tool_node.pass_user_info_to_mcp is True
+
+    def test_constructor_passes_mcp_auth_to_tool_node(self):
+        async def mcp_auth(ctx):
+            return {}
+
+        with (
+            patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent),
+            patch("tenxgraph.prebuilt.agent.react.ToolNode", FakeToolNode),
+        ):
+            react_agent = ReactAgent[AgentState](
+                model="fake-model", provider="openai", client=object(), mcp_auth=mcp_auth
+            )
+
+        assert react_agent._tool_node.mcp_auth is mcp_auth
 
 
 class TestShouldUseToolsFunction:

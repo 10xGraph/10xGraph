@@ -479,7 +479,7 @@ class SchemaMixin:
         tools: list[dict] = []
         for name, fn in self._funcs.items():
             # Use decorator metadata if available, otherwise fall back to defaults
-            tool_name = getattr(fn, "_py_tool_name", name)
+            tool_name = name
             description = getattr(fn, "_py_tool_description", None)
             if description is None:
                 description = inspect.getdoc(fn) or "No description provided."

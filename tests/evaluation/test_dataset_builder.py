@@ -244,3 +244,30 @@ class TestNormaliseTools:
         assert len(result) == 2
         assert result[0].name == "tool1"
         assert result[1] is tc
+
+
+class TestBuilderSessionInput:
+    def test_given_session_input_is_stored(self):
+        from tenxgraph.qa.evaluation.dataset.eval_set import SessionInput
+
+        si = SessionInput(user_id="u1", config={"user": {"org_id": "acme"}})
+        es = (
+            EvalSetBuilder()
+            .add_case("q", "a", session_input=si)
+            .add_multi_turn([("q1", "a1")], session_input=si)
+            .add_tool_test("q", "tool", session_input=si)
+            .build()
+        )
+        assert [c.session_input for c in es.eval_cases] == [si, si, si]
+
+    def test_default_unchanged(self):
+        es = (
+            EvalSetBuilder()
+            .add_case("q", "a")
+            .add_multi_turn([("q1", "a1")])
+            .add_tool_test("q", "tool")
+            .build()
+        )
+        for c in es.eval_cases:
+            assert c.session_input.user_id == "test_user"
+            assert c.session_input.config == {}

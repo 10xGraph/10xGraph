@@ -7,6 +7,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import Enum
 from typing import Any, TypeVar
 from urllib.parse import quote, unquote
@@ -41,6 +42,7 @@ from tenxgraph.storage.columns import (
     rls_policy_expression,
     rls_policy_name,
     rls_settings,
+    role_bypasses_rls,
     warn_if_rls_bypassed,
     write_conditions,
 )
@@ -94,7 +96,7 @@ DEFAULT_CACHE_TTL = 86400
 
 # Current durable schema version. Bump when schema changes and add a matching
 # entry to ``PgCheckpointer._migrations``.
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 # Columns of the ``threads`` table the checkpointer owns; tenant and extra columns cannot reuse
 # these names.
@@ -382,6 +384,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
               built with ``CREATE INDEX CONCURRENTLY`` (an invalid leftover of a failed build is
               dropped and rebuilt). Setup is serialised across processes by a session-level
               advisory lock.
+            - record_tool_result: Record finished tool calls in ``tool_executions`` (default
+              True), so a replayed or resumed node does not run them again. False turns the
+              ledger off for every tool; ``@tool(record_tool_result=False)`` does it for one.
 
             Redis keys with tenant columns: the state cache, stop and active-run keys belong to
             the thread, not the caller. They are built from the thread row's own ``user_id`` and
@@ -523,6 +528,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         if row_level_security and not self.columns.tenant:
             raise ValueError("row_level_security=True needs at least one tenant column")
         self.row_level_security = row_level_security
+        # False turns the tool ledger off (see BaseCheckpointer.record_tool_result).
+        self.record_tool_result = bool(kwargs.get("record_tool_result", True))
         self.ddl_lock_timeout = kwargs.get("ddl_lock_timeout", DEFAULT_DDL_LOCK_TIMEOUT)
         ddl_lock_timeout_setting(self.ddl_lock_timeout)  # validates
 
@@ -628,7 +635,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 keys = list(self._skipped_invalidations)
                 await self.redis.delete(*keys)
                 self._skipped_invalidations.difference_update(keys)
-                logger.info("Dropped %d state cache entries invalidated during outage", len(keys))
+                logger.info(
+                    "Dropped %d state cache entries invalidated during outage",
+                    len(keys),
+                )
             result = await call()
         except _REDIS_CONNECTION_ERRORS as e:
             breaker.record_failure(e)
@@ -734,10 +744,14 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Returns:
             list[str]: List of SQL statements for table creation.
         """
-        statements = [sql for _table, sql in self._build_table_statements()]
+        tables = self._build_table_statements()
+        created = {table for table, _sql in tables}
+        statements = [sql for _table, sql in tables]
+        # ``tool_executions`` is made by migration v3, so its index is not part of this list.
         statements.extend(
             f"CREATE INDEX IF NOT EXISTS {name} ON {self._get_table_name(table)}{definition}"
             for name, table, definition in self._base_index_specs()
+            if table in created
         )
         return statements
 
@@ -753,6 +767,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             ("idx_threads_user_id", "threads", "(user_id)"),
             ("idx_states_thread_id", "states", "(thread_id)"),
             ("idx_messages_thread_id", "messages", "(thread_id)"),
+            # v7: aprune_tool_results deletes by age across all threads.
+            ("idx_tool_executions_created_at", "tool_executions", "(created_at)"),
         ]
 
     def _build_table_statements(self) -> list[tuple[str | None, str]]:
@@ -953,6 +969,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 "idx_threads",
                 indexes=False,
             ),
+            # v7: an index on tool_executions(created_at) for aprune_tool_results. No DDL
+            # here: _ensure_indexes builds it after the migrations, CONCURRENTLY when the
+            # table already exists, so the upgrade does not block ledger writes.
+            7: [],
         }
 
     async def _ensure_declared_columns(self, conn) -> None:
@@ -1035,7 +1055,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             migrations = self._build_migrations()
             for version in range(current_version + 1, target_version + 1):
                 for statement in migrations.get(version, []):
-                    logger.debug("Applying migration step for v%d: %s", version, statement.strip())
+                    logger.debug(
+                        "Applying migration step for v%d: %s",
+                        version,
+                        statement.strip(),
+                    )
                     await conn.execute(statement)
 
             await conn.execute(
@@ -1130,7 +1154,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
     @staticmethod
     def _index_tables() -> set[str]:
         """Tables whose indexes ``_ensure_indexes`` manages."""
-        return {"threads", "states", "messages"}
+        return {"threads", "states", "messages", "tool_executions"}
 
     async def _ensure_indexes(self, conn, tables: set[str], *, concurrently: bool) -> None:
         """Build the missing or invalid base and declared-column indexes of ``tables``.
@@ -2150,10 +2174,16 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     )
 
                 new_version = await self._run_scoped(
-                    _store_state, in_transaction=True, settings=self._rls(config, write=True)
+                    _store_state,
+                    in_transaction=True,
+                    settings=self._rls(config, write=True),
                 )
                 config[STATE_VERSION_CONFIG_KEY] = new_version
-                logger.debug("State stored for thread_id=%s at version=%s", thread_id, new_version)
+                logger.debug(
+                    "State stored for thread_id=%s at version=%s",
+                    thread_id,
+                    new_version,
+                )
                 metrics.counter("pg_checkpointer.save_state.success").inc()
                 # Write-through. A run loads its state from the cache first, with the
                 # durable version embedded for its compare-and-swap. Without this, a
@@ -2255,7 +2285,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     return version
 
                 new_version = await self._run_scoped(
-                    _store_checkpoint, in_transaction=True, settings=self._rls(config, write=True)
+                    _store_checkpoint,
+                    in_transaction=True,
+                    settings=self._rls(config, write=True),
                 )
                 config[STATE_VERSION_CONFIG_KEY] = new_version
                 logger.debug(
@@ -2317,13 +2349,16 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 """  # noqa: S608
 
             row = await self._run_scoped(
-                lambda conn: conn.fetchrow(query, *scope_params), settings=self._rls(config)
+                lambda conn: conn.fetchrow(query, *scope_params),
+                settings=self._rls(config),
             )
 
             if row:
                 data = self._loads_jsonb(row["state_data"])
                 logger.debug(
-                    "State found for thread_id=%s at version=%s", thread_id, row["version"]
+                    "State found for thread_id=%s at version=%s",
+                    thread_id,
+                    row["version"],
                 )
                 config[STATE_VERSION_CONFIG_KEY] = int(row["version"])
                 return self._deserialize_state_payload(data, thread_id)
@@ -2363,7 +2398,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             # Clear from PostgreSQL with retry logic, scoped to the owner.
             query = f"DELETE FROM {self._get_table_name('states')} WHERE {scope_sql}"  # noqa: S608
             status = await self._run_scoped(
-                lambda conn: conn.execute(query, *scope_params), settings=self._rls(config)
+                lambda conn: conn.execute(query, *scope_params),
+                settings=self._rls(config),
             )
 
             # Clear from Redis cache (best effort: Postgres is already cleared)
@@ -2482,7 +2518,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             except Exception as e:  # invalidation is best-effort
                 if attempt >= retries:
                     logger.warning(
-                        "Failed to invalidate state cache for thread_id=%s: %s", thread_id, e
+                        "Failed to invalidate state cache for thread_id=%s: %s",
+                        thread_id,
+                        e,
                     )
 
     async def _cache_matches_durable(
@@ -2509,7 +2547,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 f"WHERE {scope_sql}"
             )
             durable = await self._run_scoped(
-                lambda conn: conn.fetchval(query, *scope_params), settings=self._rls(config)
+                lambda conn: conn.fetchval(query, *scope_params),
+                settings=self._rls(config),
             )
             return int(durable) == cached_version
         except Exception as e:
@@ -2662,7 +2701,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return None
         except Exception as e:
             logger.error(
-                "Failed to get cached value for namespace=%s key=%s: %s", namespace, key, e
+                "Failed to get cached value for namespace=%s key=%s: %s",
+                namespace,
+                key,
+                e,
             )
             return None
 
@@ -2845,9 +2887,73 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             settings=self._rls(config, write=True),
         )
         logger.debug(
-            "Recorded tool execution thread_id=%s tool_call_id=%s", thread_id, tool_call_id
+            "Recorded tool execution thread_id=%s tool_call_id=%s",
+            thread_id,
+            tool_call_id,
         )
         return True
+
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Delete the thread's ledger rows (only those of ``origin_message_ids`` when given).
+
+        A row belongs to an origin id when its key starts with ``"<id>:"``, compared with
+        ``left()`` on bound values (no LIKE, so ``%`` and ``_`` in ids stay literal). Scoped
+        like the ledger write: the caller's own thread (``user_id`` and every tenant column
+        when isolation is on), with the RLS values set when RLS is on.
+        """
+        if origin_message_ids is not None and not origin_message_ids:
+            return 0
+        thread_id, user_id = self._validate_config(config)
+        params: list[Any] = [thread_id]
+        where = "thread_id = $1"
+        if origin_message_ids is not None:
+            params.append([str(i) for i in origin_message_ids])
+            where += (
+                " AND EXISTS (SELECT 1 FROM unnest($2::text[]) AS o(id) "
+                "WHERE left(tool_call_id, length(o.id) + 1) = o.id || ':')"
+            )
+        query = self._append_owner_scope(
+            f"DELETE FROM {self._get_table_name('tool_executions')} "  # noqa: S608
+            f"WHERE {where}",
+            params,
+            user_id,
+            config,
+            write=True,
+        )
+        status = await self._run_scoped(
+            lambda conn: conn.execute(query, *params),
+            settings=self._rls(config, write=True),
+        )
+        return _rows_affected(status)
+
+    async def aprune_tool_results(self, older_than: timedelta) -> int:
+        """Delete ledger rows of every thread recorded more than ``older_than`` ago.
+
+        Not scoped to a user or tenant. With ``row_level_security=True`` the rows are only
+        visible to a role that bypasses RLS (superuser or ``BYPASSRLS``): any other role
+        deletes nothing, and a warning says so.
+        """
+        query = (
+            f"DELETE FROM {self._get_table_name('tool_executions')} "  # noqa: S608
+            f"WHERE created_at < now() - $1::interval"
+        )
+
+        async def _prune(conn) -> Any:
+            if self.row_level_security and not await role_bypasses_rls(conn):
+                logger.warning(
+                    "PgCheckpointer: row_level_security=True and this database role does not "
+                    "bypass RLS, so aprune_tool_results sees no rows. Run it with a "
+                    "maintenance role that is a superuser or has BYPASSRLS."
+                )
+            return await conn.execute(query, older_than)
+
+        deleted = _rows_affected(await self._run_query(_prune))
+        logger.info("Pruned %d tool ledger rows older than %s", deleted, older_than)
+        return deleted
 
     ###########################
     #### MESSAGE METHODS ######
@@ -3218,7 +3324,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             """
 
             row = await self._run_scoped(
-                lambda conn: conn.fetchrow(query, *params), settings=self._rls(config, write=True)
+                lambda conn: conn.fetchrow(query, *params),
+                settings=self._rls(config, write=True),
             )
             return self._row_to_message(row) if row else None
 
@@ -3278,7 +3385,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     content_value = [{"type": "text", "text": str(parsed), "annotations": []}]
             except Exception:
                 content_value = [
-                    {"type": "text", "text": content_raw.decode(errors="ignore"), "annotations": []}
+                    {
+                        "type": "text",
+                        "text": content_raw.decode(errors="ignore"),
+                        "annotations": [],
+                    }
                 ]
         elif isinstance(content_raw, str):
             # Try JSON parse first
@@ -3480,7 +3591,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             WHERE thread_id = $1
             """  # noqa: S608
         return await self._run_scoped(
-            lambda conn: conn.fetchval(query, thread_id), settings=self._global_settings()
+            lambda conn: conn.fetchval(query, thread_id),
+            settings=self._global_settings(),
         )
 
     def _global_settings(self) -> list[tuple[str, str]] | None:
@@ -3507,7 +3619,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             "WHERE thread_id = $1"
         )
         row = await self._run_scoped(
-            lambda conn: conn.fetchrow(query, thread_id), settings=self._global_settings()
+            lambda conn: conn.fetchrow(query, thread_id),
+            settings=self._global_settings(),
         )
         if row is None:
             return None
@@ -3637,13 +3750,15 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 # The deleted row's identity names the thread's shared cache entry.
                 query += f" RETURNING {self._identity_columns_sql()}"
                 row = await self._run_scoped(
-                    lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
+                    lambda conn: conn.fetchrow(query, *params),
+                    settings=self._rls(config),
                 )
                 self._remember_identity(config, thread_id, row)
                 deleted = 0 if row is None else 1
             else:
                 status = await self._run_scoped(
-                    lambda conn: conn.execute(query, *params), settings=self._rls(config)
+                    lambda conn: conn.execute(query, *params),
+                    settings=self._rls(config),
                 )
                 deleted = _rows_affected(status)
 

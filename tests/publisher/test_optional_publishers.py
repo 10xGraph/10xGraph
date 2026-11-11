@@ -539,7 +539,8 @@ class TestRabbitMQPublisher:
         mock_exchange = AsyncMock()
         
         # Set up proper async behavior
-        mock_pika.connect_robust = AsyncMock(return_value=mock_connection)
+        mock_pika.connect = AsyncMock(return_value=mock_connection)
+        mock_pika.exceptions.ProbableAuthenticationError = type("AuthError", (Exception,), {})
         mock_connection.channel = AsyncMock(return_value=mock_channel)
         mock_channel.declare_exchange = AsyncMock(return_value=mock_exchange)
         mock_exchange.publish = AsyncMock()
@@ -603,8 +604,9 @@ class TestRabbitMQPublisher:
         from tenxgraph.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
         publisher = RabbitMQPublisher()
         publisher._exchange = MagicMock()
+        publisher._channel = MagicMock(is_closed=False)
         
-        await publisher._ensure()
+        assert await publisher._ensure() is True
         mock_import.assert_not_called()
 
     @pytest.mark.asyncio
@@ -625,7 +627,8 @@ class TestRabbitMQPublisher:
         mock_connection = AsyncMock()
         mock_channel = AsyncMock()
         
-        mock_pika.connect_robust = AsyncMock(return_value=mock_connection)
+        mock_pika.connect = AsyncMock(return_value=mock_connection)
+        mock_pika.exceptions.ProbableAuthenticationError = type("AuthError", (Exception,), {})
         mock_connection.channel = AsyncMock(return_value=mock_channel)
         mock_import.return_value = mock_pika
         
@@ -668,7 +671,7 @@ class TestRabbitMQPublisher:
         publisher._conn = mock_conn
         
         await publisher.close()
-        mock_channel.close.assert_called_once()
+        # Closing the connection closes its channel too.
         mock_conn.close.assert_called_once()
         assert publisher._channel is None
         assert publisher._conn is None

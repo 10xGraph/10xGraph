@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
@@ -122,7 +123,12 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         function_name = tool_call.get("function", {}).get("name", "")
         tool_call_id = tool_call.get("id", "")
 
-        ledger_key = self._ledger_key(origin_message_id, tool_call_id)
+        # None turns both the replay lookup and the record below off.
+        ledger_key = (
+            self._ledger_key(origin_message_id, tool_call_id)
+            if self._ledger_enabled(checkpointer, self.func, function_name)
+            else None
+        )
         if checkpointer and ledger_key:
             recorded = await self._get_recorded_tool_result(checkpointer, config, ledger_key)
             if recorded is not None:
@@ -696,7 +702,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             invocation_type=InvocationType.AI,
             node_name=self.name,
             function_name=function_name,
-            metadata={"config": config},
+            metadata={"config": public_config(config)},
         )
 
         # Execute before_invoke callbacks
@@ -940,7 +946,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             invocation_type=InvocationType.AI,
             node_name=self.name,
             function_name=getattr(agent, "__class__", type(agent)).__name__,
-            metadata={"config": config},
+            metadata={"config": public_config(config)},
         )
         input_data = {"state": state, "config": config}
         last_message = state.context[-1] if state.context and len(state.context) > 0 else None

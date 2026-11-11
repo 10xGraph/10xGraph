@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import inspect
 import logging
+import types
 import typing as t
 
+from tenxgraph.core.authz import UserCredential, get_credential, public_config
 from tenxgraph.core.state import (
     AgentState,
     ContentBlock,
@@ -21,7 +23,7 @@ from tenxgraph.utils.interrupt import activate as activate_interrupts
 
 from ._helpers import _extract_block_meta, _safe_serialize, generic_tool_failure
 from .coercion import ToolArgumentError, coerce_tool_argument
-from .constants import INJECTABLE_PARAMS, SKILL_TOOL_ATTR, has_injected_default
+from .constants import CREDENTIAL_PARAM, INJECTABLE_PARAMS, SKILL_TOOL_ATTR, has_injected_default
 from .schema import _safe_type_hints
 
 
@@ -29,6 +31,36 @@ if t.TYPE_CHECKING:
     from tenxgraph.core.state.stream_emitter import StreamEmitter
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
+
+_CREDENTIAL_HINTS = (UserCredential, UserCredential | None, t.Optional[UserCredential])
+
+
+def check_credential_annotation(fn: t.Callable) -> None:
+    """Warn once when a ``credential`` parameter is annotated as something else.
+
+    The parameter always receives the UserCredential object (never a str or dict, which would
+    end up in logs and events), so a different annotation is misleading.
+    """
+    try:
+        param = inspect.signature(fn).parameters.get(CREDENTIAL_PARAM)
+    except (TypeError, ValueError):
+        return
+    if param is None or param.annotation is inspect.Parameter.empty:
+        return
+    hint = _safe_type_hints(fn).get(CREDENTIAL_PARAM, param.annotation)
+    if hint in _CREDENTIAL_HINTS:
+        return
+    if t.get_origin(hint) in (t.Union, types.UnionType) and set(t.get_args(hint)) == {
+        UserCredential,
+        type(None),
+    }:
+        return
+    logger.warning(
+        "Tool '%s': the annotation of parameter 'credential' (%s) is ignored; it always "
+        "receives a UserCredential, or None when the run has none.",
+        getattr(fn, "__name__", fn),
+        hint,
+    )
 
 
 class LocalExecMixin:
@@ -97,6 +129,7 @@ class LocalExecMixin:
         self,
         result: t.Any,
         tool_call_id: str,
+        name: str | None = None,
     ) -> list[ContentBlock]:
         is_error = False
 
@@ -126,6 +159,7 @@ class LocalExecMixin:
         return [
             ToolResultBlock(
                 call_id=tool_call_id,
+                name=name,
                 output=output,
                 status="failed" if is_error else "completed",
                 is_error=is_error,
@@ -138,6 +172,7 @@ class LocalExecMixin:
         state: AgentState,
         tool_call_id: str,
         meta: dict[str, t.Any],
+        name: str | None = None,
     ) -> dict[str, t.Any] | Message:
         if isinstance(result, ToolResult):
             if result.state:
@@ -151,6 +186,7 @@ class LocalExecMixin:
                     content=[
                         ToolResultBlock(
                             call_id=tool_call_id,
+                            name=name,
                             output=result.message,
                             status="failed" if result.is_error else "completed",
                             is_error=result.is_error,
@@ -165,7 +201,7 @@ class LocalExecMixin:
             return result
 
         return Message.tool_message(
-            content=self._build_internal_result_blocks(result, tool_call_id),
+            content=self._build_internal_result_blocks(result, tool_call_id, name),
             meta=meta,
         )
 
@@ -192,7 +228,7 @@ class LocalExecMixin:
             metadata={
                 "tool_call_id": tool_call_id,
                 "args": args,
-                "config": config,
+                "config": public_config(config),
             },
         )
         # The model's raw arguments until they are validated, so an error callback still has
@@ -241,9 +277,15 @@ class LocalExecMixin:
             event.metadata["status"] = "before_invoke_complete Invoke internal"
             publish_event(event)
 
+            # Added after the callbacks, so their input_data never holds the credential.
+            call_data = dict(input_data)
+            call_data.pop(CREDENTIAL_PARAM, None)
+            if CREDENTIAL_PARAM in inspect.signature(fn).parameters:
+                call_data[CREDENTIAL_PARAM] = get_credential(config)
+
             # interrupt() inside the tool is keyed to this call, so parallel calls resume apart.
             with activate_interrupts(config, tool_call_id):
-                result = await call_sync_or_async(fn, **input_data)
+                result = await call_sync_or_async(fn, **call_data)
 
             result = await callback_mgr.execute_after_invoke(
                 context,
@@ -251,7 +293,7 @@ class LocalExecMixin:
                 result,
             )
 
-            msg = self._message_from_internal_result(result, state, tool_call_id, meta)
+            msg = self._message_from_internal_result(result, state, tool_call_id, meta, name)
             if isinstance(msg, Message):
                 self._publish_internal_completion(event, msg, "Internal tool execution complete")
             elif isinstance(msg, dict):
@@ -259,7 +301,7 @@ class LocalExecMixin:
                     event,
                     Message.tool_message(
                         content=self._build_internal_result_blocks(
-                            msg.get("messages"), tool_call_id
+                            msg.get("messages"), tool_call_id, name
                         ),
                         meta=meta,
                     ),
@@ -295,6 +337,7 @@ class LocalExecMixin:
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
+                        name=name,
                         output=error_text,
                         status="failed",
                         is_error=True,

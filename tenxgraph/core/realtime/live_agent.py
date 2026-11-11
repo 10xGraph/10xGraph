@@ -28,6 +28,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.graph.agent_internal.memory import AgentMemoryMixin
 from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
 from tenxgraph.core.graph.base_agent import BaseAgent
@@ -664,7 +665,11 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         except Exception:
             payload = repr((event.name, event.args))
         digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
-        key = ToolRuntimeMixin._ledger_key(f"realtime-{scope}-{digest}", event.id)
+        key = (
+            ToolRuntimeMixin._ledger_key(f"realtime-{scope}-{digest}", event.id)
+            if ToolRuntimeMixin._ledger_enabled(checkpointer, tool_node, event.name)
+            else None
+        )
         ledger = _LedgerAccess(self._node_name_or_default())
         if checkpointer is not None and key:
             recorded = await ledger._get_recorded_tool_result(checkpointer, config, key)
@@ -922,7 +927,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     ) -> AgentState:
         if not cb._lifecycle_hooks:
             return state
-        return await cb.fire_on_graph_start(GraphLifecycleContext(config=config), state)
+        return await cb.fire_on_graph_start(
+            GraphLifecycleContext(config=public_config(config)), state
+        )
 
     async def _fire_graph_end(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turns: int
@@ -930,21 +937,27 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         if not cb._lifecycle_hooks:
             return
         messages = list(getattr(state, "context", []) or [])
-        await cb.fire_on_graph_end(GraphLifecycleContext(config=config), state, messages, turns)
+        await cb.fire_on_graph_end(
+            GraphLifecycleContext(config=public_config(config)), state, messages, turns
+        )
 
     async def _fire_turn_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int
     ) -> AgentState:
         if not cb._lifecycle_hooks:
             return state
-        return await cb.fire_on_turn_start(GraphLifecycleContext(config=config), state, turn_index)
+        return await cb.fire_on_turn_start(
+            GraphLifecycleContext(config=public_config(config)), state, turn_index
+        )
 
     async def _fire_turn_end(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int
     ) -> AgentState:
         if not cb._lifecycle_hooks:
             return state
-        return await cb.fire_on_turn_end(GraphLifecycleContext(config=config), state, turn_index)
+        return await cb.fire_on_turn_end(
+            GraphLifecycleContext(config=public_config(config)), state, turn_index
+        )
 
     # ------------------------------------------------------------------ #
     # Observability for events ToolNode doesn't already publish.

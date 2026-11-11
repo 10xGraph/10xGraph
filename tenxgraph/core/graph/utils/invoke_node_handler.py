@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
@@ -136,7 +137,12 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         # Replay guard: if this exact tool call already completed, reuse its
         # recorded result instead of invoking the tool a second time.
-        ledger_key = self._ledger_key(origin_message_id, tool_call_id)
+        # None turns both the replay lookup and the record below off.
+        ledger_key = (
+            self._ledger_key(origin_message_id, tool_call_id)
+            if self._ledger_enabled(checkpointer, self.func, function_name)
+            else None
+        )
         if checkpointer and ledger_key:
             recorded = await self._get_recorded_tool_result(checkpointer, config, ledger_key)
             if recorded is not None:
@@ -579,7 +585,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             invocation_type=InvocationType.AI,
             node_name=self.name,
             function_name=getattr(self.func, "__name__", str(self.func)),
-            metadata={"config": config},
+            metadata={"config": public_config(config)},
         )
 
         # Event publishing logic (similar to stream_node_handler)
@@ -712,7 +718,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             invocation_type=InvocationType.AI,
             node_name=self.name,
             function_name=getattr(agent, "__class__", type(agent)).__name__,
-            metadata={"config": config},
+            metadata={"config": public_config(config)},
         )
 
         input_data = {"state": state, "config": config}

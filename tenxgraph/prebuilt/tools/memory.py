@@ -182,7 +182,6 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
     user_config = memory_config.user_memory
 
     @tool(
-        name="user_memory_tool",
         description=(
             "Search or remember user-scoped long-term memories. "
             "Use action='search' with text to recall durable user facts. "
@@ -267,7 +266,6 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
     agent_config = memory_config.agent_memory
 
     @tool(
-        name="agent_memory_tool",
         description=(
             "Search read-only agent/app-scoped long-term memories. "
             "This tool cannot write, update, or delete memory."

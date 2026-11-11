@@ -1,5 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, TypeVar, get_args
 
 from tenxgraph.core.authz import owner_id
@@ -131,6 +133,10 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     # ``super().__init__()`` still get the default.
     _state_type: type[AgentState] = AgentState
     _state_type_bound: bool = False
+    # Whether ToolNode records finished tool calls in the tool ledger (see aget_tool_result).
+    # False turns the ledger off for every tool: a node replayed after a crash, or resumed
+    # after a pause inside it, runs its tools again.
+    record_tool_result: bool = True
 
     @property
     def state_type(self) -> type[AgentState]:
@@ -736,6 +742,47 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         self._warn_ledger_unsupported()
         return None
+
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Delete the thread's tool ledger rows; return how many went.
+
+        Ledger keys are ``"<origin_message_id>:<tool_call_id>"``. With ``origin_message_ids``
+        only the rows issued by those assistant messages go (an empty list deletes nothing);
+        with ``None`` every row of the thread goes, for deliberate manual use.
+
+        Called in the background after a run on the thread completed, with the ids of that
+        run's tool-calling messages: no node of it can be replayed any more, and rows a newer
+        run on the thread has written meanwhile stay. Paused, stopped, failed or cancelled
+        runs keep their rows. Backends without a ledger keep this default (nothing).
+        """
+        return 0
+
+    async def aprune_tool_results(self, older_than: timedelta) -> int:
+        """Delete tool ledger rows of every thread recorded more than ``older_than`` ago.
+
+        A maintenance call, not scoped to a user, that nothing in the library makes: run it
+        from a scheduled job. It removes rows a completed run did not clear (a run that never
+        completed, a dropped background clear, realtime sessions). Choose ``older_than``
+        longer than any pause may last, or a resumed node runs its finished tools again.
+        Returns the number of rows deleted (0 for backends without a ledger).
+        """
+        return 0
+
+    def clear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Synchronously delete tool ledger rows (see :meth:`aclear_tool_results`)."""
+        return run_coroutine(self.aclear_tool_results(config, origin_message_ids))
+
+    def prune_tool_results(self, older_than: timedelta) -> int:
+        """Synchronously prune old tool ledger rows (see :meth:`aprune_tool_results`)."""
+        return run_coroutine(self.aprune_tool_results(older_than))
 
     # -------------------------
     # Message methods async

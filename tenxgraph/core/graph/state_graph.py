@@ -539,6 +539,13 @@ class StateGraph[StateT: AgentState]:
         # Stored rows hold data only; the checkpointer rebuilds them into this class.
         checkpointer.bind_state_type(type(self._state))
 
+        if getattr(checkpointer, "record_tool_result", True) is False:
+            logger.info(
+                "%s has record_tool_result=False: finished tool calls are not recorded, so a "
+                "node replayed after a crash or resumed after a pause runs its tools again.",
+                type(checkpointer).__name__,
+            )
+
         check_tenant_columns(checkpointer, store, allow_mismatch=allow_tenant_mismatch)
 
         # Import the CompiledGraph class

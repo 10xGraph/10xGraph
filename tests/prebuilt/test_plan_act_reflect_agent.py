@@ -47,10 +47,11 @@ class FakeManagedAgent(BaseAgent):
 class FakeToolNode:
     """ToolNode stub for constructor-only tests."""
 
-    def __init__(self, tools, client=None, pass_user_info_to_mcp: bool = False):
+    def __init__(self, tools, client=None, pass_user_info_to_mcp: bool = False, mcp_auth=None):
         self._funcs = list(tools)
         self.client = client
         self.pass_user_info_to_mcp = pass_user_info_to_mcp
+        self.mcp_auth = mcp_auth
 
 
 # ---------------------------------------------------------------------------

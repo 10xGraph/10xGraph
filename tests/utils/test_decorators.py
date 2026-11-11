@@ -15,19 +15,18 @@ class TestToolDecorator:
     def test_tool_decorator_with_name_only(self):
         """Test decorator with just a name parameter."""
 
-        @tool(name="test_tool")
+        @tool
         def sample_func(x: int) -> int:
             """Sample function."""
             return x * 2
 
         assert has_tool_decorator(sample_func)
         metadata = get_tool_metadata(sample_func)
-        assert metadata["name"] == "test_tool"
         assert metadata["description"] == "Sample function."
         assert metadata["tags"] == set()
 
     def test_tool_decorator_no_args(self):
-        """Test decorator without arguments (uses function name and docstring)."""
+        """Test decorator without arguments (uses the docstring as description)."""
 
         @tool
         def my_function(a: int, b: int) -> int:
@@ -36,7 +35,6 @@ class TestToolDecorator:
 
         assert has_tool_decorator(my_function)
         metadata = get_tool_metadata(my_function)
-        assert metadata["name"] == "my_function"
         assert metadata["description"] == "Add two numbers."
         assert metadata["tags"] == set()
 
@@ -44,7 +42,6 @@ class TestToolDecorator:
         """Test decorator with all metadata parameters."""
 
         @tool(
-            name="advanced_tool",
             description="A complex tool",
             tags=["tag1", "tag2"],
             provider="test_provider",
@@ -56,7 +53,6 @@ class TestToolDecorator:
 
         assert has_tool_decorator(complex_func)
         meta = get_tool_metadata(complex_func)
-        assert meta["name"] == "advanced_tool"
         assert meta["description"] == "A complex tool"
         assert meta["tags"] == {"tag1", "tag2"}
         assert meta["provider"] == "test_provider"
@@ -66,7 +62,7 @@ class TestToolDecorator:
     def test_tool_decorator_with_list_tags(self):
         """Test that list tags are converted to sets."""
 
-        @tool(name="test", tags=["a", "b", "c"])
+        @tool(tags=["a", "b", "c"])
         def func():
             pass
 
@@ -77,7 +73,7 @@ class TestToolDecorator:
     def test_tool_decorator_with_set_tags(self):
         """Test that set tags remain as sets."""
 
-        @tool(name="test", tags={"x", "y", "z"})
+        @tool(tags={"x", "y", "z"})
         def func():
             pass
 
@@ -88,7 +84,7 @@ class TestToolDecorator:
     def test_tool_decorator_preserves_function_behavior(self):
         """Test that decorated function still works normally."""
 
-        @tool(name="calculator")
+        @tool
         def add(a: int, b: int) -> int:
             """Add two numbers."""
             return a + b
@@ -99,7 +95,7 @@ class TestToolDecorator:
     def test_tool_decorator_with_async_function(self):
         """Test decorator works with async functions."""
 
-        @tool(name="async_tool", tags=["async"])
+        @tool(tags=["async"])
         async def async_func(x: int) -> int:
             """Async function."""
             await asyncio.sleep(0.01)
@@ -107,7 +103,6 @@ class TestToolDecorator:
 
         assert has_tool_decorator(async_func)
         metadata = get_tool_metadata(async_func)
-        assert metadata["name"] == "async_tool"
         assert "async" in metadata["tags"]
 
         # Test it still works
@@ -117,7 +112,7 @@ class TestToolDecorator:
     def test_tool_decorator_without_docstring(self):
         """Test decorator with function that has no docstring."""
 
-        @tool(name="no_doc")
+        @tool
         def func_without_doc(x: int) -> int:
             return x
 
@@ -127,7 +122,7 @@ class TestToolDecorator:
     def test_tool_decorator_override_description(self):
         """Test that explicit description overrides docstring."""
 
-        @tool(name="test", description="Custom description")
+        @tool(description="Custom description")
         def func(x: int) -> int:
             """Original docstring."""
             return x
@@ -138,7 +133,7 @@ class TestToolDecorator:
     def test_tool_decorator_invalid_input(self):
         """Test that decorator raises error for non-callable."""
         with pytest.raises(ValueError, match="can only be applied to callable"):
-            tool(name="invalid")(123)  # type: ignore
+            tool()(123)  # type: ignore
 
     def test_has_tool_decorator_false(self):
         """Test has_tool_decorator returns False for undecorated functions."""
@@ -155,7 +150,6 @@ class TestToolDecorator:
             pass
 
         metadata = get_tool_metadata(plain_function)
-        assert metadata["name"] is None
         assert metadata["description"] is None
         assert metadata["tags"] == set()
         assert metadata["provider"] is None
@@ -169,11 +163,11 @@ class TestToolDecoratorIntegration:
     def test_tool_node_with_decorated_functions(self):
         """Test ToolNode recognizes and uses decorated tool metadata."""
 
-        @tool(name="custom_add", description="Custom addition tool")
+        @tool(description="Custom addition tool")
         def add(a: int, b: int) -> int:
             return a + b
 
-        @tool(name="custom_multiply")
+        @tool
         def multiply(x: int, y: int) -> int:
             """Multiply two numbers."""
             return x * y
@@ -184,10 +178,8 @@ class TestToolDecoratorIntegration:
         assert len(tools) == 2
 
         # Find the tools by name
-        add_tool = next(t for t in tools if t["function"]["name"] == "custom_add")
-        mult_tool = next(
-            t for t in tools if t["function"]["name"] == "custom_multiply"
-        )
+        add_tool = next(t for t in tools if t["function"]["name"] == "add")
+        mult_tool = next(t for t in tools if t["function"]["name"] == "multiply")
 
         assert add_tool["function"]["description"] == "Custom addition tool"
         assert mult_tool["function"]["description"] == "Multiply two numbers."
@@ -195,15 +187,15 @@ class TestToolDecoratorIntegration:
     def test_tool_node_tag_filtering(self):
         """Test that ToolNode filters by tags correctly."""
 
-        @tool(name="read_tool", tags=["database", "read"])
+        @tool(tags=["database", "read"])
         def read_data(table: str) -> dict:
             return {"table": table}
 
-        @tool(name="write_tool", tags=["database", "write"])
+        @tool(tags=["database", "write"])
         def write_data(table: str, data: dict) -> bool:
             return True
 
-        @tool(name="search_tool", tags=["web", "search"])
+        @tool(tags=["web", "search"])
         def search(query: str) -> list:
             return []
 
@@ -217,22 +209,22 @@ class TestToolDecoratorIntegration:
         db_tools = tool_node.get_local_tool(tags={"database"})
         assert len(db_tools) == 2
         names = {t["function"]["name"] for t in db_tools}
-        assert names == {"read_tool", "write_tool"}
+        assert names == {"read_data", "write_data"}
 
         # Filter by search tag
         search_tools = tool_node.get_local_tool(tags={"search"})
         assert len(search_tools) == 1
-        assert search_tools[0]["function"]["name"] == "search_tool"
+        assert search_tools[0]["function"]["name"] == "search"
 
         # Filter by read tag
         read_tools = tool_node.get_local_tool(tags={"read"})
         assert len(read_tools) == 1
-        assert read_tools[0]["function"]["name"] == "read_tool"
+        assert read_tools[0]["function"]["name"] == "read_data"
 
     def test_tool_node_mixed_decorated_and_plain(self):
         """Test ToolNode with mix of decorated and plain functions."""
 
-        @tool(name="decorated_func")
+        @tool
         def decorated(x: int) -> int:
             """Decorated function."""
             return x * 2
@@ -246,10 +238,8 @@ class TestToolDecoratorIntegration:
 
         assert len(tools) == 2
 
-        # Decorated function should use custom name
-        decorated_tool = next(
-            t for t in tools if t["function"]["name"] == "decorated_func"
-        )
+        # Decorated function uses its function name
+        decorated_tool = next(t for t in tools if t["function"]["name"] == "decorated")
         assert decorated_tool is not None
 
         # Plain function should use function name
@@ -259,7 +249,7 @@ class TestToolDecoratorIntegration:
     def test_tool_node_injectable_params_excluded(self):
         """Test that injectable parameters are excluded from schema."""
 
-        @tool(name="stateful_tool")
+        @tool
         def stateful(
             user_input: str,
             state: AgentState | None = None,
@@ -283,7 +273,7 @@ class TestToolDecoratorIntegration:
     def test_tool_decorator_preserves_tool_node_functionality(self):
         """Test that decorated tools work in ToolNode execution."""
 
-        @tool(name="test_add")
+        @tool
         def add(a: int, b: int) -> int:
             """Add numbers."""
             return a + b
@@ -294,7 +284,7 @@ class TestToolDecoratorIntegration:
         # This test ensures the decorator doesn't break ToolNode's internal mechanisms
         tools = tool_node.get_local_tool()
         assert len(tools) == 1
-        assert tools[0]["function"]["name"] == "test_add"
+        assert tools[0]["function"]["name"] == "add"
 
 
 class TestToolDecoratorEdgeCases:
@@ -303,7 +293,7 @@ class TestToolDecoratorEdgeCases:
     def test_tool_decorator_empty_tags(self):
         """Test decorator with empty tags list."""
 
-        @tool(name="test", tags=[])
+        @tool(tags=[])
         def func():
             pass
 
@@ -314,7 +304,6 @@ class TestToolDecoratorEdgeCases:
         """Test decorator handles None values correctly."""
 
         @tool(
-            name="test",
             description=None,
             provider=None,
             capabilities=None,
@@ -325,7 +314,6 @@ class TestToolDecoratorEdgeCases:
             pass
 
         metadata = get_tool_metadata(func)
-        assert metadata["name"] == "test"
         assert metadata["description"] == "Fallback docstring."
         assert metadata["provider"] is None
         assert metadata["capabilities"] is None
@@ -334,7 +322,7 @@ class TestToolDecoratorEdgeCases:
     def test_tool_decorator_complex_types(self):
         """Test decorator with complex parameter types."""
 
-        @tool(name="complex_tool")
+        @tool
         def complex_func(
             items: list[str],
             mapping: dict[str, int],
@@ -345,13 +333,11 @@ class TestToolDecoratorEdgeCases:
 
         # Should not raise any errors
         assert has_tool_decorator(complex_func)
-        metadata = get_tool_metadata(complex_func)
-        assert metadata["name"] == "complex_tool"
 
     def test_tool_decorator_with_varargs(self):
         """Test decorator with *args and **kwargs."""
 
-        @tool(name="varargs_tool")
+        @tool
         def varargs_func(required: str, *args, **kwargs) -> str:
             """Function with varargs."""
             return required
@@ -374,7 +360,7 @@ class TestToolDecoratorEdgeCases:
 
             return wrapper
 
-        @tool(name="multi_decorated")
+        @tool
         @other_decorator
         def multi_func(x: int) -> int:
             """Multi-decorated function."""
@@ -393,30 +379,29 @@ class TestToolDecoratorEdgeCases:
             """Special function."""
             pass
 
-        metadata = get_tool_metadata(my_special_function)
-        assert metadata["name"] == "my_special_function"
+        assert ToolNode([my_special_function]).knows_tool("my_special_function")
 
 
 class TestToolDecoratorSchemaGeneration:
     """Test schema generation for decorated tools."""
 
-    def test_schema_uses_decorator_name(self):
-        """Test that generated schema uses decorator name over function name."""
+    def test_schema_name_equals_function_name(self):
+        """The schema name is always the function's __name__."""
 
-        @tool(name="custom_name")
+        @tool(description="Test function")
         def original_name(x: int) -> int:
-            """Test function."""
             return x
 
         tool_node = ToolNode([original_name])
         tools = tool_node.get_local_tool()
 
-        assert tools[0]["function"]["name"] == "custom_name"
+        assert tools[0]["function"]["name"] == original_name.__name__ == "original_name"
+        assert tool_node.knows_tool("original_name")
 
     def test_schema_uses_decorator_description(self):
         """Test that schema uses decorator description over docstring."""
 
-        @tool(name="test", description="Custom description")
+        @tool(description="Custom description")
         def func(x: int) -> int:
             """Original docstring that should be overridden."""
             return x
@@ -430,7 +415,6 @@ class TestToolDecoratorSchemaGeneration:
         """Test that schema format matches OpenAI function calling format."""
 
         @tool(
-            name="test_tool",
             description="Test description",
             tags=["test"],
         )
@@ -454,14 +438,18 @@ class TestToolDecoratorSchemaGeneration:
         assert "param2" in params["properties"]
 
 
-def test_positional_name_form_documented_in_docstring():
-    @tool("calculator")
-    def add(a: int, b: int) -> int:
-        """Add."""
-        return a + b
+@pytest.mark.parametrize("call", [lambda: tool(name="x"), lambda: tool("x")])
+def test_name_argument_is_removed(call):
+    with pytest.raises((TypeError, ValueError)):
+        call()(lambda: None)
 
-    assert add._py_tool_name == "calculator"
-    assert add(1, 2) == 3
+
+def test_name_keyword_raises_type_error():
+    with pytest.raises(TypeError):
+
+        @tool(name="x")
+        def func():
+            pass
 
 
 def test_bound_method_can_be_decorated():
@@ -471,6 +459,6 @@ def test_bound_method_can_be_decorated():
             return "pong"
 
     box = Box()
-    bound = tool(box.ping, name="ping_tool")
-    assert bound._py_tool_name == "ping_tool"
+    bound = tool(box.ping)
+    assert has_tool_decorator(bound)
     assert bound() == "pong"
