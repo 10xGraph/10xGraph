@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, TypeVar, get_args
 
@@ -742,12 +743,21 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         self._warn_ledger_unsupported()
         return None
 
-    async def aclear_tool_results(self, config: dict[str, Any]) -> int:
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
         """Delete the thread's tool ledger rows; return how many went.
 
-        Called in the background after a run on the thread completed: no node of it can be
-        replayed any more, so its records are not needed. Paused, stopped, failed or
-        cancelled runs keep them. Backends without a ledger keep this default (nothing).
+        Ledger keys are ``"<origin_message_id>:<tool_call_id>"``. With ``origin_message_ids``
+        only the rows issued by those assistant messages go (an empty list deletes nothing);
+        with ``None`` every row of the thread goes, for deliberate manual use.
+
+        Called in the background after a run on the thread completed, with the ids of that
+        run's tool-calling messages: no node of it can be replayed any more, and rows a newer
+        run on the thread has written meanwhile stay. Paused, stopped, failed or cancelled
+        runs keep their rows. Backends without a ledger keep this default (nothing).
         """
         return 0
 
@@ -762,9 +772,13 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """
         return 0
 
-    def clear_tool_results(self, config: dict[str, Any]) -> int:
-        """Synchronously delete the thread's tool ledger rows (see :meth:`aclear_tool_results`)."""
-        return run_coroutine(self.aclear_tool_results(config))
+    def clear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Synchronously delete tool ledger rows (see :meth:`aclear_tool_results`)."""
+        return run_coroutine(self.aclear_tool_results(config, origin_message_ids))
 
     def prune_tool_results(self, older_than: timedelta) -> int:
         """Synchronously prune old tool ledger rows (see :meth:`aprune_tool_results`)."""

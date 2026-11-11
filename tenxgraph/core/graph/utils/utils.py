@@ -30,7 +30,7 @@ from injectq import Inject
 
 from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import GraphError
-from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message, ToolCallBlock
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.execution_state import ExecutionState as ExecMeta
 from tenxgraph.core.state.execution_state import StopRequestStatus
@@ -756,7 +756,7 @@ async def sync_data(
     """Sync the current state and messages to the checkpointer.
 
     ``last_save`` records the save this call starts, for the run's cancel cleanup. Once a
-    COMPLETED state is saved, the thread's tool ledger is cleared in the background (see
+    COMPLETED state is saved, this run's tool ledger rows are cleared in the background (see
     :func:`_schedule_ledger_clear`).
     """
     checkpointer = fresh(checkpointer)
@@ -765,6 +765,8 @@ async def sync_data(
     task_manager = fresh(task_manager)
     is_context_trimmed = False
 
+    # Ids of the run's tool-calling messages, taken before trimming drops any of them.
+    origin_ids = _tool_origin_ids([*state.context, *messages])
     new_state = copy.deepcopy(state)
     # if context manager is available then utilize it
     if context_manager and trim:
@@ -816,14 +818,29 @@ async def sync_data(
             raise
 
         if new_state.execution_meta.status == ExecutionStatus.COMPLETED:
-            _schedule_ledger_clear(checkpointer, config, task_manager)
+            _schedule_ledger_clear(checkpointer, config, task_manager, origin_ids)
 
     return is_context_trimmed
 
 
-async def _clear_ledger(checkpointer: BaseCheckpointer, config: dict[str, Any]) -> None:
+def _tool_origin_ids(messages: list[Message]) -> list[str]:
+    """``message_id`` of each message that issued tool calls, as the ledger keys spell it.
+
+    ToolNode keys a call on the message holding it in ``tools_calls``; a ``ToolCallBlock`` in
+    the content counts too, so no recorded call is missed.
+    """
+    ids: dict[str, None] = {}
+    for msg in messages:
+        if msg.tools_calls or any(isinstance(b, ToolCallBlock) for b in msg.content or []):
+            ids[str(msg.message_id)] = None
+    return list(ids)
+
+
+async def _clear_ledger(
+    checkpointer: BaseCheckpointer, config: dict[str, Any], origin_ids: list[str]
+) -> None:
     try:
-        deleted = await checkpointer.aclear_tool_results(config)
+        deleted = await checkpointer.aclear_tool_results(config, origin_ids)
         logger.debug("Cleared %s tool ledger rows of thread '%s'", deleted, config.get("thread_id"))
     except Exception as e:
         logger.warning(
@@ -838,20 +855,26 @@ def _schedule_ledger_clear(
     checkpointer: BaseCheckpointer,
     config: dict[str, Any],
     task_manager: BackgroundTaskManager | None,
+    origin_ids: list[str],
 ) -> None:
-    """Delete the thread's tool ledger rows after its run completed, without holding the caller.
+    """Delete the run's tool ledger rows after it completed, without holding the caller.
 
-    A completed run has no node left to replay, so its records are spent. Runs that paused,
-    stopped, failed or were cancelled never save COMPLETED and keep them. The task runs on the
-    graph's own task manager, which ``aclose()`` drains before it releases the checkpointer.
+    A completed run has no node left to replay, so its records are spent. Only rows keyed on
+    ``origin_ids`` (the run's tool-calling messages) go: a newer run on the thread may record
+    rows before this task runs, and those must stay. Rows of a message trimmed out of the
+    state before this save stay too, until pruned. Runs that paused, stopped, failed or were
+    cancelled never save COMPLETED and keep them. The task runs on the graph's own task
+    manager, which ``aclose()`` drains before it releases the checkpointer.
     """
-    if not getattr(checkpointer, "record_tool_result", True):
+    if not origin_ids or not getattr(checkpointer, "record_tool_result", True):
         return
     manager = resolve_task_manager(task_manager)
     if manager is None:
         return
     # A copy: the caller goes on using (and popping keys from) its config.
-    task = manager.create_task(_clear_ledger(checkpointer, dict(config)), name="clear_tool_ledger")
+    task = manager.create_task(
+        _clear_ledger(checkpointer, dict(config), origin_ids), name="clear_tool_ledger"
+    )
     if task is None:
         logger.debug(
             "Tool ledger clear of thread '%s' dropped by backpressure; the rows stay until pruned",

@@ -87,6 +87,23 @@ async def test_clear_is_scoped_to_the_callers_thread(make_cp):
     assert await cp.aget_tool_result(b, "m:c1") == {"v": 3}
 
 
+async def test_clear_by_origin_ids_matches_literally_and_keeps_other_messages(make_cp):
+    cp = await make_cp()
+    a = _cfg(_tid(), org="A")
+    for key in ("m1:c1", "m1:c2", "m10:c1", "m2:c1", "a%:c1", "ab:c1", "a_:c1", "x:y:c1", "x:c1"):
+        await cp.aput_tool_result(a, key, {"k": key})
+
+    other_org = _cfg(a["thread_id"], org="B")
+    assert await cp.aclear_tool_results(other_org, ["m1"]) == 0
+    assert await cp.aclear_tool_results(a, []) == 0
+
+    assert await cp.aclear_tool_results(a, ["m1", "a%", "a_", "x:y"]) == 5
+    for gone in ("m1:c1", "m1:c2", "a%:c1", "a_:c1", "x:y:c1"):
+        assert await cp.aget_tool_result(a, gone) is None
+    for kept in ("m10:c1", "m2:c1", "ab:c1", "x:c1"):
+        assert await cp.aget_tool_result(a, kept) == {"k": kept}
+
+
 async def test_prune_deletes_old_rows_of_every_thread(make_cp, admin_pool, schema):
     cp = await make_cp(tenant_columns=None)
     old_a = {"thread_id": _tid(), "user_id": "alice"}
@@ -114,4 +131,4 @@ async def test_clear_works_under_rls_and_prune_warns(make_cp, rls_dsn, caplog):
         assert await cp.aprune_tool_results(timedelta(seconds=-1)) == 0
     assert any("BYPASSRLS" in r.getMessage() for r in caplog.records)
 
-    assert await cp.aclear_tool_results(a) == 2
+    assert await cp.aclear_tool_results(a, ["m"]) == 2

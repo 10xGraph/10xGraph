@@ -126,7 +126,6 @@ def _fetch_sync(
 
 
 @tool(
-    name="fetch_url",
     description=(
         "Fetch a public http/https URL and return text content. Blocks private/local hosts, "
         "including through redirects, applies a timeout, and truncates long responses."
@@ -153,7 +152,6 @@ def create_fetch_url(allowed_hosts: list[str] | tuple[str, ...]):
         raise ValueError("allowed_hosts must not be empty")
 
     @tool(
-        name="fetch_url",
         description=(
             "Fetch an http/https URL on an approved host and return text content. Applies a "
             "timeout and truncates long responses."
@@ -161,7 +159,7 @@ def create_fetch_url(allowed_hosts: list[str] | tuple[str, ...]):
         tags=["web", "fetch", "network"],
         capabilities=["network_access"],
     )
-    async def scoped_fetch_url(
+    async def fetch_url(
         url: str, timeout: float = 10.0, max_chars: int = _DEFAULT_MAX_CHARS
     ) -> str:
         """Fetch a URL on an approved host and return normalized text content."""
@@ -169,4 +167,4 @@ def create_fetch_url(allowed_hosts: list[str] | tuple[str, ...]):
         result = await asyncio.to_thread(_fetch_sync, url, timeout, safe_max_chars, hosts)
         return json.dumps(result)
 
-    return scoped_fetch_url
+    return fetch_url

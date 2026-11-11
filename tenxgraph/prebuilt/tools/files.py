@@ -425,7 +425,6 @@ def _search(
 
 
 @tool(
-    name="file_read",
     description=_READ_DESCRIPTION,
     tags=_READ_TAGS,
     capabilities=["read_files"],
@@ -443,7 +442,6 @@ def file_read(
 
 
 @tool(
-    name="file_write",
     description=_WRITE_DESCRIPTION,
     tags=_WRITE_TAGS,
     capabilities=["write_files"],
@@ -461,7 +459,6 @@ def file_write(
 
 
 @tool(
-    name="file_search",
     description=_SEARCH_DESCRIPTION,
     tags=_SEARCH_TAGS,
     capabilities=["read_files"],
@@ -533,12 +530,11 @@ def create_file_tools(
     if read:
 
         @tool(
-            name="file_read",
             description=_READ_DESCRIPTION,
             tags=_READ_TAGS,
             capabilities=["read_files"],
         )
-        def scoped_file_read(
+        def file_read(
             path: str,
             start_line: int = 1,
             end_line: int = 0,
@@ -547,17 +543,16 @@ def create_file_tools(
             """Read a workspace-scoped text file."""
             return _read(path, start_line, end_line, max_chars, fixed_root, rules)
 
-        tools.append(scoped_file_read)
+        tools.append(file_read)
 
     if write:
 
         @tool(
-            name="file_write",
             description=_WRITE_DESCRIPTION,
             tags=_WRITE_TAGS,
             capabilities=["write_files"],
         )
-        def scoped_file_write(
+        def file_write(
             path: str,
             content: str,
             mode: Literal["create", "overwrite", "append"] = "create",
@@ -566,17 +561,16 @@ def create_file_tools(
             """Write UTF-8 text to a workspace-scoped file."""
             return _write(path, content, mode, create_dirs, fixed_root, rules)
 
-        tools.append(scoped_file_write)
+        tools.append(file_write)
 
     if search:
 
         @tool(
-            name="file_search",
             description=_SEARCH_DESCRIPTION,
             tags=_SEARCH_TAGS,
             capabilities=["read_files"],
         )
-        def scoped_file_search(
+        def file_search(
             query: str,
             path: str = "",
             glob: str = "**/*",
@@ -585,6 +579,6 @@ def create_file_tools(
             """Search workspace-scoped text files by filename and content."""
             return _search(query, path, glob, max_results, fixed_root, rules)
 
-        tools.append(scoped_file_search)
+        tools.append(file_search)
 
     return tools

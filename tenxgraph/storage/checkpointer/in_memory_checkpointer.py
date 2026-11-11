@@ -3,6 +3,7 @@ import copy
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import timedelta
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -340,13 +341,26 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             self._tool_results[self._tool_key(config, tool_call_id)] = (result, time.time())
             return True
 
-    async def aclear_tool_results(self, config: dict[str, Any]) -> int:
-        """Delete the thread's ledger records; returns how many went."""
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Delete the thread's ledger records (only those of ``origin_message_ids`` when given)."""
+        if origin_message_ids is not None and not origin_message_ids:
+            return 0
         if self._owner_denied(config, write=True):
             return 0
         key = self._get_config_key(config)
+        prefixes = (
+            None if origin_message_ids is None else tuple(f"{i}:" for i in origin_message_ids)
+        )
         async with self._tool_lock:
-            stale = [k for k in self._tool_results if k[0] == key]
+            stale = [
+                k
+                for k in self._tool_results
+                if k[0] == key and (prefixes is None or k[1].startswith(prefixes))
+            ]
             for ledger_key in stale:
                 del self._tool_results[ledger_key]
         return len(stale)

@@ -23,7 +23,6 @@ def tool[F: Callable[..., Any]](
     _func: F | None = None,
     /,
     *,
-    name: str | None = None,
     description: str | None = None,
     tags: list[str] | set[str] | None = None,
     provider: str | None = None,
@@ -35,20 +34,18 @@ def tool[F: Callable[..., Any]](
     """Decorator to mark a function as a tool with metadata.
 
     This decorator attaches metadata to a function, making it recognizable as a tool
-    within the agentflow framework. The metadata includes the tool's name, description,
+    within the agentflow framework. The metadata includes the tool's description,
     tags for categorization, provider information, and capabilities.
 
     The decorator can be used in two ways:
-    1. With arguments: @tool(name="my_tool", description="...")
+    1. With arguments: @tool(description="...")
     2. Without arguments: @tool
 
-    When used without arguments, the function's name and docstring are used as
-    the tool name and description respectively.
+    The tool name is always the function's ``__name__``; to change it, rename the
+    function. When ``description`` is not given, the docstring is used.
 
     Args:
         _func: The function to decorate (when used without parentheses).
-        name: The name of the tool. If not provided, uses the function's __name__.
-            This name is used when the tool is called by agents or listed in schemas.
         description: A clear description of what the tool does. If not provided,
             uses the function's docstring. This is crucial for agents to understand
             when and how to use the tool.
@@ -81,26 +78,25 @@ def tool[F: Callable[..., Any]](
         ValueError: If the decorated object is not a callable function.
 
     Examples:
-        Basic usage with just a name:
-        >>> @tool("calculator")
+        Basic usage with a description:
+        >>> @tool(description="Add two numbers")
         ... def add(a: int, b: int) -> int:
         ...     '''Add two numbers together.'''
         ...     return a + b
 
         Full usage with all options:
         >>> @tool(
-        ...     name="web_search",
         ...     description="Search the web for information",
         ...     tags=["search", "web", "external"],
         ...     provider="custom",
         ...     capabilities=["network_access"],
         ...     metadata={"rate_limit": 100, "timeout": 30},
         ... )
-        ... async def search_web(query: str, max_results: int = 10) -> list[str]:
+        ... async def web_search(query: str, max_results: int = 10) -> list[str]:
         ...     # Implementation here
         ...     return ["result1", "result2"]
 
-        Usage without arguments (uses function name and docstring):
+        Usage without arguments (uses docstring as the description):
         >>> @tool
         ... def multiply(x: int, y: int) -> int:
         ...     '''Multiply two numbers.'''
@@ -108,7 +104,6 @@ def tool[F: Callable[..., Any]](
 
     Note:
         - The metadata is stored as private attributes on the function object:
-          - _py_tool_name: The tool name
           - _py_tool_description: The tool description
           - _py_tool_tags: Set of tags
           - _py_tool_provider: The provider string
@@ -120,13 +115,6 @@ def tool[F: Callable[..., Any]](
           OpenAI-compatible function calling schemas.
         - Tags are converted to a set for efficient membership testing.
     """
-
-    # Documented form @tool("my_tool"): a bare string is the tool name.
-    if isinstance(_func, str):
-        if name is not None and name != _func:
-            raise ValueError("@tool got a positional name and name=; pass only one")
-        name = _func
-        _func = None
 
     def decorator(func: F) -> F:
         """Inner decorator that attaches metadata to the function.
@@ -144,11 +132,8 @@ def tool[F: Callable[..., Any]](
             msg = f"@tool decorator can only be applied to callable functions, got {type(func)}"
             raise ValueError(msg)
 
-        # Set the tool name (use provided name or function name)
         # A bound method cannot take attributes; store them on the underlying function.
         target = func.__func__ if inspect.ismethod(func) else func
-        tool_name = name if name is not None else func.__name__
-        target._py_tool_name = tool_name  # type: ignore[attr-defined]
 
         # Set the tool description (use provided description or docstring)
         tool_description = description
@@ -205,7 +190,6 @@ def get_tool_metadata(func: Callable) -> dict[str, Any]:
 
     Returns:
         A dictionary containing all tool metadata. Keys include:
-        - name: The tool name (or None if not decorated)
         - description: The tool description (or None if not decorated)
         - tags: Set of tags (empty set if not decorated or no tags)
         - provider: The provider string (or None if not set)
@@ -215,18 +199,15 @@ def get_tool_metadata(func: Callable) -> dict[str, Any]:
         - record_tool_result: Whether the tool ledger records its calls (default True)
 
     Example:
-        >>> @tool(name="my_tool", tags=["test"])
+        >>> @tool(tags=["test"])
         ... def example():
         ...     '''Example function.'''
         ...     pass
         >>> metadata = get_tool_metadata(example)
-        >>> print(metadata["name"])
-        my_tool
         >>> print(metadata["tags"])
         {"test"}
     """
     return {
-        "name": getattr(func, "_py_tool_name", None),
         "description": getattr(func, "_py_tool_description", None),
         "tags": getattr(func, "_py_tool_tags", set()),
         "provider": getattr(func, "_py_tool_provider", None),
@@ -257,4 +238,4 @@ def has_tool_decorator(func: Callable) -> bool:
         >>> has_tool_decorator(not_decorated)
         False
     """
-    return hasattr(func, "_py_tool_name")
+    return hasattr(func, "_py_tool_description")

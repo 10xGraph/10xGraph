@@ -50,6 +50,45 @@ async def test_clear_removes_only_that_threads_rows(cp):
 
 
 @pytest.mark.asyncio
+async def test_clear_by_origin_ids_removes_only_those_messages_rows(cp):
+    await cp.aput_tool_result(A, "m1:c1", {"v": 1})
+    await cp.aput_tool_result(A, "m1:c2", {"v": 2})
+    await cp.aput_tool_result(A, "m2:c1", {"v": 3})  # a newer run's message
+    await cp.aput_tool_result(A, "m10:c1", {"v": 4})  # "m1" is a prefix of it, not its id
+    await cp.aput_tool_result(B, "m1:c1", {"v": 5})
+
+    assert await cp.aclear_tool_results(A, ["m1"]) == 2
+    assert await cp.aget_tool_result(A, "m1:c1") is None
+    assert await cp.aget_tool_result(A, "m1:c2") is None
+    assert await cp.aget_tool_result(A, "m2:c1") == {"v": 3}
+    assert await cp.aget_tool_result(A, "m10:c1") == {"v": 4}
+    assert await cp.aget_tool_result(B, "m1:c1") == {"v": 5}
+
+
+@pytest.mark.asyncio
+async def test_clear_with_an_empty_list_removes_nothing(cp):
+    await cp.aput_tool_result(A, "m1:c1", {"v": 1})
+    assert await cp.aclear_tool_results(A, []) == 0
+    assert await cp.aget_tool_result(A, "m1:c1") == {"v": 1}
+
+
+@pytest.mark.asyncio
+async def test_clear_matches_wildcard_and_colon_ids_literally(cp):
+    await cp.aput_tool_result(A, "a%:c1", {"v": 1})
+    await cp.aput_tool_result(A, "ab:c1", {"v": 2})  # would match LIKE 'a_:%' or 'a%:%'
+    await cp.aput_tool_result(A, "a_:c1", {"v": 3})
+    await cp.aput_tool_result(A, "x:y:c1", {"v": 4})
+    await cp.aput_tool_result(A, "x:c1", {"v": 5})
+
+    assert await cp.aclear_tool_results(A, ["a%", "a_", "x:y"]) == 3
+    assert await cp.aget_tool_result(A, "ab:c1") == {"v": 2}
+    assert await cp.aget_tool_result(A, "x:c1") == {"v": 5}
+    assert await cp.aget_tool_result(A, "a%:c1") is None
+    assert await cp.aget_tool_result(A, "a_:c1") is None
+    assert await cp.aget_tool_result(A, "x:y:c1") is None
+
+
+@pytest.mark.asyncio
 async def test_clear_of_another_users_thread_removes_nothing(cp):
     await cp.aput_tool_result(A, "m:c1", {"v": 1})
     intruder = {"thread_id": "t1", "user_id": "u2", "user": {"user_id": "u2", "reach": "own"}}
@@ -76,6 +115,7 @@ def test_sync_wrappers():
     cp = InMemoryCheckpointer()
     cp.put_state(A, AgentState())  # any sync call works outside a loop
     assert cp.clear_tool_results(A) == 0
+    assert cp.clear_tool_results(A, ["m"]) == 0
     assert cp.prune_tool_results(timedelta(seconds=1)) == 0
 
 
@@ -168,6 +208,27 @@ async def test_pg_clear_is_scoped_to_the_callers_own_thread(monkeypatch):
     assert sql.startswith('DELETE FROM "public"."tool_executions" WHERE thread_id = $1')
     assert 'SELECT thread_id FROM "public"."threads" WHERE user_id = $2' in sql
     assert params == ["t1", "u1"]
+
+
+@pytest.mark.asyncio
+async def test_pg_clear_by_origin_ids_binds_them_as_a_text_array(monkeypatch):
+    cp, conn = _pg(monkeypatch)
+    assert await cp.aclear_tool_results(A, ["m1", "a%_"]) == 3
+    sql, *params = conn.execute.await_args.args
+    assert (
+        "WHERE thread_id = $1 AND EXISTS (SELECT 1 FROM unnest($2::text[]) AS o(id) "
+        "WHERE left(tool_call_id, length(o.id) + 1) = o.id || ':')"
+    ) in sql
+    assert "LIKE" not in sql
+    assert "WHERE user_id = $3" in sql
+    assert params == ["t1", ["m1", "a%_"], "u1"]
+
+
+@pytest.mark.asyncio
+async def test_pg_clear_with_an_empty_list_sends_no_query(monkeypatch):
+    cp, conn = _pg(monkeypatch)
+    assert await cp.aclear_tool_results(A, []) == 0
+    conn.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

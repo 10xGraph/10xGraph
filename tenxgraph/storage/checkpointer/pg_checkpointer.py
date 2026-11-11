@@ -3003,17 +3003,32 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         )
         return True
 
-    async def aclear_tool_results(self, config: dict[str, Any]) -> int:
-        """Delete the thread's ledger rows; returns how many went.
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Delete the thread's ledger rows (only those of ``origin_message_ids`` when given).
 
-        Scoped like the ledger write: the caller's own thread (``user_id`` and every tenant
-        column when isolation is on), with the RLS values set when RLS is on.
+        A row belongs to an origin id when its key starts with ``"<id>:"``, compared with
+        ``left()`` on bound values (no LIKE, so ``%`` and ``_`` in ids stay literal). Scoped
+        like the ledger write: the caller's own thread (``user_id`` and every tenant column
+        when isolation is on), with the RLS values set when RLS is on.
         """
+        if origin_message_ids is not None and not origin_message_ids:
+            return 0
         thread_id, user_id = self._validate_config(config)
         params: list[Any] = [thread_id]
+        where = "thread_id = $1"
+        if origin_message_ids is not None:
+            params.append([str(i) for i in origin_message_ids])
+            where += (
+                " AND EXISTS (SELECT 1 FROM unnest($2::text[]) AS o(id) "
+                "WHERE left(tool_call_id, length(o.id) + 1) = o.id || ':')"
+            )
         query = self._append_owner_scope(
             f"DELETE FROM {self._get_table_name('tool_executions')} "  # noqa: S608
-            f"WHERE thread_id = $1",
+            f"WHERE {where}",
             params,
             user_id,
             config,

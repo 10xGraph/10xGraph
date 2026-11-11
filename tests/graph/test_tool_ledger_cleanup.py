@@ -1,9 +1,10 @@
 """The tool ledger is cleared after a completed run, kept for paused ones, and can be turned off.
 
-A completed run has no node left to replay, so ``sync_data`` clears the thread's ledger rows in
-the background once the COMPLETED state is saved. Every other end of a run (interrupt_before /
-interrupt_after, ``interrupt()`` inside a tool, a client tool pause, stop, error, cancel) keeps
-them, so the resumed node does not run its finished tools again.
+A completed run has no node left to replay, so ``sync_data`` clears that run's ledger rows (those
+keyed on its tool-calling messages) in the background once the COMPLETED state is saved. Every
+other end of a run (interrupt_before / interrupt_after, ``interrupt()`` inside a tool, a client
+tool pause, stop, error, cancel) keeps them, so the resumed node does not run its finished tools
+again.
 """
 
 import asyncio
@@ -13,6 +14,7 @@ import pytest
 
 from tenxgraph.core.graph import StateGraph, ToolNode
 from tenxgraph.core.graph.utils.tool_runtime import ToolRuntimeMixin
+from tenxgraph.core.graph.utils.utils import _tool_origin_ids
 from tenxgraph.core.state import AgentState, ExecutionStatus, Message, ToolCallBlock
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.utils import ResponseGranularity, interrupt, tool
@@ -30,12 +32,14 @@ class SpyCheckpointer(InMemoryCheckpointer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.clears = 0
+        self.cleared_ids: list[list[str] | None] = []
         self.reads: list[str] = []
         self.writes: list[str] = []
 
-    async def aclear_tool_results(self, config):
+    async def aclear_tool_results(self, config, origin_message_ids=None):
         self.clears += 1
-        return await super().aclear_tool_results(config)
+        self.cleared_ids.append(origin_message_ids)
+        return await super().aclear_tool_results(config, origin_message_ids)
 
     async def aget_tool_result(self, config, tool_call_id):
         self.reads.append(tool_call_id)
@@ -112,15 +116,65 @@ async def test_completed_run_clears_its_ledger_in_the_background(mode):
 
     assert cp.writes == ["asst-1:c1"]
     assert cp.clears == 1
+    assert cp.cleared_ids == [["asst-1"]]  # only this run's rows, never the whole thread
     assert cp.ledger_size() == 0
     state = await cp.aget_state(config)
     assert state.execution_meta.status == ExecutionStatus.COMPLETED
 
 
 @pytest.mark.asyncio
+async def test_rows_a_newer_run_writes_before_the_clear_runs_survive():
+    gate = asyncio.Event()
+
+    class Gated(InMemoryCheckpointer):
+        async def aclear_tool_results(self, config, origin_message_ids=None):
+            await gate.wait()
+            return await super().aclear_tool_results(config, origin_message_ids)
+
+    cp = Gated()
+    app = build([work], [("c1", "work")], cp)
+    config = {"thread_id": "t-race", "user_id": "u1"}
+
+    await run(app, "ainvoke", config)
+    # The clear is pending. A newer run on the thread records its own call meanwhile.
+    await cp.aput_tool_result(config, "asst-2:c1", {"v": "newer"})
+    gate.set()
+    await drained(app)
+
+    assert await cp.aget_tool_result(config, "asst-1:c1") is None
+    assert await cp.aget_tool_result(config, "asst-2:c1") == {"v": "newer"}
+
+
+@pytest.mark.asyncio
+async def test_rows_of_a_message_no_longer_in_the_state_stay():
+    # A message trimmed out of the state before an earlier save is not in the final state, so
+    # its rows are not cleared; aprune_tool_results removes them.
+    cp = SpyCheckpointer()
+    app = build([work], [("c1", "work")], cp)
+    config = {"thread_id": "t-trimmed", "user_id": "u1"}
+    await cp.aput_tool_result(config, "trimmed-msg:c1", {"v": 1})
+
+    await run(app, "ainvoke", config)
+    await drained(app)
+
+    assert cp.cleared_ids == [["asst-1"]]
+    assert await cp.aget_tool_result(config, "trimmed-msg:c1") == {"v": 1}
+    assert cp.ledger_size() == 1
+
+
+def test_origin_ids_cover_tools_calls_and_tool_call_blocks():
+    by_field = Message(role="assistant", message_id=7, content=[], tools_calls=[{"id": "a"}])
+    by_block = Message(
+        role="assistant", message_id="b", content=[ToolCallBlock(id="x", name="n", args={})]
+    )
+    plain = Message.text_message("hi", role="assistant")
+    assert _tool_origin_ids([by_field, by_block, plain, by_field]) == ["7", "b"]
+
+
+@pytest.mark.asyncio
 async def test_failing_clear_is_logged_and_does_not_fail_the_run(caplog):
     class Broken(InMemoryCheckpointer):
-        async def aclear_tool_results(self, config):
+        async def aclear_tool_results(self, config, origin_message_ids=None):
             raise RuntimeError("db down")
 
     cp = Broken()
@@ -150,10 +204,10 @@ async def test_aclose_waits_for_a_pending_clear_before_releasing_the_checkpointe
     order: list[str] = []
 
     class Slow(InMemoryCheckpointer):
-        async def aclear_tool_results(self, config):
+        async def aclear_tool_results(self, config, origin_message_ids=None):
             await asyncio.sleep(0.2)
             order.append("cleared")
-            return await super().aclear_tool_results(config)
+            return await super().aclear_tool_results(config, origin_message_ids)
 
         async def arelease(self):
             order.append("released")
@@ -221,6 +275,7 @@ async def test_interrupt_inside_a_tool_keeps_the_ledger_and_resume_skips_finishe
     assert runs.count("lookup") == 1  # the finished tool was replayed from the ledger
     assert runs.count("refund") == 2  # the paused one re-ran and got the answer
     assert cp.clears == 1  # the resumed run completed
+    assert cp.cleared_ids == [["asst-1"]]  # covers the rows of the paused invocation too
     assert cp.ledger_size() == 0
 
 

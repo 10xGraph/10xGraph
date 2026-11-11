@@ -26,7 +26,7 @@ def test_overwrite_is_atomic_when_the_write_fails(tmp_path):
     (tmp_path / "a.txt").write_text("original")
     tools = _tools(tmp_path)
     with patch.object(files_mod.os, "fdopen", side_effect=OSError("disk full")):
-        reply = json.loads(tools["scoped_file_write"]("a.txt", "new", mode="overwrite"))
+        reply = json.loads(tools["file_write"]("a.txt", "new", mode="overwrite"))
     assert "error" in reply
     assert (tmp_path / "a.txt").read_text() == "original"
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]  # no temp file left behind
@@ -37,7 +37,7 @@ def test_overwrite_replaces_content_and_keeps_mode(tmp_path):
     target.write_text("original")
     target.chmod(0o640)
     tools = _tools(tmp_path)
-    assert json.loads(tools["scoped_file_write"]("a.txt", "new", mode="overwrite"))["status"]
+    assert json.loads(tools["file_write"]("a.txt", "new", mode="overwrite"))["status"]
     assert target.read_text() == "new"
     assert (target.stat().st_mode & 0o777) == 0o640
     assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
@@ -57,7 +57,7 @@ def test_os_error_text_does_not_leak_paths(tmp_path):
     (tmp_path / "d").mkdir()
     with patch.object(Path, "read_text", side_effect=PermissionError(f"{tmp_path}/secret")):
         (tmp_path / "f.txt").write_text("x")
-        reply = json.loads(tools["scoped_file_read"]("f.txt"))
+        reply = json.loads(tools["file_read"]("f.txt"))
     assert str(tmp_path) not in json.dumps(reply)
 
 

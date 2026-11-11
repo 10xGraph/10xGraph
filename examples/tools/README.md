@@ -65,7 +65,7 @@ ReactAgent(
 ### tool_decorator.py
 
 ```python
-@tool(name="get_order", description="Look up an order by id.", tags=["orders", "read"])
+@tool(description="Look up an order by id.", tags=["orders", "read"])
 def get_order(order_id: str) -> dict: ...
 ```
 

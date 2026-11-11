@@ -18,7 +18,6 @@ REWRITER_PROMPT = (
 
 
 @tool(
-    name="query_rewriter",
     description=(
         "Rewrite a user question into a concise search query. Call this first, then pass "
         "its result to search_docs."
@@ -52,7 +51,6 @@ def format_hits(results: list[Any]) -> list[dict[str, Any]]:
 
 
 @tool(
-    name="search_docs",
     description=(
         "Search the product documentation. Returns a JSON list of passages with `source` "
         "(file name), `title`, `score` and `content`. Cite the `source` in your answer."

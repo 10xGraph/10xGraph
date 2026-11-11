@@ -162,17 +162,17 @@ def _scoped_tools(root, **kwargs):
 def test_create_file_tools_are_scoped_to_their_root(tmp_path) -> None:
     tools = _scoped_tools(tmp_path)
 
-    written = json.loads(tools["scoped_file_write"]("notes/info.txt", "hello", create_dirs=True))
+    written = json.loads(tools["file_write"]("notes/info.txt", "hello", create_dirs=True))
     assert written["status"] == "written"
     assert (tmp_path / "notes" / "info.txt").read_text() == "hello"
 
-    read = json.loads(tools["scoped_file_read"]("notes/info.txt"))
+    read = json.loads(tools["file_read"]("notes/info.txt"))
     assert read["content"] == "hello"
 
-    found = json.loads(tools["scoped_file_search"]("hello"))
+    found = json.loads(tools["file_search"]("hello"))
     assert found["results"][0]["path"] == "notes/info.txt"
 
-    blocked = json.loads(tools["scoped_file_read"]("../outside.txt"))
+    blocked = json.loads(tools["file_read"]("../outside.txt"))
     assert "configured root" in blocked["error"]
 
 
@@ -192,14 +192,14 @@ async def test_create_file_tools_ignore_root_in_run_config(tmp_path) -> None:
     tools = _scoped_tools(root)
     # The factory tools take no config, so a client value has nowhere to go
     with pytest.raises(TypeError):
-        tools["scoped_file_read"]("secret.txt", config={"file_tool_root": str(outside)})
-    result = json.loads(tools["scoped_file_read"]("secret.txt"))
+        tools["file_read"]("secret.txt", config={"file_tool_root": str(outside)})
+    result = json.loads(tools["file_read"]("secret.txt"))
     assert result["error"] == "file does not exist"
 
 
 def test_create_file_tools_selects_tools(tmp_path) -> None:
     tools = create_file_tools(tmp_path, write=False)
-    names = [fn._py_tool_name for fn in tools]
+    names = [fn.__name__ for fn in tools]
 
     # Same names the model sees for the module-level tools
     assert names == ["file_read", "file_search"]
@@ -240,13 +240,13 @@ def test_file_search_skips_symlinks_that_leave_the_root(tmp_path) -> None:
     root = _workspace_with_escaping_links(tmp_path)
     tools = _scoped_tools(root)
 
-    found = json.loads(tools["scoped_file_search"]("SECRET-VALUE"))
+    found = json.loads(tools["file_search"]("SECRET-VALUE"))
     paths = {item["path"] for item in found["results"]}
 
     assert paths == {"inside.txt"}
     assert all("is not here" in item["preview"] for item in found["results"])
 
-    by_name = json.loads(tools["scoped_file_search"]("link"))
+    by_name = json.loads(tools["file_search"]("link"))
     assert by_name["results"] == []
 
 
@@ -257,7 +257,7 @@ def test_file_search_follows_symlinks_that_stay_inside_the_root(tmp_path) -> Non
     (root / "alias.txt").symlink_to(root / "docs" / "real.txt")
     tools = _scoped_tools(root)
 
-    found = json.loads(tools["scoped_file_search"]("needle"))
+    found = json.loads(tools["file_search"]("needle"))
     paths = sorted(item["path"] for item in found["results"])
 
     assert paths == ["alias.txt", "docs/real.txt"]

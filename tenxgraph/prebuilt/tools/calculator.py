@@ -66,7 +66,6 @@ def _evaluate_node(node: ast.AST) -> int | float:
 
 
 @tool(
-    name="safe_calculator",
     description=(
         "Safely evaluate a basic arithmetic expression. Supports numbers, parentheses, "
         "and +, -, *, /, //, %, and ** with conservative size limits."

@@ -74,7 +74,7 @@ async def async_tool(x: int, credential: UserCredential | None = None) -> str:
     return "ok"
 
 
-@tool(name="decorated", description="Decorated tool.")
+@tool(description="Decorated tool.")
 def decorated(x: int, credential: UserCredential | None = None) -> str:
     SEEN["decorated"] = credential
     return "ok"
@@ -155,7 +155,7 @@ def _clear_seen():
 )
 async def test_tool_receives_the_credential_object(fn):
     node = ToolNode([fn])
-    name = getattr(fn, "_py_tool_name", fn.__name__)
+    name = fn.__name__
     cred = UserCredential(TOKEN)
     await node.invoke(name, {"x": 1}, "c1", {"credential": cred}, AgentState())
     key = "decorated" if name == "decorated" else fn.__name__

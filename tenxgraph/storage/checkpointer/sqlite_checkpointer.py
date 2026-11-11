@@ -25,7 +25,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from enum import Enum
@@ -892,17 +892,37 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             )
         return True
 
-    async def aclear_tool_results(self, config: dict[str, Any]) -> int:
-        """Delete the thread's ledger rows; returns how many went."""
+    async def aclear_tool_results(
+        self,
+        config: dict[str, Any],
+        origin_message_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Delete the thread's ledger rows (only those of ``origin_message_ids`` when given).
+
+        A row belongs to an origin id when its key starts with ``"<id>:"``, compared with
+        ``substr`` on bound values (no LIKE, so ``%`` and ``_`` in ids stay literal).
+        """
+        if origin_message_ids is not None and not origin_message_ids:
+            return 0
         await self._ensure_setup()
+        thread_id = self._get_config_key(config)
         async with self._write() as conn:
             if await self._owner_denied(config, write=True):
                 return 0
-            cursor = await conn.execute(
-                "DELETE FROM af_tool_executions WHERE thread_id = ?",
-                (self._get_config_key(config),),
-            )
-        return cursor.rowcount
+            if origin_message_ids is None:
+                cursor = await conn.execute(
+                    "DELETE FROM af_tool_executions WHERE thread_id = ?", (thread_id,)
+                )
+                return cursor.rowcount
+            deleted = 0
+            for origin in dict.fromkeys(f"{i}:" for i in origin_message_ids):
+                cursor = await conn.execute(
+                    "DELETE FROM af_tool_executions "
+                    "WHERE thread_id = ? AND substr(tool_call_id, 1, length(?)) = ?",
+                    (thread_id, origin, origin),
+                )
+                deleted += cursor.rowcount
+        return deleted
 
     async def aprune_tool_results(self, older_than: timedelta) -> int:
         """Delete ledger rows of every thread recorded more than ``older_than`` ago."""
