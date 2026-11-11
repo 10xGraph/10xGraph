@@ -167,7 +167,7 @@ class TestLangsmithPublisher:
 
             pub = LangsmithPublisher()
 
-        assert pub._level == ObservabilityLevel.STANDARD
+        assert pub._level == ObservabilityLevel.FULL
 
     def test_raises_value_error_when_no_key(self):
         mods, *_ = _fake_otel_modules()

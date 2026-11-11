@@ -46,8 +46,8 @@ class LogfirePublisher(OtelPublisher):
         console: Console output option.  Pass ``False`` to suppress console
             output, a ``logfire.ConsoleOptions`` instance for fine-grained
             control, or ``None`` to rely on environment variables.
-        level: How much data to emit.  ``STANDARD`` by default.  Set to
-            ``FULL`` for complete prompt/response visibility (may contain PII).
+        level: How much data to emit.  ``FULL`` by default (message content and graph state; may
+            contain PII).  Use ``STANDARD`` or ``SPANS`` to keep content out.
         additional_span_processors: Extra ``SpanProcessor`` instances to attach
             alongside the Logfire processor (e.g. a LangSmith OTLP processor).
         **configure_kwargs: Additional keyword arguments forwarded verbatim to
@@ -74,7 +74,7 @@ class LogfirePublisher(OtelPublisher):
         service_name: str | None = None,
         send_to_logfire: bool = True,
         console: Any = None,
-        level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+        level: ObservabilityLevel = ObservabilityLevel.FULL,
         additional_span_processors: list | None = None,
         **configure_kwargs: Any,
     ) -> None:

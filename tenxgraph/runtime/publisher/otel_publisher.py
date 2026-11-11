@@ -91,9 +91,10 @@ class ObservabilityLevel(StrEnum):
     SPANS    — timing and structure only. No I/O data on spans.
     STANDARD — adds token counts, model name, request params when available, and the graph
                state on node spans (``input.value`` = state in, ``output.value`` = state
-               after, messages produced, next node). (default)
+               after, messages produced, next node).
     FULL     — adds model input messages, output messages, tool I/O, system prompt.
-               May contain PII — use only in controlled environments.
+               The default. Sends message content and graph state to the trace backend;
+               use ``STANDARD`` or ``SPANS`` to keep content out.
     """
 
     SPANS = "spans"
@@ -168,7 +169,7 @@ class SpanRegistry:
 class OtelPublisher(BasePublisher):
     """Publisher backend that maps EventModel events to OTEL spans.
 
-    Usage (minimal — STANDARD level, global TracerProvider):
+    Usage (minimal — FULL level, global TracerProvider):
         from tenxgraph.runtime.publisher.otel_publisher import setup_tracing
 
         setup_tracing(graph)           # call before graph.compile()
@@ -193,7 +194,7 @@ class OtelPublisher(BasePublisher):
     def __init__(
         self,
         tracer: Tracer | None = None,
-        level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+        level: ObservabilityLevel = ObservabilityLevel.FULL,
         user_id_mode: UserIdMode = "raw",
     ) -> None:
         """Create the publisher.
@@ -835,7 +836,7 @@ def _set_request_params(span: Span, params: dict[str, Any]) -> None:
 def setup_tracing(
     graph: StateGraph,
     tracer: Tracer | None = None,
-    level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+    level: ObservabilityLevel = ObservabilityLevel.FULL,
     user_id_mode: UserIdMode = "raw",
 ) -> OtelPublisher:
     """Register OtelPublisher as the publisher backend on the graph.
@@ -846,8 +847,8 @@ def setup_tracing(
     Args:
         graph: The StateGraph instance to instrument.
         tracer: Optional explicit Tracer. Uses the global TracerProvider if None.
-        level: How much data to emit. STANDARD by default. Use FULL for complete
-               prompt/response visibility (may contain PII).
+        level: How much data to emit. FULL by default (message content and graph
+               state; may contain PII). Use STANDARD or SPANS to keep content out.
         user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``; see ``OtelPublisher``.
 
     Returns:

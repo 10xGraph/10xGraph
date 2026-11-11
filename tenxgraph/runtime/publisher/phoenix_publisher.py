@@ -56,8 +56,8 @@ class PhoenixPublisher(OtelPublisher):
         endpoint: Phoenix base URL. Falls back to ``PHOENIX_COLLECTOR_ENDPOINT``,
             then ``http://localhost:6006``.  ``/v1/traces`` is appended unless
             present.
-        level: How much data to emit.  ``STANDARD`` by default.  Set to
-            ``FULL`` for complete prompt/response visibility (may contain PII).
+        level: How much data to emit.  ``FULL`` by default (message content and graph state; may
+            contain PII).  Use ``STANDARD`` or ``SPANS`` to keep content out.
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
@@ -82,7 +82,7 @@ class PhoenixPublisher(OtelPublisher):
         api_key: str | None = None,
         project: str | None = None,
         endpoint: str | None = None,
-        level: ObservabilityLevel = ObservabilityLevel.STANDARD,
+        level: ObservabilityLevel = ObservabilityLevel.FULL,
         tracer_provider: Any = None,
     ) -> None:
         processor = _build_phoenix_processor(api_key=api_key, endpoint=endpoint)

@@ -204,6 +204,11 @@ def test_llm_handlers_and_error_paths():
     pub._on_llm_error(_evt(Event.NODE_EXECUTION, EventType.ERROR, node="MAIN", data={"error": "boom"}))
 
 
+def test_default_level_is_full():
+    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
+        assert OtelPublisher()._level == ObservabilityLevel.FULL
+
+
 def test_setup_tracing_attaches_publisher():
     graph = SimpleNamespace(_publisher=None, _container=MagicMock())
     with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):

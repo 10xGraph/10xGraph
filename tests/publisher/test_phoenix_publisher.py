@@ -157,7 +157,7 @@ class TestPhoenixPublisher:
         from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 
         pub, *_ = _make()
-        assert pub._level == ObservabilityLevel.STANDARD
+        assert pub._level == ObservabilityLevel.FULL
 
     def test_raises_import_error_when_otlp_exporter_missing(self):
         mods, *_ = _fake_otel_modules()

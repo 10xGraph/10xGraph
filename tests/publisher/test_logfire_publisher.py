@@ -247,7 +247,7 @@ class TestLogfirePublisher:
 
             pub = LogfirePublisher()
 
-        assert pub._level == ObservabilityLevel.STANDARD
+        assert pub._level == ObservabilityLevel.FULL
 
     def test_raises_import_error_when_logfire_missing(self):
         # A None entry in sys.modules makes `import logfire` raise ImportError
