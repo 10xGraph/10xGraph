@@ -854,8 +854,7 @@ def _schedule_ledger_clear(
     task = manager.create_task(_clear_ledger(checkpointer, dict(config)), name="clear_tool_ledger")
     if task is None:
         logger.debug(
-            "Tool ledger clear of thread '%s' dropped by backpressure; the rows stay until "
-            "pruned",
+            "Tool ledger clear of thread '%s' dropped by backpressure; the rows stay until pruned",
             config.get("thread_id"),
         )
 

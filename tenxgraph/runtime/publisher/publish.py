@@ -156,7 +156,13 @@ def publish_event(
     # A queued event must not pin a whole run state while the sink is slow, so a large
     # ``state`` is cut to a bounded summary (see ``bound_state_snapshot``).
     if "state" in data:
-        data["state"] = bound_state_snapshot(data["state"], _state_limit(publisher))
+        state = data["state"]
+        # A live state object keeps changing after this call and is not a dict, so publishers
+        # and the size cap would not see a stable snapshot. Dump it to a plain dict here, for
+        # every call site, so streamed and invoked runs hand publishers the same shape.
+        if not isinstance(state, dict) and callable(getattr(state, "model_dump", None)):
+            state = state.model_dump()
+        data["state"] = bound_state_snapshot(state, _state_limit(publisher))
     # The same reuse means ``timestamp`` is stale on the second publish of an event, so the
     # snapshot carries the moment of this publish (publish happens when the thing happens).
     snapshot = event.model_copy(

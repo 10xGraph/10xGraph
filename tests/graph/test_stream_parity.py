@@ -128,14 +128,25 @@ async def test_a_finished_tool_call_is_recorded(mode):
         return "worked"
 
     cp = InMemoryCheckpointer()
+    recorded: dict = {}
+    put = cp.aput_tool_result
+
+    async def spy(cfg, key, result):
+        recorded[key] = result
+        return await put(cfg, key, result)
+
+    cp.aput_tool_result = spy
     app = build([work], [("c1", "work", {})], checkpointer=cp)
     config = {"thread_id": f"t-record-{mode}", "user_id": "u1"}
 
     await run(app, mode, config)
 
-    entry = await cp.aget_tool_result(config, "asst-1:c1")
+    entry = recorded.get("asst-1:c1")
     assert entry is not None
     assert entry["__kind__"] == "message"
+    # The run completed, so its ledger rows are cleared in the background.
+    await app._task_manager.wait_for_all(timeout=5)
+    assert await cp.aget_tool_result(config, "asst-1:c1") is None
 
 
 # ------------------------------------------------------- parallel isolation and order

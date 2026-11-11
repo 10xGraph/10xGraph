@@ -89,7 +89,9 @@ class ObservabilityLevel(StrEnum):
     """Controls how much data OtelPublisher emits as OTEL span attributes/events.
 
     SPANS    — timing and structure only. No I/O data on spans.
-    STANDARD — adds token counts, model name, request params when available. (default)
+    STANDARD — adds token counts, model name, request params when available, and the graph
+               state on node spans (``input.value`` = state in, ``output.value`` = state
+               after, messages produced, next node). (default)
     FULL     — adds model input messages, output messages, tool I/O, system prompt.
                May contain PII — use only in controlled environments.
     """
@@ -438,6 +440,10 @@ class OtelPublisher(BasePublisher):
         if step is not None:
             span.set_attribute(NODE_STEP, step)
 
+        if self._level != ObservabilityLevel.SPANS:
+            for key, value in oi.node_input_attrs(event.data).items():
+                span.set_attribute(key, value)
+
         if self._level == ObservabilityLevel.FULL:
             input_messages = event.data.get("input_messages") or event.data.get("messages")
             if input_messages:
@@ -475,6 +481,8 @@ class OtelPublisher(BasePublisher):
             model = event.metadata.get("model")
             if model:
                 span.set_attribute(GRAPH_MODEL, str(model))
+            for key, value in oi.node_output_attrs(event.data).items():
+                span.set_attribute(key, value)
 
         if self._level == ObservabilityLevel.FULL:
             output_messages = event.data.get("messages")

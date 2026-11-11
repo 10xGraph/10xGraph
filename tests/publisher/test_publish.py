@@ -143,3 +143,94 @@ def test_small_state_and_disabled_limit_keep_full_state():
     big = _big_state()
     event.data["state"] = big
     assert _capture_publish(event, {"state_snapshot_limit": 0}).data["state"] == big
+
+
+# Live state objects are dumped to a plain dict at the choke point
+def _state_with(text="hello"):
+    from tenxgraph.core.state import AgentState, Message
+
+    state = AgentState()
+    state.context.append(Message.text_message(text, role="user"))
+    return state
+
+
+def test_state_object_is_published_as_plain_dict():
+    event = EventModel(event=Event.GRAPH_EXECUTION, event_type=EventType.START)
+    event.data["state"] = _state_with("hello there")
+    sent = _capture_publish(event).data["state"]
+    assert isinstance(sent, dict)
+    assert "hello there" in str(sent["context"])
+
+
+def test_mutating_state_after_publish_does_not_change_event():
+    from tenxgraph.core.state import Message
+
+    state = _state_with()
+    event = EventModel(event=Event.GRAPH_EXECUTION, event_type=EventType.START)
+    event.data["state"] = state
+    sent = _capture_publish(event).data["state"]
+    state.context.append(Message.text_message("later", role="assistant"))
+    assert len(sent["context"]) == 1
+
+
+def test_state_limit_applies_to_state_object():
+    from tenxgraph.core.state import AgentState, Message
+
+    state = AgentState()
+    for _ in range(200):
+        state.context.append(Message.text_message("x" * 1000, role="user"))
+    event = EventModel(event=Event.GRAPH_EXECUTION, event_type=EventType.START)
+    event.data["state"] = state
+    sent = _capture_publish(event, {"state_snapshot_limit": 5000}).data["state"]
+    assert sent["truncated"] is True
+    assert sent["context_count"] == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ainvoke", "astream"])
+async def test_graph_start_event_state_is_dict_for_invoke_and_stream(mode):
+    from tenxgraph.core.graph import StateGraph
+    from tenxgraph.core.state import AgentState, Message
+    from tenxgraph.utils.constants import END
+
+    class Capture(BasePublisher):
+        def __init__(self):
+            super().__init__({})
+            self.events = []
+
+        async def publish(self, event):
+            self.events.append(event)
+
+        async def close(self):
+            pass
+
+        def sync_close(self):
+            pass
+
+    def node(state: AgentState) -> Message:
+        return Message.text_message("ok", role="assistant")
+
+    pub = Capture()
+    graph = StateGraph(publisher=pub)
+    graph.add_node("A", node)
+    graph.add_edge("A", END)
+    graph.set_entry_point("A")
+    app = graph.compile()
+    inp = {"messages": [Message.text_message("ping from user")]}
+    cfg = {"thread_id": "t1"}
+    if mode == "ainvoke":
+        await app.ainvoke(inp, config=cfg)
+    else:
+        async for _ in app.astream(inp, config=cfg):
+            pass
+    await app.aclose()
+
+    starts = [
+        e
+        for e in pub.events
+        if e.event == Event.GRAPH_EXECUTION and e.event_type == EventType.START
+    ]
+    assert starts
+    state = starts[0].data["state"]
+    assert isinstance(state, dict)
+    assert "ping from user" in str(state["context"])

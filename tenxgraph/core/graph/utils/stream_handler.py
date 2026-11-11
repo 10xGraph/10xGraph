@@ -979,7 +979,7 @@ class StreamHandler[StateT: AgentState](
 
         event = EventModel.default(
             config,
-            data={"state": state},
+            data={"state": state.model_dump()},
             content_type=[ContentType.STATE],
             extra={
                 "is_interrupted": state.is_interrupted(),
