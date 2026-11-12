@@ -36,6 +36,7 @@ from tenxgraph.utils.converter import (
     strip_provider_blocks,
 )
 from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.log_safety import describe_error
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
@@ -873,7 +874,7 @@ class AgentExecutionMixin:
                         logger.warning(
                             "Non-retryable error from %s: %s",
                             model,
-                            exc,
+                            describe_error(exc),
                         )
                         # Non-retryable → skip remaining retries, try next fallback
                         break

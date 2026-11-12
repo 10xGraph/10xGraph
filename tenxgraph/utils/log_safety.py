@@ -20,3 +20,12 @@ def log_safe(value: object, limit: int = 200) -> str:
     if len(text) > limit:
         text = text[:limit] + "..."
     return text
+
+
+def describe_error(exc: BaseException) -> str:
+    """Return ``exc`` as text that always names the error.
+
+    Some exceptions have an empty ``str`` (``TimeoutError()`` from a pool acquire), which
+    makes a log line end in a bare colon. Those fall back to ``repr``.
+    """
+    return str(exc) or repr(exc)
