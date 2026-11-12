@@ -490,7 +490,7 @@ async def reload_state[StateT: AgentState](
         existing_state = await checkpointer.aget_state(config)
 
     if not existing_state:
-        logger.warning("No existing state found to reload, returning old state")
+        logger.debug("No existing state found to reload, returning old state")
         return old_state
 
     logger.info(

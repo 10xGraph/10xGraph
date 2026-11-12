@@ -48,6 +48,7 @@ from tenxgraph.storage.columns import (
 )
 from tenxgraph.storage.sql_filter import FilterSchema, compile_filters, validate_filters
 from tenxgraph.utils import ThreadInfo, metrics
+from tenxgraph.utils.log_safety import describe_error
 
 
 try:
@@ -1068,9 +1069,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 target_version,
             )
         except Exception as e:
-            logger.error("Failed to apply schema migrations: %s", e)
+            logger.error("Failed to apply schema migrations: %s", describe_error(e))
             raise SchemaVersionError(
-                message=f"Failed to apply schema migrations: {e}",
+                message=f"Failed to apply schema migrations: {describe_error(e)}",
                 error_code="STORAGE_SCHEMA_001",
                 context={"error_type": type(e).__name__},
             ) from e
@@ -1130,7 +1131,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     self._schema_initialized = True
                     logger.debug("Database schema initialized successfully")
                 except Exception as e:
-                    logger.error("Failed to initialize database schema: %s", e)
+                    logger.error("Failed to initialize database schema: %s", describe_error(e))
                     raise
 
     async def _create_missing_tables(self, conn) -> set[str]:
@@ -1412,7 +1413,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             await self._read_thread_identity(self._db_thread_id(thread_id), user_id, config)
         except Exception as e:  # the caller's own keys are the safe fallback
-            logger.debug("Could not read the identity of thread_id=%s: %s", thread_id, e)
+            logger.debug(
+                "Could not read the identity of thread_id=%s: %s", thread_id, describe_error(e)
+            )
 
     def _stop_request_key(self, config: dict[str, Any]) -> str:
         """Per-thread stop/active-run key.
@@ -1558,16 +1561,16 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                         attempt + 1,
                         max_retries,
                         wait_time,
-                        e,
+                        describe_error(e),
                     )
                     await asyncio.sleep(wait_time)
                     continue
 
-                logger.error("Failed after %d attempts: %s", max_retries, e)
+                logger.error("Failed after %d attempts: %s", max_retries, describe_error(e))
                 break
             except Exception as e:
                 # Don't retry on non-connection errors
-                logger.error("Non-retryable error: %s", e)
+                logger.error("Non-retryable error: %s", describe_error(e))
                 raise
 
         if last_exception:
@@ -1898,7 +1901,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             await self._run_scoped(_check_and_create_thread, settings=isolation.settings)
 
         except Exception as e:
-            logger.error("Failed to ensure thread exists: %s", e)
+            logger.error("Failed to ensure thread exists: %s", describe_error(e))
             raise
 
     def _serialize_state_payload(self, state: StateT) -> dict[str, Any]:
@@ -2205,7 +2208,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 raise  # another user's thread: nothing was written, the API answers 404
             except Exception as e:
                 metrics.counter("pg_checkpointer.save_state.error").inc()
-                logger.error("Failed to store state for thread_id=%s: %s", thread_id, e)
+                logger.error(
+                    "Failed to store state for thread_id=%s: %s", thread_id, describe_error(e)
+                )
                 if asyncpg and hasattr(asyncpg, "ConnectionDoesNotExistError"):
                     connection_errors = (
                         asyncpg.ConnectionDoesNotExistError,
@@ -2213,7 +2218,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     )
                     if isinstance(e, connection_errors):
                         raise TransientStorageError(
-                            message=f"Connection issue storing state: {e}",
+                            message=f"Connection issue storing state: {describe_error(e)}",
                             error_code="STORAGE_TRANSIENT_001",
                             context={
                                 "thread_id": thread_id,
@@ -2221,7 +2226,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                             },
                         ) from e
                 raise StorageError(
-                    message=f"Failed to store state: {e}",
+                    message=f"Failed to store state: {describe_error(e)}",
                     error_code="STORAGE_001",
                     context={
                         "thread_id": thread_id,
@@ -2309,9 +2314,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 raise  # another user's thread: nothing was written, the API answers 404
             except Exception as e:
                 metrics.counter("pg_checkpointer.save_checkpoint.error").inc()
-                logger.error("Failed to store checkpoint for thread_id=%s: %s", thread_id, e)
+                logger.error(
+                    "Failed to store checkpoint for thread_id=%s: %s", thread_id, describe_error(e)
+                )
                 raise StorageError(
-                    message=f"Failed to store checkpoint: {e}",
+                    message=f"Failed to store checkpoint: {describe_error(e)}",
                     error_code="STORAGE_001",
                     context={"thread_id": thread_id, "error_type": type(e).__name__},
                 ) from e
@@ -2367,7 +2374,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return None
 
         except Exception as e:
-            logger.error("Failed to retrieve state for thread_id=%s: %s", thread_id, e)
+            logger.error(
+                "Failed to retrieve state for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             raise
 
     async def aclear_state(self, config: dict[str, Any]) -> int:
@@ -2410,7 +2419,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return _rows_affected(status)
 
         except Exception as e:
-            logger.error("Failed to clear state for thread_id=%s: %s", thread_id, e)
+            logger.error("Failed to clear state for thread_id=%s: %s", thread_id, describe_error(e))
             raise
 
     async def aput_state_cache(self, config: dict[str, Any], state: StateT) -> Any | None:
@@ -2469,7 +2478,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         except Exception as e:
             if not isinstance(e, _RedisUnavailable):  # the breaker already logged it
-                logger.error("Failed to cache state for thread_id=%s: %s", thread_id, e)
+                logger.error(
+                    "Failed to cache state for thread_id=%s: %s", thread_id, describe_error(e)
+                )
             # Don't raise - caching is optional
             return None
 
@@ -2501,7 +2512,11 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 if caller_key not in keys:
                     keys.append(caller_key)
         except ValueError as e:  # a malformed tenant value: nothing of ours can be cached
-            logger.warning("Skipped state cache invalidation for thread_id=%s: %s", thread_id, e)
+            logger.warning(
+                "Skipped state cache invalidation for thread_id=%s: %s",
+                thread_id,
+                describe_error(e),
+            )
             return
         for attempt in range(retries + 1):
             try:
@@ -2552,7 +2567,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             )
             return int(durable) == cached_version
         except Exception as e:
-            logger.warning("Could not verify state cache for thread_id=%s: %s", thread_id, e)
+            logger.warning(
+                "Could not verify state cache for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             return True
 
     async def _durable_version_for_cache(
@@ -2570,7 +2587,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         try:
             row = await self._read_thread_identity(thread_id, user_id, config)
         except Exception as e:
-            logger.warning("Could not verify state cache for thread_id=%s: %s", thread_id, e)
+            logger.warning(
+                "Could not verify state cache for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             return None
         return int(row["durable_version"]) if row is not None else 0
 
@@ -2665,7 +2684,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
 
         except Exception as e:
             if not isinstance(e, _RedisUnavailable):  # the breaker already logged it
-                logger.error("Failed to get cached state for thread_id=%s: %s", thread_id, e)
+                logger.error(
+                    "Failed to get cached state for thread_id=%s: %s", thread_id, describe_error(e)
+                )
             # Fallback to PostgreSQL on error
             return await self.aget_state(config)
 
@@ -2686,7 +2707,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         except _RedisUnavailable:
             return None
         except Exception as e:
-            logger.error("Failed to cache value for namespace=%s key=%s: %s", namespace, key, e)
+            logger.error(
+                "Failed to cache value for namespace=%s key=%s: %s",
+                namespace,
+                key,
+                describe_error(e),
+            )
             return None
 
     async def aget_cache_value(self, namespace: str, key: str) -> Any | None:
@@ -2762,7 +2788,12 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         except _RedisUnavailable:
             return False
         except Exception as e:
-            logger.error("Failed to cache value for namespace=%s key=%s: %s", namespace, key, e)
+            logger.error(
+                "Failed to cache value for namespace=%s key=%s: %s",
+                namespace,
+                key,
+                describe_error(e),
+            )
             return False
 
     async def alist_cache_keys(
@@ -3046,7 +3077,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             logger.debug("Stored %d messages for thread_id=%s", len(messages), thread_id)
 
         except Exception as e:
-            logger.error("Failed to store messages for thread_id=%s: %s", thread_id, e)
+            logger.error(
+                "Failed to store messages for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             raise
 
     async def aget_message(self, config: dict[str, Any], message_id: str | int) -> Message:
@@ -3095,7 +3128,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return self._row_to_message(row)
 
         except Exception as e:
-            logger.error("Failed to retrieve message_id=%s: %s", message_id, e)
+            logger.error("Failed to retrieve message_id=%s: %s", message_id, describe_error(e))
             raise
 
     async def alist_messages(
@@ -3168,7 +3201,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return messages
 
         except Exception as e:
-            logger.error("Failed to list messages for thread_id=%s: %s", thread_id, e)
+            logger.error(
+                "Failed to list messages for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             raise
 
     async def adelete_message(
@@ -3277,7 +3312,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return deleted
 
         except Exception as e:
-            logger.error("Failed to delete message_id=%s: %s", message_id, e)
+            logger.error("Failed to delete message_id=%s: %s", message_id, describe_error(e))
             raise
 
     async def aupdate_message_metadata(
@@ -3330,7 +3365,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return self._row_to_message(row) if row else None
 
         except Exception as e:
-            logger.error("Failed to update metadata of message_id=%s: %s", message_id, e)
+            logger.error(
+                "Failed to update metadata of message_id=%s: %s", message_id, describe_error(e)
+            )
             raise
 
     def _row_to_message(self, row) -> Message:  # noqa: PLR0912, PLR0915
@@ -3526,7 +3563,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return bool(created)
 
         except Exception as e:
-            logger.error("Failed to store thread info for thread_id=%s: %s", thread_id, e)
+            logger.error(
+                "Failed to store thread info for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             raise e
 
     async def aget_thread(
@@ -3571,7 +3610,9 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return None
 
         except Exception as e:
-            logger.error("Failed to retrieve thread info for thread_id=%s: %s", thread_id, e)
+            logger.error(
+                "Failed to retrieve thread info for thread_id=%s: %s", thread_id, describe_error(e)
+            )
             raise e
 
     async def aget_thread_owner(self, thread_id: str | int) -> str | int | None:
@@ -3718,7 +3759,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return threads
 
         except Exception as e:
-            logger.error("Failed to list threads for user_id=%s: %s", user_id, e)
+            logger.error("Failed to list threads for user_id=%s: %s", user_id, describe_error(e))
             raise
 
     async def aclean_thread(self, config: dict[str, Any]) -> int:
@@ -3772,7 +3813,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             return deleted
 
         except Exception as e:
-            logger.error("Failed to clean thread thread_id=%s: %s", thread_id, e)
+            logger.error("Failed to clean thread thread_id=%s: %s", thread_id, describe_error(e))
             raise
 
     ###########################
@@ -3838,8 +3879,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     await self.redis.close()
                 logger.debug("Redis connection closed")
             except Exception as e:
-                logger.error("Error closing Redis connection: %s", e)
-                errors.append(f"Redis: {e}")
+                logger.error("Error closing Redis connection: %s", describe_error(e))
+                errors.append(f"Redis: {describe_error(e)}")
 
         # Close PostgreSQL pool
         if close_pg:
@@ -3848,8 +3889,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                     await self._pg_pool.close()
                 logger.debug("PostgreSQL pool closed")
             except Exception as e:
-                logger.error("Error closing PostgreSQL pool: %s", e)
-                errors.append(f"PostgreSQL: {e}")
+                logger.error("Error closing PostgreSQL pool: %s", describe_error(e))
+                errors.append(f"PostgreSQL: {describe_error(e)}")
 
         if errors:
             error_msg = f"Errors during resource cleanup: {'; '.join(errors)}"
