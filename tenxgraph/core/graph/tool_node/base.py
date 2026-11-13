@@ -467,6 +467,8 @@ class ToolNode(
             data={"args": args, "tool_call_id": tool_call_id, "function_name": name},
             content_type=[ContentType.TOOL_CALL],
             event=Event.TOOL_EXECUTION,
+            # The graph node running this tool, so tracing can parent the tool span to it.
+            extra={"graph_node": config.get("_node_name", "")},
         )
         event.node_name = name
         # Attach structured tool call block
@@ -622,6 +624,7 @@ class ToolNode(
             data={"args": args, "tool_call_id": tool_call_id, "function_name": name},
             content_type=[ContentType.TOOL_CALL],
             event=Event.TOOL_EXECUTION,
+            extra={"graph_node": config.get("_node_name", "")},
         )
         event.node_name = "ToolNode"
         event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]

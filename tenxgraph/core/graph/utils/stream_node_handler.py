@@ -52,7 +52,7 @@ from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import GraphInterrupt
 from tenxgraph.utils.interrupt import activate as activate_interrupts
-from tenxgraph.utils.log_safety import log_safe
+from tenxgraph.utils.log_safety import error_details, log_safe
 
 from .handler_mixins import BaseLoggingMixin
 from .tool_runtime import ToolRuntimeMixin
@@ -912,6 +912,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 event.event_type = EventType.ERROR
                 event.content = f"Function execution failed: {e}"
                 event.data["error"] = str(e)
+                event.data.update(error_details(e, config))
                 event.content_type = [ContentType.ERROR, ContentType.STATE]
                 publish_event(event)
                 raise
@@ -1062,6 +1063,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             event.event_type = EventType.ERROR
             event.metadata["status"] = f"Agent execution failed: {e}"
             event.data["error"] = str(e)
+            event.data.update(error_details(e, config))
             event.content_type = [ContentType.ERROR, ContentType.STATE]
             publish_event(event)
             raise

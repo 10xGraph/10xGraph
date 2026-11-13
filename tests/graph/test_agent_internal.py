@@ -31,6 +31,7 @@ from tenxgraph.storage.store.memory_config import (
     UserMemoryConfig,
 )
 from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
+from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
 
 from tenxgraph.core.graph.agent_internal.execution import (
     _extract_cache_creation_tokens,
@@ -2766,7 +2767,12 @@ class TestLlmSpanClosed:
     async def test_failed_call_publishes_error_event_without_provider_text(self):
         seen = await self._run(stream=False, error=RuntimeError("secret provider detail"))
         assert [t for t, _ in seen] == ["start", "error"]
-        assert "secret provider detail" not in str(seen[-1][1])
+        data = seen[-1][1]
+        assert data["error"] == data["error_type"] == "RuntimeError"
+        # The text goes to trace backends only (publish_event drops it for event streams).
+        streamed = {k: v for k, v in data.items() if k not in TRACE_ONLY_ERROR_KEYS}
+        assert "secret provider detail" not in str(streamed)
+        assert "secret provider detail" in data["error_message"]
 
     async def test_streaming_call_ends_span_when_stream_ends_not_before(self):
         seen = await self._run(stream=True, response=MagicMock())

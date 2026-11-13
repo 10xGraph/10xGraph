@@ -23,6 +23,10 @@ TOKENS_PROMPT = "llm.token_count.prompt"
 TOKENS_COMPLETION = "llm.token_count.completion"
 TOKENS_TOTAL = "llm.token_count.total"
 
+# Output tool calls flattened into ``llm.output_messages.0.message.tool_calls.N.*``; every
+# call is still in ``gen_ai.output_messages``. Bounds the attribute count of an LLM span.
+MAX_OUTPUT_TOOL_CALLS = 6
+
 KIND_CHAIN = "CHAIN"
 KIND_LLM = "LLM"
 KIND_TOOL = "TOOL"
@@ -156,24 +160,45 @@ def llm_standard_attrs(data: dict[str, Any], model: str, system_name: str) -> di
     return attrs
 
 
-def llm_input_attrs(input_messages: Any, system_prompt: Any = None) -> dict[str, Any]:
-    """Indexed input messages plus ``input.value`` (FULL only)."""
+def _message_attrs(message: dict[str, Any]) -> dict[str, Any]:
+    """One request message as ``llm.input_messages.N.message.*`` key suffixes."""
+    attrs: dict[str, Any] = {"role": message["role"], "content": message["content"]}
+    if message.get("tool_call_id"):
+        attrs["tool_call_id"] = message["tool_call_id"]
+    for j, call in enumerate(message.get("tool_calls", [])):
+        call_id, name, arguments = _call_fields(call)
+        if call_id:
+            attrs[f"tool_calls.{j}.tool_call.id"] = call_id
+        attrs[f"tool_calls.{j}.tool_call.function.name"] = name
+        attrs[f"tool_calls.{j}.tool_call.function.arguments"] = arguments
+    return attrs
+
+
+def llm_input_attrs(
+    input_messages: Any, system_prompt: Any = None, max_attrs: int | None = None
+) -> dict[str, Any]:
+    """Indexed input messages plus ``input.value`` (FULL only).
+
+    ``input.value`` holds every message. The indexed ``llm.input_messages.N.*`` attributes
+    hold the most recent messages whose attributes fit in ``max_attrs`` (None: all), so a long
+    history cannot push a span past the SDK attribute count limit.
+    """
     messages = llm_request_messages(input_messages, system_prompt)
     if not messages:
         return {}
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for m in reversed(messages):
+        flat = _message_attrs(m)
+        if max_attrs is not None and used + len(flat) > max_attrs:
+            break
+        kept.append(flat)
+        used += len(flat)
+    kept.reverse()
     attrs: dict[str, Any] = {INPUT_VALUE: _dumps(messages), INPUT_MIME: JSON_MIME}
-    for i, m in enumerate(messages):
-        attrs[f"llm.input_messages.{i}.message.role"] = m["role"]
-        attrs[f"llm.input_messages.{i}.message.content"] = m["content"]
-        if m.get("tool_call_id"):
-            attrs[f"llm.input_messages.{i}.message.tool_call_id"] = m["tool_call_id"]
-        for j, call in enumerate(m.get("tool_calls", [])):
-            prefix = f"llm.input_messages.{i}.message.tool_calls.{j}.tool_call"
-            call_id, name, arguments = _call_fields(call)
-            if call_id:
-                attrs[f"{prefix}.id"] = call_id
-            attrs[f"{prefix}.function.name"] = name
-            attrs[f"{prefix}.function.arguments"] = arguments
+    for i, flat in enumerate(kept):
+        for suffix, value in flat.items():
+            attrs[f"llm.input_messages.{i}.message.{suffix}"] = value
     return attrs
 
 
@@ -201,7 +226,7 @@ def llm_output_attrs(data: dict[str, Any]) -> dict[str, Any]:
         OUTPUT_VALUE: msg["content"],
         OUTPUT_MIME: TEXT_MIME,
     }
-    for j, call in enumerate(msg.get("tool_calls", [])):
+    for j, call in enumerate(msg.get("tool_calls", [])[:MAX_OUTPUT_TOOL_CALLS]):
         prefix = f"llm.output_messages.0.message.tool_calls.{j}.tool_call"
         if call.get("id"):
             attrs[f"{prefix}.id"] = str(call["id"])
@@ -226,9 +251,11 @@ def graph_output_text(event_data: dict[str, Any]) -> str:
 
 
 def tool_input_attrs(args: Any) -> dict[str, Any]:
-    if not args:
+    """Tool arguments as JSON; a call with no arguments shows ``{}``. None gives nothing."""
+    if args is None:
         return {}
-    return {INPUT_VALUE: args if isinstance(args, str) else _dumps(args), INPUT_MIME: JSON_MIME}
+    value = (args or "{}") if isinstance(args, str) else _dumps(args)
+    return {INPUT_VALUE: value, INPUT_MIME: JSON_MIME}
 
 
 def tool_output_attrs(event_data: dict[str, Any]) -> dict[str, Any]:

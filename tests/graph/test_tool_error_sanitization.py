@@ -15,6 +15,7 @@ from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
 
 
 DSN = "postgres://user:pw@db/x"
@@ -53,7 +54,9 @@ def _assert_generic(msg: Message, name: str, events: list[str], caplog) -> None:
 
 def _capture(module: str, events: list[str]):
     def _record(event):
-        events.append(repr(event.data) + repr(event.metadata) + repr(event.content))
+        # Exception text goes to trace backends only; publish_event drops it for event streams.
+        data = {k: v for k, v in event.data.items() if k not in TRACE_ONLY_ERROR_KEYS}
+        events.append(repr(data) + repr(event.metadata) + repr(event.content))
 
     return patch(f"tenxgraph.core.graph.tool_node.{module}.publish_event", side_effect=_record)
 

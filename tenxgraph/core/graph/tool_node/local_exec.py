@@ -20,6 +20,7 @@ from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, E
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
 from tenxgraph.utils.interrupt import activate as activate_interrupts
+from tenxgraph.utils.log_safety import error_details
 
 from ._helpers import _extract_block_meta, _safe_serialize, generic_tool_failure
 from .coercion import ToolArgumentError, coerce_tool_argument
@@ -329,6 +330,7 @@ class LocalExecMixin:
 
             event.event_type = EventType.END
             event.data["error"] = error_text
+            event.data.update(error_details(e, config))
             event.metadata["status"] = "Internal tool execution complete, with error"
             event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
             publish_event(event)

@@ -11,6 +11,7 @@ from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
 from tenxgraph.runtime.publisher.events import EventModel
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
 
 
 logger = logging.getLogger("tenxgraph.publisher")
@@ -116,6 +117,23 @@ def _select(publisher: BasePublisher, kind: PublisherKind) -> BasePublisher | No
     return publisher if publisher.kind == kind else None
 
 
+def _split_inline(publisher: BasePublisher) -> tuple[list[BasePublisher], BasePublisher | None]:
+    """The ``inline`` publishers in ``publisher``, and the rest (None when nothing is left)."""
+    if isinstance(publisher, CompositePublisher):
+        inline: list[BasePublisher] = []
+        rest: list[BasePublisher] = []
+        for child in publisher._publishers:
+            child_inline, child_rest = _split_inline(child)
+            inline += child_inline
+            if child_rest is not None:
+                rest.append(child_rest)
+        if not inline:
+            return [], publisher
+        return inline, CompositePublisher(rest) if rest else None
+    # ``is True``: a mock or duck-typed publisher without the flag stays in the background.
+    return ([publisher], None) if getattr(publisher, "inline", False) is True else ([], publisher)
+
+
 def publish_event(
     event: EventModel,
     publisher: BasePublisher | None = Inject[BasePublisher],
@@ -127,6 +145,9 @@ def publish_event(
     Delivery is best-effort: events run as background tasks, and when more than the
     manager's cap (1000 by default) are pending, new events are shed and a warning is
     logged. ``CompiledGraph.aclose()`` and sync ``invoke()`` wait for pending events.
+    Publishers with ``inline = True`` (OTEL tracing) get the event right here instead, in
+    order, through ``publish_inline``. ``error_message`` and ``error_traceback`` reach
+    ``"observability"`` publishers only.
     ``data["state"]`` larger than the publisher's ``state_snapshot_limit`` config (JSON
     characters, default 65536; 0 or None disables) is replaced by a bounded summary.
 
@@ -172,4 +193,25 @@ def publish_event(
             "timestamp": datetime.now().timestamp(),
         }
     )
-    task_manager.create_task(_publish_event_task(snapshot, publisher))
+    # Exception text and tracebacks (``error_details``) can hold paths, DSNs or SQL, so they
+    # go to observability publishers (trace backends) only; event streams get the type.
+    plain = snapshot
+    if any(key in data for key in TRACE_ONLY_ERROR_KEYS):
+        kept = {k: v for k, v in data.items() if k not in TRACE_ONLY_ERROR_KEYS}
+        plain = snapshot.model_copy(update={"data": kept})
+
+    inline, background = _split_inline(publisher)
+    for sink in inline:
+        try:
+            sink.publish_inline(snapshot if sink.kind == "observability" else plain)
+        except Exception as e:
+            logger.error("Failed to publish event: %s", e)
+    if background is None:
+        return
+    if plain is snapshot:
+        task_manager.create_task(_publish_event_task(snapshot, background))
+        return
+    for kind, version in (("observability", snapshot), ("events", plain)):
+        part = _select(background, kind)  # type: ignore[arg-type]
+        if part is not None:
+            task_manager.create_task(_publish_event_task(version, part))

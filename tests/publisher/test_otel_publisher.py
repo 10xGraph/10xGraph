@@ -363,7 +363,7 @@ def _node_spans(level, start_data, end_data):
     pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.START, data={"step": 1}))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data=start_data))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=end_data))
-    node = next(s for s in tracer.spans if s.name == "tenxgraph.node")
+    node = next(s for s in tracer.spans if s.name == "MAIN")
     return node, json
 
 

@@ -36,6 +36,7 @@ from tenxgraph.utils.converter import (
     strip_provider_blocks,
 )
 from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.log_safety import error_details
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
@@ -224,6 +225,7 @@ def _make_stream_end_hook(llm_event: Any, started: float | None = None) -> Any:
             llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
             llm_event.is_error = True
             llm_event.data["error"] = type(error).__name__
+            llm_event.data.update(error_details(error))
         else:
             llm_event.event_type = EventType.END  # type: ignore[assignment]
         usages = getattr(final, "usages", None)
@@ -1170,6 +1172,7 @@ class AgentExecutionMixin:
             EventType,
         )
         from tenxgraph.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.trace_context import llm_span, use_trace_span
 
         node_name = config.get("_node_name", "unknown")
 
@@ -1204,21 +1207,26 @@ class AgentExecutionMixin:
             node_name=node_name,
         )
         publish_event(llm_event)
+        # Started by the publish above; current around the request so the provider SDK's
+        # own spans nest under it.
+        span = llm_span(config, node_name)
 
         converter_key_var.set(None)
         llm_started = time.perf_counter()
         try:
-            response = await self._call_llm_with_retry(
-                messages=messages,
-                tools=tools if tools else None,
-                stream=is_stream,
-            )
+            with use_trace_span(span):
+                response = await self._call_llm_with_retry(
+                    messages=messages,
+                    tools=tools if tools else None,
+                    stream=is_stream,
+                )
         except BaseException as exc:
             # Close the LLM span: without an ERROR event the publisher keeps it open
             # for the life of the process.
             llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
             llm_event.is_error = True
             llm_event.data["error"] = type(exc).__name__
+            llm_event.data.update(error_details(exc))
             publish_event(llm_event)
             _record_llm_metrics(llm_event, llm_started, "error")
             raise
@@ -1249,11 +1257,13 @@ class AgentExecutionMixin:
             # One more call after an empty reply. A fallback model on another provider may
             # answer, so the converter follows the provider that did.
             converter_key_var.set(None)
-            retry_response = await self._call_llm_with_retry(
-                messages=messages,
-                tools=tools if tools else None,
-                stream=is_stream,
-            )
+            # Still open for a stream; a non-stream call ended its span, so the node span.
+            with use_trace_span(llm_span(config, node_name)):
+                retry_response = await self._call_llm_with_retry(
+                    messages=messages,
+                    tools=tools if tools else None,
+                    stream=is_stream,
+                )
             converter.converter = ModelResponseConverter(
                 retry_response, converter=converter_key_var.get() or self._get_converter_key()
             ).converter
@@ -1264,6 +1274,9 @@ class AgentExecutionMixin:
         converter.empty_reply_error = _make_empty_reply_error(node_name, str(self.model))
         if is_stream:
             converter.on_stream_end = _make_stream_end_hook(llm_event, llm_started)
+            # A stream sends its request (Anthropic ``messages.stream()``) and reads its body
+            # while the converter is iterated, so the span is current around each read too.
+            converter.trace_span = span
         if self.tools_tags:
             # Record which tools the model was shown, so dispatch can refuse a call to
             # a tool the tags hid from it.

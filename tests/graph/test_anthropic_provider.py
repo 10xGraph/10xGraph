@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tenxgraph.core.graph.agent_internal.anthropic import (
+    _ANTHROPIC_EXCLUDED_KWARGS,
     AgentAnthropicMixin,
     apply_reasoning_config,
     strip_rejected_sampling_params,
@@ -171,6 +173,61 @@ class TestClientConstruction:
         monkeypatch.setitem(sys.modules, "anthropic", None)
         with pytest.raises(ImportError, match=r"10xgraph\[anthropic\]"):
             create_llm_client("anthropic")
+
+
+class TestSdkTracingOption:
+    """The SDK's own spans are off by default (our ``chat`` span covers the call); a developer's
+    ``open_telemetry`` is passed through unchanged; an SDK without the option gets nothing."""
+
+    TRACES_OFF = {"traces": {"enabled": False}}
+
+    @staticmethod
+    def _module(monkeypatch, *, accepts=True):
+        calls = []
+
+        if accepts:
+
+            def init(self, *, timeout=None, api_key=None, open_telemetry=None, **kwargs):
+                calls.append({"open_telemetry": open_telemetry, **kwargs})
+
+        else:
+
+            def init(self, *, timeout=None, api_key=None, **kwargs):
+                calls.append(kwargs)
+
+        names = ("AsyncAnthropic", "AsyncAnthropicVertex", "AsyncAnthropicBedrockMantle")
+        module = SimpleNamespace(**{n: type(n, (), {"__init__": init}) for n in names})
+        monkeypatch.setitem(sys.modules, "anthropic", module)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        for key in [k for k in os.environ if k.startswith("ANTHROPIC_OPEN_TELEMETRY")]:
+            monkeypatch.delenv(key)
+        return calls
+
+    @pytest.mark.parametrize("backend", [None, "vertex", "bedrock"])
+    def test_default_client_turns_sdk_tracing_off(self, monkeypatch, backend):
+        calls = self._module(monkeypatch)
+        create_llm_client("anthropic", anthropic_backend=backend)
+        assert calls[-1]["open_telemetry"] == self.TRACES_OFF
+
+    @pytest.mark.parametrize("mine", [{}, {"traces": {"enabled": True}}, False])
+    def test_developer_value_is_passed_to_the_client(self, monkeypatch, mine):
+        calls = self._module(monkeypatch)
+        create_llm_client("anthropic", open_telemetry=mine)
+        assert calls[-1]["open_telemetry"] is mine
+
+    def test_sdk_environment_variables_are_respected(self, monkeypatch):
+        calls = self._module(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_OPEN_TELEMETRY", "true")
+        create_llm_client("anthropic")
+        assert calls[-1]["open_telemetry"] is None
+
+    def test_old_sdk_without_the_option_gets_nothing(self, monkeypatch):
+        calls = self._module(monkeypatch, accepts=False)
+        create_llm_client("anthropic")
+        assert "open_telemetry" not in calls[-1]
+
+    def test_option_is_not_sent_as_a_request_param(self):
+        assert "open_telemetry" in _ANTHROPIC_EXCLUDED_KWARGS
 
 
 class TestSamplingParamStripping:

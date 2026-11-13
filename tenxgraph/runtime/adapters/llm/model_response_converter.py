@@ -66,6 +66,9 @@ class ModelResponseConverter:
         # ``message_metadata`` is merged. They may mutate the message in place (the saved
         # message is that same object). A failing hook is logged and skipped.
         self.message_hooks: list[Callable[[Any], None]] = []
+        # The OTEL span (set by the Agent) made current around each read of the stream, so
+        # spans the provider SDK starts while streaming nest under it. None: no tracing.
+        self.trace_span: Any = None
         # Empty-reply policy (set by the Agent). When ``empty_reply_retry`` is set and the
         # provider answers with an empty reply (see ``is_empty_reply``), ``on_empty_reply``
         # is called with ``(message, will_retry)``, the call is repeated once through
@@ -187,7 +190,7 @@ class ModelResponseConverter:
         except Exception:
             logger.debug("Stream end hook failed", exc_info=True)
 
-    async def stream(  # noqa: PLR0912
+    async def stream(  # noqa: PLR0912, PLR0915
         self,
         config: dict,
         node_name: str,
@@ -223,6 +226,8 @@ class ModelResponseConverter:
         else:
             response = self.response
 
+        from tenxgraph.runtime.publisher.trace_context import use_trace_span
+
         self._warn_if_empty_response(response, context="starting streaming conversion")
         last_message: Any = None
         error: BaseException | None = None
@@ -230,12 +235,20 @@ class ModelResponseConverter:
         try:
             while True:
                 held: Any = None
-                async for item in self.converter.convert_streaming_response(  # type: ignore
+                items = self.converter.convert_streaming_response(  # type: ignore
                     config,
                     node_name=node_name,
                     response=response,
                     meta=meta,
-                ):
+                ).__aiter__()
+                while True:
+                    # Only around the read, never across the yield below: the span is
+                    # attached and detached in this frame.
+                    with use_trace_span(self.trace_span):
+                        try:
+                            item = await items.__anext__()
+                        except StopAsyncIteration:
+                            break
                     if getattr(item, "usages", None) is not None:
                         last_message = item
                     if (

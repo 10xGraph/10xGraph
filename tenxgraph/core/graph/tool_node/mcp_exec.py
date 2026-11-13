@@ -20,7 +20,9 @@ from tenxgraph.core.state import (
 )
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.trace_context import tool_span, use_trace_span
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
+from tenxgraph.utils.log_safety import error_details
 
 from ._helpers import _normalize_resource_uri, generic_tool_failure
 from .mcp_auth import mcp_call_headers, resolve_mcp_headers
@@ -60,8 +62,12 @@ class MCPMixin:
         self,
         config: dict[str, t.Any] | None = None,
         tool_name: str | None = None,
+        tool_call_id: str | None = None,
     ) -> t.AsyncIterator[None]:
         """Open the MCP client session, bounding only the connect by ``mcp_connect_timeout``.
+
+        The run's tool span for ``tool_call_id`` (a listing has none: the node span) is the
+        current OTEL span in the block, so fastmcp and ``mcp`` spans nest under it.
 
         With ``mcp_auth`` set, its headers for this list or call are held in a ContextVar for
         the block, where ``MCPCallAuth`` on the transport reads them.
@@ -75,8 +81,10 @@ class MCPMixin:
             )
             headers_token = mcp_call_headers.set(headers)
         try:
-            async with self._open_mcp_client(timeout):
-                yield
+            # Attached and detached in this frame (the caller's task), around the yield.
+            with use_trace_span(tool_span(config, tool_call_id)):
+                async with self._open_mcp_client(timeout):
+                    yield
         finally:
             if headers_token is not None:
                 mcp_call_headers.reset(headers_token)
@@ -369,7 +377,7 @@ class MCPMixin:
             # No ping first: call_tool fails on its own when the server is down (handled
             # below), and MCP protocol 2026-07-28 (fastmcp 4.x default) has no ping method.
             server_name = self._mcp_server_name(name)
-            async with self._mcp_session(config, server_name):
+            async with self._mcp_session(config, server_name, tool_call_id):
                 call_kwargs: dict[str, t.Any] = {}
                 if self._pass_user_info_to_mcp:
                     mcp_user_info = _mcp_user_info(config)
@@ -423,6 +431,7 @@ class MCPMixin:
 
             event.event_type = EventType.END
             event.data["error"] = error_text
+            event.data.update(error_details(e, config))
             event.metadata["status"] = "MCP tool execution complete, with recovery"
             event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
             publish_event(event)

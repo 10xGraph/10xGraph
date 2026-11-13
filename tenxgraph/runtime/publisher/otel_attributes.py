@@ -8,6 +8,11 @@ GEN_AI_SYSTEM = "gen_ai.system"
 GEN_AI_OPERATION = "gen_ai.operation.name"
 GEN_AI_PROVIDER_NAME = "gen_ai.provider.name"
 
+# ── gen_ai tool attributes (execute_tool spans) ──────────────────────────────
+GEN_AI_TOOL_NAME = "gen_ai.tool.name"
+GEN_AI_TOOL_CALL_ID = "gen_ai.tool.call.id"
+GEN_AI_TOOL_TYPE = "gen_ai.tool.type"
+
 # ── gen_ai request attributes (standard semconv) ─────────────────────────────
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 GEN_AI_REQUEST_TEMPERATURE = "gen_ai.request.temperature"
@@ -51,18 +56,18 @@ GEN_AI_OUTPUT_MESSAGES = "gen_ai.output.messages"
 # ── session / trace context ───────────────────────────────────────────────────
 SESSION_ID = "session.id"
 
-# ── tenxgraph.graph span attributes ─────────────────────────────────────────
+# ── graph (invoke_agent) span attributes ────────────────────────────────────
 GRAPH_THREAD_ID = "tenxgraph.graph.thread_id"
 GRAPH_RUN_ID = "tenxgraph.graph.run_id"
 GRAPH_USER_ID = "tenxgraph.graph.user_id"
 GRAPH_TOTAL_STEPS = "tenxgraph.graph.total_steps"
 GRAPH_MODEL = "tenxgraph.graph.model"
 
-# ── tenxgraph.node span attributes ───────────────────────────────────────────
+# ── node span attributes ─────────────────────────────────────────────────────
 NODE_NAME = "tenxgraph.node.name"
 NODE_STEP = "tenxgraph.node.step"
 
-# ── tenxgraph.tool span attributes ───────────────────────────────────────────
+# ── tool (execute_tool) span attributes ─────────────────────────────────────
 TOOL_NAME = "tenxgraph.tool.name"
 TOOL_TYPE = "tenxgraph.tool.type"  # "local" | "mcp"
 
