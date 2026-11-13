@@ -173,12 +173,18 @@ async def peek_first_chunk(response: Any, timeout: float | None) -> Any:
     a chunk is out, a later stall is raised by :func:`iter_with_idle_timeout` outside the
     loop and is never retried (a retry would repeat output already streamed). Anything that
     is not an async stream is returned unchanged.
+
+    A stream context manager (Anthropic ``messages.stream()``) sends its request only when
+    entered, so it is entered and peeked even when ``timeout`` is ``None`` (then with no
+    deadline): an error at stream open (429, 5xx, connection) is raised here, inside the
+    retry loop, instead of later in the converter where nothing retries it.
     """
-    if timeout is None:
+    is_manager = hasattr(response, "__aenter__") and not hasattr(response, "__aiter__")
+    if timeout is None and not is_manager:
         return response
     manager = None
     stream = response
-    if hasattr(response, "__aenter__") and not hasattr(response, "__aiter__"):
+    if is_manager:
         manager = response
         stream = await manager.__aenter__()
     if not hasattr(stream, "__aiter__"):

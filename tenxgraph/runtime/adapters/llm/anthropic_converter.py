@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from datetime import datetime
 from typing import Any
 
@@ -277,8 +278,12 @@ class AnthropicConverter(BaseConverter):
         meta: dict | None = None,
     ) -> AsyncGenerator[Message]:
         """Convert an Anthropic stream into incremental and final Messages."""
-        async for message in self._handle_stream(config or {}, node_name or "", response, meta):
-            yield message
+        # ``aclosing`` closes the stream as soon as the consumer stops early, not at GC.
+        async with aclosing(
+            self._handle_stream(config or {}, node_name or "", response, meta)
+        ) as messages:
+            async for message in messages:
+                yield message
 
     async def _handle_stream(  # noqa: PLR0912, PLR0915
         self,
