@@ -15,6 +15,7 @@ from typing import Any
 from tenxgraph.core.authz import owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.storage.media.url_policy import redact_url
+from tenxgraph.utils.log_safety import describe_error
 
 from .base_store import BaseStore, limit_to_token_budget
 from .embedding.base_embedding import BaseEmbedding
@@ -357,7 +358,7 @@ class QdrantStore(BaseStore):
 
             self._collection_cache.add(collection)
         except Exception as e:
-            logger.error(f"Error ensuring collection {collection} exists: {e}")
+            logger.error(f"Error ensuring collection {collection} exists: {describe_error(e)}")
             raise
 
     def _prepare_content(self, content: str | Message) -> str:
@@ -587,7 +588,7 @@ class QdrantStore(BaseStore):
             return result
 
         except Exception as e:
-            logger.error(f"Error retrieving memory {memory_id}: {e}")
+            logger.error(f"Error retrieving memory {memory_id}: {describe_error(e)}")
             return None
 
     async def aget_all(

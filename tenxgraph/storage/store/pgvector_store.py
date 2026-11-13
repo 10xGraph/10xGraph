@@ -53,6 +53,7 @@ from tenxgraph.storage.sql_filter import (
     compile_filters,
     validate_filters,
 )
+from tenxgraph.utils.log_safety import describe_error
 
 from .base_store import BaseStore, limit_to_token_budget
 from .embedding.base_embedding import BaseEmbedding
@@ -626,7 +627,9 @@ class PgVectorStore(BaseStore):
                 return await operation()
             except errors as e:
                 if attempt == max_retries - 1:
-                    logger.error("PgVectorStore failed after %d attempts: %s", max_retries, e)
+                    logger.error(
+                        "PgVectorStore failed after %d attempts: %s", max_retries, describe_error(e)
+                    )
                     raise
                 wait = 2**attempt
                 logger.warning(
@@ -2015,4 +2018,4 @@ class PgVectorStore(BaseStore):
             logger.info("PgVectorStore resources released")
         except Exception as e:
             # Cleanup is best effort, as in PgCheckpointer.
-            logger.error("Error closing PgVectorStore pool: %s", e)
+            logger.error("Error closing PgVectorStore pool: %s", describe_error(e))

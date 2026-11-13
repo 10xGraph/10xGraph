@@ -24,6 +24,15 @@ def log_safe(value: object, limit: int = 200) -> str:
     return text
 
 
+def describe_error(exc: BaseException) -> str:
+    """Return ``exc`` as text that always names the error.
+
+    Some exceptions have an empty ``str`` (``TimeoutError()`` from a pool acquire), which
+    makes a log line end in a bare colon. Those fall back to ``repr``.
+    """
+    return str(exc) or repr(exc)
+
+
 # Bounds of the exception text an event carries; the traceback keeps its end (the frames
 # nearest the error and the exception line).
 MAX_ERROR_MESSAGE_CHARS = 2000
@@ -49,7 +58,7 @@ def error_details(exc: BaseException, config: Any = None) -> dict[str, str]:
     def clean(text: str) -> str:
         return mask_secrets(text.replace(token, "***REDACTED***") if token else text)
 
-    message = clean(str(exc))
+    message = clean(describe_error(exc))
     if len(message) > MAX_ERROR_MESSAGE_CHARS:
         message = message[:MAX_ERROR_MESSAGE_CHARS] + "..."
     trace = clean("".join(traceback.format_exception(exc)))
