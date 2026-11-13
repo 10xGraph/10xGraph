@@ -33,7 +33,7 @@ def _otel_publishers(publisher: BasePublisher) -> list[OtelPublisher]:
 def find_span(
     config: dict[str, Any] | None,
     *keys: str,
-    publisher: BasePublisher | None = Inject[BasePublisher],
+    publisher: BasePublisher | None = Inject[BasePublisher],  # type: ignore[assignment]
 ) -> Any:
     """The open span of this run under the first of ``keys`` that has one, else None."""
     publisher = fresh(publisher)
