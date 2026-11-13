@@ -12,8 +12,6 @@ import asyncio
 import json
 from unittest.mock import patch
 
-import anthropic
-import httpx2 as httpx  # anthropic 1.x runs on httpx2
 import pytest
 
 from tenxgraph.core.graph.agent import Agent
@@ -22,6 +20,11 @@ from tenxgraph.core.graph.agent_internal.constants import RetryConfig
 from tenxgraph.core.llm import set_default_stream_idle_timeout
 from tenxgraph.core.llm.stream_idle import stream_idle_timeout_var
 from tenxgraph.runtime.adapters.llm.anthropic_converter import AnthropicConverter
+
+
+# The anthropic extra is optional: CI jobs without it skip this module.
+anthropic = pytest.importorskip("anthropic")
+httpx = pytest.importorskip("httpx2")  # anthropic 1.x runs on httpx2
 
 
 def _sse(event: dict) -> bytes:
