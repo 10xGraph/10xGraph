@@ -7,6 +7,8 @@ Used by both the Agent class and the evaluation judge.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import os
 from typing import Any
@@ -119,6 +121,7 @@ _ANTHROPIC_CONSTRUCTOR_KWARGS = frozenset(
         "http_client",
         "auth_token",
         "middleware",
+        "open_telemetry",
     }
 )
 _ANTHROPIC_VERTEX_CONSTRUCTOR_KWARGS = _ANTHROPIC_CONSTRUCTOR_KWARGS | frozenset(
@@ -349,6 +352,30 @@ def _create_openai_client(
     return AsyncOpenAI(api_key=resolved_key, **client_kwargs)
 
 
+@functools.cache
+def _accepts_open_telemetry(client_cls: type) -> bool:
+    """Whether the Anthropic client class takes ``open_telemetry`` (SDK 1.0.0 does not)."""
+    try:
+        return "open_telemetry" in inspect.signature(client_cls).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _sdk_traces_off(client_cls: type, client_kwargs: dict[str, Any]) -> None:
+    """Turn the Anthropic SDK's own spans off unless the developer configured them.
+
+    10xGraph's ``chat {model}`` span already covers the request with its token counts; the SDK
+    span would count them a second time. A developer's ``open_telemetry`` (or the SDK's
+    ``ANTHROPIC_OPEN_TELEMETRY*`` environment variables) is kept, and the SDK span then nests
+    under ours.
+    """
+    if "open_telemetry" in client_kwargs or not _accepts_open_telemetry(client_cls):
+        return
+    if any(k.startswith("ANTHROPIC_OPEN_TELEMETRY") for k in os.environ):
+        return
+    client_kwargs["open_telemetry"] = {"traces": {"enabled": False}}
+
+
 def _create_anthropic_client(
     *,
     base_url: str | None,
@@ -397,6 +424,7 @@ def _create_anthropic_client(
         if base_url:
             client_kwargs["base_url"] = base_url
         logger.info("Creating Anthropic client (Vertex AI)")
+        _sdk_traces_off(AsyncAnthropicVertex, client_kwargs)
         return AsyncAnthropicVertex(**client_kwargs)
 
     if backend == "bedrock":
@@ -418,6 +446,7 @@ def _create_anthropic_client(
         if base_url:
             client_kwargs["base_url"] = base_url
         logger.info("Creating Anthropic client (Bedrock Mantle)")
+        _sdk_traces_off(AsyncAnthropicBedrockMantle, client_kwargs)
         return AsyncAnthropicBedrockMantle(**client_kwargs)
 
     try:
@@ -448,4 +477,5 @@ def _create_anthropic_client(
         logger.info("Creating Anthropic client with custom base_url: %s", redact_url(base_url))
         client_kwargs["base_url"] = base_url
 
+    _sdk_traces_off(AsyncAnthropic, client_kwargs)
     return AsyncAnthropic(**client_kwargs)

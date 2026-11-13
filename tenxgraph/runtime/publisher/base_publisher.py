@@ -24,9 +24,14 @@ class BasePublisher(ABC):
             own consumers (Kafka, Redis, RabbitMQ, console, custom). ``"observability"`` is
             an AI tracing backend (OTEL, Logfire, LangSmith, Phoenix). Callers can send an
             event to one kind only with ``publish_event(..., only=kind)``.
+        inline: When True, ``publish_event`` calls :meth:`publish_inline` on the caller's
+            path instead of scheduling :meth:`publish` as a background task. For in-process
+            publishers whose work is quick and must be done before the run goes on (OTEL
+            spans that library spans nest under). Default False.
     """
 
     kind: PublisherKind = "events"
+    inline: bool = False
 
     def __init__(self, config: dict[str, Any]):
         """Initialize the publisher with the given configuration.
@@ -50,6 +55,10 @@ class BasePublisher(ABC):
         Raises:
             RuntimeError: If the publisher is closed.
         """
+        raise NotImplementedError
+
+    def publish_inline(self, event: EventModel) -> None:
+        """Handle an event synchronously (``inline`` publishers only). Must never raise."""
         raise NotImplementedError
 
     @abstractmethod

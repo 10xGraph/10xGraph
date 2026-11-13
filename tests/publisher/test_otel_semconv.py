@@ -134,7 +134,7 @@ def test_llm_span_attributes_and_graph_node_usage():
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, data={"messages": [usage]}))
     pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.END, node=""))
 
-    llm = _by_name(exporter, "tenxgraph.llm")[0].attributes
+    llm = _by_name(exporter, "chat gpt-4o-mini")[0].attributes
     assert json.loads(llm["gen_ai.input.messages"])[0]["parts"][0]["content"] == "Be brief"
     assert json.loads(llm["gen_ai.output.messages"]) == [
         {
@@ -150,9 +150,9 @@ def test_llm_span_attributes_and_graph_node_usage():
     # Every span carries the thread as session.id, not only the root (Phoenix span filters).
     assert llm["session.id"] == "th1"
 
-    node = _by_name(exporter, "tenxgraph.node")[0].attributes
-    graph = _by_name(exporter, "tenxgraph.graph")[0].attributes
-    for attrs, kind, name in ((node, "chain", "MAIN"), (graph, "chain", "graph run")):
+    node = _by_name(exporter, "MAIN")[0].attributes
+    graph = _by_name(exporter, "invoke_agent 10xgraph")[0].attributes
+    for attrs, kind, name in ((node, "chain", "MAIN"), (graph, "chain", "invoke_agent 10xgraph")):
         assert attrs["langsmith.span.kind"] == kind
         assert attrs["logfire.msg"] == attrs["langsmith.trace.name"] == name
         assert attrs["langsmith.metadata.thread_id"] == attrs["session.id"] == "th1"
@@ -184,11 +184,11 @@ def test_parallel_calls_of_one_tool_get_separate_spans():
                 data={"function_name": "search", "tool_call_id": call_id},
             )
         )
-    tools = _by_name(exporter, "tenxgraph.tool")
+    tools = _by_name(exporter, "execute_tool search")
     assert len(tools) == 2
     assert all(s.attributes["langsmith.span.kind"] == "tool" for s in tools)
     assert all(s.attributes["session.id"] == "th1" for s in tools)
-    assert tools[0].attributes["logfire.msg"] == "tool search"
+    assert tools[0].attributes["logfire.msg"] == "execute_tool search"
     assert not pub._registry._children
 
 
@@ -202,7 +202,7 @@ def test_tool_end_with_error_sets_error_status():
             data={"function_name": "search", "tool_call_id": "a", "error": "boom"},
         )
     )
-    span = _by_name(exporter, "tenxgraph.tool")[0]
+    span = _by_name(exporter, "execute_tool search")[0]
     assert span.status.status_code == StatusCode.ERROR
     assert span.status.description == "boom"
     assert [e.name for e in span.events if e.name == "tool.error"]
@@ -211,7 +211,7 @@ def test_tool_end_with_error_sets_error_status():
 def test_remote_tool_span_ends_immediately():
     pub, exporter = _setup()
     pub._dispatch(_tool_start("a", metadata={"is_remote": True}))
-    span = _by_name(exporter, "tenxgraph.tool")[0]
+    span = _by_name(exporter, "execute_tool search")[0]
     assert span.attributes["tenxgraph.tool.remote"] is True
     assert span.status.status_code == StatusCode.UNSET
     assert span.start_time == span.end_time
@@ -230,12 +230,12 @@ def test_graph_end_closes_unfinished_children(end_type):
     pub._dispatch(_evt(Event.GRAPH_EXECUTION, end_type, node="", data=data, ts=20.0))
 
     assert not pub._registry._children
-    for name in ("tenxgraph.node", "tenxgraph.tool"):
+    for name in ("MAIN", "execute_tool search"):
         span = _by_name(exporter, name)[0]
         assert span.attributes["tenxgraph.span.unfinished"] is True
         assert span.status.status_code == StatusCode.UNSET
         assert span.end_time == 9_000_000_000
-    assert _by_name(exporter, "tenxgraph.graph")[0].end_time == 9_000_000_000
+    assert _by_name(exporter, "invoke_agent 10xgraph")[0].end_time == 9_000_000_000
 
 
 def _calc(x: int) -> int:

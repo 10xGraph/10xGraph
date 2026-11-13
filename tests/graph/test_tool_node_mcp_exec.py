@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tenxgraph.core.authz import Identity, Reach
+from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.tool_node.mcp_exec import MCPMixin
-from tenxgraph.core.state import Message
+from tenxgraph.core.state import AgentState, Message
 
 
 class _Node(MCPMixin):
@@ -401,3 +402,16 @@ async def test_published_end_event_carries_after_invoke_replacement():
     end = pub.call_args.args[0]
     assert end.data["message"] == replacement.model_dump()
     assert "RAW" not in str(end.data)
+
+
+@pytest.mark.asyncio
+async def test_tool_start_event_names_the_graph_node():
+    def echo(x: str) -> str:
+        return x
+
+    node = ToolNode([echo])
+    with patch("tenxgraph.core.graph.tool_node.base.publish_event") as pub:
+        await node.invoke("echo", {"x": "hi"}, "tc-g", {"_node_name": "TOOL"}, AgentState())
+    start = pub.call_args_list[0].args[0]
+    assert start.metadata["graph_node"] == "TOOL"
+    assert start.node_name == "echo"

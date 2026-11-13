@@ -50,8 +50,8 @@ async def test_setup_tracing_emits_spans():
     await _run(graph)
     names = [s.name for s in exporter.get_finished_spans()]
     assert names, "no spans emitted"
-    assert "tenxgraph.graph" in names
-    assert "tenxgraph.node" in names
+    assert "invoke_agent 10xgraph" in names
+    assert "MAIN" in names
     for span in exporter.get_finished_spans():
         assert span.attributes["langsmith.span.kind"] == "chain"
         assert span.attributes["langsmith.metadata.thread_id"] == "t1"

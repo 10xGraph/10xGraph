@@ -146,9 +146,9 @@ async def _spans(level):
 @pytest.mark.asyncio
 async def test_full_level_timing_status_kinds_and_content():
     spans = await _spans(ObservabilityLevel.FULL)
-    graph, llm = spans["tenxgraph.graph"], spans["tenxgraph.llm"]
+    graph, llm = spans["invoke_agent 10xgraph"], spans["chat gpt-4o-mini"]
     assert (llm.end_time - llm.start_time) / 1e9 >= SLEEP
-    for child in (s for n, s in spans.items() if n != "tenxgraph.graph"):
+    for child in (s for n, s in spans.items() if n != "invoke_agent 10xgraph"):
         assert graph.start_time <= child.start_time and graph.end_time >= child.end_time
     for s in spans.values():
         assert s.status.status_code == StatusCode.OK
@@ -185,7 +185,7 @@ async def test_full_level_timing_status_kinds_and_content():
 @pytest.mark.asyncio
 async def test_spans_level_has_kind_and_user_but_no_content():
     spans = await _spans(ObservabilityLevel.SPANS)
-    llm, graph = spans["tenxgraph.llm"], spans["tenxgraph.graph"]
+    llm, graph = spans["chat gpt-4o-mini"], spans["invoke_agent 10xgraph"]
     assert llm.attributes[oi.SPAN_KIND] == "LLM" and llm.attributes[oi.USER_ID] == "u1"
     for s in (llm, graph):
         assert oi.INPUT_VALUE not in s.attributes and oi.OUTPUT_VALUE not in s.attributes
@@ -194,7 +194,7 @@ async def test_spans_level_has_kind_and_user_but_no_content():
 
 @pytest.mark.asyncio
 async def test_standard_level_has_tokens_but_no_content():
-    llm = (await _spans(ObservabilityLevel.STANDARD))["tenxgraph.llm"]
+    llm = (await _spans(ObservabilityLevel.STANDARD))["chat gpt-4o-mini"]
     assert llm.attributes[oi.TOKENS_TOTAL] == 12
     assert oi.INPUT_VALUE not in llm.attributes
     assert "llm.input_messages.0.message.role" not in llm.attributes

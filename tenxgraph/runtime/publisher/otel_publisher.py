@@ -1,15 +1,18 @@
-"""OtelPublisher — fire-and-forget OTEL backend for Agentflow.
+"""OtelPublisher — OTEL backend for 10xGraph.
 
 Reads EventModel events from the publisher stream and reconstructs OTEL spans.
-No synchronous work happens on the execution path; all span operations occur
-inside the background task that BackgroundTaskManager already creates for
-every publish_event call.
 
-Parent-child relationships are tracked explicitly via SpanRegistry rather than
-relying on contextvars (which do not transfer across asyncio.create_task boundaries).
-Span timing is accurate because publish_event stamps each event with the moment it is
-published (events are reused between phases) and that time is passed as start_time /
-end_time to the OTEL SDK.
+``publish_event`` hands events to this publisher on the caller's path (``inline``), not in
+a background task: a span then exists as soon as its START is published, before the LLM
+request or MCP call it covers starts, and events are processed in the order they happen, so
+an END never runs before its START. Span work is in-memory and the background task would run
+on the same event loop thread anyway. Execution code makes these spans current around
+library calls (see ``trace_context``), so library spans nest under them.
+
+Parent-child relationships between 10xGraph spans are tracked explicitly via SpanRegistry
+rather than through the current context. Span timing is accurate because publish_event stamps
+each event with the moment it is published (events are reused between phases) and that time
+is passed as start_time / end_time to the OTEL SDK.
 
 Requires: pip install '10xgraph[otel]'
 """
@@ -21,6 +24,8 @@ import contextlib
 import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+
+from tenxgraph.utils.constants import START
 
 from . import _genai
 from . import _openinference as oi
@@ -48,6 +53,9 @@ from .otel_attributes import (
     GEN_AI_RESPONSE_ID,
     GEN_AI_RESPONSE_MODEL,
     GEN_AI_SYSTEM,
+    GEN_AI_TOOL_CALL_ID,
+    GEN_AI_TOOL_NAME,
+    GEN_AI_TOOL_TYPE,
     GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
     GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
     GEN_AI_USAGE_INPUT_TOKENS,
@@ -83,6 +91,11 @@ if TYPE_CHECKING:
     from tenxgraph.core.graph.state_graph import StateGraph
 
 logger = logging.getLogger("tenxgraph.otel")
+
+# Span names follow the OTEL GenAI conventions, ``{gen_ai.operation.name} {target}``: the run
+# root is ``invoke_agent 10xgraph``, an LLM call ``chat {model}``, a tool call
+# ``execute_tool {tool}``, and a node span carries the node's name.
+GRAPH_SPAN_NAME = "invoke_agent 10xgraph"
 
 
 class ObservabilityLevel(StrEnum):
@@ -126,6 +139,28 @@ def _to_str(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+# Attributes an LLM span can carry besides the indexed input messages (kind, session, user,
+# model, provider, request params, token counts, output message with up to
+# ``oi.MAX_OUTPUT_TOOL_CALLS`` tool calls). The rest of the span attribute limit goes to messages.
+_LLM_RESERVED_ATTRS = 64
+
+
+def _input_message_budget() -> int | None:
+    """How many indexed input-message attributes fit on an LLM span, None for no limit.
+
+    The OTEL SDK keeps at most ``OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`` attributes (default 128)
+    and evicts the oldest when full, which would drop the span kind, model, session and user
+    set first. A limit passed to a TracerProvider in code is not seen; the default is assumed.
+    """
+    try:
+        from opentelemetry.sdk.trace import SpanLimits
+
+        limit = SpanLimits().max_span_attributes
+    except (ImportError, ValueError):
+        limit = 128
+    return None if limit is None else max(limit - _LLM_RESERVED_ATTRS, 0)
+
+
 def _provider_system_name(raw_provider: str) -> str:
     """Map an agentflow provider string to the OTEL gen_ai.system value."""
     return PROVIDER_NAME_MAP.get(raw_provider.lower(), raw_provider) if raw_provider else ""
@@ -166,6 +201,16 @@ class SpanRegistry:
         return [self._children.pop(k) for k in keys]
 
 
+def llm_span_key(node_name: str) -> str:
+    """Registry key of the LLM span of a node (one LLM call is open per node at a time)."""
+    return f"llm:{node_name}"
+
+
+def tool_span_key(tool_call_id: str) -> str:
+    """Registry key of a tool span: the call id, so parallel calls of one tool do not collide."""
+    return f"tool:{tool_call_id}"
+
+
 class OtelPublisher(BasePublisher):
     """Publisher backend that maps EventModel events to OTEL spans.
 
@@ -190,6 +235,7 @@ class OtelPublisher(BasePublisher):
     """
 
     kind = "observability"
+    inline = True
 
     def __init__(
         self,
@@ -217,6 +263,7 @@ class OtelPublisher(BasePublisher):
         self._tracer: Tracer | None = None
         self._registry = SpanRegistry()
         self._level = level
+        self._input_message_budget = _input_message_budget()
 
     def _get_tracer(self) -> Tracer:
         if self._tracer is None:
@@ -226,6 +273,10 @@ class OtelPublisher(BasePublisher):
         return self._tracer
 
     async def publish(self, event: EventModel) -> None:
+        self.publish_inline(event)
+
+    def publish_inline(self, event: EventModel) -> None:
+        """Turn one event into span work now. Never raises: a failure is logged."""
         if self._is_closed:
             return
         try:
@@ -234,6 +285,11 @@ class OtelPublisher(BasePublisher):
             logger.exception(
                 "OtelPublisher failed to process event %s/%s", event.event, event.event_type
             )
+
+    def open_span(self, run_id: str, key: str) -> Span | None:
+        """The open span of a run under a registry key (node name, ``llm_span_key``,
+        ``tool_span_key``), or None."""
+        return self._registry.get_child(run_id, key)
 
     def _dispatch(self, event: EventModel) -> None:
         ev = event.event
@@ -281,26 +337,26 @@ class OtelPublisher(BasePublisher):
         lifecycle = event.metadata.get("lifecycle", "")
         if lifecycle == "validation_rejected":
             span = self._get_tracer().start_span(
-                "tenxgraph.graph",
+                GRAPH_SPAN_NAME,
                 start_time=_ns(event.timestamp),
             )
             span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
-            span.set_attribute(GEN_AI_OPERATION, "graph")
+            span.set_attribute(GEN_AI_OPERATION, "invoke_agent")
             _set_common_attrs(span, event, self._user_id_mode)
-            _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, "graph run")
+            _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, GRAPH_SPAN_NAME)
             span.set_status(StatusCode.ERROR, "validation_rejected")
             span.add_event("graph.validation_rejected", attributes=_extra_attrs(event))
             span.end(end_time=_ns(event.timestamp))
             return
 
         span = self._get_tracer().start_span(
-            "tenxgraph.graph",
+            GRAPH_SPAN_NAME,
             start_time=_ns(event.timestamp),
         )
         span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
-        span.set_attribute(GEN_AI_OPERATION, "graph")
+        span.set_attribute(GEN_AI_OPERATION, "invoke_agent")
         _set_common_attrs(span, event, self._user_id_mode)
-        _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, "graph run")
+        _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, GRAPH_SPAN_NAME)
         if self._level == ObservabilityLevel.FULL:
             user_text = oi.graph_input_text(event.data)
             if user_text:
@@ -427,10 +483,13 @@ class OtelPublisher(BasePublisher):
     def _on_node_start(self, event: EventModel) -> None:
         from opentelemetry import trace
 
+        if event.node_name == START:
+            # The start node does no work; its span would be empty in every trace.
+            return
         parent = self._registry.get_graph(event.run_id)
         ctx = trace.set_span_in_context(parent) if parent else None
         span = self._get_tracer().start_span(
-            "tenxgraph.node",
+            event.node_name,
             context=ctx,
             start_time=_ns(event.timestamp),
         )
@@ -497,14 +556,10 @@ class OtelPublisher(BasePublisher):
         span.end(end_time=_ns(event.timestamp))
 
     def _on_node_error(self, event: EventModel) -> None:
-        from opentelemetry.trace import StatusCode
-
         span = self._registry.pop_child(event.run_id, event.node_name)
         if span is None:
             return
-        error_msg = event.data.get("error", "")
-        span.set_status(StatusCode.ERROR, error_msg)
-        span.add_event("node.error", attributes={"error": error_msg})
+        _record_error(span, event, "node.error")
         span.end(end_time=_ns(event.timestamp))
 
     def _on_node_update(self, event: EventModel) -> None:
@@ -530,19 +585,9 @@ class OtelPublisher(BasePublisher):
         provider = event.data.get("provider", "")
         system_name = _provider_system_name(provider)
 
-        span = self._get_tracer().start_span(
-            "tenxgraph.llm",
-            context=ctx,
-            start_time=_ns(event.timestamp),
-        )
-
-        _set_kind(
-            span,
-            oi.KIND_LLM,
-            event,
-            self._user_id_mode,
-            f"chat {model}" if model else "chat",
-        )
+        name = f"chat {model}" if model else "chat"
+        span = self._get_tracer().start_span(name, context=ctx, start_time=_ns(event.timestamp))
+        _set_kind(span, oi.KIND_LLM, event, self._user_id_mode, name)
         if self._level != ObservabilityLevel.SPANS:
             _set_attrs(span, oi.llm_standard_attrs({}, model, system_name))
 
@@ -575,7 +620,12 @@ class OtelPublisher(BasePublisher):
                 semconv_in = _genai.input_messages(input_messages, event.data.get("system_prompt"))
                 span.set_attribute(GEN_AI_INPUT_MESSAGES, _to_str(semconv_in))
                 _set_attrs(
-                    span, oi.llm_input_attrs(input_messages, event.data.get("system_prompt"))
+                    span,
+                    oi.llm_input_attrs(
+                        input_messages,
+                        event.data.get("system_prompt"),
+                        self._input_message_budget,
+                    ),
                 )
             system_prompt = event.data.get("system_prompt")
             if system_prompt:
@@ -585,12 +635,12 @@ class OtelPublisher(BasePublisher):
                 )
 
         # key: "llm:{node_name}" — allows multiple LLM calls within one node
-        self._registry.set_child(event.run_id, f"llm:{event.node_name}", span)
+        self._registry.set_child(event.run_id, llm_span_key(event.node_name), span)
 
     def _on_llm_end(self, event: EventModel) -> None:
         from opentelemetry.trace import StatusCode
 
-        span = self._registry.pop_child(event.run_id, f"llm:{event.node_name}")
+        span = self._registry.pop_child(event.run_id, llm_span_key(event.node_name))
         if span is None:
             return
 
@@ -644,14 +694,10 @@ class OtelPublisher(BasePublisher):
         span.end(end_time=_ns(event.timestamp))
 
     def _on_llm_error(self, event: EventModel) -> None:
-        from opentelemetry.trace import StatusCode
-
-        span = self._registry.pop_child(event.run_id, f"llm:{event.node_name}")
+        span = self._registry.pop_child(event.run_id, llm_span_key(event.node_name))
         if span is None:
             return
-        error_msg = event.data.get("error", "")
-        span.set_status(StatusCode.ERROR, error_msg)
-        span.add_event("llm.error", attributes={"error": error_msg})
+        _record_error(span, event, "llm.error")
         span.end(end_time=_ns(event.timestamp))
 
     # ── Tool span handlers ────────────────────────────────────────────────────
@@ -659,11 +705,9 @@ class OtelPublisher(BasePublisher):
     def _on_tool_start(self, event: EventModel) -> None:
         from opentelemetry import trace
 
-        # Tools are invoked by the model, so prefer the LLM span as parent.
-        # Fall back to node span, then graph span.
-        parent = self._registry.get_child(event.run_id, f"llm:{event.node_name}")
-        if parent is None:
-            parent = self._registry.get_child(event.run_id, event.node_name)
+        # Parent is the span of the graph node running the tool (the tool event's own
+        # node_name is the tool name), else the graph span.
+        parent = self._registry.get_child(event.run_id, event.metadata.get("graph_node", ""))
         if parent is None:
             parent = self._registry.get_graph(event.run_id)
         ctx = trace.set_span_in_context(parent) if parent else None
@@ -672,19 +716,24 @@ class OtelPublisher(BasePublisher):
         is_mcp = event.metadata.get("is_mcp", False)
         tool_type = "mcp" if is_mcp else "local"
 
-        span = self._get_tracer().start_span(
-            "tenxgraph.tool",
-            context=ctx,
-            start_time=_ns(event.timestamp),
-        )
-        span.set_attribute(GEN_AI_OPERATION, "tool_call")
-        _set_kind(span, oi.KIND_TOOL, event, self._user_id_mode, f"tool {tool_name}")
+        name = f"execute_tool {tool_name}" if tool_name else "execute_tool"
+        span = self._get_tracer().start_span(name, context=ctx, start_time=_ns(event.timestamp))
+        span.set_attribute(GEN_AI_OPERATION, "execute_tool")
+        _set_kind(span, oi.KIND_TOOL, event, self._user_id_mode, name)
+        span.set_attribute(GEN_AI_TOOL_NAME, tool_name)
+        # The model generates the arguments of a predefined function, local or MCP alike.
+        span.set_attribute(GEN_AI_TOOL_TYPE, "function")
+        tool_call_id = event.data.get("tool_call_id")
+        if tool_call_id:
+            span.set_attribute(GEN_AI_TOOL_CALL_ID, str(tool_call_id))
         span.set_attribute(TOOL_NAME, tool_name)
         span.set_attribute(TOOL_TYPE, tool_type)
 
         if self._level == ObservabilityLevel.FULL:
-            tool_input = event.data.get("args") or event.data.get("tool_input")
-            if tool_input:
+            tool_input = event.data.get("args")
+            if tool_input is None:
+                tool_input = event.data.get("tool_input")
+            if tool_input is not None:
                 span.add_event(
                     "tool.input",
                     attributes={"tool.input": _to_str(tool_input)},
@@ -714,23 +763,17 @@ class OtelPublisher(BasePublisher):
                 )
             _set_attrs(span, oi.tool_output_attrs(event.data))
 
-        error_msg = event.data.get("error")
-        if error_msg:
-            span.set_status(StatusCode.ERROR, str(error_msg))
-            span.add_event("tool.error", attributes={"error": str(error_msg)})
+        if event.data.get("error"):
+            _record_error(span, event, "tool.error")
         else:
             span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
     def _on_tool_error(self, event: EventModel) -> None:
-        from opentelemetry.trace import StatusCode
-
         span = self._registry.pop_child(event.run_id, _tool_key(event))
         if span is None:
             return
-        error_msg = event.data.get("error", "")
-        span.set_status(StatusCode.ERROR, error_msg)
-        span.add_event("tool.error", attributes={"error": error_msg})
+        _record_error(span, event, "tool.error")
         span.end(end_time=_ns(event.timestamp))
 
     # ── BasePublisher interface ───────────────────────────────────────────────
@@ -769,8 +812,27 @@ def _tool_name(event: EventModel) -> str:
 
 
 def _tool_key(event: EventModel) -> str:
-    """Registry key of a tool span: the call id, so parallel calls of one tool do not collide."""
-    return f"tool:{event.data.get('tool_call_id') or _tool_name(event)}"
+    return tool_span_key(event.data.get("tool_call_id") or _tool_name(event))
+
+
+def _record_error(span: Span, event: EventModel, name: str) -> None:
+    """Error status, the ``<name>`` event, and the OTEL ``exception`` event when the event
+    carries the exception (``error_type``, ``error_message``, ``error_traceback``)."""
+    from opentelemetry.trace import StatusCode
+
+    error_msg = str(event.data.get("error") or "")
+    span.set_status(StatusCode.ERROR, error_msg)
+    span.add_event(name, attributes={"error": error_msg})
+    error_type = event.data.get("error_type")
+    if not error_type:
+        return
+    attrs = {
+        "exception.type": str(error_type),
+        "exception.message": str(event.data.get("error_message") or error_msg),
+    }
+    if event.data.get("error_traceback"):
+        attrs["exception.stacktrace"] = str(event.data["error_traceback"])
+    span.add_event("exception", attributes=attrs)
 
 
 def _set_kind(
