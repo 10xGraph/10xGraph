@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.store.long_term_memory import (
@@ -17,11 +19,13 @@ from tenxgraph.storage.store.long_term_memory import (
     _format_search_results,
     _strip_thread_id,
     _validate_memory_type,
+    get_agent_memory_system_prompt,
 )
 from tenxgraph.prebuilt.tools.memory import (
     make_agent_memory_tool,
     make_user_memory_tool,
 )
+from tenxgraph.storage.store.store_schema import MemoryTypeName
 from tenxgraph.storage.store.memory_config import (
     AgentMemoryConfig,
     MemoryConfig,
@@ -29,6 +33,8 @@ from tenxgraph.storage.store.memory_config import (
 )
 from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.qa.testing import InMemoryStore
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +127,15 @@ class TestValidateMemoryType:
     def test_valid_type(self):
         assert _validate_memory_type("semantic") == MemoryType.SEMANTIC
 
-    def test_invalid_type_returns_episodic(self):
-        assert _validate_memory_type("invalid") == MemoryType.EPISODIC
+    def test_invalid_type_raises_naming_valid_types(self):
+        with pytest.raises(ValueError, match=r"unknown memory_type 'invalid'.*semantic"):
+            _validate_memory_type("invalid")
+
+    def test_accepts_enum_instance(self):
+        assert _validate_memory_type(MemoryType.ENTITY) is MemoryType.ENTITY
+
+    def test_literal_matches_enum(self):
+        assert set(get_args(MemoryTypeName)) == {m.value for m in MemoryType}
 
     def test_all_valid_types(self):
         for mt in MemoryType:
@@ -283,20 +296,165 @@ class TestAgentLevelMemoryTools:
         user_props = schema_by_name["user_memory_tool"]["function"]["parameters"]["properties"]
         agent_props = schema_by_name["agent_memory_tool"]["function"]["parameters"]["properties"]
 
-        assert set(user_props) == {"action", "text", "memory_type", "category", "limit"}
+        assert set(user_props) == {
+            "action",
+            "text",
+            "memory_key",
+            "memory_type",
+            "category",
+            "limit",
+        }
         assert set(agent_props) == {"query", "memory_type", "category", "limit"}
         assert "memory_id" not in user_props
-        assert "memory_key" not in user_props
+        assert user_props["action"]["enum"] == ["search", "remember", "forget"]
         assert "action" not in agent_props
 
-    def test_preload_does_not_expose_model_facing_tools(self):
+    def test_preload_does_not_expose_agent_tool(self):
         memory = MemoryConfig(
             retrieval_mode="preload",
-            user_memory=UserMemoryConfig(),
+            user_memory=UserMemoryConfig(enabled=False),
             agent_memory=AgentMemoryConfig(enabled=True),
         )
 
         assert memory.model_facing_tools() == []
+
+
+# ---------------------------------------------------------------------------
+# user_memory_tool: memory_key and forget
+# ---------------------------------------------------------------------------
+
+
+class _KeyedStore(InMemoryStore):
+    """InMemoryStore whose search honours exact metadata filters, like the real stores."""
+
+    async def asearch(self, config, query, memory_type=None, limit=10, filters=None, **kwargs):
+        hits = [
+            m
+            for m in self.memories.values()
+            if (not memory_type or m.memory_type == memory_type)
+            and all(m.metadata.get(k) == v for k, v in (filters or {}).items())
+            and (filters or query.lower() in m.content.lower())
+        ]
+        return hits[:limit]
+
+
+async def _call(tool_fn, store, task_manager, **kwargs):
+    return json.loads(
+        await tool_fn(store=store, task_manager=task_manager, config={"user_id": "u1"}, **kwargs)
+    )
+
+
+class TestUserMemoryKeyAndForget:
+    @pytest.mark.asyncio
+    async def test_remember_same_key_twice_keeps_one_memory_with_new_text(self):
+        store = _KeyedStore()
+        manager = BackgroundTaskManager()
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        for text in ("User uses pip", "User switched to uv"):
+            await _call(
+                tool_fn, store, manager, action="remember", text=text, memory_key="package_manager"
+            )
+            await manager.wait_for_all()
+
+        assert [m.content for m in store.memories.values()] == ["User switched to uv"]
+
+    @pytest.mark.asyncio
+    async def test_forget_by_key_removes_only_that_memory(self):
+        store = _KeyedStore()
+        manager = BackgroundTaskManager()
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+        await _call(
+            tool_fn, store, manager, action="remember", text="Uses vim", memory_key="editor"
+        )
+        await _call(tool_fn, store, manager, action="remember", text="Likes tea")
+        await manager.wait_for_all()
+
+        result = await _call(tool_fn, store, manager, action="forget", memory_key="editor")
+
+        assert result == {"status": "forgotten", "memory_key": "editor"}
+        assert [m.content for m in store.memories.values()] == ["Likes tea"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", [None, "", "   "])
+    async def test_forget_without_key_is_an_error_and_deletes_nothing(
+        self, mock_store, mock_task_manager, key
+    ):
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        result = await _call(
+            tool_fn, mock_store, mock_task_manager, action="forget", memory_key=key
+        )
+
+        assert "error" in result
+        mock_store.aforget_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forget_flushes_pending_writes_then_deletes_by_key(
+        self, mock_store, mock_task_manager
+    ):
+        order = []
+        mock_task_manager.get_task_count.return_value = 1
+        mock_task_manager.wait_for_all.side_effect = lambda **kw: order.append("flush")
+        mock_store.aforget_memory.side_effect = lambda *a, **kw: order.append("forget")
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        await tool_fn(
+            action="forget",
+            memory_key="editor",
+            store=mock_store,
+            task_manager=mock_task_manager,
+            config={"user_id": "u1", "thread_id": "t1"},
+        )
+
+        assert order == ["flush", "forget"]
+        mock_store.aforget_memory.assert_awaited_once_with(
+            {"user_id": "u1"}, filters={"memory_key": "editor"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_key_is_stripped(self, mock_store, mock_task_manager):
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        result = await _call(
+            tool_fn, mock_store, mock_task_manager, action="forget", memory_key="  editor \n"
+        )
+
+        assert result["memory_key"] == "editor"
+        mock_store.aforget_memory.assert_awaited_once_with(
+            {"user_id": "u1"}, filters={"memory_key": "editor"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_remember_puts_stripped_key_in_metadata(self, mock_store):
+        manager = BackgroundTaskManager()
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        await _call(tool_fn, mock_store, manager, action="remember", text="x", memory_key=" k ")
+        await manager.wait_for_all()
+
+        assert mock_store.astore.call_args.kwargs["metadata"]["memory_key"] == "k"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["remember", "forget"])
+    async def test_over_long_key_is_an_error(self, mock_store, mock_task_manager, action):
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        result = await _call(
+            tool_fn, mock_store, mock_task_manager, action=action, text="x", memory_key="k" * 129
+        )
+
+        assert "error" in result
+        mock_store.aforget_memory.assert_not_called()
+        mock_task_manager.create_task.assert_not_called()
+
+    def test_system_prompt_explains_keys_and_forget(self):
+        prompt = get_agent_memory_system_prompt(
+            MemoryConfig(retrieval_mode="postload", user_memory=UserMemoryConfig())
+        )
+        assert "memory_key" in prompt
+        assert "action='forget'" in prompt
+        assert "Do not invent memory ids" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -521,3 +679,64 @@ class TestDoWriteDedup:
     async def test_identical_threshold_is_valid(self):
         """Ensure threshold constant is valid."""
         assert 0 < _IDENTICAL_SCORE_THRESHOLD <= 1.0
+
+
+class TestStrictMemoryType:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["search", "remember"])
+    async def test_unknown_type_is_an_error_and_nothing_runs(
+        self, mock_store, mock_task_manager, action
+    ):
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        result = await _call(
+            tool_fn,
+            mock_store,
+            mock_task_manager,
+            action=action,
+            text="x",
+            memory_type="preference",
+        )
+
+        assert result["error"].startswith("unknown memory_type 'preference'; use one of: ")
+        mock_store.asearch.assert_not_called()
+        mock_store.astore.assert_not_called()
+        mock_task_manager.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_tool_unknown_type_is_an_error(self, mock_store, mock_task_manager):
+        tool_fn = make_agent_memory_tool(
+            MemoryConfig(agent_memory=AgentMemoryConfig(enabled=True, agent_id="a1"))
+        )
+
+        result = json.loads(
+            await tool_fn(
+                query="x",
+                memory_type="nope",
+                store=mock_store,
+                task_manager=mock_task_manager,
+                config={"user_id": "u1"},
+            )
+        )
+
+        assert result["error"].startswith("unknown memory_type 'nope'")
+        mock_store.asearch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_schema_has_enum_on_both_tools(self):
+        memory = MemoryConfig(agent_memory=AgentMemoryConfig(enabled=True))
+        schemas = await ToolNode(memory.model_facing_tools()).all_tools()
+        by_name = {
+            s["function"]["name"]: s["function"]["parameters"]["properties"] for s in schemas
+        }
+        expected = [m.value for m in MemoryType]
+        for name in ("user_memory_tool", "agent_memory_tool"):
+            assert sorted(by_name[name]["memory_type"]["enum"]) == sorted(expected)
+
+    @pytest.mark.parametrize("cls", [UserMemoryConfig, AgentMemoryConfig])
+    def test_config_rejects_unknown_type(self, cls):
+        with pytest.raises(ValidationError):
+            cls(memory_type="nope")
+
+    def test_config_accepts_known_type(self):
+        assert UserMemoryConfig(memory_type="semantic").memory_type == "semantic"

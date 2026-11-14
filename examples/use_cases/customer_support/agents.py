@@ -40,7 +40,8 @@ def build_memory_store() -> QdrantStore:
 def build_swarm(store: QdrantStore) -> SwarmAgent:
     # Memory is keyed by config["user_id"], so each customer only sees their own notes.
     # PRELOAD: the store is searched once per run and the hits are added to the
-    # request, so the model needs no memory tool (good for a cheap triage model).
+    # request, so the model needs no search tool (good for a cheap triage model). It
+    # still gets `user_memory_tool` with remember and forget, so it needs a ToolNode.
     preload = MemoryConfig(
         store=store,
         retrieval_mode="preload",

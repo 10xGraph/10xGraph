@@ -2405,7 +2405,7 @@ class TestAgentInit:
         }
 
     @pytest.mark.asyncio
-    async def test_preload_memory_does_not_register_tools_and_builds_prompt(self):
+    async def test_preload_memory_registers_write_tool_and_builds_prompt(self):
         store = _FakeMemoryStore(
             [
                 MemorySearchResult(
@@ -2420,10 +2420,10 @@ class TestAgentInit:
             retrieval_mode="preload",
             user_memory=UserMemoryConfig(store=store, user_id="u1", memory_type="semantic"),
         )
-        agent = _make_openai_agent(tool_node=None, memory=memory)
+        agent = _make_openai_agent(tool_node=ToolNode([]), memory=memory)
 
-        assert agent._tool_node is None
-        assert not any("user_memory_tool" in p["content"] for p in agent.system_prompt)
+        assert set(agent._tool_node._funcs) == {"user_memory_tool"}
+        assert any("action='remember'" in p["content"] for p in agent.system_prompt)
 
         block = await agent._build_memory_block(
             AgentState(context=[Message.text_message("What do I like?", role="user")]),
@@ -2436,6 +2436,8 @@ class TestAgentInit:
         assert "Long-term Memory Context" not in block
         store.asearch_mock.assert_awaited_once()
         assert store.asearch_mock.call_args.args[0] == {"user_id": "u1"}
+        assert "memory_type" not in store.asearch_mock.call_args.kwargs
+        assert "category" not in store.asearch_mock.call_args.kwargs
 
 
 class TestMemoryBlockInjection:
@@ -2638,7 +2640,7 @@ class TestMemoryBlockPerRunCache:
             retrieval_mode="preload",
             user_memory=UserMemoryConfig(store=store, user_id="u1", memory_type="semantic"),
         )
-        return _make_openai_agent(tool_node=None, memory=memory), store
+        return _make_openai_agent(tool_node=ToolNode([]), memory=memory), store
 
     @staticmethod
     def _state(text="hi"):

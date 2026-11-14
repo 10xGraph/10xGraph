@@ -757,6 +757,37 @@ class TestQdrantLocalModeEndToEnd:
         finally:
             await store.client.close()
 
+    @pytest.mark.asyncio
+    async def test_user_memory_tool_key_upsert_and_forget(self):
+        """Strategy-1 key upsert and forget by key (exact match) on a real Qdrant client."""
+        from tenxgraph.prebuilt.tools.memory import make_user_memory_tool
+        from tenxgraph.storage.store.memory_config import MemoryConfig, UserMemoryConfig
+        from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+
+        store = QdrantStore(embedding=_FixedEmbedding(), path=":memory:")
+        manager = BackgroundTaskManager()
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+        cfg = {"user_id": "alice", "thread_id": "t1"}
+
+        async def call(**kwargs):
+            await tool_fn(store=store, task_manager=manager, config=cfg, **kwargs)
+            await manager.wait_for_all()
+
+        try:
+            await call(action="remember", text="uses vim", memory_key="editor")
+            await call(action="remember", text="uses helix", memory_key="editor")
+            await call(action="remember", text="beta", memory_key="drink")
+            await store.astore({"user_id": "bob"}, "uses vim", metadata={"memory_key": "editor"})
+            listed = await store.aget_all(cfg, limit=10)
+            assert sorted(r.content for r in listed) == ["beta", "uses helix"]
+
+            await call(action="forget", memory_key="editor")
+
+            assert [r.content for r in await store.aget_all(cfg, limit=10)] == ["beta"]
+            assert len(await store.aget_all({"user_id": "bob"}, limit=10)) == 1
+        finally:
+            await store.client.close()
+
 
 class TestIntegerZeroIds:
     def test_user_id_zero_is_still_filtered(self, qdrant_store):

@@ -50,10 +50,12 @@ DEFAULT_READ_MODE = ReadMode.NO_RETRIEVAL
 # ---------------------------------------------------------------------------
 
 
-def _validate_memory_type(value: str) -> MemoryType:
+def _validate_memory_type(value: str | MemoryType) -> MemoryType:
     if value in _VALID_MEMORY_TYPES:
         return MemoryType(value)
-    return MemoryType.EPISODIC
+    raise ValueError(
+        f"unknown memory_type {str(value)!r}; use one of: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
+    )
 
 
 def _strip_thread_id(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -286,6 +288,21 @@ def get_agent_memory_system_prompt(memory_config: Any) -> str:
                 "are relevant, but do not assume they are exhaustive.",
             ]
         )
+        if memory_config.user_memory and memory_config.user_memory.enabled:
+            lines.extend(
+                [
+                    "You have access to user_memory_tool to save and remove user facts; "
+                    "it cannot search.",
+                    "- To save useful user facts or preferences, call user_memory_tool with "
+                    "action='remember' and text.",
+                    "- For a fact that can change, also pass a short stable memory_key "
+                    "(for example 'package_manager' or 'editor'). Remember again with the "
+                    "same memory_key to replace the old fact.",
+                    "- When the user asks you to forget a fact, call user_memory_tool with "
+                    "action='forget' and its memory_key.",
+                    "- Do not invent memory ids; the memory layer manages ids and deduplication.",
+                ]
+            )
         return "\n".join(lines)
 
     if memory_config.retrieval_mode != ReadMode.POSTLOAD:
@@ -300,8 +317,12 @@ def get_agent_memory_system_prompt(memory_config: Any) -> str:
                 "action='search' and text.",
                 "- To save useful user facts or preferences, call user_memory_tool with "
                 "action='remember' and text.",
-                "- Do not invent memory identifiers; the memory layer manages identity "
-                "and deduplication.",
+                "- For a fact that can change, also pass a short stable memory_key "
+                "(for example 'package_manager' or 'editor'). Remember again with the same "
+                "memory_key to replace the old fact.",
+                "- When the user asks you to forget a fact, call user_memory_tool with "
+                "action='forget' and its memory_key.",
+                "- Do not invent memory ids; the memory layer manages ids and deduplication.",
             ]
         )
 

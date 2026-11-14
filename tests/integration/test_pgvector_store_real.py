@@ -238,6 +238,18 @@ class TestMemoryKey:
             assert result["status"] == "upserted_by_key"
         assert [r.content for r in await store.aget_all(_cfg())] == ["lang is rust"]
 
+    async def test_forget_by_key_removes_only_that_key(self, pool, table):
+        store = _store(pool, table)
+        await store.astore(_cfg(), "uses vim", memory_key="editor")
+        await store.astore(
+            _cfg(), "editor is vim", memory_type=MemoryType.SEMANTIC, memory_key="editor"
+        )
+        await store.astore(_cfg(), "likes tea", memory_key="drink")
+        await store.astore(_cfg("bob"), "uses emacs", memory_key="editor")
+        await store.aforget_memory(_cfg(), filters={"memory_key": "editor"})
+        assert [r.content for r in await store.aget_all(_cfg())] == ["likes tea"]
+        assert len(await store.aget_all(_cfg("bob"))) == 1
+
 
 class TestSearch:
     @pytest.mark.parametrize("metric", ["cosine", "euclidean", "dot_product", "manhattan"])

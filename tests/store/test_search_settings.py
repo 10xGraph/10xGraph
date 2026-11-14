@@ -1,5 +1,6 @@
 """Search settings in three levels: store default, MemoryConfig / scope, method call."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,12 +16,14 @@ from tenxgraph.prebuilt.tools.memory import (
 from tenxgraph.qa.testing.in_memory_store import InMemoryStore
 from tenxgraph.storage.store import AgentMemoryConfig, MemoryConfig, UserMemoryConfig
 from tenxgraph.storage.store.base_store import BaseStore
+from tenxgraph.storage.store.long_term_memory import MemoryType
 from tenxgraph.storage.store.qdrant_store import QdrantStore
 from tenxgraph.storage.store.store_schema import (
     DistanceMetric,
     MemorySearchResult,
     RetrievalStrategy,
 )
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 
 
 CFG = {"user_id": "u1", "thread_id": "t1"}
@@ -48,11 +51,13 @@ def _qdrant(**kw):
 class _Recorder(BaseStore):
     def __init__(self):
         self.asearch_mock = AsyncMock(return_value=[])
+        self.astore_mock = MagicMock()
 
     async def aping(self):
         return None
 
     async def astore(self, *a, **k):
+        self.astore_mock(*a, **k)
         return "id"
 
     async def asearch(self, *a, **k):
@@ -208,8 +213,7 @@ class TestCallSites:
             action="search", text="hi", config=dict(CFG), store=store2, task_manager=None
         )
         assert (
-            store2.asearch_mock.call_args.kwargs["retrieval_strategy"]
-            is RetrievalStrategy.HYBRID
+            store2.asearch_mock.call_args.kwargs["retrieval_strategy"] is RetrievalStrategy.HYBRID
         )
 
     @pytest.mark.asyncio
@@ -230,9 +234,7 @@ class TestCallSites:
         from tenxgraph.core.graph.agent_internal.memory import AgentMemoryMixin
 
         store = _Recorder()
-        store.asearch_mock.return_value = [
-            MemorySearchResult(id="m", content="x", score=0.9)
-        ]
+        store.asearch_mock.return_value = [MemorySearchResult(id="m", content="x", score=0.9)]
         mc = MemoryConfig(
             retrieval_mode="preload",
             retrieval_strategy="text",
@@ -247,6 +249,127 @@ class TestCallSites:
         await holder._search_memory_block(state, dict(CFG))
         strategies = [c.kwargs["retrieval_strategy"] for c in store.asearch_mock.call_args_list]
         assert strategies == [RetrievalStrategy.TEXT, RetrievalStrategy.HYBRID]
+
+
+class TestSearchFilters:
+    """Scope type and category are write defaults; search filters only on what the model passes."""
+
+    @staticmethod
+    def _mc(store, **scope):
+        return MemoryConfig(
+            store=store,
+            user_memory=UserMemoryConfig(user_id="u1", **scope),
+            agent_memory=AgentMemoryConfig(enabled=True, agent_id="a1", **scope),
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_scope_memory_none_means_no_filter(self):
+        store = _Recorder()
+        await _search_scope_memory(
+            store=store,
+            config={**CFG, "memory_type": "semantic", "category": "editor"},
+            query="q",
+            memory_type=None,
+            category=None,
+            limit=3,
+            score_threshold=None,
+            task_manager=None,
+        )
+        kwargs = store.asearch_mock.call_args.kwargs
+        assert kwargs["memory_type"] is None
+        assert kwargs["category"] is None
+
+    @pytest.mark.asyncio
+    async def test_user_search_ignores_scope_defaults(self):
+        store = _Recorder()
+        mc = self._mc(store, memory_type="semantic", category="editor")
+        await make_user_memory_tool(mc)(
+            action="search", text="hi", config=dict(CFG), store=store, task_manager=None
+        )
+        kwargs = store.asearch_mock.call_args.kwargs
+        assert kwargs["memory_type"] is None
+        assert kwargs["category"] is None
+
+    @pytest.mark.asyncio
+    async def test_user_search_filters_when_model_names_them(self):
+        store = _Recorder()
+        mc = self._mc(store)
+        await make_user_memory_tool(mc)(
+            action="search",
+            text="hi",
+            memory_type="semantic",
+            category="editor",
+            config=dict(CFG),
+            store=store,
+            task_manager=None,
+        )
+        kwargs = store.asearch_mock.call_args.kwargs
+        assert kwargs["memory_type"] is MemoryType.SEMANTIC
+        assert kwargs["category"] == "editor"
+
+    @pytest.mark.asyncio
+    async def test_agent_search_ignores_scope_defaults_and_filters_when_named(self):
+        store = _Recorder()
+        mc = self._mc(store, memory_type="semantic", category="editor")
+        tool_fn = make_agent_memory_tool(mc)
+        await tool_fn(query="hi", config=dict(CFG), store=store, task_manager=None)
+        kwargs = store.asearch_mock.call_args.kwargs
+        assert kwargs["memory_type"] is None
+        assert kwargs["category"] is None
+
+        await tool_fn(
+            query="hi",
+            memory_type="procedural",
+            category="rules",
+            config=dict(CFG),
+            store=store,
+            task_manager=None,
+        )
+        kwargs = store.asearch_mock.call_args.kwargs
+        assert kwargs["memory_type"] is MemoryType.PROCEDURAL
+        assert kwargs["category"] == "rules"
+
+    @pytest.mark.asyncio
+    async def test_search_finds_every_type_and_category_unless_filtered(self):
+        store = InMemoryStore()
+        manager = BackgroundTaskManager()
+        mc = self._mc(store)
+        tool_fn = make_user_memory_tool(mc)
+        cfg = {"user_id": "u1"}
+        for text, mtype, cat in (
+            ("user likes vim", "semantic", "editor"),
+            ("user fixed a bug", "episodic", "general"),
+            ("user deploy steps", "procedural", "ops"),
+        ):
+            await store.astore(cfg, text, memory_type=MemoryType(mtype), category=cat)
+
+        async def search(**kw):
+            out = await tool_fn(
+                action="search",
+                text="user",
+                config=dict(cfg),
+                store=store,
+                task_manager=manager,
+                **kw,
+            )
+            return json.loads(out)
+
+        assert len(await search()) == 3
+        only_semantic = await search(memory_type="semantic")
+        assert [r["content"] for r in only_semantic] == ["user likes vim"]
+
+    @pytest.mark.asyncio
+    async def test_remember_still_uses_scope_defaults(self):
+        store = _Recorder()
+        manager = BackgroundTaskManager()
+        mc = self._mc(store, memory_type="semantic", category="editor")
+        await make_user_memory_tool(mc)(
+            action="remember", text="likes vim", config=dict(CFG), store=store, task_manager=manager
+        )
+        await manager.wait_for_all()
+        args = store.astore_mock.call_args
+        assert args.kwargs["memory_type"] is MemoryType.SEMANTIC
+        assert args.kwargs["category"] == "editor"
 
 
 class TestInMemoryStore:

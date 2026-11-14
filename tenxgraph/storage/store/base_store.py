@@ -58,6 +58,34 @@ def limit_to_token_budget(
     return kept
 
 
+# (store class, strategy) pairs already warned about in this process.
+_WARNED_STRATEGIES: set[tuple[type, RetrievalStrategy]] = set()
+
+
+def warn_unsupported_strategy(store: Any, strategy: RetrievalStrategy | str | None) -> None:
+    """Log one warning per (store class, strategy) when the store cannot run ``strategy``.
+
+    Only checked when the store declares ``supported_retrieval_strategies``. Never raises; the
+    store still raises ``ValueError`` on the search itself.
+    """
+    supported = getattr(store, "supported_retrieval_strategies", None)
+    if strategy is None or supported is None:
+        return
+    strategy = RetrievalStrategy(strategy)
+    key = (type(store), strategy)
+    if strategy in supported or key in _WARNED_STRATEGIES:
+        return
+    _WARNED_STRATEGIES.add(key)
+    names = ", ".join(s.value for s in RetrievalStrategy if s in supported)
+    logger.warning(
+        "MemoryConfig retrieval_strategy '%s' is not supported by %s (supported: %s); every "
+        "memory search will fail. Use created_at filters for time ranges.",
+        strategy.value,
+        type(store).__name__,
+        names,
+    )
+
+
 def system_user_id(name: str) -> str:
     """Return the reserved owner id ``"__system__:<name>"`` for shared data called ``name``."""
     if not isinstance(name, str) or not name.strip():
@@ -89,6 +117,10 @@ class BaseStore(ABC):
     #: True when ``astore(..., memory_key=key)`` is one atomic upsert on the key for the owner.
     #: The memory layer then skips its search-then-update dedup for keyed writes.
     supports_memory_key_upsert: bool = False
+
+    #: The retrieval strategies ``asearch`` can run. ``None`` means the store does not declare
+    #: them, so a ``MemoryConfig`` strategy is not checked against it.
+    supported_retrieval_strategies: frozenset[RetrievalStrategy] | None = None
 
     def setup(self) -> Any:
         """

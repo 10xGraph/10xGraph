@@ -37,7 +37,7 @@ The model strings are written in `agents.py`. Nothing else changes when you swap
 - `interrupt()` (`tenxgraph.utils`): pauses a tool or node and returns the resume value on the next run.
 - `pending_interrupt(state)`: reads the pending request from the state returned by `ainvoke`.
 - `SqliteCheckpointer`: saves threads in one local file, with no external service.
-- `MemoryConfig` with `UserMemoryConfig`: long-term, per-user memory in `QdrantStore`. `retrieval_mode="preload"` injects matches into the request; `"postload"` gives the model `user_memory_tool` to search and remember.
+- `MemoryConfig` with `UserMemoryConfig`: long-term, per-user memory in `QdrantStore`. `retrieval_mode="preload"` injects matches into the request and gives the model `user_memory_tool` with `remember` and `forget` only; `"postload"` gives the model `user_memory_tool` to search and remember.
 - Injected `config` argument: tools read `config["user_id"]`, so the model cannot ask for another customer's data.
 
 ## Prerequisites
