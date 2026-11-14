@@ -7,6 +7,7 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.storage.store.base_store import warn_unsupported_strategy
 from tenxgraph.utils.converter import wrap_memory_block
 
 
@@ -19,6 +20,16 @@ logger = logging.getLogger("tenxgraph.agent")
 # Preload blocks cached per run on each Agent. Entries only matter while a run is in
 # flight, so a small LRU bounds memory in long-lived servers.
 _MEMORY_BLOCK_CACHE_SIZE = 256
+
+
+def _warn_unsupported_strategies(memory: MemoryConfig) -> None:
+    """Warn for each enabled scope whose strategy its known store cannot run."""
+    for scope in (memory.user_memory, memory.agent_memory):
+        if scope is None or not scope.enabled:
+            continue
+        store = scope.store or memory.store
+        if store is not None:
+            warn_unsupported_strategy(store, scope.retrieval_strategy or memory.retrieval_strategy)
 
 
 class AgentMemoryMixin:
@@ -58,6 +69,7 @@ class AgentMemoryMixin:
             )
 
         self._memory_config = memory
+        _warn_unsupported_strategies(memory)
 
         if memory.inject_system_prompt:
             self._memory_prompt = {
@@ -77,10 +89,11 @@ class AgentMemoryMixin:
                 else:
                     extra.extend(memory_tools)
             else:
+                mode = getattr(memory.retrieval_mode, "value", memory.retrieval_mode)
                 raise RuntimeError(
-                    "Memory requires an existing ToolNode when model-facing memory tools are "
-                    "enabled. Provide a ToolNode to the Agent or register the memory tools "
-                    "manually."
+                    f"Memory requires an existing ToolNode: retrieval_mode '{mode}' exposes "
+                    f"model-facing memory tools ({', '.join(t.__name__ for t in memory_tools)}). "
+                    "Provide a ToolNode to the Agent or register the memory tools manually."
                 )
 
         if self._tool_node is not None:
@@ -149,7 +162,6 @@ class AgentMemoryMixin:
             ReadMode,
             _format_search_results,
             _strip_thread_id,
-            _validate_memory_type,
         )
 
         memory = getattr(self, "_memory_config", None)
@@ -171,6 +183,8 @@ class AgentMemoryMixin:
             store = _memory_scope_store(memory, scope_config, None)
             if store is None:
                 continue
+            strategy = _memory_scope_retrieval_strategy(memory, scope_config)
+            warn_unsupported_strategy(store, strategy)
 
             search_config = _memory_scope_config(
                 config,
@@ -185,11 +199,10 @@ class AgentMemoryMixin:
                 results = await store.asearch(
                     search_config,
                     query,
-                    memory_type=_validate_memory_type(scope_config.memory_type),
-                    category=scope_config.category,
+                    # Every type and category: the scope values are write defaults only.
                     limit=_memory_scope_limit(memory, scope_config, None),
                     score_threshold=_memory_scope_score_threshold(memory, scope_config),
-                    retrieval_strategy=_memory_scope_retrieval_strategy(memory, scope_config),
+                    retrieval_strategy=strategy,
                     **({"max_tokens": memory.max_tokens} if memory.max_tokens else {}),
                 )
             except Exception:

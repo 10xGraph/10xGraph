@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.store.long_term_memory import (
@@ -23,6 +25,7 @@ from tenxgraph.prebuilt.tools.memory import (
     make_agent_memory_tool,
     make_user_memory_tool,
 )
+from tenxgraph.storage.store.store_schema import MemoryTypeName
 from tenxgraph.storage.store.memory_config import (
     AgentMemoryConfig,
     MemoryConfig,
@@ -124,8 +127,15 @@ class TestValidateMemoryType:
     def test_valid_type(self):
         assert _validate_memory_type("semantic") == MemoryType.SEMANTIC
 
-    def test_invalid_type_returns_episodic(self):
-        assert _validate_memory_type("invalid") == MemoryType.EPISODIC
+    def test_invalid_type_raises_naming_valid_types(self):
+        with pytest.raises(ValueError, match=r"unknown memory_type 'invalid'.*semantic"):
+            _validate_memory_type("invalid")
+
+    def test_accepts_enum_instance(self):
+        assert _validate_memory_type(MemoryType.ENTITY) is MemoryType.ENTITY
+
+    def test_literal_matches_enum(self):
+        assert set(get_args(MemoryTypeName)) == {m.value for m in MemoryType}
 
     def test_all_valid_types(self):
         for mt in MemoryType:
@@ -299,10 +309,10 @@ class TestAgentLevelMemoryTools:
         assert user_props["action"]["enum"] == ["search", "remember", "forget"]
         assert "action" not in agent_props
 
-    def test_preload_does_not_expose_model_facing_tools(self):
+    def test_preload_does_not_expose_agent_tool(self):
         memory = MemoryConfig(
             retrieval_mode="preload",
-            user_memory=UserMemoryConfig(),
+            user_memory=UserMemoryConfig(enabled=False),
             agent_memory=AgentMemoryConfig(enabled=True),
         )
 
@@ -669,3 +679,64 @@ class TestDoWriteDedup:
     async def test_identical_threshold_is_valid(self):
         """Ensure threshold constant is valid."""
         assert 0 < _IDENTICAL_SCORE_THRESHOLD <= 1.0
+
+
+class TestStrictMemoryType:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["search", "remember"])
+    async def test_unknown_type_is_an_error_and_nothing_runs(
+        self, mock_store, mock_task_manager, action
+    ):
+        tool_fn = make_user_memory_tool(MemoryConfig(user_memory=UserMemoryConfig()))
+
+        result = await _call(
+            tool_fn,
+            mock_store,
+            mock_task_manager,
+            action=action,
+            text="x",
+            memory_type="preference",
+        )
+
+        assert result["error"].startswith("unknown memory_type 'preference'; use one of: ")
+        mock_store.asearch.assert_not_called()
+        mock_store.astore.assert_not_called()
+        mock_task_manager.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_tool_unknown_type_is_an_error(self, mock_store, mock_task_manager):
+        tool_fn = make_agent_memory_tool(
+            MemoryConfig(agent_memory=AgentMemoryConfig(enabled=True, agent_id="a1"))
+        )
+
+        result = json.loads(
+            await tool_fn(
+                query="x",
+                memory_type="nope",
+                store=mock_store,
+                task_manager=mock_task_manager,
+                config={"user_id": "u1"},
+            )
+        )
+
+        assert result["error"].startswith("unknown memory_type 'nope'")
+        mock_store.asearch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_schema_has_enum_on_both_tools(self):
+        memory = MemoryConfig(agent_memory=AgentMemoryConfig(enabled=True))
+        schemas = await ToolNode(memory.model_facing_tools()).all_tools()
+        by_name = {
+            s["function"]["name"]: s["function"]["parameters"]["properties"] for s in schemas
+        }
+        expected = [m.value for m in MemoryType]
+        for name in ("user_memory_tool", "agent_memory_tool"):
+            assert sorted(by_name[name]["memory_type"]["enum"]) == sorted(expected)
+
+    @pytest.mark.parametrize("cls", [UserMemoryConfig, AgentMemoryConfig])
+    def test_config_rejects_unknown_type(self, cls):
+        with pytest.raises(ValidationError):
+            cls(memory_type="nope")
+
+    def test_config_accepts_known_type(self):
+        assert UserMemoryConfig(memory_type="semantic").memory_type == "semantic"

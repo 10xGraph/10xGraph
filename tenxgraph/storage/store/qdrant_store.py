@@ -81,6 +81,8 @@ class QdrantStore(BaseStore):
         ```
     """
 
+    supported_retrieval_strategies = frozenset({RetrievalStrategy.SIMILARITY})
+
     def __init__(
         self,
         embedding: BaseEmbedding,

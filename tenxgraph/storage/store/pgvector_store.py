@@ -295,6 +295,7 @@ class PgVectorStore(BaseStore):
     #: ``astore`` with a ``memory_key`` is one atomic upsert on the unique key index, so the
     #: memory layer does not need its search-then-update dedup for keyed writes.
     supports_memory_key_upsert = True
+    supported_retrieval_strategies = frozenset(_SUPPORTED_STRATEGIES)
 
     def __init__(  # noqa: PLR0913, PLR0915
         self,

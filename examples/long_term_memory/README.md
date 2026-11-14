@@ -24,7 +24,7 @@ A Claude chat agent that remembers facts between conversations. In the first ses
 ## Key concepts
 
 - `MemoryConfig`: passed to `ReactAgent(memory=...)` or `Agent(memory=...)`. Registers the memory tools and adds a short memory section to the system prompt.
-- `ReadMode`: `POSTLOAD` (default) gives the model a `user_memory_tool` to search and remember. `PRELOAD` searches on every turn and attaches results to the user message, with no write tool. `NO_RETRIEVAL` turns retrieval off.
+- `ReadMode`: `POSTLOAD` (default) gives the model a `user_memory_tool` to search and remember. `PRELOAD` searches on every turn and attaches results to the user message; the model gets `user_memory_tool` with `remember` and `forget` only (it needs a `ToolNode`). `NO_RETRIEVAL` turns retrieval off.
 - `UserMemoryConfig`: private per-user memory, keyed by `user_id` in the run config.
 - `AgentMemoryConfig`: shared memory that the model can only search. It is off by default and needs `agent_id` or `app_id`.
 - `system_user_id(name)`: the reserved owner id (`__system__:<name>`) for shared data such as agent memory.

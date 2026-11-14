@@ -43,7 +43,8 @@ memory = MemoryConfig(
     store=store,
     # POSTLOAD (default): the model gets user_memory_tool and decides when to search or
     #   remember. PRELOAD: relevant memories are searched on every turn and attached to the
-    #   user message, with no write tool. NO_RETRIEVAL: no memory tools or injection.
+    #   user message; the model can only remember and forget. NO_RETRIEVAL: no memory tools
+    #   or injection.
     retrieval_mode=ReadMode.POSTLOAD,
     limit=5,
     score_threshold=0.0,

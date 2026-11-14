@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from tenxgraph.storage.store.base_store import BaseStore
 
-from .long_term_memory import ReadMode
+from .long_term_memory import ReadMode, _validate_memory_type
 from .store_schema import RetrievalStrategy
 
 
@@ -33,6 +33,10 @@ class _MemoryScopeConfig(BaseModel):
 
     A function must return a non-empty ``str``; otherwise ``ValueError`` is raised when the
     scope's config is built.
+
+    ``memory_type`` and ``category`` are the defaults for what the scope writes. They do not
+    narrow a search made through the model-facing tools: a search filters by type or category
+    only when the model names one.
     """
 
     enabled: bool = True
@@ -78,6 +82,11 @@ class _MemoryScopeConfig(BaseModel):
         if not value:
             raise ValueError("memory scope values must not be empty")
         return value
+
+    @field_validator("memory_type")
+    @classmethod
+    def _check_memory_type(cls, value: str) -> str:
+        return _validate_memory_type(value).value
 
     @field_validator("limit")
     @classmethod
@@ -185,14 +194,22 @@ class MemoryConfig(BaseModel):
         return value
 
     def model_facing_tools(self) -> list[Any]:
-        """Return the tools this memory config should expose to an Agent."""
+        """Return the tools this memory config should expose to an Agent.
+
+        POSTLOAD: the user tool (search, remember, forget) and the read-only agent tool.
+        PRELOAD: the user tool with remember and forget only; the preload step does the search
+        and agent memory is read-only. NO_RETRIEVAL: none.
+        """
+        from tenxgraph.prebuilt.tools.memory import make_agent_memory_tool, make_user_memory_tool
+
+        user_enabled = bool(self.user_memory and self.user_memory.enabled)
+        if self.retrieval_mode == ReadMode.PRELOAD:
+            return [make_user_memory_tool(self, ("remember", "forget"))] if user_enabled else []
         if self.retrieval_mode != ReadMode.POSTLOAD:
             return []
 
-        from tenxgraph.prebuilt.tools.memory import make_agent_memory_tool, make_user_memory_tool
-
         tools: list[Any] = []
-        if self.user_memory and self.user_memory.enabled:
+        if user_enabled:
             tools.append(make_user_memory_tool(self))
         if self.agent_memory and self.agent_memory.enabled:
             tools.append(make_agent_memory_tool(self))

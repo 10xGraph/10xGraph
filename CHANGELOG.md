@@ -37,6 +37,16 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Changed
+
+- **Model memory search no longer filters by the scope's `memory_type` and `category`.** `user_memory_tool` (search) and `agent_memory_tool` used to narrow every search to the scope's type (default `episodic`) and category (default `general`), so a `semantic` memory in another category was never found. They now filter only when the model passes `memory_type` or `category`. The scope's `memory_type` and `category` stay the defaults for `remember`.
+- **Memory types are strict.** An unknown `memory_type` is an error, not silently `episodic`: the model-facing tools return `{"error": "unknown memory_type 'x'; use one of: ..."}` before any write or search, their schema lists the valid types as an enum, and `UserMemoryConfig` / `AgentMemoryConfig` raise a `ValidationError` for an unknown `memory_type`.
+- **Preload mode searches every memory type and category and can write.** The preload search no longer filters by the scope's `memory_type` and `category` (same rule as the tool search). With user memory enabled, `retrieval_mode="preload"` now gives the model `user_memory_tool` with `remember` and `forget` only (the schema enum lists just those; another action returns an error), and the system prompt explains them. Such an Agent needs a `ToolNode`, like postload; the `RuntimeError` names the mode. `make_user_memory_tool(memory_config, actions=...)` takes the allowed actions.
+
+### Added
+
+- **Warning for an unsupported retrieval strategy.** `BaseStore.supported_retrieval_strategies` (default `None`, not checked) lets a store declare what `asearch` can run; `PgVectorStore` declares similarity, text and hybrid, `QdrantStore` similarity. When a `MemoryConfig` or scope `retrieval_strategy` is not supported, one warning per store class and strategy is logged at Agent setup (or on first use for a store from DI or the preload search), since every memory search would fail. It never raises.
+
 ## [1.0.0rc6] - 2026-11-11
 
 The sixth release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc6. Tools and MCP

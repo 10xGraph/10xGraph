@@ -3,7 +3,7 @@ from collections.abc import Awaitable
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from injectq import InjectQ
 from pydantic import BaseModel, Field, field_validator
@@ -66,6 +66,18 @@ class MemoryType(StrEnum):
     RELATIONSHIP = "relationship"  # Entity relationships
     CUSTOM = "custom"  # Custom memory types
     DECLARATIVE = "declarative"  # Explicit facts and events
+
+
+# Keep in sync with MemoryType (a test checks it); a Literal gives the tool schema an enum.
+MemoryTypeName = Literal[
+    "episodic",
+    "semantic",
+    "procedural",
+    "entity",
+    "relationship",
+    "custom",
+    "declarative",
+]
 
 
 class MemorySearchResult(BaseModel):
