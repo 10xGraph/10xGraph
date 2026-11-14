@@ -300,8 +300,12 @@ def get_agent_memory_system_prompt(memory_config: Any) -> str:
                 "action='search' and text.",
                 "- To save useful user facts or preferences, call user_memory_tool with "
                 "action='remember' and text.",
-                "- Do not invent memory identifiers; the memory layer manages identity "
-                "and deduplication.",
+                "- For a fact that can change, also pass a short stable memory_key "
+                "(for example 'package_manager' or 'editor'). Remember again with the same "
+                "memory_key to replace the old fact.",
+                "- When the user asks you to forget a fact, call user_memory_tool with "
+                "action='forget' and its memory_key.",
+                "- Do not invent memory ids; the memory layer manages ids and deduplication.",
             ]
         )
 

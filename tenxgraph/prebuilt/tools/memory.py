@@ -8,8 +8,8 @@ Public API
 ----------
 ``make_user_memory_tool(memory_config)``
     Factory that returns the ``user_memory_tool`` used by
-    ``Agent(..., memory=MemoryConfig(...))``.  Supports ``search`` and
-    ``remember``.
+    ``Agent(..., memory=MemoryConfig(...))``.  Supports ``search``,
+    ``remember`` and ``forget``.
 
 ``make_agent_memory_tool(memory_config)``
     Factory that returns the read-only ``agent_memory_tool`` used by
@@ -40,6 +40,9 @@ from tenxgraph.utils.injection import fresh
 
 
 logger = logging.getLogger("tenxgraph.prebuilt.tools.memory")
+
+# Longest ``memory_key`` the model may give; a longer one is an error, never truncated.
+_MAX_MEMORY_KEY_LENGTH = 128
 
 
 # ---------------------------------------------------------------------------
@@ -178,21 +181,32 @@ async def _search_scope_memory(
 
 
 def make_user_memory_tool(memory_config: Any) -> Callable:
-    """Create the user-scoped model-facing memory tool for an Agent."""
+    """Create the user-scoped model-facing memory tool for an Agent.
+
+    ``remember`` with a ``memory_key`` replaces the memory saved earlier under that key;
+    ``forget`` deletes the memories with that key. The key is unique per
+    ``(collection, user_id, memory_type, memory_key)``, so the same key under two memory
+    types is two memories, and ``forget`` by key removes it under every type.
+    """
     user_config = memory_config.user_memory
 
     @tool(
         description=(
-            "Search or remember user-scoped long-term memories. "
+            "Search, remember or forget user-scoped long-term memories. "
             "Use action='search' with text to recall durable user facts. "
             "Use action='remember' with text to save useful user facts or preferences. "
-            "The model does not provide memory identifiers."
+            "For a fact that can change, also pass a short stable memory_key "
+            "(for example 'package_manager' or 'editor'); remembering again with the same "
+            "key replaces the old fact. "
+            "Use action='forget' with the memory_key when the user asks to forget that fact. "
+            "Never pass memory ids; the memory layer manages them."
         ),
         tags=["memory", "long_term_memory", "user_memory"],
     )
-    async def user_memory_tool(
-        action: Literal["search", "remember"] = "search",
+    async def user_memory_tool(  # noqa: PLR0911
+        action: Literal["search", "remember", "forget"] = "search",
         text: str = "",
+        memory_key: str | None = None,
         memory_type: str | None = None,
         category: str | None = None,
         limit: int | None = None,
@@ -214,10 +228,28 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
         resolved_limit = _memory_scope_limit(memory_config, user_config, limit)
         score_threshold = _memory_scope_score_threshold(memory_config, user_config)
 
-        if not text:
+        key = (memory_key or "").strip()
+        if len(key) > _MAX_MEMORY_KEY_LENGTH:
+            return json.dumps(
+                {"error": f"memory_key is longer than {_MAX_MEMORY_KEY_LENGTH} characters"}
+            )
+        if action == "forget" and not key:
+            return json.dumps({"error": "memory_key is required for forget"})
+        if action != "forget" and not text:
             return json.dumps({"error": "text is required"})
 
         try:
+            if action == "forget":
+                # Let a remember scheduled earlier in this turn land first, so the delete
+                # does not run before it and leave the fact behind.
+                await _flush_pending_writes(task_manager)
+                # Always narrowed by the key: without filters this deletes every memory
+                # of the user.
+                await resolved_store.aforget_memory(
+                    _strip_thread_id(cfg), filters={"memory_key": key}
+                )
+                return json.dumps({"status": "forgotten", "memory_key": key})
+
             if action == "search":
                 return await _search_scope_memory(
                     store=resolved_store,
@@ -232,6 +264,8 @@ def make_user_memory_tool(memory_config: Any) -> Callable:
                 )
 
             metadata = _memory_tool_metadata("user")
+            if key:
+                metadata["memory_key"] = key
             write_coro = _do_write(
                 resolved_store,
                 cfg,

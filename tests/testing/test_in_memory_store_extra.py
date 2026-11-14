@@ -227,6 +227,21 @@ class TestInMemoryStoreForget:
         count = await store.aforget_memory({})
         assert count == 2
 
+    @pytest.mark.asyncio
+    async def test_aforget_narrowed_by_filters_and_type(self):
+        """Filters match metadata exactly and memory_type narrows the delete."""
+        store = InMemoryStore()
+        cfg = {"user_id": "user1"}
+        await store.astore(cfg, "a", metadata={"memory_key": "editor"})
+        await store.astore(
+            cfg, "b", memory_type=MemoryType.SEMANTIC, metadata={"memory_key": "editor"}
+        )
+        await store.astore(cfg, "c", metadata={"memory_key": "other"})
+
+        assert await store.aforget_memory(cfg, memory_type=MemoryType.SEMANTIC) == 1
+        assert await store.aforget_memory(cfg, filters={"memory_key": "editor"}) == 1
+        assert [m.content for m in store.memories.values()] == ["c"]
+
 
 class TestInMemoryStoreRelease:
     """Test InMemoryStore.arelease()."""

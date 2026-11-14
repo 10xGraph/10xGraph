@@ -283,23 +283,30 @@ class InMemoryStore(BaseStore):
         config: dict[str, Any],
         **kwargs: Any,
     ) -> int:
-        """Delete all memories for a user/agent.
+        """Delete all memories for a user/agent, optionally narrowed.
 
         Args:
             config: Configuration dict (may contain user_id, thread_id)
-            **kwargs: Additional parameters
+            **kwargs: ``memory_type`` and ``filters`` (exact match on metadata keys)
+                narrow the delete
 
         Returns:
             Number of memories deleted
         """
         user_id = config.get("user_id")
         thread_id = config.get("thread_id")
+        memory_type = kwargs.get("memory_type")
+        filters = kwargs.get("filters") or {}
 
         to_delete = []
         for mem_id, mem in self.memories.items():
             if user_id and mem.user_id != user_id:
                 continue
             if thread_id and mem.thread_id != thread_id:
+                continue
+            if memory_type and mem.memory_type != memory_type:
+                continue
+            if any(mem.metadata.get(k) != v for k, v in filters.items()):
                 continue
             to_delete.append(mem_id)
 
