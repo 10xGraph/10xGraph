@@ -72,6 +72,9 @@ export ANTHROPIC_API_KEY=sk-...  # Anthropic Claude
 
 Requires Python 3.12 or newer. Tested on 3.12, 3.13, 3.14 and 3.15. Full guide: [installation](https://10xgraph.com/docs/get-started/installation).
 
+From 1.0 the public API is stable until 2.0. Keep `major.minor` the same across `10xgraph`,
+`10xgraph-api` and `10xgraph-client` (patch versions are independent).
+
 ---
 
 ## Quick start: a support agent with durable state
