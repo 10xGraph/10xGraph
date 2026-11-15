@@ -37,15 +37,37 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+## [1.0.0rc7] - 2026-11-15
+
+The seventh release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc7. The model can
+forget a memory by key, tracing produces one trace per run with standard span names, Anthropic
+errors at stream open are retried, and multi-agent graphs on Claude no longer fail on thinking
+blocks.
+
 ### Changed
 
 - **Model memory search no longer filters by the scope's `memory_type` and `category`.** `user_memory_tool` (search) and `agent_memory_tool` used to narrow every search to the scope's type (default `episodic`) and category (default `general`), so a `semantic` memory in another category was never found. They now filter only when the model passes `memory_type` or `category`. The scope's `memory_type` and `category` stay the defaults for `remember`.
 - **Memory types are strict.** An unknown `memory_type` is an error, not silently `episodic`: the model-facing tools return `{"error": "unknown memory_type 'x'; use one of: ..."}` before any write or search, their schema lists the valid types as an enum, and `UserMemoryConfig` / `AgentMemoryConfig` raise a `ValidationError` for an unknown `memory_type`.
 - **Preload mode searches every memory type and category and can write.** The preload search no longer filters by the scope's `memory_type` and `category` (same rule as the tool search). With user memory enabled, `retrieval_mode="preload"` now gives the model `user_memory_tool` with `remember` and `forget` only (the schema enum lists just those; another action returns an error), and the system prompt explains them. Such an Agent needs a `ToolNode`, like postload; the `RuntimeError` names the mode. `make_user_memory_tool(memory_config, actions=...)` takes the allowed actions.
 
+- **Tracing: one trace per run, with standard span names.** The OTEL publisher names spans after the OTEL GenAI conventions: the run is `invoke_agent 10xgraph` (was `tenxgraph.graph`), an LLM call `chat {model}` (was `tenxgraph.llm`), a tool call `execute_tool {tool}` (was `tenxgraph.tool`), and a node span carries the node's name (was `tenxgraph.node`). `gen_ai.operation.name` is `invoke_agent` or `execute_tool`, and tool spans also carry `gen_ai.tool.name`, `gen_ai.tool.call.id` and `gen_ai.tool.type`. The `START` node no longer gets an empty span. A tool span is a child of the span of the graph node that ran it. Update dashboards or filters that match the old span names.
+- **Library spans nest under the run's spans.** `BasePublisher.inline` (default `False`) makes `publish_event` call `publish_inline` on the caller's path instead of a background task. `OtelPublisher` sets it, so a span exists before the LLM request or MCP call it covers starts, and events are handled in order. The LLM request, each read of the model stream and each MCP list or call run with the matching span as the current OTEL span, so spans from the provider SDK, fastmcp and `mcp` appear under it.
+- **Failed LLM, tool and MCP events carry the exception.** They include `error_type`, `error_message` and `error_traceback`. Secrets are masked, the run's `UserCredential` token is replaced, the message is cut to 2000 characters and the traceback keeps its last 8000. Because they can still hold paths, DSNs or SQL, `publish_event` sends `error_message` and `error_traceback` to `"observability"` publishers only; event streams (Kafka, Redis, RabbitMQ, console) get the error type. The OTEL publisher records them as an `exception` event on the span.
+- **Bounded span attributes.** An LLM span's indexed `llm.input_messages.N.*` attributes keep the most recent messages that fit under the SDK attribute count limit (`input.value` still holds every message), and at most 6 output tool calls are flattened into attributes (all stay in `gen_ai.output_messages`). A tool call with no arguments shows `{}` as its input.
+- **Less noise in logs.** "No existing state found to reload" is logged at debug, not warning.
+
 ### Added
 
 - **Warning for an unsupported retrieval strategy.** `BaseStore.supported_retrieval_strategies` (default `None`, not checked) lets a store declare what `asearch` can run; `PgVectorStore` declares similarity, text and hybrid, `QdrantStore` similarity. When a `MemoryConfig` or scope `retrieval_strategy` is not supported, one warning per store class and strategy is logged at Agent setup (or on first use for a store from DI or the preload search), since every memory search would fail. It never raises.
+- **`forget` action and `memory_key` on `user_memory_tool`.** `action="forget"` with a `memory_key` deletes the memories saved under that key; it is always narrowed by the key, and a missing key is an error. `remember` with a `memory_key` replaces the memory saved earlier under that key (the key is unique per collection, user, memory type and key, so the same key under two memory types is two memories, and `forget` removes it under every type). A key longer than 128 characters is an error, never truncated. A `remember` scheduled earlier in the same turn lands before the delete. The system prompt tells the model about both. The in-memory test store's `aforget_memory` now applies `memory_type` and `filters`.
+
+### Fixed
+
+- **Multi-agent graphs on Claude no longer fail with `Invalid signature in thinking block`.** Each Agent node replays signed thinking only from its own replies (matched by `metadata["node_name"]`). Replies from other agent nodes keep their text and tool calls but drop their thinking. Before, a second Claude agent with a different system prompt or tools got a 400 on accounts where Anthropic enforces thinking block binding. No setting is needed.
+- **Anthropic errors at stream open are retried (#361).** A 429, 5xx or connection error when the stream is opened was raised in the converter, where nothing retried it. The stream context manager is now entered inside the retry loop even when no stream idle timeout is set (then with no deadline), so the existing retries apply.
+- **The Anthropic stream is closed when the consumer stops early (#361).** The converter closes the stream as soon as the reader stops, not when it is garbage collected.
+- **The Anthropic SDK no longer adds a second span for every request.** 10xGraph's `chat {model}` span already covers the request and its token counts, so the SDK's own span counted them twice. The Anthropic, Vertex AI and Bedrock clients are created with the SDK's traces off when the installed SDK accepts `open_telemetry`. A developer's `open_telemetry` setting or the SDK's `ANTHROPIC_OPEN_TELEMETRY*` environment variables are kept, and the SDK span then nests under ours.
+- **Error logs name the error when it has no message (#358).** An exception such as `TimeoutError()` from a pool acquire made a log line end in a bare colon. The `PgVectorStore`, `QdrantStore` and `PgCheckpointer` error logs and the non-retryable LLM error warning now fall back to the exception's `repr`.
 
 ## [1.0.0rc6] - 2026-11-11
 

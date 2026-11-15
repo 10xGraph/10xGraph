@@ -11,9 +11,10 @@ from types import SimpleNamespace
 import pytest
 
 from tenxgraph.core.graph.agent_internal.anthropic_request import merge_tool_results
-from tenxgraph.core.state import Message
+from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ReasoningBlock, TextBlock
 from tenxgraph.runtime.adapters.llm.anthropic_converter import AnthropicConverter
+from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter
 from tenxgraph.utils.converter import (
     THINKING_BLOCKS_KEY,
     _convert_dict,
@@ -195,3 +196,79 @@ async def test_call_llm_strips_blocks_for_non_anthropic_provider():
     msgs = [{"role": "assistant", "content": "a", THINKING_BLOCKS_KEY: [{"type": "thinking"}]}]
     assert await agent._call_llm(msgs) == "ok"
     assert THINKING_BLOCKS_KEY not in seen["messages"][0]
+
+
+def _signed_reply(node: str | None) -> Message:
+    return Message(
+        role="assistant",
+        content=[ReasoningBlock(summary="hm", signature="S"), TextBlock(text="draft")],
+        tools_calls=[
+            {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        ],
+        metadata={"node_name": node} if node else {},
+    )
+
+
+def _history_for(node: str | None, reply: Message) -> dict:
+    from tenxgraph.utils.converter import convert_messages
+
+    state = AgentState(context=[reply])
+    return convert_messages(system_prompts=[], state=state, node=node)[0]
+
+
+def test_other_nodes_thinking_is_dropped_but_text_and_tool_calls_stay():
+    out = _history_for("reviewer", _signed_reply("writer"))
+    assert THINKING_BLOCKS_KEY not in out
+    assert out["content"] == "draft"
+    assert out["tool_calls"][0]["id"] == "c1"
+
+
+def test_own_nodes_thinking_is_replayed():
+    out = _history_for("writer", _signed_reply("writer"))
+    assert out[THINKING_BLOCKS_KEY] == [{"type": "thinking", "thinking": "hm", "signature": "S"}]
+
+
+def test_unstamped_reply_keeps_thinking_for_any_node():
+    assert THINKING_BLOCKS_KEY in _history_for("reviewer", _signed_reply(None))
+
+
+def test_no_node_keeps_thinking():
+    assert THINKING_BLOCKS_KEY in _history_for(None, _signed_reply("writer"))
+
+
+class _StubConverter(BaseConverter):
+    async def convert_response(self, response):
+        return Message.text_message("hi", role="assistant")
+
+    async def convert_streaming_response(self, config, node_name, response, meta=None):
+        yield Message.text_message("hi", role="assistant")
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_node_stamps_node_name_on_reply():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+    from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+    from tenxgraph.utils.callbacks import CallbackManager
+
+    agent = MagicMock()
+    agent.execute = AsyncMock(return_value=ModelResponseConverter(object(), _StubConverter()))
+    with patch("tenxgraph.core.graph.utils.invoke_node_handler.publish_event"):
+        result = await InvokeNodeHandler("writer", agent)._call_agent_node(
+            AgentState(), {"thread_id": "t"}, CallbackManager()
+        )
+    assert result["messages"][0].metadata["node_name"] == "writer"
+
+
+@pytest.mark.asyncio
+async def test_stream_reply_carries_node_name_from_the_converter():
+    """The stream path stamps node_name in the provider converter (anthropic_converter.py:316)."""
+    events = [_delta(0, "text_delta", text="hi")]
+    out = [
+        m
+        async for m in AnthropicConverter().convert_streaming_response(
+            {"thread_id": "t"}, "reviewer", _Stream(events)
+        )
+    ]
+    assert out[-1].metadata["node_name"] == "reviewer"
