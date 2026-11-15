@@ -63,6 +63,21 @@ from tenxgraph.utils.callbacks import BaseValidator
 
 logger = logging.getLogger("tenxgraph.utils")
 
+
+def is_unstorable_text(value: str) -> bool:
+    """True when ``value`` holds NUL or cannot be encoded as UTF-8 (a lone surrogate).
+
+    Postgres can store neither in a text or json column.
+    """
+    if "\x00" in value:
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
 # Zero-width space, non-joiner, joiner, word joiner, BOM and soft hyphen, removed before matching
 _ZERO_WIDTH = dict.fromkeys((0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD))
 
@@ -271,10 +286,10 @@ class PromptInjectionValidator(BaseValidator):
             if not content:
                 continue
 
-            # NUL characters break Postgres text columns and some model APIs
-            if "\x00" in content:
+            # NUL and lone surrogates break Postgres text columns and some model APIs
+            if is_unstorable_text(content):
                 self._handle_violation(
-                    "Input contains a NUL character",
+                    "Input contains a NUL character or a lone surrogate",
                     "invalid_character",
                     {},
                 )

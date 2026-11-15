@@ -323,3 +323,83 @@ class TestLegacyPrefixFallback:
             assert await store.exists("ab" * 16) is False
         paths = [c.args[0] for c in storage.get_public_url.call_args_list]
         assert all(p.startswith("custom/") for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Not-found detection, optional HTTP client order, real cloud-storage-manager layout
+# ---------------------------------------------------------------------------
+
+
+class TestNotFoundAndImports:
+    def test_is_not_found_httpx_style_error(self):
+        from tenxgraph.storage.media.storage.cloud_store import _is_not_found
+
+        exc = Exception("boom")
+        exc.response = type("R", (), {"status_code": 404})()
+        assert _is_not_found(exc)
+        exc.response = type("R", (), {"status_code": 500})()
+        assert not _is_not_found(exc)
+
+    def test_is_not_found_urllib_http_error(self):
+        import urllib.error
+
+        from tenxgraph.storage.media.storage.cloud_store import _is_not_found
+
+        for code in (403, 404, 410):
+            assert _is_not_found(urllib.error.HTTPError("u", code, "x", {}, None))
+        assert not _is_not_found(urllib.error.HTTPError("u", 500, "x", {}, None))
+
+    @pytest.mark.asyncio
+    async def test_download_prefers_httpx2_then_httpx_then_urllib(self, monkeypatch):
+        import sys
+        import types
+
+        from tenxgraph.storage.media.storage import cloud_store
+
+        monkeypatch.setattr(cloud_store, "_validate_download_url", lambda url: None)
+        seen = []
+
+        def fake(name):
+            mod = types.ModuleType(name)
+
+            def boom(*a, **k):
+                seen.append(name)
+                raise RuntimeError("stop")
+
+            mod.AsyncClient = boom
+            mod.Timeout = lambda *a, **k: None
+            return mod
+
+        monkeypatch.setitem(sys.modules, "httpx2", fake("httpx2"))
+        monkeypatch.setitem(sys.modules, "httpx", fake("httpx"))
+        with pytest.raises(RuntimeError):
+            await CloudMediaStore._download_from_url("https://x/y")
+        monkeypatch.setitem(sys.modules, "httpx2", None)  # None makes the import fail
+        with pytest.raises(RuntimeError):
+            await CloudMediaStore._download_from_url("https://x/y")
+        assert seen == ["httpx2", "httpx"]
+
+        monkeypatch.setitem(sys.modules, "httpx", None)
+        monkeypatch.setattr(
+            CloudMediaStore, "_download_from_url_blocking", staticmethod(lambda u, m: b"urllib")
+        )
+        assert await CloudMediaStore._download_from_url("https://x/y") == b"urllib"
+
+    def test_store_builds_with_real_cloud_storage_manager_layout(self):
+        pytest.importorskip("cloud_storage_manager")
+        from cloud_storage_manager.storage_provider import CloudStorageFactory, StorageProvider
+        from cloud_storage_manager.storage_schema import AwsConfig, StorageConfig
+
+        config = StorageConfig(
+            aws=AwsConfig(
+                bucket_name="b",
+                access_key_id="k",
+                secret_access_key="s",  # noqa: S106
+                region="us-east-1",
+            )
+        )
+        try:
+            storage = CloudStorageFactory.get_storage(StorageProvider.AWS, config)
+        except ImportError:
+            pytest.skip("boto client library not installed")
+        assert CloudMediaStore(storage, prefix="p")._storage is storage

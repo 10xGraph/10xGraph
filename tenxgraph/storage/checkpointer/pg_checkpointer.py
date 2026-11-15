@@ -402,7 +402,7 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             them from request config, metadata, state or model output. For example::
 
                 class MyAuth(BaseAuth):
-                    async def authenticate(self, request, credential):
+                    async def authenticate(self, request, response, credential):
                         claims = verify(credential)  # your token check
                         return {
                             "user_id": claims["sub"],

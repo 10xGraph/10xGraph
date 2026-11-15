@@ -46,6 +46,7 @@ from tenxgraph.utils import (
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
+from tenxgraph.utils.validators import is_unstorable_text
 
 
 StateT = TypeVar("StateT", bound=AgentState)
@@ -274,30 +275,30 @@ async def validate_message_content(
     return True
 
 
-def _has_nul(value: Any) -> bool:
-    """True when a string anywhere inside ``value`` holds a NUL character."""
+def _has_unstorable_text(value: Any) -> bool:
+    """True when a string anywhere inside ``value`` holds NUL or a lone surrogate."""
     if isinstance(value, str):
-        return "\x00" in value
+        return is_unstorable_text(value)
     if isinstance(value, dict):
-        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
+        return any(_has_unstorable_text(k) or _has_unstorable_text(v) for k, v in value.items())
     if isinstance(value, list | tuple):
-        return any(_has_nul(v) for v in value)
+        return any(_has_unstorable_text(v) for v in value)
     if hasattr(value, "model_dump"):
-        return _has_nul(value.model_dump())
+        return _has_unstorable_text(value.model_dump())
     return False
 
 
 def reject_nul_messages(messages: list[Any]) -> None:
-    """Refuse messages holding a NUL character: Postgres can never store them.
+    """Refuse messages holding NUL or a lone surrogate: Postgres can never store them.
 
     Saving one would fail on every later call of the thread (crash recovery retries the
     save), so it is refused before anything is written or run.
     """
-    if any(_has_nul(m) for m in messages or []):
+    if any(_has_unstorable_text(m) for m in messages or []):
         from tenxgraph.utils.validators import ValidationError
 
         raise ValidationError(
-            "Messages cannot contain the NUL character (\\x00).",
+            "Messages cannot contain the NUL character (\\x00) or a lone surrogate.",
             "invalid_character",
         )
 
@@ -318,6 +319,13 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     checkpointer = fresh(checkpointer)
     # Before the run is registered or any state is touched: a bad message must leave no trace.
     reject_nul_messages(input_data.get("messages", []))
+    if _has_unstorable_text(input_data.get("state") or {}):
+        from tenxgraph.utils.validators import ValidationError
+
+        raise ValidationError(
+            "State cannot contain the NUL character (\\x00) or a lone surrogate.",
+            "invalid_character",
+        )
     logger.debug("Loading or creating state with thread_id=%s", config.get("thread_id", "default"))
 
     # Try to load existing state if checkpointer is available

@@ -10,12 +10,8 @@ Install the optional dependency::
 
 Then create a store::
 
-    from cloud_storage_manager import (
-        CloudStorageFactory,
-        StorageProvider,
-        StorageConfig,
-        AwsConfig,
-    )
+    from cloud_storage_manager.storage_provider import CloudStorageFactory, StorageProvider
+    from cloud_storage_manager.storage_schema import AwsConfig, StorageConfig
     from tenxgraph.media.storage import CloudMediaStore
 
     config = StorageConfig(
@@ -33,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import json
 import logging
 import mimetypes
@@ -103,7 +100,7 @@ class CloudMediaStore(BaseMediaStore):
 
     Args:
         storage: A ``BaseCloudStorage`` instance (from
-            :func:`cloud_storage_manager.CloudStorageFactory.get_storage`).
+            :func:`cloud_storage_manager.storage_provider.CloudStorageFactory.get_storage`).
         prefix: Top-level "directory" in the bucket.  Defaults to
             ``"10xgraph-media"``. When the default is used, objects
             stored under the legacy ``"agentflow-media"`` prefix are still found
@@ -445,16 +442,21 @@ class CloudMediaStore(BaseMediaStore):
     async def _download_from_url(url: str, max_bytes: int | None = None) -> bytes:
         """Download bytes from a signed URL.
 
-        Prefers ``httpx`` (async). The stdlib fallback is synchronous, so it is
+        Prefers ``httpx2``, then ``httpx`` (async, both optional). The stdlib fallback is synchronous, so it is
         run in a worker thread: calling ``urllib.request.urlopen`` directly inside
         an ``async def`` blocked the whole event loop for the duration of the
         download -- stalling every other in-flight run in the process, not just
         this one.
         """
         _validate_download_url(url)
-        try:
-            import httpx
-        except ImportError:
+        httpx = None
+        for name in ("httpx2", "httpx"):
+            try:
+                httpx = importlib.import_module(name)
+                break
+            except ImportError:
+                continue
+        if httpx is None:
             return await asyncio.to_thread(
                 CloudMediaStore._download_from_url_blocking, url, max_bytes
             )
@@ -493,7 +495,10 @@ def _is_not_found(exc: Exception) -> bool:
     """Whether ``exc`` means the object is absent (HTTP 403/404/410, a missing file or key)."""
     if isinstance(exc, FileNotFoundError | KeyError | json.JSONDecodeError):
         return True
+    # httpx-style errors carry ``.response.status_code``; urllib's HTTPError carries ``.code``
     status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is None:
+        status = getattr(exc, "code", None)
     return status in (403, 404, 410)
 
 
