@@ -35,14 +35,14 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
-## [1.0.0] - 2026-11-15
+## [1.0.0] - 2026-11-16
 
 The first stable release of `10xgraph`, released with `10xgraph-api` 1.0.0 and `10xgraph-client` 1.0.0.
 From this version on the public API is stable: no breaking change before 2.0, and every removal
 follows the deprecation policy above. Compared with 1.0.0rc7 it adds `base_url` for the Google
-provider and fixes tool results losing keys, reasoning parameters sent by `ReactAgent` by default,
-`is_new_thread` on the in-memory and SQLite checkpointers, and threads broken by NUL characters or
-lone surrogates.
+provider, makes Claude reasoning readable by default, and fixes tool results losing keys,
+reasoning parameters sent by `ReactAgent` by default, `is_new_thread` on the in-memory and SQLite
+checkpointers, and threads broken by NUL characters or lone surrogates.
 
 Upgrading from 0.x: the `agentflow` import keeps working as a deprecated alias until 2.0. See the
 release candidate sections below for every change since 0.10.
@@ -53,6 +53,7 @@ release candidate sections below for every change since 0.10.
 
 ### Fixed
 
+- **Claude reasoning is readable by default.** Current Claude models default `thinking.display` to `"omitted"`, so with `reasoning_config=True` (or unset) the `ReasoningBlock` had an empty summary and only a signature. The default now sends `display: "summarized"`; thinking cost is unchanged (only the summary text is added). An explicit `reasoning_config` dict sends `display` only when it contains a `display` key, and a `thinking` passed in `llm_kwargs` is used as given.
 - **A tool's returned dict reaches the model unchanged.** The tool node removed the keys `status`, `error`, `success` and `is_error` from a dict result (also from a model or object result) before the model saw it, so data such as `{"order_id": "1042", "status": "delivered"}` arrived without `status`. The keys are now only read to set `is_error` on the result block; they stay in the content. How an error is detected is unchanged.
 - **`ReactAgent` no longer sends reasoning parameters on Chat Completions unless `reasoning_config` is set.** Its default was `True`, which counted as an explicit choice, so every request to an OpenAI-compatible server carried `reasoning_effort` and `extra_body.reasoning`. Non-reasoning models on vLLM, Ollama or Groq rejected them with a 400. `ReactAgent` now defaults like `Agent`. `StructuredOutputAgent` and `PlanActReflectAgent` had the same default and are fixed the same way. `False` or `None` still disables reasoning.
 - **`InMemoryCheckpointer` and `SqliteCheckpointer` report an existing thread as not new.** `aput_thread` returned `True` on every call. It now returns `True` only when the thread is created, like `PgCheckpointer`, so `meta.is_new_thread` is correct and a thread name generator no longer renames the thread on every call.

@@ -2238,7 +2238,10 @@ class TestAgentInit:
         for provider, effort in expected.items():
             with patch.object(Agent, "_create_client", return_value=MagicMock()):
                 agent = Agent(model=models[provider], provider=provider, reasoning_config=True)
-            assert agent.reasoning_config == {"effort": effort}, provider
+            want = {"effort": effort}
+            if provider == "anthropic":
+                want["display"] = "summarized"
+            assert agent.reasoning_config == want, provider
 
     def test_default_google_request_uses_lowest_budget(self):
         with patch.object(Agent, "_create_client", return_value=_make_google_client_mock()):
@@ -2257,7 +2260,7 @@ class TestAgentInit:
         with patch.object(Agent, "_create_client", return_value=MagicMock()):
             agent = Agent(model="claude-opus-5", provider="anthropic")
         _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
-        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "low"}
 
     def test_default_resolved_for_cross_provider_fallback(self):
