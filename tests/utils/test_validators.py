@@ -443,3 +443,21 @@ async def test_g56_error_does_not_echo_regex_or_input():
     shown = str(exc.value) + str(getattr(exc.value, "details", ""))
     assert "(?i)" not in shown
     assert "ignore all previous" not in shown
+
+
+@pytest.mark.asyncio
+async def test_prompt_injection_rejects_nul_strict():
+    v = PromptInjectionValidator(strict_mode=True)
+    msg = Message.text_message("hello\x00world", role="user")
+    with pytest.raises(ValidationError) as exc:
+        await v.validate([msg])
+    assert exc.value.violation_type == "invalid_character"
+
+
+@pytest.mark.asyncio
+async def test_prompt_injection_nul_non_strict_warns(caplog):
+    v = PromptInjectionValidator(strict_mode=False)
+    msg = Message.text_message("hello\x00world", role="user")
+    with caplog.at_level("WARNING", logger="tenxgraph.utils"):
+        assert await v.validate([msg]) is True
+    assert "invalid_character" in caplog.text

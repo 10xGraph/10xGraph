@@ -111,6 +111,17 @@ class PromptInjectionValidator(BaseValidator):
     - Adversarial suffixes: Meaningless strings that manipulate output
     - Multilingual attacks: Using multiple languages to evade detection
 
+    The default validator checks, on every text that reaches the model (message text, tool
+    results, document excerpts and tool call arguments):
+    - NUL characters (violation type ``invalid_character``)
+    - Length above ``max_length`` (``length_exceeded``)
+    - Injection, role, leakage, delimiter, jailbreak, template and authority patterns, plus
+      long punctuation runs and very long ASCII words (``injection_pattern``)
+    - Base64 or hex payloads, hidden or bidi unicode, Latin and Cyrillic mixed in a word
+      (``encoding_attack``)
+    - Three or more suspicious keywords (``suspicious_keywords``)
+    - Payload splitting markers (``payload_splitting``)
+
     The checks are heuristics for known English phrasings, not a complete defence. Input is
     NFKC-normalized and stripped of zero-width characters before matching, but paraphrases,
     homoglyphs and other languages still pass. Only the messages passed to the graph as input
@@ -259,6 +270,14 @@ class PromptInjectionValidator(BaseValidator):
         for content in content_to_validate:
             if not content:
                 continue
+
+            # NUL characters break Postgres text columns and some model APIs
+            if "\x00" in content:
+                self._handle_violation(
+                    "Input contains a NUL character",
+                    "invalid_character",
+                    {},
+                )
 
             # Length validation, before any pattern matching
             if len(content) > self.max_length:
