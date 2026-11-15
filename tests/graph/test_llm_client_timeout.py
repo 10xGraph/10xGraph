@@ -59,3 +59,38 @@ def test_google_client_keeps_env_api_version(monkeypatch):
     client_factory.create_llm_client("google")
     # Left to the SDK, which reads the env variable (3.x).
     assert seen["http_options"].api_version is None
+
+
+@pytest.mark.parametrize("vertex", [False, True])
+def test_google_client_base_url_goes_to_http_options(monkeypatch, vertex):
+    pytest.importorskip("google.genai")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")
+    from google import genai
+
+    seen = {}
+    monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw))
+    client_factory.create_llm_client("google", use_vertex_ai=vertex, base_url="http://gw:4000")
+    assert seen["http_options"].base_url == "http://gw:4000"
+
+
+@pytest.mark.parametrize("vertex", [False, True])
+def test_google_client_without_base_url_keeps_sdk_default(monkeypatch, vertex):
+    pytest.importorskip("google.genai")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")
+    from google import genai
+
+    seen = {}
+    monkeypatch.setattr(genai, "Client", lambda **kw: seen.update(kw))
+    client_factory.create_llm_client("google", use_vertex_ai=vertex)
+    assert seen["http_options"].base_url is None
+
+
+def test_agent_passes_base_url_to_google_client(monkeypatch):
+    pytest.importorskip("google.genai")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    from tenxgraph.core.graph.agent import Agent
+
+    agent = Agent(model="gemini-2.5-flash", provider="google", base_url="http://gw:4000")
+    assert agent.client._api_client._http_options.base_url == "http://gw:4000"

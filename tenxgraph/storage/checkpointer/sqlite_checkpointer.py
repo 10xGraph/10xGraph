@@ -746,6 +746,8 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             if owner is not None and str(record.get("user_id")) != owner:
                 record["user_id"] = owner  # the stored owner, never one named by thread_info
             data = _dumps(record)
+            cursor = await conn.execute("SELECT 1 FROM af_threads WHERE thread_id = ?", (key,))
+            created = await cursor.fetchone() is None
             await conn.execute(
                 """
                 INSERT INTO af_threads (thread_id, thread_data, updated_at)
@@ -756,7 +758,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
                 """,
                 (key, data, time.time()),
             )
-        return True
+        return created
 
     async def aget_thread(self, config: dict[str, Any]) -> ThreadInfo | None:
         await self._ensure_setup()

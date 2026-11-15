@@ -37,6 +37,15 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Added
+
+- **`base_url` now works for the Google provider.** `Agent(provider="google", base_url=...)` sets `HttpOptions.base_url` on the Gemini Developer API and Vertex AI clients, so Gemini calls can go through proxies, AI gateways such as LiteLLM, self-hosted endpoints or mock servers. Without `base_url` nothing changes.
+
+### Fixed
+
+- **`ReactAgent` no longer sends reasoning parameters on Chat Completions unless `reasoning_config` is set.** Its default was `True`, which counted as an explicit choice, so every request to an OpenAI-compatible server carried `reasoning_effort` and `extra_body.reasoning`. Non-reasoning models on vLLM, Ollama or Groq rejected them with a 400. `ReactAgent` now defaults like `Agent`. `StructuredOutputAgent` and `PlanActReflectAgent` had the same default and are fixed the same way. `False` or `None` still disables reasoning.
+- **`InMemoryCheckpointer` and `SqliteCheckpointer` report an existing thread as not new.** `aput_thread` returned `True` on every call. It now returns `True` only when the thread is created, like `PgCheckpointer`, so `meta.is_new_thread` is correct and a thread name generator no longer renames the thread on every call.
+
 ## [1.0.0rc7] - 2026-11-15
 
 The seventh release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc7. The model can

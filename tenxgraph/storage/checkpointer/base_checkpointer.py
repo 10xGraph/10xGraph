@@ -978,7 +978,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         self,
         config: dict[str, Any],
         thread_info: ThreadInfo,
-    ) -> Any | None:
+    ) -> bool:
         """
         Store thread info asynchronously.
 
@@ -990,7 +990,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             thread_info (ThreadInfo): Thread information object.
 
         Returns:
-            Any | None: Implementation-defined result.
+            bool: True if the thread row was created, False if it already existed
+            and was updated.
 
         Raises:
             ThreadNotFoundError: The thread belongs to another user or tenant (any reach).

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.agent_internal.openai import _REASONING_REJECTED_MODELS
 from tenxgraph.core.state.message import Message
+from tenxgraph.prebuilt.agent.react import ReactAgent
 from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
 from tenxgraph.runtime.adapters.llm.openai_responses_converter import OpenAIResponsesConverter
 
@@ -180,6 +181,55 @@ class TestChatReasoning:
         agent = _agent(client, api_style="chat", reasoning_config=True)
         await agent._call_llm(MESSAGES, tools=None, stream=False)
         assert client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "minimal"
+
+
+@pytest.mark.asyncio
+class TestReactAgentChatReasoning:
+    def _react(self, client, **kwargs):
+        with patch.object(Agent, "_create_client", return_value=client):
+            react = ReactAgent(
+                model="gpt-mock",
+                provider="openai",
+                base_url="http://localhost:8000/v1",
+                **kwargs,
+            )
+        react._agent.client = client
+        return react._agent
+
+    async def test_default_sends_no_reasoning_on_chat(self):
+        client = _client()
+        agent = self._react(client)
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "reasoning_effort" not in kwargs
+        assert "extra_body" not in kwargs
+
+    async def test_explicit_config_is_sent_on_chat(self):
+        client = _client()
+        agent = self._react(client, reasoning_config={"effort": "low"})
+        await agent._call_llm(MESSAGES, tools=None, stream=False)
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+
+
+class TestReactAgentReasoningConfig:
+    _react = TestReactAgentChatReasoning._react
+
+    def test_disabled_config_stays_disabled(self):
+        agent = self._react(_client(), reasoning_config=False)
+        assert agent.reasoning_config is None
+
+    def test_other_providers_keep_their_default_config(self):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            google = ReactAgent(model="gemini-2.5-flash", provider="google")._agent
+            claude = ReactAgent(model="claude-sonnet-4-5", provider="anthropic")._agent
+        assert google.reasoning_config == Agent(
+            model="gemini-2.5-flash", provider="google"
+        ).reasoning_config
+        assert claude.reasoning_config == Agent(
+            model="claude-sonnet-4-5", provider="anthropic"
+        ).reasoning_config
 
 
 @pytest.mark.asyncio

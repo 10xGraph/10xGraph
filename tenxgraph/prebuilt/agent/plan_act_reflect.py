@@ -27,6 +27,7 @@ from typing import Any, TypeVar
 from injectq import InjectQ
 
 from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.agent_internal.constants import REASONING_DEFAULT
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.graph.tool_node import ToolNode
@@ -424,7 +425,7 @@ class PlanActReflectAgent[StateT: AgentState]:
         extra_messages: list[Message] | None = None,
         trim_context: bool = False,
         tools_tags: set[str] | None = None,
-        reasoning_config: dict[str, Any] | bool | None = True,
+        reasoning_config: dict[str, Any] | bool | None = REASONING_DEFAULT,  # type: ignore
         skills: SkillConfig | None = None,
         memory: MemoryConfig | None = None,
         retry_config: Any = True,
@@ -439,7 +440,7 @@ class PlanActReflectAgent[StateT: AgentState]:
         self._plan_system_prompt = plan_system_prompt or DEFAULT_PLAN_SYSTEM_PROMPT
         self._reflect_system_prompt = reflect_system_prompt or DEFAULT_REFLECT_SYSTEM_PROMPT
 
-        # Per-phase reasoning config — explicit override wins, else shared config, else default True
+        # Per-phase reasoning config: explicit override wins, else shared config, else Agent default
         self._plan_reasoning_config = (
             plan_reasoning_config if plan_reasoning_config is not None else reasoning_config
         )
