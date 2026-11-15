@@ -69,11 +69,16 @@ def apply_reasoning_config(
 
     ``budget_tokens`` is never emitted: it is removed on every current Claude
     model and returns a 400. Depth is controlled by ``output_config.effort``.
+    ``thinking.display`` is sent only when ``reasoning_config`` has a ``display`` key; the
+    API default is "omitted" (empty summary). A ``thinking`` already in ``call_kwargs`` wins.
     """
     if not reasoning_config:
         return
 
-    call_kwargs.setdefault("thinking", {"type": "adaptive"})
+    thinking = {"type": "adaptive"}
+    if reasoning_config.get("display"):
+        thinking["display"] = reasoning_config["display"]
+    call_kwargs.setdefault("thinking", thinking)
 
     effort = reasoning_config.get("effort")
     if effort:

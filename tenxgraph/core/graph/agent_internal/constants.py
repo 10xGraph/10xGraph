@@ -132,6 +132,8 @@ GOOGLE_THINKING_BUDGET_BY_EFFORT = {
 # - anthropic: ``OutputConfigParam.effort`` in anthropic/types/output_config_param.py.
 # - google: the effort path sends ``thinking_budget``; "low" maps to 512 tokens below, the
 #   lowest budget every Gemini 2.5 family accepts (Gemini 3 also takes a budget).
+# Anthropic also gets ``display: "summarized"`` (see ``default_reasoning_config``): current
+# Claude models default to "omitted", which returns thinking blocks with an empty summary.
 DEFAULT_REASONING_EFFORT_BY_PROVIDER: dict[str, str] = {
     "openai": "minimal",
     "anthropic": "low",
@@ -143,8 +145,14 @@ REASONING_DEFAULT: object = object()
 
 
 def default_reasoning_config(provider: str) -> dict[str, Any]:
-    """Return the request config ``reasoning_config=True`` stands for on ``provider``."""
-    return {"effort": DEFAULT_REASONING_EFFORT_BY_PROVIDER.get(provider, "low")}
+    """Return the request config ``reasoning_config=True`` stands for on ``provider``.
+
+    Anthropic adds ``display: "summarized"`` so the reasoning summary is readable.
+    """
+    config = {"effort": DEFAULT_REASONING_EFFORT_BY_PROVIDER.get(provider, "low")}
+    if provider == "anthropic":
+        config["display"] = "summarized"
+    return config
 
 
 def resolve_reasoning_config(agent: Any) -> dict[str, Any] | None:

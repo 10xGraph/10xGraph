@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.agent_internal.anthropic import (
     _ANTHROPIC_EXCLUDED_KWARGS,
     AgentAnthropicMixin,
@@ -271,6 +272,43 @@ class TestReasoningConfig:
         assert "budget_tokens" not in kwargs
         assert "thinking_budget" not in kwargs
         assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+class TestReasoningDisplay:
+    @staticmethod
+    def _request(**agent_kwargs):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(model="claude-opus-5", provider="anthropic", **agent_kwargs)
+        _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
+        return kwargs
+
+    @pytest.mark.parametrize("extra", [{}, {"reasoning_config": True}])
+    def test_default_asks_for_summarized_display(self, extra):
+        kwargs = self._request(**extra)
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_explicit_dict_without_display_sends_none(self):
+        kwargs = self._request(reasoning_config={"effort": "high"})
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "high"}
+
+    def test_explicit_display_passes_through(self):
+        kwargs = self._request(reasoning_config={"effort": "high", "display": "omitted"})
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "omitted"}
+        assert kwargs["output_config"] == {"effort": "high"}
+
+    def test_llm_kwargs_thinking_is_not_overwritten(self):
+        thinking = {"type": "adaptive", "display": "omitted"}
+        kwargs = self._request(thinking=thinking)
+        assert kwargs["thinking"] == thinking
+        assert "display" not in kwargs["output_config"]
+
+    @pytest.mark.parametrize("value", [None, False])
+    def test_disabled_sends_no_thinking(self, value):
+        kwargs = self._request(reasoning_config=value)
+        assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
 
 
 class _StubAgent(AgentAnthropicMixin):
