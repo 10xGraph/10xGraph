@@ -224,12 +224,10 @@ class TestReactAgentReasoningConfig:
         with patch.object(Agent, "_create_client", return_value=MagicMock()):
             google = ReactAgent(model="gemini-2.5-flash", provider="google")._agent
             claude = ReactAgent(model="claude-sonnet-4-5", provider="anthropic")._agent
-        assert google.reasoning_config == Agent(
-            model="gemini-2.5-flash", provider="google"
-        ).reasoning_config
-        assert claude.reasoning_config == Agent(
-            model="claude-sonnet-4-5", provider="anthropic"
-        ).reasoning_config
+            google_default = Agent(model="gemini-2.5-flash", provider="google")
+            claude_default = Agent(model="claude-sonnet-4-5", provider="anthropic")
+        assert google.reasoning_config == google_default.reasoning_config
+        assert claude.reasoning_config == claude_default.reasoning_config
 
 
 @pytest.mark.asyncio
