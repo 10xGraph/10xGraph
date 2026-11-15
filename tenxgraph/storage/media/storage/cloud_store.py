@@ -451,7 +451,8 @@ class CloudMediaStore(BaseMediaStore):
     async def _download_from_url(url: str, max_bytes: int | None = None) -> bytes:
         """Download bytes from a signed URL.
 
-        Prefers ``httpx2``, then ``httpx`` (async, both optional). The stdlib fallback is synchronous, so it is
+        Prefers ``httpx2``, then ``httpx`` (async, both optional).
+        The stdlib fallback is synchronous, so it is
         run in a worker thread: calling ``urllib.request.urlopen`` directly inside
         an ``async def`` blocked the whole event loop for the duration of the
         download -- stalling every other in-flight run in the process, not just

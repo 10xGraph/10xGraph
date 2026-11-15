@@ -140,18 +140,18 @@ class LocalExecMixin:
                 result = result[:cap] + f"\n[output cut: {len(result) - cap} more characters]"
             output: str | list[dict[str, t.Any]] = result
         elif isinstance(result, dict):
-            is_error, cleaned = _extract_block_meta(result)
-            output = [_safe_serialize(cleaned)]
+            is_error = _extract_block_meta(result)
+            output = [_safe_serialize(dict(result))]
         elif hasattr(result, "model_dump"):
             dumped = result.model_dump()  # type: ignore
             if isinstance(dumped, dict):
-                is_error, cleaned = _extract_block_meta(dumped)
-                output = [_safe_serialize(cleaned)]
+                is_error = _extract_block_meta(dumped)
+                output = [_safe_serialize(dumped)]
             else:
                 output = [_safe_serialize(dumped)]
         elif hasattr(result, "__dict__"):
-            is_error, cleaned = _extract_block_meta(result.__dict__)
-            output = [_safe_serialize(cleaned)]
+            is_error = _extract_block_meta(result.__dict__)
+            output = [_safe_serialize(dict(result.__dict__))]
         elif isinstance(result, list):
             output = [_safe_serialize(item) for item in result]
         else:
