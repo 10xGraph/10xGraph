@@ -157,8 +157,9 @@ class Agent(
                 ``"system"`` to the front).
             trim_context: Whether to trim context using context manager.
             tools_tags: Optional tags to filter tools.
-            base_url (via **kwargs): Optional base URL for OpenAI-compatible APIs
-                (ollama, vllm, openrouter, deepseek, etc.). Default: ``None``.
+            base_url (via **kwargs): Optional custom endpoint: OpenAI-compatible APIs
+                (ollama, vllm, openrouter, deepseek, etc.), or a proxy, AI gateway
+                (LiteLLM) or mock server for Anthropic and Google. Default: ``None``.
             api_style: API style for OpenAI provider. ``"chat"`` uses
                 Chat Completions, ``"responses"`` uses the Responses API.
                 Default: ``"responses"``, except when ``base_url`` is set, where

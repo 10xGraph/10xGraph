@@ -113,15 +113,14 @@ def _as_bool(val: t.Any, truthy_set: set[str]) -> bool:
     return str(val).lower() in truthy_set
 
 
-def _extract_block_meta(
-    data: dict[str, t.Any],
-) -> tuple[bool, dict[str, t.Any]]:
-    """Normalize arbitrary status/error keys; return (is_error, cleaned_data)."""
-    data = dict(data)
+def _extract_block_meta(data: dict[str, t.Any]) -> bool:
+    """Read the status/error keys of a tool result and return ``is_error``.
 
-    raw_status = data.pop("status", None)
-    raw_is_error = data.pop("is_error", data.pop("error", None))
-    raw_success = data.pop("success", None)
+    The keys are only read. They stay in the data, which reaches the model unchanged.
+    """
+    raw_status = data.get("status")
+    raw_is_error = data["is_error"] if "is_error" in data else data.get("error")
+    raw_success = data.get("success")
 
     if raw_is_error is not None:
         is_error = _as_bool(raw_is_error, _ERROR_TRUE)
@@ -135,7 +134,7 @@ def _extract_block_meta(
         if s in _STATUS_FAIL:
             is_error = True
 
-    return is_error, data
+    return is_error
 
 
 def generic_tool_failure(

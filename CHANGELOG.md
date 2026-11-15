@@ -37,6 +37,20 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Added
+
+- **`base_url` now works for the Google provider.** `Agent(provider="google", base_url=...)` sets `HttpOptions.base_url` on the Gemini Developer API and Vertex AI clients, so Gemini calls can go through proxies, AI gateways such as LiteLLM, self-hosted endpoints or mock servers. Without `base_url` nothing changes.
+
+### Fixed
+
+- **`ReactAgent` no longer sends reasoning parameters on Chat Completions unless `reasoning_config` is set.** Its default was `True`, which counted as an explicit choice, so every request to an OpenAI-compatible server carried `reasoning_effort` and `extra_body.reasoning`. Non-reasoning models on vLLM, Ollama or Groq rejected them with a 400. `ReactAgent` now defaults like `Agent`. `StructuredOutputAgent` and `PlanActReflectAgent` had the same default and are fixed the same way. `False` or `None` still disables reasoning.
+- **`InMemoryCheckpointer` and `SqliteCheckpointer` report an existing thread as not new.** `aput_thread` returned `True` on every call. It now returns `True` only when the thread is created, like `PgCheckpointer`, so `meta.is_new_thread` is correct and a thread name generator no longer renames the thread on every call.
+- **A lone surrogate in message text no longer breaks a thread.** Text that is not valid UTF-8 (for example `"x\ud800y"`) was accepted, then Postgres refused the checkpoint write and every later call on the thread failed with a storage error until the state was deleted. It is now refused like a NUL character, in the same three places (input, a crashed turn loaded from the cache, `PromptInjectionValidator`), with a `ValidationError` of type `invalid_character`. Emoji and other non-BMP characters are unaffected.
+- **Cloud media storage: a missing object is recognised from the stdlib download fallback.** `_is_not_found` only read `exc.response.status_code`, so the 404 raised as `urllib.error.HTTPError` (`.code`) counted as a failure and a user's first upload failed. The download also prefers `httpx2`, then `httpx`, before the blocking stdlib fallback, and the `CloudMediaStore` docstring imports `cloud-storage-manager` from its real submodules.
+- **A NUL or lone surrogate in model or tool output no longer breaks a thread.** The text was saved as is, Postgres refused the write, and the run's state stayed RUNNING so every later call failed in crash recovery. The text is now cleaned (NUL removed, lone surrogates replaced by `?`) where the provider response becomes messages and stream chunks (`ModelResponseConverter`) and where a tool result is built (`ToolNode`), so streamed chunks, traces and saved state never see it (a lone surrogate in a model reply used to cut the HTTP stream and fail span export). Messages are cleaned again at the save point (`sync_data`) as a safety net for custom nodes, a warning names the thread, and a thread already stuck repairs itself on its next call. Client input is still refused.
+- **A NUL or lone surrogate in a caller-supplied state value no longer breaks a thread.** The partial `state` of a run input (the API's `initial_state`) was not checked like messages, so such a value reached the state cache, the Postgres checkpoint write failed, and every later run on the thread failed too. It is now refused before anything is written, with a `ValidationError` of type `invalid_character`.
+- **`CloudMediaStore` deletes an owner's index object when the owner's last file is deleted.** It used to write an empty `owners/<hash>.index.json`, which stayed in the bucket for good.
+
 ## [1.0.0rc7] - 2026-11-15
 
 The seventh release candidate of `10xgraph` 1.0, released with `10xgraph-api` 1.0.0rc7. The model can

@@ -265,6 +265,15 @@ async def test_put_get_thread(cp, cfg1):
 
 
 @pytest.mark.asyncio
+async def test_put_thread_reports_created_then_existing(cp, cfg1):
+    ti = ThreadInfo(thread_id="thread-1", thread_name="main", user_id="u1")
+    assert await cp.aput_thread(cfg1, ti) is True
+    renamed = ThreadInfo(thread_id="thread-1", thread_name="renamed", user_id="u1")
+    assert await cp.aput_thread(cfg1, renamed) is False
+    assert (await cp.aget_thread(cfg1)).thread_name == "renamed"
+
+
+@pytest.mark.asyncio
 async def test_get_thread_missing_returns_none(cp, cfg1):
     assert await cp.aget_thread(cfg1) is None
 

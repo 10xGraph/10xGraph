@@ -507,3 +507,10 @@ async def test_inmem_reach_tenant_raises(cp):
     cfg = {"thread_id": "t1", "user": {"user_id": "A", "reach": "tenant"}}
     with pytest.raises(ValueError, match="tenant"):
         await cp.aget_state(cfg)
+
+
+@pytest.mark.asyncio
+async def test_aput_thread_reports_created_then_existing(cp, config_t1):
+    assert await cp.aput_thread(config_t1, _make_thread("t1")) is True
+    assert await cp.aput_thread(config_t1, _make_thread("t1")) is False
+    assert (await cp.aget_thread(config_t1)).thread_id == "t1"

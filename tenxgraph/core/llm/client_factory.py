@@ -231,7 +231,10 @@ def create_llm_client(
         use_vertex_ai: When True and provider is ``"google"``, creates a
             Vertex AI client using ``GOOGLE_CLOUD_PROJECT`` / ``GOOGLE_CLOUD_LOCATION``.
             Google-specific; use ``anthropic_backend`` for Anthropic on Vertex.
-        base_url: Custom base URL for OpenAI-compatible APIs (ollama, vllm, …).
+        base_url: Custom endpoint instead of the provider's own: OpenAI-compatible
+            servers (ollama, vllm, …), Anthropic and Google proxies, AI gateways
+            such as LiteLLM, or mock servers. For ``"google"`` it sets
+            ``HttpOptions.base_url`` on the Gemini Developer API and Vertex AI clients.
         api_key: Explicit API key. Falls back to env vars when omitted.
         anthropic_backend: Backend selector for the Anthropic provider.
             ``None`` (direct Claude API), ``"vertex"``, or ``"bedrock"``.
@@ -250,7 +253,9 @@ def create_llm_client(
     """
     if provider == "google":
         return _create_google_client(
-            use_vertex_ai=use_vertex_ai, timeout=extra_kwargs.get("timeout")
+            use_vertex_ai=use_vertex_ai,
+            base_url=base_url,
+            timeout=extra_kwargs.get("timeout"),
         )
 
     if provider == "openai":
@@ -273,7 +278,9 @@ def create_llm_client(
     )
 
 
-def _create_google_client(*, use_vertex_ai: bool, timeout: float | None = None) -> Any:
+def _create_google_client(
+    *, use_vertex_ai: bool, base_url: str | None = None, timeout: float | None = None
+) -> Any:
     try:
         from google import genai
         from google.genai.types import HttpOptions
@@ -285,6 +292,8 @@ def _create_google_client(*, use_vertex_ai: bool, timeout: float | None = None) 
 
     # google-genai expresses the request timeout in milliseconds.
     http_options = HttpOptions(timeout=int((timeout or get_default_llm_timeout()) * 1000))
+    if base_url:
+        http_options.base_url = base_url
 
     if use_vertex_ai:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")

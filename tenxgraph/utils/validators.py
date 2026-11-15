@@ -63,6 +63,56 @@ from tenxgraph.utils.callbacks import BaseValidator
 
 logger = logging.getLogger("tenxgraph.utils")
 
+
+def is_unstorable_text(value: str) -> bool:
+    """True when ``value`` holds NUL or cannot be encoded as UTF-8 (a lone surrogate).
+
+    Postgres can store neither in a text or json column.
+    """
+    if "\x00" in value:
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
+def has_unstorable_text(value: Any) -> bool:
+    """True when a string anywhere inside ``value`` holds NUL or a lone surrogate."""
+    if isinstance(value, str):
+        return is_unstorable_text(value)
+    if isinstance(value, dict):
+        return any(has_unstorable_text(k) or has_unstorable_text(v) for k, v in value.items())
+    if isinstance(value, list | tuple):
+        return any(has_unstorable_text(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return has_unstorable_text(value.model_dump())
+    return False
+
+
+def strip_unstorable(value: Any) -> Any:
+    """``value`` with NUL removed and lone surrogates replaced by "?" in every string.
+
+    Models are rebuilt from their dump. Applied per streamed chunk this is safe: a valid
+    surrogate pair is already one code point in a decoded Python string.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {strip_unstorable(k): strip_unstorable(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [strip_unstorable(v) for v in value]
+    if hasattr(value, "model_dump"):
+        return type(value).model_validate(strip_unstorable(value.model_dump()))
+    return value
+
+
+def clean_unstorable(value: Any) -> Any:
+    """``value`` itself when it is fine (one scan), else a cleaned copy."""
+    return strip_unstorable(value) if has_unstorable_text(value) else value
+
+
 # Zero-width space, non-joiner, joiner, word joiner, BOM and soft hyphen, removed before matching
 _ZERO_WIDTH = dict.fromkeys((0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD))
 
@@ -110,6 +160,17 @@ class PromptInjectionValidator(BaseValidator):
     - Payload splitting: Distributing attack across multiple inputs
     - Adversarial suffixes: Meaningless strings that manipulate output
     - Multilingual attacks: Using multiple languages to evade detection
+
+    The default validator checks, on every text that reaches the model (message text, tool
+    results, document excerpts and tool call arguments):
+    - NUL characters (violation type ``invalid_character``)
+    - Length above ``max_length`` (``length_exceeded``)
+    - Injection, role, leakage, delimiter, jailbreak, template and authority patterns, plus
+      long punctuation runs and very long ASCII words (``injection_pattern``)
+    - Base64 or hex payloads, hidden or bidi unicode, Latin and Cyrillic mixed in a word
+      (``encoding_attack``)
+    - Three or more suspicious keywords (``suspicious_keywords``)
+    - Payload splitting markers (``payload_splitting``)
 
     The checks are heuristics for known English phrasings, not a complete defence. Input is
     NFKC-normalized and stripped of zero-width characters before matching, but paraphrases,
@@ -259,6 +320,14 @@ class PromptInjectionValidator(BaseValidator):
         for content in content_to_validate:
             if not content:
                 continue
+
+            # NUL and lone surrogates break Postgres text columns and some model APIs
+            if is_unstorable_text(content):
+                self._handle_violation(
+                    "Input contains a NUL character or a lone surrogate",
+                    "invalid_character",
+                    {},
+                )
 
             # Length validation, before any pattern matching
             if len(content) > self.max_length:

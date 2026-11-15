@@ -654,7 +654,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             thread_info (ThreadInfo): Thread information object.
 
         Returns:
-            bool: True if stored.
+            bool: True if the thread was created, False if it already existed and was updated.
 
         Raises:
             ThreadNotFoundError: Another user owns the thread.
@@ -665,9 +665,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             owner = self._claim(config)
             if owner is not None and str(record.get("user_id")) != owner:
                 record["user_id"] = owner  # the stored owner, never one named by thread_info
+            created = key not in self._threads
             self._threads[key] = record
             logger.debug(f"Stored thread info for key: {key}")
-            return True
+            return created
 
     async def aget_thread_owner(self, thread_id: str | int) -> str | int | None:
         """Return the owner ``user_id`` of ``thread_id``, or None if unknown.

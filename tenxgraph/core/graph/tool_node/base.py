@@ -36,6 +36,7 @@ from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.log_safety import log_safe
+from tenxgraph.utils.validators import clean_unstorable
 
 from . import deps
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
@@ -495,12 +496,8 @@ class ToolNode(
             )
 
         if name in self.mcp_tools:
-            res = await self._mcp_execute(
-                name,
-                args,
-                tool_call_id,
-                config,
-                callback_manager,
+            res = clean_unstorable(
+                await self._mcp_execute(name, args, tool_call_id, config, callback_manager)
             )
             event.data["message"] = res.model_dump()
             # Attach tool result block mirroring the tool output
@@ -517,13 +514,10 @@ class ToolNode(
             return res
 
         if name in self._funcs:
-            res = await self._internal_execute(
-                name,
-                args,
-                tool_call_id,
-                config,
-                state,
-                callback_manager,
+            res = clean_unstorable(
+                await self._internal_execute(
+                    name, args, tool_call_id, config, state, callback_manager
+                )
             )
             if isinstance(res, Message):
                 event.data["message"] = res.model_dump()
@@ -648,12 +642,8 @@ class ToolNode(
             event.metadata["function_type"] = "mcp"
             event.metadata["is_mcp"] = True
             publish_event(event)
-            message = await self._mcp_execute(
-                name,
-                args,
-                tool_call_id,
-                config,
-                callback_manager,
+            message = clean_unstorable(
+                await self._mcp_execute(name, args, tool_call_id, config, callback_manager)
             )
             event.data["message"] = message.model_dump()
             event.content_blocks = [
@@ -670,14 +660,10 @@ class ToolNode(
             event.metadata["is_mcp"] = False
             publish_event(event)
 
-            result = await self._internal_execute(
-                name,
-                args,
-                tool_call_id,
-                config,
-                state,
-                callback_manager,
-                emit=emit,
+            result = clean_unstorable(
+                await self._internal_execute(
+                    name, args, tool_call_id, config, state, callback_manager, emit=emit
+                )
             )
             if isinstance(result, Message):
                 event.data["message"] = result.model_dump()

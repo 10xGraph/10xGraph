@@ -37,6 +37,7 @@ from tenxgraph.utils.converter import (
 )
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.log_safety import describe_error, error_details
+from tenxgraph.utils.validators import clean_unstorable
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
@@ -1236,8 +1237,9 @@ class AgentExecutionMixin:
             # A stream is read later by the caller, so its span ends when the stream does
             # (see ``on_stream_end`` below), with the usage from the last chunks.
             llm_event.event_type = EventType.END  # type: ignore[assignment]
-            llm_event.data["output_response"] = _extract_response_text(response)
-            llm_event.data["output_tool_calls"] = _extract_tool_calls(response)
+            # Raw provider text: cleaned so span export never meets NUL or a lone surrogate.
+            llm_event.data["output_response"] = clean_unstorable(_extract_response_text(response))
+            llm_event.data["output_tool_calls"] = clean_unstorable(_extract_tool_calls(response))
             llm_event.data["input_tokens"] = _extract_input_tokens(response)
             llm_event.data["output_tokens"] = _extract_output_tokens(response)
             llm_event.data["cache_read_tokens"] = _extract_cache_read_tokens(response)

@@ -5,6 +5,8 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from tenxgraph.utils.validators import clean_unstorable
+
 from .base_converter import BaseConverter
 
 
@@ -145,11 +147,11 @@ class ModelResponseConverter:
 
         self._warn_if_empty_response(response, context="converting a model response")
         logger.debug("Converting response to Message")
-        message = await self.converter.convert_response(response)  # type: ignore
+        message = clean_unstorable(await self.converter.convert_response(response))  # type: ignore
         if self.empty_reply_retry is not None and is_empty_reply(message):
             self._note_empty(message, will_retry=True)
             response = await self.empty_reply_retry()
-            message = await self.converter.convert_response(response)  # type: ignore
+            message = clean_unstorable(await self.converter.convert_response(response))  # type: ignore
             if is_empty_reply(message):
                 self._note_empty(message, will_retry=False)
                 raise self._empty_error(message)
@@ -249,6 +251,8 @@ class ModelResponseConverter:
                             item = await items.__anext__()
                         except StopAsyncIteration:
                             break
+                    # NUL / lone surrogates would break JSON, Postgres and span export
+                    item = clean_unstorable(item)
                     if getattr(item, "usages", None) is not None:
                         last_message = item
                     if (

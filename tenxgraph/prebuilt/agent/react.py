@@ -4,6 +4,7 @@ from typing import Any, TypeVar
 from injectq import InjectQ
 
 from tenxgraph.core.graph.agent import Agent
+from tenxgraph.core.graph.agent_internal.constants import REASONING_DEFAULT
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.graph.tool_node import ToolNode
@@ -77,7 +78,7 @@ class ReactAgent[StateT: AgentState]:
         extra_messages: list[Message] | None = None,
         trim_context: bool = False,
         tools_tags: set[str] | None = None,
-        reasoning_config: dict[str, Any] | bool | None = True,
+        reasoning_config: dict[str, Any] | bool | None = REASONING_DEFAULT,  # type: ignore
         skills: SkillConfig | None = None,
         memory: MemoryConfig | None = None,
         retry_config: Any = True,

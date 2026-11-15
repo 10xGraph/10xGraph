@@ -158,27 +158,19 @@ def test_as_bool_handles_native_and_string_values():
     assert _as_bool("no", truthy) is False
 
 
-def test_extract_block_meta_prefers_explicit_error_and_strips_meta_keys():
-    is_error, cleaned = _extract_block_meta(
-        {"is_error": "yes", "status": "ok", "payload": 1, "success": True}
-    )
-    assert is_error is True
-    assert cleaned == {"payload": 1}
+def test_extract_block_meta_prefers_explicit_error_and_keeps_data():
+    data = {"is_error": "yes", "status": "ok", "payload": 1, "success": True}
+    assert _extract_block_meta(data) is True
+    assert data == {"is_error": "yes", "status": "ok", "payload": 1, "success": True}
 
 
 def test_extract_block_meta_uses_success_flag_when_error_not_present():
-    is_error, cleaned = _extract_block_meta({"success": "false", "x": 1})
-    assert is_error is True
-    assert cleaned == {"x": 1}
+    assert _extract_block_meta({"success": "false", "x": 1}) is True
 
 
 def test_extract_block_meta_marks_failure_status_as_error():
-    is_error, cleaned = _extract_block_meta({"status": "failed", "value": "v"})
-    assert is_error is True
-    assert cleaned == {"value": "v"}
+    assert _extract_block_meta({"status": "failed", "value": "v"}) is True
 
 
 def test_extract_block_meta_defaults_to_non_error_without_status_fields():
-    is_error, cleaned = _extract_block_meta({"answer": 42})
-    assert is_error is False
-    assert cleaned == {"answer": 42}
+    assert _extract_block_meta({"answer": 42}) is False

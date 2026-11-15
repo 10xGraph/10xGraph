@@ -235,7 +235,7 @@ async def test_cloud_direct_url_uses_stored_extension_not_caller_mime(monkeypatc
 @pytest.mark.asyncio
 async def test_cloud_download_clients_have_timeouts(monkeypatch):
     """G-59 leftover: neither download path may wait forever."""
-    import httpx
+    import httpx2 as httpx
 
     seen = {}
 
