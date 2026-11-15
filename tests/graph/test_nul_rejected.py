@@ -3,12 +3,17 @@
 import pytest
 
 from tenxgraph.core.graph import StateGraph
-from tenxgraph.core.graph.utils.utils import reject_nul_messages
-from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.core.graph.utils.utils import reject_nul_messages, sync_data
+from tenxgraph.core.state import AgentState, ExecutionStatus, Message, ToolResultBlock
 from tenxgraph.core.state.execution_state import ExecutionState
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.utils.constants import END
-from tenxgraph.utils.validators import PromptInjectionValidator, ValidationError
+from tenxgraph.utils.validators import (
+    PromptInjectionValidator,
+    ValidationError,
+    has_unstorable_text,
+    is_unstorable_text,
+)
 
 
 BAD = ["a\x00b", "x\ud800y", "x\udfffy"]
@@ -50,12 +55,70 @@ def test_surrogate_in_metadata_is_refused():
         reject_nul_messages([msg])
 
 
+def build_bad_reply(bad):
+    g = StateGraph()
+    g.add_node("a", lambda s: [Message.text_message(f"hi {bad}", role="assistant")])
+    g.set_entry_point("a")
+    g.add_edge("a", END)
+    return g
+
+
+def assert_clean(text):
+    assert not is_unstorable_text(text)
+    assert text.startswith("hi ")
+
+
 @pytest.mark.parametrize("bad", BAD)
 @pytest.mark.asyncio
-async def test_poisoned_cached_state_is_refused_on_load(bad):
+async def test_bad_model_reply_is_cleaned_before_save(bad):
+    cp = InMemoryCheckpointer()
+    app = build_bad_reply(bad).compile(checkpointer=cp)
+    config = {"thread_id": "t-reply"}
+    out = await app.ainvoke({"messages": [Message.text_message("ok")]}, config)
+    assert out["messages"]
+    saved = await cp.aget_state(config)
+    assert all(not has_unstorable_text(m) for m in saved.context)
+    assert_clean(saved.context[-1].text())
+    # The thread keeps working.
+    await app.ainvoke({"messages": [Message.text_message("again")]}, config)
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.asyncio
+async def test_bad_model_reply_is_cleaned_when_streaming(bad):
+    cp = InMemoryCheckpointer()
+    app = build_bad_reply(bad).compile(checkpointer=cp)
+    config = {"thread_id": "t-stream"}
+    async for _ in app.astream({"messages": [Message.text_message("ok")]}, config):
+        pass
+    saved = await cp.aget_state(config)
+    assert all(not has_unstorable_text(m) for m in saved.context)
+    assert_clean(saved.context[-1].text())
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.asyncio
+async def test_bad_tool_result_is_cleaned_before_save(bad):
+    cp = InMemoryCheckpointer()
+    config = {"thread_id": "t-tool"}
+    state = AgentState(context=[Message.text_message("ok")])
+    tool_msg = Message.tool_message(
+        [ToolResultBlock(call_id="c1", output=f"hi {bad}", is_error=False)]
+    )
+    await sync_data(state=state, config=config, messages=[tool_msg], checkpointer=cp)
+    saved = await cp.alist_messages(config)
+    assert saved
+    assert all(not has_unstorable_text(m) for m in saved)
+
+
+@pytest.mark.parametrize("bad", BAD)
+@pytest.mark.asyncio
+async def test_poisoned_cached_state_is_repaired_on_load(bad):
     cp = InMemoryCheckpointer()
     config = {"thread_id": "t-poison", "user_id": "u1"}
-    state = AgentState(context=[Message.text_message(bad)])
+    state = AgentState(
+        context=[Message.text_message("q"), Message.text_message(f"hi {bad}", role="assistant")]
+    )
     state.execution_meta = ExecutionState(
         current_node="a", step=1, status=ExecutionStatus.RUNNING, run_id="dead-run"
     )
@@ -65,8 +128,11 @@ async def test_poisoned_cached_state_is_refused_on_load(bad):
     g.set_entry_point("a")
     g.add_edge("a", END)
     app = g.compile(checkpointer=cp)
-    with pytest.raises(ValidationError):
-        await app.ainvoke({"messages": [Message.text_message("ok")]}, config)
+    out = await app.ainvoke({"messages": [Message.text_message("ok")]}, config)
+    assert out["messages"]
+    saved = await cp.aget_state(config)
+    assert all(not has_unstorable_text(m) for m in saved.context)
+    assert all(not has_unstorable_text(m) for m in await cp.alist_messages(config))
 
 
 @pytest.mark.parametrize("bad", BAD)

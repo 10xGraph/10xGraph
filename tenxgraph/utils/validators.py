@@ -78,6 +78,41 @@ def is_unstorable_text(value: str) -> bool:
     return False
 
 
+def has_unstorable_text(value: Any) -> bool:
+    """True when a string anywhere inside ``value`` holds NUL or a lone surrogate."""
+    if isinstance(value, str):
+        return is_unstorable_text(value)
+    if isinstance(value, dict):
+        return any(has_unstorable_text(k) or has_unstorable_text(v) for k, v in value.items())
+    if isinstance(value, list | tuple):
+        return any(has_unstorable_text(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return has_unstorable_text(value.model_dump())
+    return False
+
+
+def strip_unstorable(value: Any) -> Any:
+    """``value`` with NUL removed and lone surrogates replaced by "?" in every string.
+
+    Models are rebuilt from their dump. Applied per streamed chunk this is safe: a valid
+    surrogate pair is already one code point in a decoded Python string.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {strip_unstorable(k): strip_unstorable(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [strip_unstorable(v) for v in value]
+    if hasattr(value, "model_dump"):
+        return type(value).model_validate(strip_unstorable(value.model_dump()))
+    return value
+
+
+def clean_unstorable(value: Any) -> Any:
+    """``value`` itself when it is fine (one scan), else a cleaned copy."""
+    return strip_unstorable(value) if has_unstorable_text(value) else value
+
+
 # Zero-width space, non-joiner, joiner, word joiner, BOM and soft hyphen, removed before matching
 _ZERO_WIDTH = dict.fromkeys((0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD))
 

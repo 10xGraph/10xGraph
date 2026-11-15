@@ -52,3 +52,24 @@ async def test_missing_sidecar_stays_quiet(caplog):
     with caplog.at_level(logging.DEBUG, logger="tenxgraph.storage.media.cloud"):
         assert await store._download_meta("0" * 32) is None
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_owner_index_is_deleted_when_the_last_file_goes():
+    storage = _storage()
+    store = CloudMediaStore(storage, prefix="test-media")
+    path = store._owner_index_path("u1")
+    store._read_owner_index = AsyncMock(return_value=["a" * 32])
+    await store._modify_owner_index("u1", lambda keys: [k for k in keys if k != "a" * 32])
+    storage.delete.assert_awaited_once_with(path)
+    storage.upload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_owner_index_is_rewritten_while_files_remain():
+    storage = _storage()
+    store = CloudMediaStore(storage, prefix="test-media")
+    store._read_owner_index = AsyncMock(return_value=["a" * 32, "b" * 32])
+    await store._modify_owner_index("u1", lambda keys: [k for k in keys if k != "a" * 32])
+    storage.delete.assert_not_awaited()
+    storage.upload.assert_awaited_once()

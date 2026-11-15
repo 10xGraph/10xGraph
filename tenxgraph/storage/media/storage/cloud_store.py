@@ -374,7 +374,10 @@ class CloudMediaStore(BaseMediaStore):
     async def _modify_owner_index(
         self, owner_id: str, mutate: Callable[[list[str]], list[str]]
     ) -> None:
-        """Rewrite an owner's index with ``mutate(keys)``; same re-read check as the sidecar."""
+        """Rewrite an owner's index with ``mutate(keys)``; same re-read check as the sidecar.
+
+        An index that becomes empty is deleted.
+        """
         path = self._owner_index_path(owner_id)
         async with self._meta_lock:
             for _ in range(_UPDATE_ATTEMPTS):
@@ -385,7 +388,13 @@ class CloudMediaStore(BaseMediaStore):
                     return
                 if await self._read_owner_index(path) != before:
                     continue
-                await self._upload_meta({"keys": after}, path)
+                if after:
+                    await self._upload_meta({"keys": after}, path)
+                else:
+                    # Last file gone: remove the index object instead of leaving an empty one.
+                    # Same unguarded window as the write above: an upload by another worker
+                    # landing between the re-read and this delete is dropped from the index.
+                    await self._storage.delete(path)
                 return
         raise RuntimeError("Owner index kept changing; update not applied")
 

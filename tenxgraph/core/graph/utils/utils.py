@@ -46,7 +46,7 @@ from tenxgraph.utils import (
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
-from tenxgraph.utils.validators import is_unstorable_text
+from tenxgraph.utils.validators import has_unstorable_text, strip_unstorable
 
 
 StateT = TypeVar("StateT", bound=AgentState)
@@ -275,17 +275,25 @@ async def validate_message_content(
     return True
 
 
-def _has_unstorable_text(value: Any) -> bool:
-    """True when a string anywhere inside ``value`` holds NUL or a lone surrogate."""
-    if isinstance(value, str):
-        return is_unstorable_text(value)
-    if isinstance(value, dict):
-        return any(_has_unstorable_text(k) or _has_unstorable_text(v) for k, v in value.items())
-    if isinstance(value, list | tuple):
-        return any(_has_unstorable_text(v) for v in value)
-    if hasattr(value, "model_dump"):
-        return _has_unstorable_text(value.model_dump())
-    return False
+def clean_unstorable_messages(messages: list[Message], config: dict[str, Any]) -> int:
+    """Clean NUL and lone surrogates out of ``messages`` in place; returns how many changed.
+
+    Used on what the model and tools produced (and on a turn a crash left behind): the run
+    must not die because of text it did not send. Client input is refused instead (see
+    :func:`reject_nul_messages`). Costs one scan when nothing is wrong.
+    """
+    cleaned = 0
+    for i, m in enumerate(messages):
+        if has_unstorable_text(m):
+            messages[i] = strip_unstorable(m)
+            cleaned += 1
+    if cleaned:
+        logger.warning(
+            "Cleaned NUL or lone surrogate characters out of %d message(s) on thread '%s'",
+            cleaned,
+            config.get("thread_id"),
+        )
+    return cleaned
 
 
 def reject_nul_messages(messages: list[Any]) -> None:
@@ -294,7 +302,7 @@ def reject_nul_messages(messages: list[Any]) -> None:
     Saving one would fail on every later call of the thread (crash recovery retries the
     save), so it is refused before anything is written or run.
     """
-    if any(_has_unstorable_text(m) for m in messages or []):
+    if any(has_unstorable_text(m) for m in messages or []):
         from tenxgraph.utils.validators import ValidationError
 
         raise ValidationError(
@@ -319,7 +327,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     checkpointer = fresh(checkpointer)
     # Before the run is registered or any state is touched: a bad message must leave no trace.
     reject_nul_messages(input_data.get("messages", []))
-    if _has_unstorable_text(input_data.get("state") or {}):
+    if has_unstorable_text(input_data.get("state") or {}):
         from tenxgraph.utils.validators import ValidationError
 
         raise ValidationError(
@@ -802,6 +810,10 @@ async def sync_data(
     callback_mgr = fresh(callback_mgr)
     task_manager = fresh(task_manager)
     is_context_trimmed = False
+
+    # Model and tool output must be storable, or the save fails on every later call.
+    clean_unstorable_messages(state.context, config)
+    clean_unstorable_messages(messages, config)
 
     # Ids of the run's tool-calling messages, taken before trimming drops any of them.
     origin_ids = _tool_origin_ids([*state.context, *messages])
