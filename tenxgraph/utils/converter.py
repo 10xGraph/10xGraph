@@ -392,7 +392,7 @@ def _build_content(blocks: list[Any]) -> str | list[dict[str, Any]]:
     return content_parts
 
 
-def _convert_dict(message: Message) -> dict[str, Any] | None:
+def _convert_dict(message: Message, node: str | None = None) -> dict[str, Any] | None:
     """
     Convert a Message object to a dictionary for LLM/tool payloads.
 
@@ -402,6 +402,9 @@ def _convert_dict(message: Message) -> dict[str, Any] | None:
 
     Args:
         message (Message): The message to convert.
+        node (str | None): The node the request is for. Signed thinking blocks are bound to
+            the system prompt and tools they were made with, so a reply stamped with another
+            node (``metadata["node_name"]``) keeps its text and tool calls but drops its thinking.
 
     Returns:
         dict[str, Any]: Dictionary representation of the message.
@@ -430,6 +433,9 @@ def _convert_dict(message: Message) -> dict[str, Any] | None:
         }
 
     thinking = _thinking_blocks_for_replay(blocks) if message.role == "assistant" else []
+    producer = (message.metadata or {}).get("node_name")
+    if node is not None and producer is not None and producer != node:
+        thinking = []
 
     if message.role == "assistant" and message.tools_calls:
         result: dict[str, Any] = {
@@ -642,6 +648,7 @@ def convert_messages(
     state: Union["AgentState", None] = None,
     extra_messages: list[Message] | None = None,
     extra_system_prompts: list[dict[str, Any]] | None = None,
+    node: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Convert system prompts, agent state, and extra messages to a list of dicts for
@@ -655,6 +662,8 @@ def convert_messages(
         extra_system_prompts (list[dict[str, Any]] | None): Retrieved or loaded system
             text (skills). Added after ``system_prompts`` are interpolated and
             never passed to ``str.format``.
+        node (str | None): The node the request is for. Thinking blocks of replies stamped
+            with another node are dropped (see ``_convert_dict``).
 
     Returns:
         list[dict[str, Any]]: List of message dicts for payloads.
@@ -685,7 +694,7 @@ def convert_messages(
         for msg in state.context:
             if _is_empty_assistant_reply(msg):
                 continue  # an old empty reply must not teach the model to answer with nothing
-            formatted = _convert_dict(msg)
+            formatted = _convert_dict(msg, node)
             if formatted:
                 res.append(formatted)
 
@@ -696,7 +705,7 @@ def convert_messages(
                 continue
             if state_values is not None:
                 msg = _interpolate_message(msg, state_values)  # noqa: PLW2901
-            formatted = _convert_dict(msg)
+            formatted = _convert_dict(msg, node)
             if formatted:
                 res.append(formatted)
 

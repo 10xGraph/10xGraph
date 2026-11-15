@@ -1137,6 +1137,7 @@ class AgentExecutionMixin:
             state=state,
             extra_messages=self.extra_messages or [],
             extra_system_prompts=extra_system_prompts,
+            node=config.get("_node_name"),
         )
         # Image, video and audio endpoints take a plain prompt, so memories only apply to
         # text-like output.
