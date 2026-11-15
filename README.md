@@ -7,6 +7,7 @@
 [![PyPI](https://img.shields.io/pypi/v/10xgraph?color=blue)](https://pypi.org/project/10xgraph/)
 [![Python](https://img.shields.io/pypi/pyversions/10xgraph)](https://pypi.org/project/10xgraph/)
 [![License](https://img.shields.io/github/license/10xGraph/10xGraph)](https://github.com/10xGraph/10xGraph/blob/main/LICENSE)
+[![Star on GitHub](https://img.shields.io/badge/GitHub-Star-181717?logo=github)](https://github.com/10xGraph/10xGraph)
 
 10xGraph is open-source, self-hosted infrastructure for AI applications. You write the agents, tools and tasks; 10xGraph runs them behind an API server with authentication, role-based access, tenant isolation, durable state in Postgres and Redis, background jobs, metrics and tracing, and generates Docker and Kubernetes deploy files. MIT licensed, by 10xScale. Formerly Agentflow.
 
@@ -130,6 +131,8 @@ pip install 10xgraph-api
 ```
 
 From those two files you get REST and streaming endpoints, WebSocket, thread, memory and file APIs, health probes and the playground. `10xgraph build --docker-compose --k8s` writes the Dockerfile, Compose file and Kubernetes manifest. For a scaffold with auth on, a Redis cache store, rate limits and tests, run `10xgraph init --template production`. See [Why 10xGraph](https://10xgraph.com/docs/get-started/why-10xgraph) and the [server docs](https://10xgraph.com/docs/server).
+
+If this saved you time, [star the repo](https://github.com/10xGraph/10xGraph). It helps other developers find 10xGraph.
 
 ---
 
