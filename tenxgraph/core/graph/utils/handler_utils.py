@@ -64,6 +64,7 @@ from .utils import (
     _detached_tasks,  # noqa: F401  (re-exported: cleanup tasks still running)
     detach_task,
     get_next_node,
+    reject_nul_messages,
     reload_state,
     sync_data,
     wait_detached,
@@ -718,6 +719,14 @@ async def _unsaved_turn_messages(
     return unsaved
 
 
+def _last_turn(state: AgentState) -> list[Message]:
+    """The messages from the latest user message on."""
+    for i in range(len(state.context) - 1, -1, -1):
+        if state.context[i].role == "user":
+            return state.context[i:]
+    return []
+
+
 async def recover_crashed_run(
     state: AgentState,
     config: dict[str, Any],
@@ -730,10 +739,12 @@ async def recover_crashed_run(
     ``crashed`` and saved durably (store and cache), together with the turn's messages the store
     does not have yet. The caller decides what the next call does with it (decision D1).
     Never raises: if the save fails the repaired state is still returned to the caller, whose
-    own saves persist it.
+    own saves persist it. The one exception: a turn holding a NUL character (stored by an
+    older version) can never be saved, so it raises ``ValidationError`` and the graph does not run.
     """
     checkpointer = fresh(checkpointer)
     meta = state.execution_meta
+    reject_nul_messages(_last_turn(state))
     dead_run = meta.run_id
     logger.warning(
         "Run '%s' on thread '%s' ended without finishing; repairing the thread",

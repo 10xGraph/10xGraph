@@ -274,6 +274,34 @@ async def validate_message_content(
     return True
 
 
+def _has_nul(value: Any) -> bool:
+    """True when a string anywhere inside ``value`` holds a NUL character."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
+    if isinstance(value, list | tuple):
+        return any(_has_nul(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return _has_nul(value.model_dump())
+    return False
+
+
+def reject_nul_messages(messages: list[Any]) -> None:
+    """Refuse messages holding a NUL character: Postgres can never store them.
+
+    Saving one would fail on every later call of the thread (crash recovery retries the
+    save), so it is refused before anything is written or run.
+    """
+    if any(_has_nul(m) for m in messages or []):
+        from tenxgraph.utils.validators import ValidationError
+
+        raise ValidationError(
+            "Messages cannot contain the NUL character (\\x00).",
+            "invalid_character",
+        )
+
+
 async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     input_data: dict[str, Any],
     config: dict[str, Any],
@@ -288,6 +316,8 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     incoming messages. Supports partial state update via 'state' in input_data.
     """
     checkpointer = fresh(checkpointer)
+    # Before the run is registered or any state is touched: a bad message must leave no trace.
+    reject_nul_messages(input_data.get("messages", []))
     logger.debug("Loading or creating state with thread_id=%s", config.get("thread_id", "default"))
 
     # Try to load existing state if checkpointer is available
