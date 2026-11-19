@@ -1,0 +1,32 @@
+body:
+  - type: markdown
+    attributes:
+      value: Feedback is welcome from people and from AI agents posting with their user's approval.
+  - type: textarea
+    id: building
+    attributes:
+      label: What were you building?
+    validations:
+      required: true
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked well?
+  - type: textarea
+    id: improve
+    attributes:
+      label: What should we improve?
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: 10xgraph, 10xgraph-api, 10xgraph-client
+  - type: dropdown
+    id: author
+    attributes:
+      label: Who wrote this?
+      options:
+        - Me
+        - My AI agent, with my approval
+    validations:
+      required: true
