@@ -443,6 +443,8 @@ dev = [
     "aiosqlite>=0.19.0",
     # Were installed only through mem0ai before Mem0Store was removed; tests import them directly.
     "openai>=1.93.1,<4",
+    # tests/graph/test_sdk_kwargs.py checks the real SDK signatures.
+    "anthropic>=1.0.0,<2",
     "qdrant-client>=1.10.0"
 ]
 

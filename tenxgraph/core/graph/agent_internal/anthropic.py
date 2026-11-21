@@ -20,6 +20,7 @@ from .constants import (
     CALL_EXCLUDED_KWARGS,
     resolve_reasoning_config,
 )
+from .sdk_kwargs import accepted_params, filter_kwargs
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -27,18 +28,10 @@ logger = logging.getLogger("tenxgraph.agent")
 # Rejected with a 400 by the models in ANTHROPIC_NO_SAMPLING_MODELS.
 _SAMPLING_KEYS = ("temperature", "top_p", "top_k")
 
-# Anthropic-specific keys that agentflow threads through llm_kwargs but which are
-# not request parameters.
+# Anthropic client-constructor keys and the OpenAI-style effort key; none is a request
+# parameter. The keys 10xGraph reads itself are already in CALL_EXCLUDED_KWARGS.
 _ANTHROPIC_EXCLUDED_KWARGS = CALL_EXCLUDED_KWARGS | frozenset(
-    {
-        "anthropic_backend",
-        "anthropic_cache",
-        "reasoning_effort",
-        "auth_token",
-        "middleware",
-        "open_telemetry",
-        "stream_idle_timeout",
-    }
+    {"reasoning_effort", "auth_token", "middleware", "open_telemetry"}
 )
 
 
@@ -140,10 +133,15 @@ class AgentAnthropicMixin:
 
         anthropic_tools = convert_tools(tools)
 
-        # Prefix-stable caching. Skipped when the caller placed their own
-        # cache_control breakpoints, so an explicit strategy is never doubled.
-        if "cache_control" not in call_kwargs:
-            apply_cache_control(self.llm_kwargs.get("anthropic_cache"), system, anthropic_tools)
+        # Caching is on unless anthropic_cache is False/None; it adds nothing
+        # when the developer placed their own cache_control.
+        apply_cache_control(
+            self.llm_kwargs.get("anthropic_cache", True),
+            system,
+            anthropic_tools,
+            remainder,
+            call_kwargs,
+        )
 
         if anthropic_tools:
             call_kwargs["tools"] = anthropic_tools
@@ -169,6 +167,8 @@ class AgentAnthropicMixin:
     ) -> Any:
         """Call the Anthropic Messages API."""
         remainder, call_kwargs = self._build_anthropic_request(messages, tools, stream, **kwargs)
+        method = self.client.messages.stream if stream else self.client.messages.create
+        call_kwargs = filter_kwargs(call_kwargs, accepted_params(method), "anthropic")
 
         if stream:
             logger.debug("Calling Anthropic messages.stream with model=%s", self.model)
@@ -214,10 +214,12 @@ class AgentAnthropicMixin:
             messages, tools, stream=False, **kwargs
         )
 
-        # count_tokens prices the input; generation-side parameters are not part
-        # of its request shape and are rejected.
-        for key in ("max_tokens", "stream", "output_config", "temperature", "top_p", "top_k"):
+        # The framework adds these for generation; count_tokens has no such parameters.
+        for key in ("max_tokens", "stream"):
             call_kwargs.pop(key, None)
+        call_kwargs = filter_kwargs(
+            call_kwargs, accepted_params(self.client.messages.count_tokens), "anthropic"
+        )
 
         response = await self.client.messages.count_tokens(
             model=self.model,

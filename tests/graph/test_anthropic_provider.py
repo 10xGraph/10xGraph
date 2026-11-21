@@ -350,7 +350,7 @@ class TestRequestAssembly:
 
     @pytest.mark.asyncio
     async def test_system_prompt_is_lifted_out_of_messages(self):
-        agent = _StubAgent()
+        agent = _StubAgent(llm_kwargs={"anthropic_cache": False})
         await agent._call_anthropic(
             [
                 {"role": "system", "content": "be terse"},
