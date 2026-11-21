@@ -1306,5 +1306,24 @@ class CompiledGraph[StateT: AgentState]:
             "id_type": self._state_graph._id_generator.id_type.value,
             "state_type": self._state.__class__.__name__,
             "state_fields": list(self._state.model_dump().keys()),
+            "models": self._model_choices(),
         }
         return graph
+
+    def _model_choices(self) -> dict[str, dict[str, Any]]:
+        """Per node, the model names a run can pick (only nodes whose Agent has a registry).
+
+        Names only: the entries hold api keys and base URLs and never leave the Agent. A node
+        function that wraps an Agent (prebuilt agents do) exposes it as ``.agent``.
+        """
+        models: dict[str, dict[str, Any]] = {}
+        for name, node in self._state_graph.nodes.items():
+            agent = getattr(node.func, "agent", node.func)
+            entries = getattr(agent, "_model_entries", None)
+            if entries:
+                models[name] = {
+                    "default": agent.default_model_name,
+                    "names": list(entries),
+                    "config_key": agent.model_config_key,
+                }
+        return models

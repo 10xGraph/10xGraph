@@ -212,6 +212,7 @@ def _make_reflect_node(reflect_agent: Agent) -> Callable:
         return result
 
     _reflect.__name__ = "reflect"
+    _reflect.agent = reflect_agent  # type: ignore[attr-defined]
     return _reflect
 
 

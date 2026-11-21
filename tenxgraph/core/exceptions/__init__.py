@@ -6,6 +6,7 @@ This package provides:
         - NodeError: Exception for node-specific errors.
         - GraphClosedError: A run was started on a graph that is closing or closed.
         - GraphRecursionError: Exception for recursion limit errors in graphs.
+        - ModelNotFoundError: The run config names a model the Agent has not registered.
         - InterruptMismatchError: A resume names an interrupt the thread is not paused at.
         - NothingToResumeError: A resume was sent to a thread that is not paused.
         - InterruptPendingError: A new message was sent to a thread paused at interrupt().
@@ -26,6 +27,7 @@ from .interrupt_error import (
     NothingToResumeError,
     ResumeValidationError,
 )
+from .model_error import ModelNotFoundError
 from .node_error import NodeError
 from .recursion_error import GraphRecursionError
 from .storage_exceptions import (
@@ -50,6 +52,7 @@ __all__ = [
     "InterruptMismatchError",
     "InterruptPendingError",
     "MetricsError",
+    "ModelNotFoundError",
     "NodeError",
     "LLMStreamIdleTimeoutError",
     "NodeTimeoutError",

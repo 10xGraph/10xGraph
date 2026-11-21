@@ -41,6 +41,7 @@ from tenxgraph.utils.validators import clean_unstorable
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from .constants import RetryConfig
+from .model_registry import ModelEntry, bind_entry, entry_attempt, named_entry, select_entry
 from .openai import _REASONING_REJECTED_MODELS, is_endpoint_unsupported, is_reasoning_rejected
 
 
@@ -775,6 +776,7 @@ class AgentExecutionMixin:
         messages: list[dict[str, Any]],
         tools: list | None = None,
         stream: bool = False,
+        model_entry: ModelEntry | None = None,
         **kwargs: Any,
     ) -> Any:
         """Wrap ``_call_llm`` with retry + exponential back-off + fallback models.
@@ -784,28 +786,46 @@ class AgentExecutionMixin:
         2. For each fallback model, try up to ``retry_config.max_retries`` times.
         3. If everything fails, raise the last exception.
 
-        Every attempt runs on a private copy of the Agent, so a fallback never changes
-        the model, provider or client other runs see. The key of the converter that
-        matches the successful attempt is left in :data:`converter_key_var`.
+        ``model_entry`` is the registry entry the run config picked (None: the default
+        model). Every attempt runs on a private copy of the Agent, so neither a fallback
+        nor a picked entry changes the model, provider or client other runs see. The key of
+        the converter that matches the successful attempt is left in :data:`converter_key_var`.
         """
-        retry_cfg: RetryConfig | None = getattr(self, "retry_config", None)
+        # The run's model: an entry ``config`` picked from the registry, else the default.
+        run_cfg: RetryConfig | None = (
+            model_entry.retry_config
+            if model_entry is not None
+            else getattr(self, "retry_config", None)
+        )
         fallback_models: list[tuple[str, str | None]] = getattr(self, "fallback_models", [])
 
         # Fast-path: no retry config at all → single attempt, no catch
-        if retry_cfg is None and not fallback_models:
-            return await self._call_bound(self, None, messages, tools, stream, kwargs)
+        if run_cfg is None and not fallback_models:
+            bound = self if model_entry is None else entry_attempt(self, model_entry, None)
+            return await self._call_bound(bound, None, messages, tools, stream, kwargs)
 
-        max_retries = retry_cfg.max_retries if retry_cfg else 0
-
-        # Build the ordered attempt list: primary + fallbacks
-        attempts: list[tuple[str, str]] = [(self.model, self.provider)]
+        # Build the ordered attempt list: the run's model + fallbacks. A fallback string that
+        # names a registry entry is that entry; other fallbacks resolve as before, against the
+        # Agent's default model.
+        attempts: list[tuple[str, str, ModelEntry | None]] = [
+            (self.model, self.provider, None)
+            if model_entry is None
+            else (model_entry.model, model_entry.provider, model_entry)
+        ]
         for fb_model, fb_provider in fallback_models:
-            attempts.append((fb_model, fb_provider or self.provider))
+            entry = named_entry(self, fb_model, fb_provider)
+            if entry is not None:
+                attempts.append((entry.model, entry.provider, entry))
+            else:
+                attempts.append((fb_model, fb_provider or self.provider, None))
 
         last_exc: Exception | None = None
 
-        for attempt_idx, (model, provider) in enumerate(attempts):
+        for attempt_idx, (model, provider, entry) in enumerate(attempts):
             is_fallback = attempt_idx > 0
+            # An entry brings its own retry config; a plain fallback uses the run's.
+            retry_cfg = entry.retry_config if entry is not None else run_cfg
+            max_retries = retry_cfg.max_retries if retry_cfg else 0
 
             if is_fallback:
                 logger.info(
@@ -827,7 +847,9 @@ class AgentExecutionMixin:
                 continue
 
             try:
-                if is_fallback:
+                if entry is not None and entry.name != getattr(self, "default_model_name", None):
+                    bound = entry_attempt(self, entry, retry_cfg)
+                elif is_fallback and entry is None:
                     same_provider = provider == self.provider
                     bound = self._bind_attempt(
                         model,
@@ -1115,6 +1137,12 @@ class AgentExecutionMixin:
         """
         container = InjectQ.get_instance()
 
+        # The registry entry the run config names (None: the default model). ``run`` reads
+        # the entry's model, provider and kwargs; the shared Agent is never changed.
+        model_entry = select_entry(self, config)
+        run = self if model_entry is None else bind_entry(self, model_entry, None)
+        entry_kwargs = {} if model_entry is None else {"model_entry": model_entry}
+
         state = await self._trim_context(state)
 
         # Skill text is loaded, so it is added after the developer's system prompt is
@@ -1150,7 +1178,7 @@ class AgentExecutionMixin:
         # Resolve internal media refs (graph://media/...) before provider call.
         # This converts internal refs to signed URLs or inline base64, using the
         # capability-aware path when provider+model are known.
-        messages = await self._resolve_media_in_messages(messages)
+        messages = await run._resolve_media_in_messages(messages)
 
         # Multi-agent safety: strip media blocks for text-only agents.
         # When an agent has no multimodal_config, it cannot process images,
@@ -1190,14 +1218,14 @@ class AgentExecutionMixin:
             "seed",
         )
         request_params: dict[str, Any] = {
-            k: v for k, v in self.llm_kwargs.items() if k in _REQUEST_PARAM_KEYS and v is not None
+            k: v for k, v in run.llm_kwargs.items() if k in _REQUEST_PARAM_KEYS and v is not None
         }
 
         llm_event = EventModel.default(
             config,
             data={
-                "model": self.model,
-                "provider": getattr(self, "provider", ""),
+                "model": run.model,
+                "provider": getattr(run, "provider", ""),
                 "input_messages": messages,
                 "system_prompt": effective_system_prompt,
                 "request_params": request_params,
@@ -1221,6 +1249,7 @@ class AgentExecutionMixin:
                     messages=messages,
                     tools=tools if tools else None,
                     stream=is_stream,
+                    **entry_kwargs,
                 )
         except BaseException as exc:
             # Close the LLM span: without an ERROR event the publisher keeps it open
@@ -1253,7 +1282,7 @@ class AgentExecutionMixin:
 
         # The converter must match the attempt that answered, which is not the primary
         # when a fallback on another provider took over.
-        converter_key = converter_key_var.get() or self._get_converter_key()
+        converter_key = converter_key_var.get() or run._get_converter_key()
         converter = ModelResponseConverter(response, converter=converter_key)
 
         async def _retry_empty() -> Any:
@@ -1266,15 +1295,16 @@ class AgentExecutionMixin:
                     messages=messages,
                     tools=tools if tools else None,
                     stream=is_stream,
+                    **entry_kwargs,
                 )
             converter.converter = ModelResponseConverter(
-                retry_response, converter=converter_key_var.get() or self._get_converter_key()
+                retry_response, converter=converter_key_var.get() or run._get_converter_key()
             ).converter
             return retry_response
 
         converter.empty_reply_retry = _retry_empty
-        converter.on_empty_reply = _make_empty_reply_logger(node_name, str(self.model))
-        converter.empty_reply_error = _make_empty_reply_error(node_name, str(self.model))
+        converter.on_empty_reply = _make_empty_reply_logger(node_name, str(run.model))
+        converter.empty_reply_error = _make_empty_reply_error(node_name, str(run.model))
         if is_stream:
             converter.on_stream_end = _make_stream_end_hook(llm_event, llm_started)
             # A stream sends its request (Anthropic ``messages.stream()``) and reads its body
