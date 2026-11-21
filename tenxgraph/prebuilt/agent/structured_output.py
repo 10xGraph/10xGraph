@@ -258,6 +258,7 @@ def _make_format_node(format_agent: Agent) -> Callable:
             state.context = original_context
 
     _format.__name__ = "format"
+    _format.agent = format_agent  # type: ignore[attr-defined]
     return _format
 
 

@@ -59,6 +59,7 @@ python examples/providers/providers.py gemini
 python examples/providers/providers.py claude
 python examples/providers/reasoning.py openai
 python examples/providers/custom_converter.py gemini
+python examples/providers/model_registry.py
 ```
 
 ## How it works
@@ -85,6 +86,8 @@ for block in reply.content:
 For Google, `effort` maps to a thinking budget (low 512, medium 8192, high 24576) and `thinking_budget` sets it directly. For current Claude models, `effort` selects thinking depth and a token budget is ignored.
 
 `custom_converter.py` is for cases where you want the SDK's own features. A graph node calls `client.aio.models.generate_content(...)` or `client.chat.completions.create(...)` and returns `await GoogleGenAIConverter().convert_response(response)`, so tool calls, text and token usage end up in the same `Message` shape as the Agent class produces.
+
+`model_registry.py` gives one agent a `model_registry` of named models (Claude, OpenAI, Gemini, plus a commented self-hosted entry) and switches between them per message with `config={"model": name}`. In the chat loop, `/model gpt` changes the entry and the thread continues. It needs `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GEMINI_API_KEY` for the entries you use.
 
 ## Expected output
 

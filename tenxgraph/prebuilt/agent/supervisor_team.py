@@ -384,6 +384,7 @@ def _make_supervisor_node(
         return Command(goto=decision)
 
     _supervisor.__name__ = "supervisor"
+    _supervisor.agent = supervisor_agent  # type: ignore[attr-defined]
     return _supervisor
 
 

@@ -23,6 +23,36 @@ from .constants import (
 logger = logging.getLogger("tenxgraph.agent")
 
 
+def validate_output_type(provider: str, output_type: str) -> None:
+    """Validate that the selected provider supports the requested output type."""
+    if output_type not in VALID_OUTPUT_TYPES:
+        raise ValueError(
+            f"Invalid output_type '{output_type}'. Supported types: {list(VALID_OUTPUT_TYPES)}"
+        )
+
+    if provider == "google" and output_type not in GOOGLE_OUTPUT_TYPES:
+        raise ValueError(
+            f"Google provider doesn't support output_type='{output_type}'. "
+            f"Supported: {list(GOOGLE_OUTPUT_TYPES)}"
+        )
+
+    if provider == "openai" and output_type not in OPENAI_OUTPUT_TYPES:
+        raise ValueError(
+            f"OpenAI provider doesn't support output_type='{output_type}'. "
+            f"Supported: {list(OPENAI_OUTPUT_TYPES)}"
+        )
+
+    if provider == "anthropic" and output_type not in ANTHROPIC_OUTPUT_TYPES:
+        raise ValueError(
+            f"Anthropic provider doesn't support output_type='{output_type}'. "
+            f"Supported: {list(ANTHROPIC_OUTPUT_TYPES)}. Anthropic's Messages API "
+            "generates text and tool calls only; there is no image/audio/video "
+            "generation endpoint."
+        )
+
+    logger.debug("%s provider supports output_type='%s'", provider, output_type)
+
+
 class _ProviderAgentLike(Protocol):
     output_type: str
     provider: str
@@ -34,33 +64,7 @@ class AgentProviderMixin:
 
     def _validate_output_type(self: _ProviderAgentLike) -> None:
         """Validate that the selected provider supports the requested output type."""
-        if self.output_type not in VALID_OUTPUT_TYPES:
-            raise ValueError(
-                "Invalid output_type "
-                f"'{self.output_type}'. Supported types: {list(VALID_OUTPUT_TYPES)}"
-            )
-
-        if self.provider == "google" and self.output_type not in GOOGLE_OUTPUT_TYPES:
-            raise ValueError(
-                f"Google provider doesn't support output_type='{self.output_type}'. "
-                f"Supported: {list(GOOGLE_OUTPUT_TYPES)}"
-            )
-
-        if self.provider == "openai" and self.output_type not in OPENAI_OUTPUT_TYPES:
-            raise ValueError(
-                f"OpenAI provider doesn't support output_type='{self.output_type}'. "
-                f"Supported: {list(OPENAI_OUTPUT_TYPES)}"
-            )
-
-        if self.provider == "anthropic" and self.output_type not in ANTHROPIC_OUTPUT_TYPES:
-            raise ValueError(
-                f"Anthropic provider doesn't support output_type='{self.output_type}'. "
-                f"Supported: {list(ANTHROPIC_OUTPUT_TYPES)}. Anthropic's Messages API "
-                "generates text and tool calls only; there is no image/audio/video "
-                "generation endpoint."
-            )
-
-        logger.debug("%s provider supports output_type='%s'", self.provider, self.output_type)
+        validate_output_type(self.provider, self.output_type)
 
     def _detect_provider_from_model(self, model: str, use_vertex_ai: bool = False) -> str:
         """Infer the provider from the model name when not explicitly supplied."""

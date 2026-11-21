@@ -5,7 +5,6 @@ implementation lives in smaller internal modules under ``tenxgraph.graph.agent_i
 """
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 from tenxgraph.core.graph.base_agent import BaseAgent
@@ -15,17 +14,13 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.storage.media.config import MultimodalConfig
 
 from .agent_internal.anthropic import AgentAnthropicMixin
-from .agent_internal.constants import (
-    DEFAULT_RETRY_CONFIG,
-    REASONING_DEFAULT,
-    RetryConfig,
-    default_reasoning_config,
-)
+from .agent_internal.constants import REASONING_DEFAULT, RetryConfig
 from .agent_internal.execution import AgentExecutionMixin
 from .agent_internal.google import AgentGoogleMixin
 from .agent_internal.memory import AgentMemoryMixin
+from .agent_internal.model_registry import ModelEntry, build_registry, resolve_entry
 from .agent_internal.openai import AgentOpenAIMixin
-from .agent_internal.providers import AgentProviderMixin
+from .agent_internal.providers import AgentProviderMixin, validate_output_type
 from .agent_internal.skills import AgentSkillsMixin
 
 
@@ -103,6 +98,8 @@ class Agent(
         fallback_models: list[str | tuple[str, str]] | None = None,
         multimodal_config: MultimodalConfig | None = None,
         output_schema: Any | None = None,
+        model_registry: dict[str, dict[str, Any]] | None = None,
+        model_config_key: str = "model",
         **kwargs,
     ):
         """Initialize an Agent node.
@@ -206,6 +203,36 @@ class Agent(
                     fallback_models = [("gemini-2.0-flash", "google")]
                     fallback_models = ["gpt-4o-mini", ("gemini-2.0-flash", "google")]
 
+                A string that names a ``model_registry`` entry is that entry, with its
+                own client and settings.
+
+            model_registry: Optional named models the run config can pick from, as
+                ``{name: entry}``. An entry takes the model keys the Agent takes:
+                ``model`` (required), ``provider``, ``base_url``, ``api_key``,
+                ``api_style``, ``use_vertex_ai``, ``anthropic_backend``,
+                ``reasoning_config``, ``retry_config`` and provider kwargs. With a
+                registry, ``model`` is the name of the default entry, and ``provider``,
+                ``base_url``, ``api_key``, ``api_style``, ``use_vertex_ai`` and
+                ``anthropic_backend`` on the Agent raise ``ValueError``. Provider kwargs
+                and ``reasoning_config`` on the Agent are shared defaults; an entry's own
+                keys win::
+
+                    Agent(
+                        model="openai",
+                        model_registry={
+                            "openai": {"model": "gpt-5-mini"},
+                            "vllm": {
+                                "provider": "openai",
+                                "model": "deepseek-r1",
+                                "base_url": "http://gpu1:8000/v1",
+                            },
+                        },
+                    )
+                    await app.ainvoke(state, config={"thread_id": "t1", "model": "vllm"})
+
+            model_config_key: The run-config key that names the entry for a run
+                (default ``"model"``). An unregistered name raises
+                ``ModelNotFoundError``. An Agent without a registry ignores the key.
             **llm_kwargs: Additional provider-specific parameters
                 (temperature, max_tokens, top_p, or model args, organization_id, project_id).
 
@@ -258,33 +285,36 @@ class Agent(
             )
             ```
         """
-        # Pop kwargs-only params before passing to parent
-        base_url: str | None = kwargs.pop("base_url", None)
-        provider: str | None = kwargs.pop("provider", None)
-        # Default is "responses" for OpenAI, but "chat" behind a custom base_url (most
-        # OpenAI-compatible servers only speak Chat Completions). An explicit value wins.
-        api_style_arg: str | None = kwargs.pop("api_style", None)
-        api_style: str = api_style_arg or ("chat" if base_url else "responses")
+        # One model is resolved by the same rules as a registry entry, so a single model and
+        # a registry share one path. A registry's entries are resolved once, here.
+        self.model_config_key = model_config_key
+        self.default_model_name: str | None = None
+        self._model_entries: dict[str, ModelEntry] | None = None
+        if model_registry is None:
+            spec: dict[str, Any] = {"model": model}
+            for key in ("provider", "base_url", "api_style", "use_vertex_ai"):
+                if key in kwargs:
+                    spec[key] = kwargs.pop(key)
+            default = resolve_entry(None, spec, kwargs, reasoning_config, retry_config)
+        else:
+            self._model_entries = build_registry(
+                model_registry, model, kwargs, reasoning_config, retry_config
+            )
+            self.default_model_name = model
+            default = self._model_entries[model]
+        # Clients of non-default entries, built on first use; shared by per-attempt copies.
+        self._entry_clients: dict[str | None, Any] = {}
 
-        # check user using vertex ai for google or other model
-        use_vertex_ai: bool = kwargs.pop(
-            "use_vertex_ai",
-            os.getenv(
-                "GOOGLE_GENAI_USE_VERTEXAI",
-                "false",
-            ).lower()
-            == "true",
-        )  # legacy alias for provider="google"
         # Persist so fallback clients (created lazily at call time) honour the
         # same Vertex AI selection as the primary client.
-        self.use_vertex_ai = use_vertex_ai
+        self.use_vertex_ai = default.use_vertex_ai
         # Call parent constructor
         super().__init__(
-            model=model,
+            model=default.model,
             system_prompt=system_prompt or [],
             tool_node=tool_node,
-            base_url=base_url,
-            **kwargs,
+            base_url=default.base_url,
+            **default.llm_kwargs,
         )
 
         # Store output type
@@ -292,22 +322,15 @@ class Agent(
         self.output_schema = output_schema
         self._validate_output_schema_output_type()
 
-        # Determine provider; self.llm_kwargs is set by super().__init__ and is
-        # already available here for _create_client().
-        self.base_url = base_url
-        if provider is not None:
-            # Provider explicitly supplied — trust it as-is.
-            self.provider = provider.lower()
-            self.client = self._create_client(self.provider, base_url, use_vertex_ai)
-        else:
-            # Resolve provider (and strip a recognised ``provider/`` prefix) from
-            # the model string. Unknown prefixes resolve to ``openai`` and keep
-            # the full model name (e.g. OpenAI-compatible/self-hosted models).
-            self.provider, self.model = self._resolve_provider_and_model(model, use_vertex_ai)
-            self.client = self._create_client(self.provider, base_url, use_vertex_ai)
+        # self.llm_kwargs is set by super().__init__ and is read by _create_client().
+        self.base_url = default.base_url
+        self.provider = default.provider
+        self.client = self._create_client(self.provider, self.base_url, self.use_vertex_ai)
 
         # Validate that provider supports the output type
         self._validate_output_type()
+        for entry in (self._model_entries or {}).values():
+            validate_output_type(entry.provider, self.output_type)
 
         self.extra_messages = extra_messages
         self.trim_context = trim_context
@@ -317,34 +340,16 @@ class Agent(
         # Internal setup
         self._tool_node = self._setup_tools()
 
-        # API style & reasoning configuration
-        if api_style not in ("chat", "responses"):
-            raise ValueError(f"Invalid api_style '{api_style}'. Supported: 'chat', 'responses'")
-        self.api_style = api_style
+        self.api_style = default.api_style
         # base_url values whose server rejected the Responses API. Mutable and shared with the
         # per-attempt copies of this Agent, so one failed probe sticks for the Agent's lifetime.
         self._responses_unsupported_urls: set[str] = set()
 
-        # True or sentinel = reasoning on at the provider's lowest effort
-        # (DEFAULT_REASONING_EFFORT_BY_PROVIDER, resolved per request so a fallback on another
-        # provider gets its own value); False or None = disabled; a dict is sent as given.
-        # Remember whether the user chose a value: the chat path only sends reasoning
-        # parameters for an explicit choice, never for the implicit default.
-        self._reasoning_explicit = reasoning_config is not REASONING_DEFAULT
-        self._reasoning_default = reasoning_config is REASONING_DEFAULT or reasoning_config is True
-        if self._reasoning_default:
-            reasoning_config = default_reasoning_config(self.provider)
-        self.reasoning_config: dict[str, Any] | None = (
-            None if (reasoning_config is False or reasoning_config is None) else reasoning_config
-        )  # type: ignore
-
-        # Retry & fallback configuration
-        if retry_config is True:
-            self.retry_config: RetryConfig | None = DEFAULT_RETRY_CONFIG
-        elif isinstance(retry_config, RetryConfig):
-            self.retry_config = retry_config
-        else:
-            self.retry_config = None
+        # Reasoning and retry settings, resolved by resolve_entry (see model_registry.py).
+        self._reasoning_explicit = default.reasoning_explicit
+        self._reasoning_default = default.reasoning_default
+        self.reasoning_config: dict[str, Any] | None = default.reasoning_config
+        self.retry_config: RetryConfig | None = default.retry_config
 
         # Normalise fallback_models to list[tuple[str, str | None]]
         self.fallback_models: list[tuple[str, str | None]] = []
@@ -356,7 +361,7 @@ class Agent(
                     self.fallback_models.append(tuple(entry))  # type: ignore[arg-type]
 
         logger.info(
-            f"Agent initialized: model={model}, provider={self.provider}, "
+            f"Agent initialized: model={self.model}, provider={self.provider}, "
             f"output_type={self.output_type}, has_tools={self._tool_node is not None}"
         )
 
