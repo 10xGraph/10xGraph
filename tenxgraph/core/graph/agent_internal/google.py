@@ -14,7 +14,12 @@ from tenxgraph.storage.media.url_policy import (
     resolve_media_policy,
 )
 
-from .constants import GOOGLE_THINKING_BUDGET_BY_EFFORT, resolve_reasoning_config
+from .constants import (
+    CALL_EXCLUDED_KWARGS,
+    GOOGLE_THINKING_BUDGET_BY_EFFORT,
+    resolve_reasoning_config,
+)
+from .sdk_kwargs import filter_kwargs
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -454,6 +459,14 @@ class AgentGoogleMixin:
             elif effort and effort in GOOGLE_THINKING_BUDGET_BY_EFFORT:
                 thinking_kwargs["thinking_budget"] = GOOGLE_THINKING_BUDGET_BY_EFFORT[effort]
             config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
+
+        # Any other key that GenerateContentConfig defines (seed, top_k, safety_settings, ...)
+        # goes to the SDK. Values the framework computed above win: the developer's key fills
+        # a field only when the framework left it unset. Other keys are dropped with a warning.
+        fields = types.GenerateContentConfig.model_fields.keys()
+        extra = {k: v for k, v in call_kwargs.items() if k not in CALL_EXCLUDED_KWARGS}
+        for key, value in filter_kwargs(extra, set(fields), "google").items():
+            config_kwargs.setdefault(key, value)
 
         return types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 

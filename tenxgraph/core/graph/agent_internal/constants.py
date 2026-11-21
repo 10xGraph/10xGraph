@@ -83,12 +83,19 @@ CLIENT_CONSTRUCTOR_KWARGS = frozenset(
     }
 )
 
+# Keys 10xGraph reads itself from ``llm_kwargs``; no SDK call defines them.
+FRAMEWORK_KWARGS = frozenset({"stream_idle_timeout", "anthropic_cache", "anthropic_backend"})
+
 # Keys that must never be forwarded to request calls.
-CALL_EXCLUDED_KWARGS = CLIENT_CONSTRUCTOR_KWARGS | frozenset(
-    {
-        "api_key",
-        "base_url",
-    }
+CALL_EXCLUDED_KWARGS = (
+    CLIENT_CONSTRUCTOR_KWARGS
+    | FRAMEWORK_KWARGS
+    | frozenset(
+        {
+            "api_key",
+            "base_url",
+        }
+    )
 )
 
 VALID_OUTPUT_TYPES = ("text", "image", "video", "audio", "json")

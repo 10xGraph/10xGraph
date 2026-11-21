@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from .constants import CALL_EXCLUDED_KWARGS, resolve_reasoning_config
+from .sdk_kwargs import accepted_params, filter_kwargs
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -106,6 +107,11 @@ def _to_responses_content(content: Any) -> Any:
     return converted
 
 
+def _supported(method: Any, call_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """``call_kwargs`` limited to the parameters ``method`` defines."""
+    return filter_kwargs(call_kwargs, accepted_params(method), "openai")
+
+
 class AgentOpenAIMixin:
     """OpenAI and OpenAI-compatible API request helpers."""
 
@@ -140,12 +146,13 @@ class AgentOpenAIMixin:
                 call_kwargs["tools"] = tools
 
             logger.debug("Calling OpenAI chat.completions.parse with model=%s", self.model)
-            response = await self.client.chat.completions.parse(
+            method = self.client.chat.completions.parse
+            response = await method(
                 model=self.model,
                 messages=messages,
                 response_format=output_schema,
                 stream=False,
-                **call_kwargs,
+                **_supported(method, call_kwargs),
             )
             details = getattr(getattr(response, "usage", None), "prompt_tokens_details", None)
             cached = getattr(details, "cached_tokens", 0) or 0
@@ -161,11 +168,12 @@ class AgentOpenAIMixin:
                 call_kwargs.setdefault("stream_options", {"include_usage": True})
 
             logger.debug("Calling OpenAI chat.completions.create with model=%s", self.model)
-            response = await self.client.chat.completions.create(
+            method = self.client.chat.completions.create
+            response = await method(
                 model=self.model,
                 messages=messages,
                 stream=stream,
-                **call_kwargs,
+                **_supported(method, call_kwargs),
             )
             if not stream:
                 details = getattr(getattr(response, "usage", None), "prompt_tokens_details", None)
@@ -305,17 +313,19 @@ class AgentOpenAIMixin:
             # responses.parse validates the reply into ``output_schema``. It returns the whole
             # response at once, so streaming is turned off, as on the chat parse path.
             logger.debug("Calling OpenAI responses.parse with model=%s", self.model)
-            return await self.client.responses.parse(
+            method = self.client.responses.parse
+            return await method(
                 model=self.model,
                 input=input_items,
                 text_format=output_schema,
                 stream=False,
-                **call_kwargs,
+                **_supported(method, call_kwargs),
             )
         logger.debug("Calling OpenAI responses.create with model=%s", self.model)
-        return await self.client.responses.create(
+        method = self.client.responses.create
+        return await method(
             model=self.model,
             input=input_items,
             stream=stream,
-            **call_kwargs,
+            **_supported(method, call_kwargs),
         )

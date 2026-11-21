@@ -21,6 +21,7 @@ one ``role: "tool"`` each    all ``tool_result`` blocks in ONE user turn
 from __future__ import annotations
 
 import logging
+from functools import cache
 from typing import Any
 
 from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
@@ -36,6 +37,30 @@ _UNSUPPORTED_PART_TYPES = ("input_audio", "video")
 _DATA_URI_PREFIX = "data:"
 
 _BEDROCK_PREFIX = "anthropic."
+
+
+@cache
+def _sdk_keys(param_type: str) -> frozenset[str]:
+    """Keys the Anthropic SDK defines on a request type (``TextBlockParam``, ``ToolParam``).
+
+    Imported lazily so the anthropic package stays optional. The SDK's own types
+    decide which developer-written fields are kept, so new API fields need no
+    change here.
+    """
+    from anthropic import types
+
+    return frozenset(getattr(types, param_type).__annotations__)
+
+
+def _keep_sdk_keys(
+    source: dict[str, Any], param_type: str, skip: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    keys = _sdk_keys(param_type)
+    return {k: v for k, v in source.items() if k in keys and k not in skip}
+
+
+def _text_block(part: dict[str, Any]) -> dict[str, Any]:
+    return {**_keep_sdk_keys(part, "TextBlockParam"), "type": "text", "text": part.get("text", "")}
 
 
 def strip_bedrock_prefix(model: str) -> str:
@@ -77,7 +102,7 @@ def split_system(
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
-                    system_blocks.append({"type": "text", "text": part.get("text", "")})
+                    system_blocks.append(_text_block(part))
                 elif isinstance(part, str):
                     system_blocks.append({"type": "text", "text": part})
         elif content:
@@ -104,7 +129,7 @@ def convert_content_parts(content: Any) -> Any:
         ptype = part.get("type", "")
 
         if ptype == "text":
-            converted.append({"type": "text", "text": part.get("text", "")})
+            converted.append(_text_block(part))
 
         elif ptype == "image_url":
             block = _convert_image_part(part)
@@ -211,14 +236,21 @@ def convert_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
 
         function = tool.get("function")
         if tool.get("type") == "function" and isinstance(function, dict):
-            entry: dict[str, Any] = {
-                "name": function.get("name", ""),
-                "description": function.get("description", ""),
-                "input_schema": function.get("parameters") or {"type": "object", "properties": {}},
-            }
-            # ``strict`` is a top-level field on an Anthropic tool, not nested.
-            if function.get("strict") is not None:
-                entry["strict"] = function["strict"]
+            # Developer fields (cache_control, strict, defer_loading, ...) are kept
+            # when the SDK's ToolParam defines them, from the wrapper or from
+            # ``function``. Other keys (e.g. x-function-capabilities) are not sent.
+            entry = _keep_sdk_keys(tool, "ToolParam", skip=("type",))
+            entry.update(_keep_sdk_keys(function, "ToolParam", skip=("type",)))
+            entry.update(
+                {
+                    "name": function.get("name", ""),
+                    "description": function.get("description", ""),
+                    "input_schema": function.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+            )
+            if entry.get("strict") is None:
+                entry.pop("strict", None)
             converted.append(entry)
         else:
             converted.append(tool)
@@ -327,42 +359,64 @@ def _stringify_tool_content(content: Any) -> Any:
     return str(content)
 
 
+def _has_cache_control(
+    system: list[dict[str, Any]] | None,
+    tools: list[dict[str, Any]] | None,
+    messages: list[dict[str, Any]],
+    call_kwargs: dict[str, Any],
+) -> bool:
+    """True when the developer placed ``cache_control`` on the request themselves."""
+    if "cache_control" in call_kwargs:
+        return True
+    blocks = [*(system or []), *(tools or [])]
+    for message in messages:
+        if isinstance(message.get("content"), list):
+            blocks.extend(message["content"])
+    return any(isinstance(block, dict) and "cache_control" in block for block in blocks)
+
+
 def apply_cache_control(
     cache: bool | dict[str, Any] | None,
     system: list[dict[str, Any]] | None,
     tools: list[dict[str, Any]] | None,
+    messages: list[dict[str, Any]],
+    call_kwargs: dict[str, Any],
 ) -> None:
-    """Attach ``cache_control`` breakpoints to the stable request prefix, in place.
+    """Turn on Anthropic prompt caching for the request, in place.
 
-    Caching is a **prefix match**: the render order is ``tools`` -> ``system`` ->
-    ``messages``, and any byte change invalidates everything after it. So the
-    breakpoint goes at the end of the stable prefix (the last tool if tools are
-    present, and the last system block), leaving the volatile per-request
-    messages after it.
+    Two parts, both using the same control (so the same TTL): a breakpoint on the
+    end of the stable prefix (the last system block, or the last tool when there
+    is no system prompt), and a top-level ``cache_control`` in ``call_kwargs``
+    (automatic caching, which caches the conversation and moves forward each call).
+
+    If the developer placed ``cache_control`` anywhere (top level, system blocks,
+    tools, message blocks) nothing is added, so their own strategy is never mixed
+    with ours.
 
     Args:
-        cache: ``False``/``None`` disables. ``True`` uses a default ephemeral
-            breakpoint. A dict is used verbatim as the ``cache_control`` value,
-            so ``{"type": "ephemeral", "ttl": "1h"}`` extends retention.
+        cache: ``False``/``None`` disables. ``True`` uses ``{"type": "ephemeral"}``.
+            A dict is used verbatim as the control, so
+            ``{"type": "ephemeral", "ttl": "1h"}`` extends retention.
         system: System blocks, mutated in place.
         tools: Anthropic-shaped tool definitions, mutated in place.
+        messages: Anthropic-shaped messages, only read.
+        call_kwargs: Request kwargs, gets the top-level ``cache_control``.
 
     Note:
-        The minimum cacheable prefix is roughly 1024 tokens; a shorter prefix
+        The minimum cacheable prefix depends on the model; a shorter prefix
         silently does not cache. Verify with ``usage.cache_read_input_tokens``.
     """
-    if not cache:
+    if not cache or _has_cache_control(system, tools, messages, call_kwargs):
         return
 
     control = cache if isinstance(cache, dict) else {"type": "ephemeral"}
 
-    # Tools render first, so a breakpoint on the last tool caches the whole
-    # tool list. Only worth it when the system prompt is also stable.
-    if tools:
-        tools[-1] = {**tools[-1], "cache_control": control}
-
     if system:
         system[-1] = {**system[-1], "cache_control": control}
+    elif tools:
+        tools[-1] = {**tools[-1], "cache_control": control}
+
+    call_kwargs["cache_control"] = control
 
 
 def drop_trailing_assistant(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

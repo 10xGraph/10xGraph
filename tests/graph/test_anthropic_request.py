@@ -58,6 +58,19 @@ class TestSplitSystem:
         system, _ = split_system(messages)
         assert system == [{"type": "text", "text": "block form"}]
 
+    def test_system_block_keeps_sdk_fields(self):
+        part = {
+            "type": "text",
+            "text": "x",
+            "cache_control": {"type": "ephemeral"},
+            "citations": [],
+            "junk": 1,
+        }
+        system, _ = split_system([{"role": "system", "content": [part]}])
+        assert system == [
+            {"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}, "citations": []}
+        ]
+
     def test_empty_system_content_is_dropped(self):
         messages = [{"role": "system", "content": ""}, {"role": "user", "content": "hi"}]
         system, remainder = split_system(messages)
@@ -234,6 +247,33 @@ class TestConvertTools:
             "type": "object",
             "properties": {},
         }
+
+    def test_tool_keeps_sdk_fields_and_drops_unknown(self):
+        tools = [
+            {
+                "type": "function",
+                "defer_loading": True,
+                "function": {
+                    "name": "f",
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                    "cache_control": {"type": "ephemeral"},
+                    "x-function-capabilities": {"a": 1},
+                },
+            }
+        ]
+        out = convert_tools(tools)[0]
+        assert out == {
+            "name": "f",
+            "description": "d",
+            "input_schema": {"type": "object", "properties": {}},
+            "cache_control": {"type": "ephemeral"},
+            "defer_loading": True,
+        }
+
+    def test_message_text_part_keeps_cache_control(self):
+        parts = [{"type": "text", "text": "t", "cache_control": {"type": "ephemeral"}}]
+        assert convert_content_parts(parts) == parts
 
     @pytest.mark.parametrize("empty", [None, []])
     def test_empty_tools_returns_none(self, empty):

@@ -220,6 +220,19 @@ def _build_google_types_mock() -> MagicMock:
             self.__dict__.update(kw)
 
     class _GenerateContentConfig:
+        model_fields = {
+            name: None
+            for name in (
+                "temperature",
+                "max_output_tokens",
+                "system_instruction",
+                "tools",
+                "thinking_config",
+                "cached_content",
+                "seed",
+            )
+        }
+
         def __init__(self, **kw):
             self.__dict__.update(kw)
 
@@ -231,6 +244,12 @@ def _build_google_types_mock() -> MagicMock:
     types.ThinkingConfig = _ThinkingConfig
     types.GenerateContentConfig = _GenerateContentConfig
     return types
+
+
+def _with_fields(factory):
+    """Give a fake GenerateContentConfig factory the ``model_fields`` the real class has."""
+    factory.model_fields = {}
+    return factory
 
 
 def _google_types_patch(types_mock: MagicMock):
@@ -1027,7 +1046,7 @@ class TestBuildGoogleConfig:
         agent = _make_google_agent()
         captured: dict = {}
         types_mock = _build_google_types_mock()
-        types_mock.GenerateContentConfig = lambda **kw: (captured.update(kw) or MagicMock())
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: (captured.update(kw) or MagicMock()))
         with _google_types_patch(types_mock):
             agent._build_google_config("You are a bot", None, {})
         assert captured.get("system_instruction") == "You are a bot"
@@ -1036,7 +1055,7 @@ class TestBuildGoogleConfig:
         agent = _make_google_agent()
         captured: dict = {}
         types_mock = _build_google_types_mock()
-        types_mock.GenerateContentConfig = lambda **kw: (captured.update(kw) or MagicMock())
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: (captured.update(kw) or MagicMock()))
         call_kwargs = {"temperature": 0.5}
         with _google_types_patch(types_mock):
             agent._build_google_config(None, None, call_kwargs)
@@ -1048,7 +1067,7 @@ class TestBuildGoogleConfig:
         agent = _make_google_agent()
         captured: dict = {}
         types_mock = _build_google_types_mock()
-        types_mock.GenerateContentConfig = lambda **kw: (captured.update(kw) or MagicMock())
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: (captured.update(kw) or MagicMock()))
         call_kwargs = {"max_tokens": 256}
         with _google_types_patch(types_mock):
             agent._build_google_config(None, None, call_kwargs)
@@ -1062,7 +1081,7 @@ class TestBuildGoogleConfig:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_budget") == 2048
@@ -1075,7 +1094,7 @@ class TestBuildGoogleConfig:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_budget") == 512
@@ -1088,7 +1107,7 @@ class TestBuildGoogleConfig:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_budget") == 8192
@@ -1101,7 +1120,7 @@ class TestBuildGoogleConfig:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_budget") == 24576
@@ -1114,7 +1133,7 @@ class TestBuildGoogleConfig:
         types_mock = _build_google_types_mock()
         thinking_called = []
         types_mock.ThinkingConfig = lambda **kw: thinking_called.append(kw) or MagicMock()
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert len(thinking_called) == 0
@@ -1128,7 +1147,7 @@ class TestBuildGoogleConfig:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_level") == "high"
@@ -1143,7 +1162,7 @@ class TestBuildGoogleConfig:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_level") == "minimal"
@@ -2250,7 +2269,7 @@ class TestAgentInit:
         thinking_kwargs: dict = {}
         types_mock = _build_google_types_mock()
         types_mock.ThinkingConfig = lambda **kw: (thinking_kwargs.update(kw) or MagicMock())
-        types_mock.GenerateContentConfig = lambda **kw: MagicMock()
+        types_mock.GenerateContentConfig = _with_fields(lambda **kw: MagicMock())
         with _google_types_patch(types_mock):
             agent._build_google_config("system", None, {})
         assert thinking_kwargs.get("thinking_budget") == 512
