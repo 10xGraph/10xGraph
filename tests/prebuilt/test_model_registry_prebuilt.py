@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
+from tenxgraph.core.exceptions import ModelNotFoundError
 from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.graph.agent import Agent
-from tenxgraph.core.state import AgentState
+from tenxgraph.core.state import AgentState, Message
 from tenxgraph.prebuilt.agent import (
     PlanActReflectAgent,
     ReactAgent,
@@ -20,6 +21,7 @@ from tenxgraph.prebuilt.agent import (
     SupervisorTeamAgent,
 )
 from tenxgraph.prebuilt.agent.supervisor_team import WorkerConfig
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.utils.constants import END
 
 
@@ -186,3 +188,47 @@ class TestPrebuiltPassthrough:
             await agent._agent.execute(AgentState(), {"_node_name": "MAIN", "model": "vllm"})
             await agent._agent.execute(AgentState(), {"_node_name": "MAIN"})
         assert seen == ["deepseek-r1", "gpt-5-mini"]
+
+
+class TestUnknownModelBeforeRun:
+    """An unknown model name fails before the graph starts, as ModelNotFoundError."""
+
+    def _compiled(self, registry: bool = True):
+        graph = StateGraph()
+        graph.add_node("MAIN", Agent(model="openai", model_registry=REGISTRY if registry else None))
+        graph.set_entry_point("MAIN")
+        graph.add_edge("MAIN", END)
+        checkpointer = InMemoryCheckpointer()
+        return graph.compile(checkpointer=checkpointer), checkpointer
+
+    @staticmethod
+    def _input() -> dict[str, Any]:
+        return {"messages": [Message.text_message("hi")]}
+
+    async def test_ainvoke_unknown_name(self):
+        compiled, checkpointer = self._compiled()
+        config = {"thread_id": "t1", "model": "gpt-4o"}
+        with pytest.raises(ModelNotFoundError):
+            await compiled.ainvoke(self._input(), config)
+        assert await checkpointer.aget_state({"thread_id": "t1"}) is None
+
+    async def test_astream_unknown_name(self):
+        compiled, checkpointer = self._compiled()
+        config = {"thread_id": "t2", "model": "gpt-4o"}
+        with pytest.raises(ModelNotFoundError):
+            async for _ in compiled.astream(self._input(), config):
+                pass
+        assert await checkpointer.aget_state({"thread_id": "t2"}) is None
+
+    async def test_known_none_and_missing_registry_run(self):
+        compiled, _ = self._compiled()
+        plain, _ = self._compiled(registry=False)
+        converter = MagicMock()
+        converter.invoke = AsyncMock(return_value=Message.text_message("ok", role="assistant"))
+        with patch.object(Agent, "execute", AsyncMock(return_value=converter)):
+            for target, config in (
+                (compiled, {"thread_id": "a", "model": "vllm"}),
+                (compiled, {"thread_id": "b", "model": None}),
+                (plain, {"thread_id": "c", "model": "gpt-4o"}),
+            ):
+                await target.ainvoke(self._input(), config)

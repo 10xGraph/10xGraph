@@ -14,6 +14,7 @@ from injectq import InjectQ
 from tenxgraph.core.authz import Identity, can_reach, get_identity
 from tenxgraph.core.exceptions.closed_error import GraphClosedError
 from tenxgraph.core.exceptions.graph_error import GraphError
+from tenxgraph.core.exceptions.model_error import ModelNotFoundError
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.tool_node.base import ToolNode
 from tenxgraph.core.state import AgentState
@@ -445,6 +446,7 @@ class CompiledGraph[StateT: AgentState]:
         """
         self._refuse_if_closing()
         self._guard_not_realtime()
+        self._check_model_choice(config)
         cfg = self._prepare_config(config, is_stream=False)
         handle, *tokens = self._begin_run(cfg, "invoke")
 
@@ -778,6 +780,7 @@ class CompiledGraph[StateT: AgentState]:
         """
         self._refuse_if_closing()
         self._guard_not_realtime()
+        self._check_model_choice(config)
         cfg = self._prepare_config(config, is_stream=True)
         handle, *tokens = self._begin_run(cfg, "stream")
 
@@ -1309,6 +1312,19 @@ class CompiledGraph[StateT: AgentState]:
             "models": self._model_choices(),
         }
         return graph
+
+    def _check_model_choice(self, config: dict[str, Any] | None) -> None:
+        """Raise ModelNotFoundError before the run starts when the config names an unknown model.
+
+        Node errors are wrapped in NodeError, so the check runs here to keep the error type.
+        None means the Agent's default, as in ``select_entry``.
+        """
+        if not config:
+            return
+        for node_name, choice in self._model_choices().items():
+            value = config.get(choice["config_key"])
+            if value is not None and (not isinstance(value, str) or value not in choice["names"]):
+                raise ModelNotFoundError(value, node_name, choice["names"])
 
     def _model_choices(self) -> dict[str, dict[str, Any]]:
         """Per node, the model names a run can pick (only nodes whose Agent has a registry).

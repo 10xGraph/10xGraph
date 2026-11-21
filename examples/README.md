@@ -45,7 +45,7 @@ Run every example from the repository root. Each folder's README lists its extra
 |---|---|
 | [tools](tools/) | `@tool`, injected params, `ToolResult` state updates, prebuilt tools, client-side tools |
 | [mcp](mcp/) | Model Context Protocol servers: local FastMCP, multiple servers, GitHub, Xquik |
-| [providers](providers/) | OpenAI, Gemini, Vertex AI, Anthropic, Bedrock, DeepSeek, Ollama, reasoning |
+| [providers](providers/) | OpenAI, Gemini, Vertex AI, Anthropic, Bedrock, DeepSeek, Ollama, reasoning, model registry |
 | [dependency_injection](dependency_injection/) | Injecting your own services into tools and nodes with InjectQ |
 
 ### Production
