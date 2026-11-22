@@ -1,4 +1,7 @@
-"""Google-backed search tools for AgentFlow agents."""
+"""Google-backed search tools for AgentFlow agents.
+
+Deprecated: will be removed in 2.0.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +11,8 @@ from typing import Any
 
 from tenxgraph.core.llm.client_factory import get_default_llm_timeout
 from tenxgraph.utils.decorators import tool
+
+from ._deprecation import deprecated_factory, deprecated_tool
 
 
 _DEFAULT_MODEL = "gemini-2.5-flash"
@@ -119,6 +124,7 @@ def _vertex_ai_search_sync(
     tags=["web", "search", "google"],
     capabilities=["network_access"],
 )
+@deprecated_tool
 async def google_web_search(
     query: str,
     model: str = _DEFAULT_MODEL,
@@ -140,6 +146,7 @@ async def google_web_search(
     tags=["search", "google", "vertex_ai"],
     capabilities=["network_access"],
 )
+@deprecated_tool
 async def vertex_ai_search(
     query: str,
     datastore: str,
@@ -160,6 +167,7 @@ async def vertex_ai_search(
     return json.dumps(result)
 
 
+@deprecated_factory
 def create_google_web_search(model: str = _DEFAULT_MODEL):
     """Create a ``google_web_search`` tool with the model fixed, so the LLM cannot pick it."""
 
@@ -182,6 +190,7 @@ def create_google_web_search(model: str = _DEFAULT_MODEL):
     return google_web_search
 
 
+@deprecated_factory
 def create_vertex_ai_search(datastore: str, model: str = _DEFAULT_MODEL):
     """Create a ``vertex_ai_search`` tool locked to one datastore and model.
 

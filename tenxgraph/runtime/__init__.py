@@ -4,10 +4,9 @@ This package provides the runtime infrastructure for agent execution:
 
 - ``tenxgraph.runtime.adapters``   - LLM response converters
 - ``tenxgraph.runtime.publisher``  - event publishers (console, Redis, Kafka, RabbitMQ)
-- ``tenxgraph.runtime.protocols``  - agent communication protocol packages
 """
 
-from . import adapters, protocols, publisher
+from . import adapters, publisher
 from .adapters.llm import (
     BaseConverter,
     ConverterType,
@@ -48,8 +47,6 @@ __all__ = [
     "RabbitMQPublisher",
     "RedisPublisher",
     "adapters",
-    # Protocols
-    "protocols",
     "publish_event",
     "publisher",
 ]

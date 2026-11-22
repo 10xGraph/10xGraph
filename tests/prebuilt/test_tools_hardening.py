@@ -107,9 +107,9 @@ async def test_bound_search_tools_hide_datastore_and_model_from_the_model():
         ("file_search", ("hi",)),
     ],
 )
-def test_module_level_file_tools_warn_and_name_the_factory(name, args, tmp_path, monkeypatch):
+def test_module_level_file_tools_warn_deprecated(name, args, tmp_path, monkeypatch):
     from tenxgraph.prebuilt import tools as tools_pkg
 
     monkeypatch.chdir(tmp_path)
-    with pytest.warns(DeprecationWarning, match="create_file_tools"):
+    with pytest.warns(DeprecationWarning, match="removed in 10xgraph 2.0"):
         getattr(tools_pkg, name)(*args)

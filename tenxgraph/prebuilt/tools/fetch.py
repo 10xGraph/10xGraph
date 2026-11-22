@@ -1,4 +1,7 @@
-"""Network fetch tools for AgentFlow agents."""
+"""Network fetch tools for AgentFlow agents.
+
+Deprecated: will be removed in 2.0.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +16,8 @@ from html.parser import HTMLParser
 
 from tenxgraph.utils import safe_http
 from tenxgraph.utils.decorators import tool
+
+from ._deprecation import deprecated_factory, deprecated_tool
 
 
 logger = logging.getLogger("tenxgraph.prebuilt.fetch")
@@ -133,6 +138,7 @@ def _fetch_sync(
     tags=["web", "fetch", "network"],
     capabilities=["network_access"],
 )
+@deprecated_tool
 async def fetch_url(url: str, timeout: float = 10.0, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
     """Fetch a public URL and return normalized text content."""
     safe_max_chars = max(1, min(int(max_chars), _DEFAULT_MAX_CHARS))
@@ -140,6 +146,7 @@ async def fetch_url(url: str, timeout: float = 10.0, max_chars: int = _DEFAULT_M
     return json.dumps(result)
 
 
+@deprecated_factory
 def create_fetch_url(allowed_hosts: list[str] | tuple[str, ...]):
     """Create a ``fetch_url`` tool that only fetches the given hosts.
 

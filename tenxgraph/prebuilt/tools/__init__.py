@@ -1,4 +1,14 @@
-"""Prebuilt tools for agentflow graphs."""
+"""Prebuilt tools for agentflow graphs.
+
+Kept: ``create_handoff_tool``, ``is_handoff_tool``, ``make_agent_memory_tool`` and
+``make_user_memory_tool``.
+
+Deprecated, will be removed in 2.0 (calling them emits a ``DeprecationWarning``):
+``safe_calculator``, ``fetch_url``, ``create_fetch_url``, ``google_web_search``,
+``create_google_web_search``, ``vertex_ai_search``, ``create_vertex_ai_search``,
+``file_read``, ``file_write``, ``file_search`` and ``create_file_tools``. Write your own
+``@tool`` or use an MCP server.
+"""
 
 from .calculator import safe_calculator
 from .fetch import create_fetch_url, fetch_url

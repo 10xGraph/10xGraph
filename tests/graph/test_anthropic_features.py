@@ -1,4 +1,4 @@
-"""Tests for prompt caching, count_tokens, server tools, and batches."""
+"""Tests for prompt caching, count_tokens, and server tools."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from tenxgraph.core.graph.agent_internal.anthropic_server_tools import (
     web_fetch_tool,
     web_search_tool,
 )
-from tenxgraph.core.llm.anthropic_batch import AnthropicBatch, BatchResult
 
 
 class TestStripBedrockPrefix:
@@ -264,115 +263,3 @@ class TestServerTools:
         await agent._call_anthropic([{"role": "user", "content": "hi"}], tools=[search])
         assert agent.client.messages.create.call_args.kwargs["tools"] == [search]
 
-
-class TestBatch:
-    def _batch(self):
-        return AnthropicBatch(model="claude-haiku-4-5", client=MagicMock())
-
-    def test_add_translates_system_prompt(self):
-        batch = self._batch()
-        batch.add(
-            "row-1",
-            [{"role": "system", "content": "sys"}, {"role": "user", "content": "q"}],
-        )
-        body = batch.requests[0]["params"]
-        assert body["system"] == [{"type": "text", "text": "sys"}]
-        assert body["messages"] == [{"role": "user", "content": "q"}]
-
-    def test_add_never_leaves_a_trailing_assistant(self):
-        """The live path drops prefills; the batch path must agree.
-
-        ``convert_messages`` emits ``state.context_summary`` as an assistant
-        message, so a summarised-and-trimmed conversation is
-        ``[system, assistant(summary)]``. Sending that verbatim is a 400, and it
-        is also inconsistent with what the non-batch path now produces.
-        """
-        batch = self._batch()
-        batch.add(
-            "row-1",
-            [{"role": "system", "content": "sys"}, {"role": "assistant", "content": "summary"}],
-        )
-        body = batch.requests[0]["params"]
-        assert body["messages"], "an empty message list is not a sendable request"
-        assert all(m.get("role") != "assistant" for m in body["messages"])
-
-    def test_max_tokens_is_defaulted(self):
-        batch = self._batch()
-        batch.add("row-1", [{"role": "user", "content": "q"}])
-        assert batch.requests[0]["params"]["max_tokens"] == batch.max_tokens
-
-    def test_duplicate_custom_id_is_rejected(self):
-        """custom_id is the only way results are matched back."""
-        batch = self._batch()
-        batch.add("dup", [{"role": "user", "content": "a"}])
-        with pytest.raises(ValueError, match="Duplicate custom_id"):
-            batch.add("dup", [{"role": "user", "content": "b"}])
-
-    def test_add_is_chainable(self):
-        batch = self._batch()
-        assert batch.add("a", [{"role": "user", "content": "1"}]) is batch
-
-    @pytest.mark.asyncio
-    async def test_submit_rejects_an_empty_batch(self):
-        with pytest.raises(ValueError, match="empty batch"):
-            await self._batch().submit()
-
-    @pytest.mark.asyncio
-    async def test_results_are_keyed_by_custom_id_not_position(self):
-        """Batch results come back in any order."""
-        batch = self._batch()
-
-        def entry(custom_id, text):
-            return SimpleNamespace(
-                custom_id=custom_id,
-                result=SimpleNamespace(
-                    type="succeeded",
-                    message=SimpleNamespace(
-                        content=[SimpleNamespace(type="text", text=text)],
-                        stop_reason="end_turn",
-                        usage=SimpleNamespace(input_tokens=5, output_tokens=2),
-                    ),
-                ),
-            )
-
-        async def gen():
-            # Deliberately out of submission order.
-            for item in (entry("row-2", "second"), entry("row-1", "first")):
-                yield item
-
-        batch.client.messages.batches.results = AsyncMock(return_value=gen())
-
-        results = await batch.results("batch_1")
-        assert results["row-1"].text == "first"
-        assert results["row-2"].text == "second"
-        assert results["row-1"].ok
-
-    @pytest.mark.asyncio
-    async def test_errored_entry_is_captured_not_dropped(self):
-        batch = self._batch()
-
-        async def gen():
-            yield SimpleNamespace(
-                custom_id="row-1",
-                result=SimpleNamespace(type="errored", error={"type": "invalid_request"}),
-            )
-
-        batch.client.messages.batches.results = AsyncMock(return_value=gen())
-
-        results = await batch.results("batch_1")
-        assert results["row-1"].status == "errored"
-        assert results["row-1"].ok is False
-        assert results["row-1"].error == {"type": "invalid_request"}
-
-    @pytest.mark.asyncio
-    async def test_wait_times_out_when_batch_never_ends(self):
-        batch = self._batch()
-        batch.client.messages.batches.retrieve = AsyncMock(
-            return_value=SimpleNamespace(processing_status="in_progress")
-        )
-        with pytest.raises(TimeoutError, match="in_progress"):
-            await batch.wait("batch_1", poll_interval=0.01, timeout=0.02)
-
-    def test_batch_result_ok_property(self):
-        assert BatchResult("a", "succeeded").ok is True
-        assert BatchResult("a", "expired").ok is False

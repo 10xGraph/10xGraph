@@ -35,6 +35,16 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
+## [Unreleased]
+
+### Deprecated
+
+- The prebuilt tools `safe_calculator`, `fetch_url`, `create_fetch_url`, `google_web_search`, `create_google_web_search`, `vertex_ai_search`, `create_vertex_ai_search`, `file_read`, `file_write`, `file_search` and `create_file_tools` are deprecated and will be removed in 2.0. They keep working and now emit a `DeprecationWarning` when called (tools) or created (factories). The fetch and file tools are network and filesystem access, a security surface the framework should not own, and the calculator and search tools are outside the product's scope. Write your own `@tool` or use an MCP server. `create_handoff_tool`, `is_handoff_tool`, `make_agent_memory_tool` and `make_user_memory_tool` stay.
+
+### Removed
+
+- `AnthropicBatch`, `OpenAIBatch` and `BatchResult` (`tenxgraph.core.llm`) are removed. They were standalone wrappers over the provider batch APIs, used by no part of the graph runtime, and had no known users. This is an exception to the deprecation policy: they are removed in a minor release without a deprecation period. Call the provider SDK's batch API directly (`client.messages.batches` for Anthropic, `client.batches` for OpenAI).
+
 ## [1.0.0] - 2026-11-16
 
 The first stable release of `10xgraph`, released with `10xgraph-api` 1.0.0 and `10xgraph-client` 1.0.0.
