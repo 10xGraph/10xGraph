@@ -123,7 +123,8 @@ class ToolGuard(BeforeInvokeCallback[dict[str, t.Any], dict[str, t.Any]]):
         """Register the guard as a before_invoke callback for local and MCP tools.
 
         Register it on the ``CallbackManager`` you pass to ``graph.compile(callback_manager=)``.
-        Graphs that share the global InjectQ container also share that manager.
+        Each graph uses only the manager it was compiled with, so the guard applies to that
+        graph alone.
         """
         callback_manager.register_before_invoke(InvocationType.TOOL, self)
         callback_manager.register_before_invoke(InvocationType.MCP, self)

@@ -16,6 +16,10 @@ from .anthropic_request import (
 from .constants import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     ANTHROPIC_DEFAULT_MAX_TOKENS_STREAMING,
+    ANTHROPIC_LEGACY_BUDGET_BY_EFFORT,
+    ANTHROPIC_LEGACY_EFFORT_PREFIXES,
+    ANTHROPIC_LEGACY_THINKING_PREFIXES,
+    ANTHROPIC_MIN_THINKING_BUDGET,
     ANTHROPIC_NO_SAMPLING_MODELS,
     CALL_EXCLUDED_KWARGS,
     resolve_reasoning_config,
@@ -54,18 +58,97 @@ def strip_rejected_sampling_params(model: str, call_kwargs: dict[str, Any]) -> N
     )
 
 
+def _bare_model(model: str) -> str:
+    """Model id without Bedrock prefix (also ``us.anthropic.``), provider prefix or Vertex
+    ``@`` date, lowercased."""
+    bare = model.split("/")[-1].split("@")[0]
+    if "anthropic." in bare:
+        bare = bare.split("anthropic.", 1)[1]
+    return strip_bedrock_prefix(bare).lower()
+
+
+def is_legacy_thinking_model(model: str) -> bool:
+    """True for Claude models before 4.6, which need budget-based thinking."""
+    return _bare_model(model).startswith(ANTHROPIC_LEGACY_THINKING_PREFIXES)
+
+
+def _apply_legacy_reasoning(
+    model: str,
+    reasoning_config: dict[str, Any],
+    call_kwargs: dict[str, Any],
+) -> None:
+    """Budget-based thinking for pre-4.6 models, in place."""
+    effort = reasoning_config.get("effort")
+    if effort and _bare_model(model).startswith(ANTHROPIC_LEGACY_EFFORT_PREFIXES):
+        # Opus 4.5 accepts low/medium/high only.
+        output_config = dict(call_kwargs.get("output_config") or {})
+        output_config.setdefault("effort", "high" if effort in ("xhigh", "max") else effort)
+        call_kwargs["output_config"] = output_config
+
+    if "thinking" in call_kwargs:
+        return
+
+    max_tokens = call_kwargs.get("max_tokens")
+    if max_tokens is not None and max_tokens <= ANTHROPIC_MIN_THINKING_BUDGET:
+        logger.warning(
+            "Model %s needs max_tokens above %d for thinking (got %s); thinking skipped.",
+            model,
+            ANTHROPIC_MIN_THINKING_BUDGET,
+            max_tokens,
+        )
+        return
+
+    budget = reasoning_config.get("budget_tokens") or reasoning_config.get("thinking_budget")
+    if not budget:
+        budget = ANTHROPIC_LEGACY_BUDGET_BY_EFFORT.get(effort or "", None)
+    if not budget:
+        budget = ANTHROPIC_LEGACY_BUDGET_BY_EFFORT["low"]
+    budget = max(int(budget), ANTHROPIC_MIN_THINKING_BUDGET)
+    if max_tokens is not None:
+        budget = min(budget, max_tokens - 1)
+    call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+
+    # Thinking rejects top_k and any non-default temperature; drop them like the
+    # no-sampling models do.
+    dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
+    for key in dropped:
+        call_kwargs.pop(key)
+    if dropped:
+        logger.warning(
+            "Thinking on model %s rejects sampling parameters; dropped %s from the request.",
+            model,
+            ", ".join(dropped),
+        )
+
+
 def apply_reasoning_config(
     reasoning_config: dict[str, Any] | None,
     call_kwargs: dict[str, Any],
+    model: str = "",
 ) -> None:
     """Map agentflow's reasoning_config onto Anthropic thinking/effort, in place.
 
-    ``budget_tokens`` is never emitted: it is removed on every current Claude
-    model and returns a 400. Depth is controlled by ``output_config.effort``.
-    ``thinking.display`` is sent only when ``reasoning_config`` has a ``display`` key; the
-    API default is "omitted" (empty summary). A ``thinking`` already in ``call_kwargs`` wins.
+    Claude 4.6 and newer (and unknown models): ``thinking={"type": "adaptive"}`` plus
+    ``output_config.effort``. ``budget_tokens`` is never emitted there: it is removed on
+    those models and returns a 400. ``thinking.display`` is sent only when
+    ``reasoning_config`` has a ``display`` key; the API default is "omitted".
+
+    Older models (Haiku 4.5, Sonnet 4.5, Opus 4.5 and before, see
+    ``ANTHROPIC_LEGACY_THINKING_PREFIXES``) reject adaptive thinking. They get
+    ``thinking={"type": "enabled", "budget_tokens": N}``: N is ``budget_tokens`` or
+    ``thinking_budget`` from the config, else mapped from effort (low 1024, medium 4096,
+    high 8192, xhigh/max 16384), at least 1024 and below ``max_tokens``. With ``max_tokens``
+    of 1024 or less thinking is skipped. ``display`` is dropped, ``output_config.effort`` is
+    sent only for Opus 4.5 (xhigh/max sent as high), and temperature, top_p and top_k are
+    dropped because thinking rejects them.
+
+    A ``thinking`` already in ``call_kwargs`` always wins.
     """
     if not reasoning_config:
+        return
+
+    if is_legacy_thinking_model(model):
+        _apply_legacy_reasoning(model, reasoning_config, call_kwargs)
         return
 
     thinking = {"type": "adaptive"}
@@ -129,7 +212,7 @@ class AgentAnthropicMixin:
         )
 
         strip_rejected_sampling_params(self.model, call_kwargs)
-        apply_reasoning_config(resolve_reasoning_config(self), call_kwargs)
+        apply_reasoning_config(resolve_reasoning_config(self), call_kwargs, self.model)
 
         anthropic_tools = convert_tools(tools)
 

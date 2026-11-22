@@ -120,6 +120,36 @@ ANTHROPIC_NO_SAMPLING_MODELS = frozenset(
     }
 )
 
+# Claude families before 4.6. They reject thinking={"type": "adaptive"} with a 400 and need
+# thinking={"type": "enabled", "budget_tokens": N}. Matched as a prefix of the bare model id, so
+# dated ids (-20251001), Vertex dates (@20251101) and -latest aliases all match. Unknown and
+# newer models take the adaptive path.
+ANTHROPIC_LEGACY_THINKING_PREFIXES = (
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+    "claude-opus-4-1",
+    "claude-opus-4-0",
+    "claude-sonnet-4-0",
+    "claude-3-7-sonnet",
+    "claude-sonnet-3-7",
+    "claude-opus-4-2025",
+    "claude-sonnet-4-2025",
+)
+
+# Only Opus 4.5 among the legacy models accepts output_config.effort, low/medium/high only.
+ANTHROPIC_LEGACY_EFFORT_PREFIXES = ("claude-opus-4-5",)
+
+# Thinking budget (tokens) for legacy models when reasoning_config gives only an effort.
+ANTHROPIC_LEGACY_BUDGET_BY_EFFORT = {
+    "low": 1024,
+    "medium": 4096,
+    "high": 8192,
+    "xhigh": 16384,
+    "max": 16384,
+}
+ANTHROPIC_MIN_THINKING_BUDGET = 1024
+
 # Anthropic requires max_tokens on every request. Streaming gets a larger default:
 # a large max_tokens without streaming risks an HTTP timeout.
 ANTHROPIC_DEFAULT_MAX_TOKENS = 16000

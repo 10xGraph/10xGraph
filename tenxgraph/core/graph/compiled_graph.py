@@ -36,6 +36,7 @@ from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
+from .utils.graph_container import activate, deactivate
 from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
@@ -181,6 +182,8 @@ class CompiledGraph[StateT: AgentState]:
         self._publisher: BasePublisher | None = publisher
         self._store: BaseStore | None = store
         self._state_graph: StateGraph[StateT] = state_graph
+        # This graph's own DI container; every run makes it current for its task.
+        self._container = state_graph._container
         self._interrupt_before: list[str] = interrupt_before
         self._interrupt_after: list[str] = interrupt_after
         # generate task manager
@@ -447,18 +450,22 @@ class CompiledGraph[StateT: AgentState]:
         self._refuse_if_closing()
         self._guard_not_realtime()
         self._check_model_choice(config)
-        cfg = self._prepare_config(config, is_stream=False)
-        handle, *tokens = self._begin_run(cfg, "invoke")
-
+        container_token = activate(self._container)
         try:
-            return await self._invoke_handler.invoke(
-                input_data,
-                cfg,
-                self._state,
-                response_granularity,
-            )
+            cfg = self._prepare_config(config, is_stream=False)
+            handle, *tokens = self._begin_run(cfg, "invoke")
+
+            try:
+                return await self._invoke_handler.invoke(
+                    input_data,
+                    cfg,
+                    self._state,
+                    response_granularity,
+                )
+            finally:
+                await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
         finally:
-            await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
+            deactivate(container_token)
 
     def _start_heartbeat(self, cfg: dict[str, Any]) -> asyncio.Task | None:
         """Keep this run's active-run marker alive while the run lasts.
@@ -538,38 +545,44 @@ class CompiledGraph[StateT: AgentState]:
           owner's keys, which the running worker polls. A refused stop answers exactly like a
           thread with no run. With no identity every run on the thread is stopped.
         """
-        cfg = self._prepare_config(config, is_stream=bool((config or {}).get("is_stream", False)))
-        # Runs of this graph in this process stop through their in-process flag. It acts at
-        # once and needs neither a checkpointer nor a reachable cache.
-        local = [
-            h
-            for h in self._runs.for_thread(cfg.get("thread_id"))
-            if can_reach(cfg, h.owner, h.tenant)
-        ]
-        for handle in local:
-            handle.request_stop()
-        if not self._checkpointer:
-            if local:
-                return {"ok": True, "running": True, "local": True}
-            return {"ok": False, "reason": "no-checkpointer"}
+        container_token = activate(self._container)
         try:
-            stop_cfg = await self._owner_stop_config(cfg)
-            if stop_cfg is None:  # the caller may not stop runs on this thread
+            cfg = self._prepare_config(
+                config, is_stream=bool((config or {}).get("is_stream", False))
+            )
+            # Runs of this graph in this process stop through their in-process flag. It acts at
+            # once and needs neither a checkpointer nor a reachable cache.
+            local = [
+                h
+                for h in self._runs.for_thread(cfg.get("thread_id"))
+                if can_reach(cfg, h.owner, h.tenant)
+            ]
+            for handle in local:
+                handle.request_stop()
+            if not self._checkpointer:
                 if local:
                     return {"ok": True, "running": True, "local": True}
-                return {"ok": False, "running": False, "reason": "no-state"}
-            return await self._request_stop_in_cache(stop_cfg, local=bool(local))
-        except Exception as e:
-            if not local:
-                raise
-            # The in-process flag is already set, so the stop is not lost.
-            logger.warning(
-                "Could not record the stop for thread_id %s in the cache (%r); "
-                "the local run is stopped through its in-process flag",
-                cfg.get("thread_id"),
-                e,
-            )
-            return {"ok": True, "running": True, "local": True}
+                return {"ok": False, "reason": "no-checkpointer"}
+            try:
+                stop_cfg = await self._owner_stop_config(cfg)
+                if stop_cfg is None:  # the caller may not stop runs on this thread
+                    if local:
+                        return {"ok": True, "running": True, "local": True}
+                    return {"ok": False, "running": False, "reason": "no-state"}
+                return await self._request_stop_in_cache(stop_cfg, local=bool(local))
+            except Exception as e:
+                if not local:
+                    raise
+                # The in-process flag is already set, so the stop is not lost.
+                logger.warning(
+                    "Could not record the stop for thread_id %s in the cache (%r); "
+                    "the local run is stopped through its in-process flag",
+                    cfg.get("thread_id"),
+                    e,
+                )
+                return {"ok": True, "running": True, "local": True}
+        finally:
+            deactivate(container_token)
 
     async def _owner_stop_config(self, cfg: dict[str, Any]) -> dict[str, Any] | None:
         """The config a cross-process stop is read and written with: the thread owner's.
@@ -781,22 +794,28 @@ class CompiledGraph[StateT: AgentState]:
         self._refuse_if_closing()
         self._guard_not_realtime()
         self._check_model_choice(config)
-        cfg = self._prepare_config(config, is_stream=True)
-        handle, *tokens = self._begin_run(cfg, "stream")
-
+        container_token = activate(self._container)
         try:
-            async for chunk in self._stream_handler.stream(
-                input_data,
-                cfg,
-                self._state,
-                response_granularity,
-            ):
-                yield chunk
-                # A consumer may drive each step from a new task (the API's stream wrapper
-                # does); a hard cancel must reach the task running the run now.
-                handle.task = asyncio.current_task()
+            cfg = self._prepare_config(config, is_stream=True)
+            handle, *tokens = self._begin_run(cfg, "stream")
+
+            try:
+                async for chunk in self._stream_handler.stream(
+                    input_data,
+                    cfg,
+                    self._state,
+                    response_granularity,
+                ):
+                    yield chunk
+                    # A consumer may drive each step from a new task (the API's stream wrapper
+                    # does); a hard cancel must reach the task running the run now, and that
+                    # task must resolve from this graph's container too.
+                    handle.task = asyncio.current_task()
+                    container_token = activate(self._container) or container_token
+            finally:
+                await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
         finally:
-            await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
+            deactivate(container_token)
 
     def attach_remote_tools(
         self,
@@ -951,24 +970,29 @@ class CompiledGraph[StateT: AgentState]:
         # socket, resume handle, transcript buffers), so a shared one would cross-wire users.
         agent = node.func.new_session()
         agent._node_name = name
-        cfg = self._prepare_config(config, is_stream=True)
-        callback_manager = InjectQ.get_instance().try_get(CallbackManager)
-        context_manager = self._state_graph._context_manager
-        run_state = state if state is not None else await self._realtime_start_state(cfg)
-
-        handle, *tokens = self._begin_run(cfg, "realtime", heartbeat=False)
+        container_token = activate(self._container)
         try:
-            async for event in agent.arun(
-                input_queue,
-                cfg,
-                run_state,
-                checkpointer=self._checkpointer,
-                callback_manager=callback_manager,
-                context_manager=context_manager,
-            ):
-                yield event
+            cfg = self._prepare_config(config, is_stream=True)
+            callback_manager = self._container.try_get(CallbackManager)
+            context_manager = self._state_graph._context_manager
+            run_state = state if state is not None else await self._realtime_start_state(cfg)
+
+            handle, *tokens = self._begin_run(cfg, "realtime", heartbeat=False)
+            try:
+                async for event in agent.arun(
+                    input_queue,
+                    cfg,
+                    run_state,
+                    checkpointer=self._checkpointer,
+                    callback_manager=callback_manager,
+                    context_manager=context_manager,
+                ):
+                    yield event
+                    container_token = activate(self._container) or container_token
+            finally:
+                await self._finish_run(cfg, handle, (tokens[0], tokens[1]), end_run=False)
         finally:
-            await self._finish_run(cfg, handle, (tokens[0], tokens[1]), end_run=False)
+            deactivate(container_token)
 
     async def _realtime_start_state(self, cfg: dict[str, Any]) -> AgentState:
         """The state a realtime session starts from: the thread's saved state, else a copy.

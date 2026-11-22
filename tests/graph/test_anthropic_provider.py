@@ -14,6 +14,7 @@ from tenxgraph.core.graph.agent_internal.anthropic import (
     _ANTHROPIC_EXCLUDED_KWARGS,
     AgentAnthropicMixin,
     apply_reasoning_config,
+    is_legacy_thinking_model,
     strip_rejected_sampling_params,
 )
 from tenxgraph.core.graph.agent_internal.constants import (
@@ -272,6 +273,79 @@ class TestReasoningConfig:
         assert "budget_tokens" not in kwargs
         assert "thinking_budget" not in kwargs
         assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+class TestLegacyThinking:
+    def test_modern_model_unchanged(self):
+        kwargs: dict = {"max_tokens": 16000}
+        apply_reasoning_config({"effort": "xhigh"}, kwargs, "claude-opus-4-7")
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+
+    def test_haiku_45_enabled_budget_no_effort(self):
+        kwargs: dict = {"max_tokens": 16000, "temperature": 0.5, "top_k": 3}
+        apply_reasoning_config(
+            {"effort": "medium", "display": "summarized"}, kwargs, "claude-haiku-4-5"
+        )
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+        assert "output_config" not in kwargs
+        assert "temperature" not in kwargs and "top_k" not in kwargs
+
+    def test_opus_45_budget_and_effort_clamped(self):
+        kwargs: dict = {"max_tokens": 32000}
+        apply_reasoning_config({"effort": "max"}, kwargs, "claude-opus-4-5")
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 16384}
+        assert kwargs["output_config"] == {"effort": "high"}
+
+    def test_explicit_budget_wins_over_effort(self):
+        kwargs: dict = {"max_tokens": 16000}
+        config = {"effort": "low", "budget_tokens": 3000}
+        apply_reasoning_config(config, kwargs, "claude-sonnet-4-5")
+        assert kwargs["thinking"]["budget_tokens"] == 3000
+
+    def test_budget_clamped_below_max_tokens(self):
+        kwargs: dict = {"max_tokens": 2000}
+        apply_reasoning_config({"effort": "high"}, kwargs, "claude-haiku-4-5")
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1999}
+
+    def test_small_max_tokens_skips_thinking(self):
+        kwargs: dict = {"max_tokens": 1024}
+        apply_reasoning_config({"effort": "high"}, kwargs, "claude-haiku-4-5")
+        assert "thinking" not in kwargs
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-haiku-4-5-20251001",
+            "claude-haiku-4-5-latest",
+            "anthropic.claude-haiku-4-5-20251001-v1:0",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "claude-opus-4-5@20251101",
+            "anthropic/claude-sonnet-4-5",
+            "claude-opus-4-20250514",
+            "claude-3-7-sonnet-latest",
+        ],
+    )
+    def test_legacy_ids_detected(self, model):
+        assert is_legacy_thinking_model(model)
+
+    @pytest.mark.parametrize(
+        "model", ["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-5", "claude-haiku-5-5", ""]
+    )
+    def test_modern_ids_not_legacy(self, model):
+        assert not is_legacy_thinking_model(model)
+
+    def test_explicit_thinking_wins(self):
+        kwargs: dict = {"max_tokens": 16000, "thinking": {"type": "disabled"}}
+        apply_reasoning_config({"effort": "high"}, kwargs, "claude-opus-4-5")
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_build_request_passes_model(self):
+        with patch.object(Agent, "_create_client", return_value=MagicMock()):
+            agent = Agent(model="claude-haiku-4-5", provider="anthropic", reasoning_config=True)
+        _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert "output_config" not in kwargs
 
 
 class TestReasoningDisplay:

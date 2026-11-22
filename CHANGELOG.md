@@ -56,6 +56,12 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 - `AnthropicBatch`, `OpenAIBatch` and `BatchResult` (`tenxgraph.core.llm`) are removed. They were an unfinished feature: standalone wrappers over the provider batch APIs that no part of the graph runtime used, and batch support will not be continued. This is an exception to the deprecation policy: they are removed in a minor release without a deprecation period. Call the provider SDK's batch API directly (`client.messages.batches` for Anthropic, `client.batches` for OpenAI).
 
+### Fixed
+
+- Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and older models no longer fail with a 400 on the default reasoning config; they get budget-based thinking (`thinking` type `enabled` with `budget_tokens`, mapped from the effort), and `output_config.effort` only on Opus 4.5.
+- Two graphs in one process no longer share their checkpointer, store, callback manager, publisher or background task manager, whether they use the global InjectQ container or one passed as `container=`. Before, the second graph could store its threads in the first graph's checkpointer, send events to the first graph's publisher, and run with the first graph's callback manager, so a `ToolGuard` registered on the second graph's manager was skipped. Each graph now keeps its values in its own container, which its runs (including concurrent runs on one event loop) resolve from; bindings you make in the global or your own container stay visible to tools and nodes. `compile()` without `callback_manager` now gives each graph its own new `CallbackManager` instead of one shared default. Graphs still share a checkpointer when you pass them the same instance.
+
+
 ## [1.0.0] - 2026-11-16
 
 The first stable release of `10xgraph`, released with `10xgraph-api` 1.0.0 and `10xgraph-client` 1.0.0.
