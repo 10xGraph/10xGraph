@@ -77,6 +77,7 @@ from .otel_attributes import (
     PROVIDER_NAME_MAP,
     SESSION_ID,
     SPAN_UNFINISHED,
+    TOOL_DENIED,
     TOOL_NAME,
     TOOL_REMOTE,
     TOOL_TYPE,
@@ -763,6 +764,8 @@ class OtelPublisher(BasePublisher):
                 )
             _set_attrs(span, oi.tool_output_attrs(event.data))
 
+        if event.metadata.get("denied"):
+            span.set_attribute(TOOL_DENIED, True)
         if event.data.get("error"):
             _record_error(span, event, "tool.error")
         else:

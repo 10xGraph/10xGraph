@@ -11,6 +11,7 @@ This package provides:
         - NothingToResumeError: A resume was sent to a thread that is not paused.
         - InterruptPendingError: A new message was sent to a thread paused at interrupt().
         - ResumeValidationError: A resume value does not match the interrupt's response schema.
+        - ToolDenied: A tool call was blocked by policy (raise it from a before_invoke callback).
         - StorageError: Base exception for storage-related errors.
         - ThreadNotFoundError: A write named a thread of another user or tenant (404).
         - TransientStorageError: Exception for retryable storage errors.
@@ -42,6 +43,7 @@ from .storage_exceptions import (
 )
 from .stored_state_error import StateFormatVersionError, StoredNodeMissingError
 from .timeout_error import GraphStopRequested, LLMStreamIdleTimeoutError, NodeTimeoutError
+from .tool_denied import ToolDenied
 
 
 __all__ = [
@@ -66,5 +68,6 @@ __all__ = [
     "StoredNodeMissingError",
     "StorageError",
     "ThreadNotFoundError",
+    "ToolDenied",
     "TransientStorageError",
 ]

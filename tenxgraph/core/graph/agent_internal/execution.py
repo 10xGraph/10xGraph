@@ -30,6 +30,7 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils import metrics
 from tenxgraph.utils.converter import (
+    TOOL_RESULT_FENCE_LINE,
     convert_messages,
     inject_request_blocks,
     strip_media_blocks,
@@ -1145,12 +1146,25 @@ class AgentExecutionMixin:
 
         state = await self._trim_context(state)
 
+        # Always resolve tools - even after tool results, the model may want to call
+        # additional tools (e.g., Gemini 2.5+ with sequential tool calls). Resolved before
+        # the messages are built, so a named ToolNode's ``fence_results`` is known.
+        tools = await self._resolve_tools(container, config)
+
+        # Tool results are fenced as untrusted data unless the ToolNode turns it off. The
+        # line explaining the fence is added whenever tools exist, so the system prompt
+        # stays the same from the first turn on (prompt cache).
+        fence = getattr(getattr(self, "_tool_node", None), "fence_results", True)
+        fence_line = fence and (bool(tools) or any(m.role == "tool" for m in state.context or []))
+
         # Skill text is loaded, so it is added after the developer's system prompt is
         # interpolated and never goes through str.format.
         extra_system_prompts: list[dict[str, Any]] = []
+        if fence_line:
+            extra_system_prompts.append({"role": "system", "content": TOOL_RESULT_FENCE_LINE})
 
         if hasattr(self, "_build_skill_prompts") and callable(self._build_skill_prompts):
-            extra_system_prompts = self._build_skill_prompts(state, [])
+            extra_system_prompts += self._build_skill_prompts(state, [])
 
         # Retrieved memories are user-level data, not system text: they are fenced and added
         # to the latest user message of this request only (never to state.context).
@@ -1167,6 +1181,7 @@ class AgentExecutionMixin:
             extra_messages=self.extra_messages or [],
             extra_system_prompts=extra_system_prompts,
             node=config.get("_node_name"),
+            fence_tool_results=fence,
         )
         # Image, video and audio endpoints take a plain prompt, so memories only apply to
         # text-like output.
@@ -1190,10 +1205,6 @@ class AgentExecutionMixin:
             messages = strip_media_blocks(messages)
 
         is_stream = config.get("is_stream", False)
-
-        # Always resolve tools - even after tool results, the model may want to call
-        # additional tools (e.g., Gemini 2.5+ with sequential tool calls)
-        tools = await self._resolve_tools(container, config)
 
         from tenxgraph.runtime.publisher.events import (
             ContentType,

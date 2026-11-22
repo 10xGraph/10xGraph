@@ -208,6 +208,26 @@ def test_tool_end_with_error_sets_error_status():
     assert [e.name for e in span.events if e.name == "tool.error"]
 
 
+def test_denied_tool_span_is_marked_denied():
+    pub, exporter = _setup()
+    pub._dispatch(_tool_start("a"))
+    pub._dispatch(
+        _evt(
+            Event.TOOL_EXECUTION,
+            EventType.END,
+            data={
+                "function_name": "search",
+                "tool_call_id": "a",
+                "error": "Denied by policy: search. No.",
+            },
+            metadata={"status": "denied", "denied": True},
+        )
+    )
+    span = _by_name(exporter, "execute_tool search")[0]
+    assert span.attributes["tenxgraph.tool.denied"] is True
+    assert span.status.status_code == StatusCode.ERROR
+
+
 def test_remote_tool_span_ends_immediately():
     pub, exporter = _setup()
     pub._dispatch(_tool_start("a", metadata={"is_remote": True}))

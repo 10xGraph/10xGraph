@@ -22,6 +22,7 @@ from injectq import Inject
 from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node.denial import TOOL_DENIED_CODE
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.stream_utils import check_non_streaming
 from tenxgraph.core.graph.utils.tool_dispatch import (
@@ -318,13 +319,16 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 None,
             )
             if error is not None:
+                denied = error.code == TOOL_DENIED_CODE
                 return [
                     StreamChunk(
                         event=StreamEvent.ERROR,
                         data={
-                            "status": "tool_failed",
+                            "status": "tool_denied" if denied else "tool_failed",
                             **meta,
-                            "reason": "Tool execution resulted in error",
+                            "reason": (
+                                "Denied by policy" if denied else "Tool execution resulted in error"
+                            ),
                             "error": error.message,
                         },
                         **ids,

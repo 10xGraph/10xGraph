@@ -37,13 +37,24 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ## [Unreleased]
 
+### Added
+
+- `ToolDenied` (`tenxgraph.core.exceptions`) blocks a tool call by policy. Raise it from a `before_invoke` callback for `InvocationType.TOOL` or `InvocationType.MCP`, or from the tool itself. The tool does not run, `on_error` recovery is skipped (it can no longer turn a block into a success), and the model gets a failed tool result `"Denied by policy: <tool>. <reason>"` instead of a generic error it would retry. The denial is logged with tool name, user id and reason (never argument values), the tool event has status `denied`, the stream chunk has status `tool_denied` and the trace span gets `tenxgraph.tool.denied`. Example: `raise ToolDenied("Deleting is turned off.")`.
+- `ToolGuard` (`tenxgraph.core.graph`) is a ready-made tool policy for local and MCP tools: an allow list of name patterns, required permissions per tool checked with `Identity.can` on `config["user"]`, an optional argument check (sync or async), and `strict=True` to deny tools with a permission rule when the caller has no identity or unrestricted permissions. Tools without a rule run as before. Client tools run in the frontend and are not covered. Example: `ToolGuard(allow={"search_*", "refund"}, permissions={"refund": "tools:refund"}).register(callback_manager)`.
+- Per-tool human approval: `ToolGuard(approval={"refund"})` pauses the run with `interrupt()` (reason `tool_approval`) before that tool runs, with the tool name, arguments and call id in the interrupt value. Resume with `True` or `{"approved": True}` to run it once; `None`, `False` or `{"approved": False}` returns the denied result. Parallel calls are approved one by one. Needs a checkpointer. `before_invoke` callbacks of local and MCP tools now run in the tool call's interrupt scope, so any callback can call `interrupt()`. Example: `await app.ainvoke({"resume": True}, config)`.
+- Tool result fencing, on by default: the text of every tool result (local, MCP and client tools) reaches the model inside a `<tool_output_xxxxxxxx>` fence, and one system prompt line tells the model the content is data, not instructions. Text inside a result that looks like the fence's tags is escaped, so a result cannot close the fence. The suffix is derived from the message and tool call ids, so the same result gets the same fence on every turn and the prompt cache keeps working. Only the model request changes: saved messages, API responses, events and traces keep the plain output. Results the framework writes itself (handoff answers, skill tools, `ToolDenied` results) are not fenced. Turn it off with `ToolNode(fence_results=False)`.
+
+### Changed
+
+- Behaviour change: tool results now reach the model inside a fence (see Added), for OpenAI (Chat Completions and Responses), Anthropic and Google. This also applies to tool results saved before 1.1 and to client tool results. Stored messages are unchanged. When tools are present, the system prompt gets one extra line, so a prompt cache from 1.0 misses once after the upgrade. Set `ToolNode(fence_results=False)` to keep the 1.0 behaviour.
+
 ### Deprecated
 
 - The prebuilt tools `safe_calculator`, `fetch_url`, `create_fetch_url`, `google_web_search`, `create_google_web_search`, `vertex_ai_search`, `create_vertex_ai_search`, `file_read`, `file_write`, `file_search` and `create_file_tools` are deprecated and will be removed in 2.0. They keep working and now emit a `DeprecationWarning` when called (tools) or created (factories). The fetch and file tools are network and filesystem access, a security surface the framework should not own, and the calculator and search tools are outside the product's scope. Write your own `@tool` or use an MCP server. `create_handoff_tool`, `is_handoff_tool`, `make_agent_memory_tool` and `make_user_memory_tool` stay.
 
 ### Removed
 
-- `AnthropicBatch`, `OpenAIBatch` and `BatchResult` (`tenxgraph.core.llm`) are removed. They were standalone wrappers over the provider batch APIs, used by no part of the graph runtime, and had no known users. This is an exception to the deprecation policy: they are removed in a minor release without a deprecation period. Call the provider SDK's batch API directly (`client.messages.batches` for Anthropic, `client.batches` for OpenAI).
+- `AnthropicBatch`, `OpenAIBatch` and `BatchResult` (`tenxgraph.core.llm`) are removed. They were an unfinished feature: standalone wrappers over the provider batch APIs that no part of the graph runtime used, and batch support will not be continued. This is an exception to the deprecation policy: they are removed in a minor release without a deprecation period. Call the provider SDK's batch API directly (`client.messages.batches` for Anthropic, `client.batches` for OpenAI).
 
 ## [1.0.0] - 2026-11-16
 

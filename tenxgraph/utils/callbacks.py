@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
 
+from tenxgraph.core.exceptions.tool_denied import ToolDenied
 from tenxgraph.core.state.message import Message
 
 
@@ -482,6 +483,9 @@ class CallbackManager:
                         current_data = await result
                     else:
                         current_data = result
+            except ToolDenied:
+                # A policy decision, not an error: on_error callbacks are not run for it.
+                raise
             except Exception as e:
                 await self.execute_on_error(context, input_data, e)
                 raise
@@ -520,6 +524,8 @@ class CallbackManager:
                         current_output = await result
                     else:
                         current_output = result
+            except ToolDenied:
+                raise
             except Exception as e:
                 await self.execute_on_error(context, input_data, e)
                 raise

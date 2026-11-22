@@ -8,6 +8,7 @@ import types
 import typing as t
 
 from tenxgraph.core.authz import UserCredential, get_credential, public_config
+from tenxgraph.core.exceptions import ToolDenied
 from tenxgraph.core.state import (
     AgentState,
     ContentBlock,
@@ -19,12 +20,14 @@ from tenxgraph.core.state import (
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
+from tenxgraph.utils.constants import TRUSTED_TOOL_RESULT_META
 from tenxgraph.utils.interrupt import activate as activate_interrupts
 from tenxgraph.utils.log_safety import error_details
 
 from ._helpers import _extract_block_meta, _safe_serialize, generic_tool_failure
 from .coercion import ToolArgumentError, coerce_tool_argument
 from .constants import CREDENTIAL_PARAM, INJECTABLE_PARAMS, SKILL_TOOL_ATTR, has_injected_default
+from .denial import denied_tool_message
 from .schema import _safe_type_hints
 
 
@@ -241,6 +244,9 @@ class LocalExecMixin:
             "function_argument": args,
             "tool_call_id": tool_call_id,
         }
+        if invocation_type == InvocationType.SKILL:
+            # Skill text is the developer's instructions, so it reaches the model unfenced.
+            meta[TRUSTED_TOOL_RESULT_META] = True
 
         event = EventModel.default(
             base_config=config,
@@ -272,7 +278,10 @@ class LocalExecMixin:
                     "emit": emit,
                 },
             )
-            input_data = await callback_mgr.execute_before_invoke(context, input_data)
+            # before_invoke runs in the call's interrupt scope too, so a callback that asks a
+            # human (ToolGuard approval) pauses keyed to this call, like interrupt() in the tool.
+            with activate_interrupts(config, tool_call_id):
+                input_data = await callback_mgr.execute_before_invoke(context, input_data)
 
             event.event_type = EventType.UPDATE
             event.metadata["status"] = "before_invoke_complete Invoke internal"
@@ -309,6 +318,10 @@ class LocalExecMixin:
                     "Internal tool execution complete",
                 )
             return msg
+
+        except ToolDenied as denied:
+            # A policy block is final: on_error recovery must not turn it into a success.
+            return denied_tool_message(denied, name, tool_call_id, config, event, meta)
 
         except Exception as e:
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)

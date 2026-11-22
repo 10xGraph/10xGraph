@@ -110,6 +110,7 @@ class ToolNode(
         mcp_cache_tools: bool = True,
         mcp_connect_timeout: float | None = DEFAULT_MCP_CONNECT_TIMEOUT,
         mcp_auth: MCPAuth | None = None,
+        fence_results: bool = True,
     ) -> None:
         """Initialize ToolNode with functions and optional MCP client.
 
@@ -158,6 +159,13 @@ class ToolNode(
                 is cached per node and shared by all users (``mcp_cache_tools``), and is
                 fetched with whichever run asks first: a server must not return a per-user
                 tool list here.
+            fence_results: When True (default) the text of every tool result (local, MCP
+                and client tools) reaches the model inside a ``<tool_output_xxxxxxxx>``
+                fence, with one system prompt line saying its content is data, not
+                instructions. Only the model request is fenced: the saved messages, events
+                and traces keep the plain output. Results the framework writes itself
+                (handoffs, skill tools, policy denials) are not fenced. The Agent that uses
+                this ToolNode reads the setting. Set False to send the raw text, as in 1.0.
 
         Tools may take a parameter named ``credential``: it always receives the caller's
         ``UserCredential`` from ``config["credential"]`` (or None), whatever its annotation,
@@ -206,6 +214,7 @@ class ToolNode(
                 )
             logger.debug("ToolNode initialized with MCP client")
 
+        self.fence_results = fence_results
         self._mcp_auth: MCPAuth | None = mcp_auth
         self._mcp_server_url: str | None = None
         if mcp_auth is not None:

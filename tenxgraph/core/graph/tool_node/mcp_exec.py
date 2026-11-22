@@ -12,6 +12,7 @@ import typing as t
 from pydantic import BaseModel
 
 from tenxgraph.core.authz import public_config
+from tenxgraph.core.exceptions import ToolDenied
 from tenxgraph.core.state import (
     ContentBlock,
     ErrorBlock,
@@ -22,9 +23,11 @@ from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, E
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.runtime.publisher.trace_context import tool_span, use_trace_span
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
+from tenxgraph.utils.interrupt import activate as activate_interrupts
 from tenxgraph.utils.log_safety import error_details
 
 from ._helpers import _normalize_resource_uri, generic_tool_failure
+from .denial import denied_tool_message
 from .mcp_auth import mcp_call_headers, resolve_mcp_headers
 
 
@@ -347,7 +350,9 @@ class MCPMixin:
         input_data = {**args}
 
         try:
-            input_data = await callback_mgr.execute_before_invoke(context, input_data)
+            # In the call's interrupt scope, so a callback can ask a human (ToolGuard approval).
+            with activate_interrupts(config, tool_call_id):
+                input_data = await callback_mgr.execute_before_invoke(context, input_data)
             event.event_type = EventType.UPDATE
             event.metadata["status"] = "before_invoke_complete Invoke MCP"
             publish_event(event)
@@ -414,6 +419,10 @@ class MCPMixin:
                 event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
                 publish_event(event)
                 return res
+
+        except ToolDenied as denied:
+            # A policy block is final: on_error recovery must not turn it into a success.
+            return denied_tool_message(denied, name, tool_call_id, config, event, meta)
 
         except Exception as e:
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)

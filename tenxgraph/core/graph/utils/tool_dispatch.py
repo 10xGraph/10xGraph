@@ -21,6 +21,7 @@ from tenxgraph.utils.constants import (
     DEFAULT_MAX_PARALLEL_TOOL_CALLS,
     END,
     MAX_PARALLEL_TOOL_CALLS_ENV,
+    TRUSTED_TOOL_RESULT_META,
 )
 
 
@@ -170,6 +171,7 @@ def handoff_tool_messages(
                     status="completed",
                 )
             ],
+            meta={TRUSTED_TOOL_RESULT_META: True},
         )
         if not_run:
             answer.metadata["not_run"] = True

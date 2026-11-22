@@ -130,7 +130,7 @@ from .edge import Edge
 from .node import Node
 from .remote_tool import RemoteToolConfig
 from .state_graph import StateGraph
-from .tool_node import ToolNode
+from .tool_node import ToolGuard, ToolNode
 
 
 __all__ = [
@@ -142,5 +142,6 @@ __all__ = [
     "RemoteToolConfig",
     "RetryConfig",
     "StateGraph",
+    "ToolGuard",
     "ToolNode",
 ]
