@@ -2,8 +2,6 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Any
-from pathlib import Path
 
 from tenxgraph.qa.evaluation.testing import (
     EvalTestCase,
@@ -17,8 +15,6 @@ from tenxgraph.qa.evaluation.testing import (
     create_eval_app,
     create_simple_eval_set,
 )
-from tenxgraph.qa.evaluation.eval_result import EvalReport
-from tenxgraph.core.graph.compiled_graph import CompiledGraph
 
 def test_eval_test_case_repr():
     case = EvalTestCase(eval_id="id1", name="name1", description="desc1")

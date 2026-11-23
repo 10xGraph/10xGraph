@@ -10,66 +10,41 @@ from collections.abc import Callable
 from injectq import inject, Inject
 
 from tenxgraph.core.authz import public_config
-from tenxgraph.core.exceptions import (
-    GraphRecursionError,
-    GraphStopRequested,
-    NodeTimeoutError,
-)
+from tenxgraph.core.exceptions import GraphStopRequested
 from tenxgraph.core.graph.edge import Edge
 from tenxgraph.core.graph.node import Node
-from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
-from tenxgraph.core.graph.utils.tool_dispatch import validate_goto
+from tenxgraph.core.graph.utils.guards import execute_with_guards, node_guards, node_metrics
 from tenxgraph.core.graph.utils.utils import (
     LastSave,
     calculate_token_usage,
-    call_realtime_sync,
-    get_next_node,
-    load_or_create_state,
     parse_response,
     process_node_result,
-    sync_data,
 )
-from tenxgraph.core.graph.utils.error_text import client_error_text
 from tenxgraph.storage.checkpointer import BaseCheckpointer
-from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
+from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.utils import END, START, ResponseGranularity, metrics
+from tenxgraph.utils import END, ResponseGranularity
 from tenxgraph.utils.command import Command
-from tenxgraph.utils.logging import log_context_scope, set_log_context
+from tenxgraph.utils.logging import log_context_scope
 from tenxgraph.core.state.reducers import add_messages
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 
 from .handler_utils import (
-    check_and_handle_interrupt,
-    check_interrupted,
     check_stop_requested,
-    close_unanswered_tool_calls,
     finalize_cancelled_run,
-    RESUME_AFTER_NODE_KEY,
-    resolve_stored_node,
     interrupt_graph,
     node_after,
-    pause_for_interrupt,
-    publish_graph_end,
-    publish_graph_error,
-    publish_state_update,
-    skip_answered_tool_node,
     split_remote_calls,
 )
 
 from .handler_mixins import (
     BaseLoggingMixin,
+    GraphRunMixin,
     InterruptConfigMixin,
 )
 from tenxgraph.utils.injection import fresh
-from tenxgraph.utils.interrupt import (
-    GraphInterrupt,
-    clear_resume_values,
-    node_scope,
-    resume_values,
-)
+from tenxgraph.utils.interrupt import GraphInterrupt, node_scope, resume_values
 
 
 StateT = TypeVar("StateT", bound=AgentState)
@@ -80,6 +55,7 @@ logger = logging.getLogger("tenxgraph.graph")
 class InvokeHandler[StateT: AgentState](
     BaseLoggingMixin,
     InterruptConfigMixin,
+    GraphRunMixin,
 ):
     @inject
     def __init__(
@@ -122,47 +98,12 @@ class InvokeHandler[StateT: AgentState](
         task we can actually cancel -- on the deadline, or as soon as a stop
         request shows up.
         """
-        checkpointer = fresh(checkpointer)
-        timeout = resolve_timeout(config, "node_timeout", DEFAULT_NODE_TIMEOUT_SECONDS)
-
-        stop_check = None
-        if checkpointer:
-
-            async def stop_check() -> bool:
-                return await checkpointer.ais_stop_requested(config)
-
-        # Node-level metrics. The engine emitted no counters or histograms at all,
-        # so operators had spans but nothing to alert on -- no error rate, no
-        # latency distribution. The timer tags each observation with its outcome,
-        # so success and failure latencies can be separated.
-        attrs = {"node": node_name}
-        metrics.counter("tenxgraph.node.executions").inc(attributes=attrs)
-
-        try:
-            with metrics.timer("tenxgraph.node.duration", attributes=attrs):
-                return await execute_with_guards(
-                    node.execute(config, state),  # type: ignore[arg-type]
-                    timeout=timeout,
-                    stop_check=stop_check,
-                    on_timeout=lambda: NodeTimeoutError(
-                        message=(
-                            f"Node '{node_name}' exceeded its timeout of {timeout}s "
-                            f"and was cancelled"
-                        ),
-                        error_code="NODE_TIMEOUT_001",
-                        context={"node_name": node_name, "timeout": timeout},
-                    ),
-                    on_stop=lambda: GraphStopRequested(node_name),
-                )
-        except NodeTimeoutError:
-            metrics.counter("tenxgraph.node.timeouts").inc(attributes=attrs)
-            raise
-        except GraphStopRequested:
-            metrics.counter("tenxgraph.node.stopped").inc(attributes=attrs)
-            raise
-        except Exception:
-            metrics.counter("tenxgraph.node.errors").inc(attributes=attrs)
-            raise
+        guards = node_guards(node_name, config, fresh(checkpointer))
+        with node_metrics(node_name):
+            return await execute_with_guards(
+                node.execute(config, state),  # type: ignore[arg-type]
+                **guards,
+            )
 
     async def _execute_graph(  # noqa: PLR0911, PLR0912, PLR0915
         self,
@@ -201,28 +142,7 @@ class InvokeHandler[StateT: AgentState](
             logger.debug("Last human message: %s", last_human_message.content)
             messages.append(last_human_message)
 
-        # Get current execution info from state
-        stored_node = state.execution_meta.current_node
-        step = state.execution_meta.step
-        # A deploy may have renamed or removed the node this thread was stored at.
-        current_node = resolve_stored_node(
-            stored_node, self.nodes, self.node_aliases, config.get("thread_id")
-        )
-        if current_node != stored_node:
-            state.execution_meta.current_node = current_node
-            if state.execution_meta.interrupted_node == stored_node:
-                state.execution_meta.interrupted_node = current_node
-        # Paused for client-side tools whose results are now in the context: move past
-        # that node (the next node can depend on those results).
-        if config.pop(RESUME_AFTER_NODE_KEY, None) in (stored_node, current_node):
-            current_node = get_next_node(current_node, state, self.edges)
-        if current_node != END:
-            current_node = skip_answered_tool_node(
-                self._get_node(current_node),
-                current_node,
-                state,
-                lambda n: get_next_node(n, state, self.edges),
-            )
+        current_node, step = self._start_node(state, config)
 
         # Build lifecycle context (shared across all hooks in this execution)
         lifecycle_context = GraphLifecycleContext(config=public_config(config))
@@ -256,103 +176,40 @@ class InvokeHandler[StateT: AgentState](
                 if res:
                     return state, messages
 
-                # Update execution metadata
-                state.set_current_node(current_node)
-                state.execution_meta.step = step
-                await call_realtime_sync(state, config)
-                event.data["state"] = state
-                event.metadata["step"] = step
-                event.metadata["current_node"] = current_node
-                event.event_type = EventType.PROGRESS
+                await self._begin_step(state, config, event, step, current_node)
                 publish_event(event)
 
-                # Check for interrupt_before
-                if await check_and_handle_interrupt(
-                    current_node,
-                    "before",
-                    state,
-                    config,
-                    interrupt_before=self.interrupt_before,
-                    interrupt_after=self.interrupt_after,
-                    messages=messages[persisted_upto:],
-                    last_save=last_save,
+                if await self._interrupt_before(
+                    current_node, state, config, event, messages[persisted_upto:], last_save
                 ):
-                    logger.info("Graph execution interrupted before node '%s'", current_node)
-                    event.event_type = EventType.INTERRUPTED
-                    event.metadata["interrupted"] = "Before"
-                    event.metadata["status"] = "Graph execution interrupted before node execution"
-                    event.data["interrupted"] = "Before"
-                    publish_event(event)
                     return state, messages
 
                 # Execute current node - use factory for override support
                 logger.debug("Executing node '%s'", current_node)
                 node = self._get_node(current_node)
-
-                # Snapshot state before node execution, only for on_state_update hooks.
-                has_hooks = bool(self.callback_mgr and self.callback_mgr._lifecycle_hooks)
-                old_state_snapshot = state.model_copy(deep=True) if has_hooks else state
-
-                node_event = EventModel.default(
-                    config,
-                    data={"step": step, "state": state},
-                    event=Event.NODE_EXECUTION,
-                    event_type=EventType.START,
-                    content_type=[ContentType.STATE],
-                    node_name=current_node,
+                has_hooks, old_state_snapshot, node_event = self._start_node_event(
+                    state, config, step, current_node
                 )
-                publish_event(node_event)
 
-                ###############################################
-                ##### Node Execution Started ##################
-                ###############################################
-
-                config["_node_name"] = current_node
-                # Narrow the correlation context to the node now executing.
-                set_log_context(node=current_node)
                 try:
                     with node_scope(config, current_node, resume_values(state)):
                         result = await self._execute_node_guarded(node, current_node, config, state)
                 except GraphInterrupt as paused:
-                    # interrupt() inside the node: save the pause and end the run. Resuming
-                    # with {"resume": value} re-runs this node.
-                    await pause_for_interrupt(
+                    await self._pause_at_interrupt(
+                        paused,
                         current_node,
                         state,
                         config,
-                        paused.interrupt,
-                        messages=messages[persisted_upto:],
-                        last_save=last_save,
+                        event,
+                        messages[persisted_upto:],
+                        last_save,
                     )
-                    event.event_type = EventType.INTERRUPTED
-                    event.metadata["interrupted"] = "Interrupt"
-                    event.metadata["status"] = "Graph execution paused by interrupt()"
-                    event.data["interrupted"] = "Interrupt"
-                    event.data["interrupt"] = paused.interrupt.model_dump(mode="json")
-                    publish_event(event)
                     return state, messages
                 except GraphStopRequested:
-                    # The node was cancelled mid-flight because a stop arrived.
-                    # Hand off to the normal stop path so the run is marked
-                    # stopped, persisted, and reported exactly as a between-nodes
-                    # stop would be -- this is control flow, not a failure.
-                    logger.info(
-                        "Node '%s' cancelled by stop request; finalizing run",
-                        current_node,
-                    )
-                    await check_stop_requested(
-                        state,
-                        current_node,
-                        event,
-                        messages,
-                        config,
-                        last_save=last_save,
+                    await self._stop_mid_node(
+                        current_node, state, config, event, messages, last_save
                     )
                     return state, messages
-
-                ###############################################
-                ##### Node Execution Finished #################
-                ###############################################
 
                 logger.debug("Node '%s' execution completed", current_node)
 
@@ -399,19 +256,7 @@ class InvokeHandler[StateT: AgentState](
                     )
                     messages.extend(command_messages)
 
-                # Fail with a clear error instead of a KeyError on an unknown target.
-                validate_goto(next_node, self.nodes, current_node)
-
-                logger.debug(
-                    "Node result processed, next_node=%s, total_messages=%d",
-                    next_node,
-                    len(messages),
-                )
-
-                node_event.event_type = EventType.END
-                node_event.data["messages"] = messages
-                node_event.content_type = [ContentType.MESSAGE]
-                publish_event(node_event)
+                self._end_node_event(node_event, next_node, current_node, messages)
 
                 if remote_calls:
                     # The run resumes after this node once the client sends the results. The
@@ -440,172 +285,61 @@ class InvokeHandler[StateT: AgentState](
                 if res:
                     return state, messages
 
-                # Fire on_state_update hook after state has been merged
-                if has_hooks:
-                    state = await self.callback_mgr.fire_on_state_update(  # type: ignore[union-attr]
-                        lifecycle_context,
-                        node_name=current_node,
-                        old_state=old_state_snapshot,
-                        new_state=state,
-                        step=step,
-                    )  # type: ignore
-                publish_state_update(config, current_node, step)
-
-                # Call realtime sync after node execution (if state/messages changed)
-                await call_realtime_sync(state, config)
-                event.event_type = EventType.UPDATE
-                event.data["state"] = state
-                event.data["messages"] = messages
-                if messages:
-                    lm = messages[-1]
-                    event.content = lm.text() if isinstance(lm.content, list) else lm.content  # type: ignore
-                    if isinstance(lm.content, list):
-                        event.content_blocks = lm.content
-                event.content_type = [ContentType.STATE, ContentType.MESSAGE]
-                publish_event(event)
-
-                is_interrupted_requested = False
-
-                # Check for interrupt_after
-                if await check_and_handle_interrupt(
+                state = await self._publish_node_update(
+                    has_hooks,
+                    lifecycle_context,
                     current_node,
-                    "after",
+                    old_state_snapshot,
                     state,
                     config,
-                    interrupt_before=self.interrupt_before,
-                    interrupt_after=self.interrupt_after,
-                    messages=messages[persisted_upto:],
-                    last_save=last_save,
-                ):
-                    logger.info("Graph execution interrupted after node '%s'", current_node)
-                    # For interrupt_after, advance to next node before pausing
-                    if next_node is None:
-                        next_node = get_next_node(current_node, state, self.edges)
-                    state.set_current_node(next_node)
-                    is_interrupted_requested = True
+                    event,
+                    step,
+                    messages,
+                    stringify=False,
+                )
 
-                    event.event_type = EventType.INTERRUPTED
-                    event.data["interrupted"] = "After"
-                    event.metadata["interrupted"] = "After"
-                    event.data["state"] = state
-                    publish_event(event)
+                is_interrupted_requested, next_node = await self._interrupt_after(
+                    current_node,
+                    next_node,
+                    state,
+                    config,
+                    event,
+                    messages[persisted_upto:],
+                    last_save,
+                )
 
-                # Get next node (only if no explicit navigation from Command)
-                if next_node is None:
-                    current_node = get_next_node(current_node, state, self.edges)
-                    logger.debug("Next node determined by graph logic: '%s'", current_node)
-                else:
-                    current_node = next_node
-                    logger.debug("Next node determined by command: '%s'", current_node)
-
-                # The node finished, so answers to its interrupt() calls are spent.
-                clear_resume_values(state)
-
-                # Advance step after successful node execution
-                step += 1
-                state.advance_step()
-
-                # Durable per-step checkpoint.
-                #
-                # Previously this only wrote the Redis cache, and the durable
-                # write happened solely at terminal points (completion, error,
-                # interrupt, stop). A pod killed mid-run therefore resumed from
-                # the last terminal checkpoint -- or, once the 24h cache TTL had
-                # lapsed or Redis restarted, from the very beginning. Persisting
-                # each completed step bounds a crash to replaying one node.
-                #
-                # Only messages not yet persisted are written, so a long run does
-                # not re-upsert its whole history on every step.
-                if config.get("durable_checkpoint_every_step", True):
-                    pending = messages[persisted_upto:]
-                    await sync_data(
-                        state=state,
-                        config=config,
-                        messages=pending,
-                        trim=False,
-                        last_save=last_save,
-                    )
-                    persisted_upto = len(messages)
-                else:
-                    await call_realtime_sync(state, config)
-
-                event.event_type = EventType.UPDATE
-
-                event.metadata["State_Updated"] = "State Updated"
-                event.data["state"] = state
-                publish_event(event)
+                current_node, step, persisted_upto = await self._advance(
+                    current_node,
+                    next_node,
+                    state,
+                    config,
+                    event,
+                    step,
+                    messages,
+                    persisted_upto,
+                    last_save,
+                )
 
                 # If we interrupted after, exit now
                 if is_interrupted_requested:
                     return state, messages
 
                 if step >= max_steps and current_node != END:
-                    error_msg = "Graph execution exceeded maximum steps"
-                    logger.error(error_msg)
-                    state.error(error_msg)
-                    # The limit is spent for this turn. Park the state at the entry so the
-                    # next message starts a new turn instead of stopping at once.
-                    state.set_current_node(START)
-                    state.execution_meta.step = 0
-                    await call_realtime_sync(state, config)
-                    event.event_type = EventType.ERROR
-                    event.data["state"] = state
-                    event.metadata["error"] = error_msg
-                    event.metadata["step"] = step
-                    event.metadata["current_node"] = current_node
-
-                    publish_event(event)
-                    raise GraphRecursionError(
-                        message=f"Graph execution exceeded recursion limit: {max_steps}",
-                        error_code="RECURSION_001",
-                        context={
-                            "max_steps": max_steps,
-                            "current_step": step,
-                            "current_node": current_node,
-                        },
+                    raise await self._recursion_limit_hit(
+                        state, config, event, step, max_steps, current_node
                     )
 
-            # Execution completed successfully
-            logger.info(
-                "Graph execution completed successfully at node '%s' after %d steps",
-                current_node,
+            state, _ = await self._complete_run(
+                state,
+                config,
+                event,
+                lifecycle_context,
+                messages,
                 step,
+                current_node,
+                last_save,
+                stringify=False,
             )
-            state.complete()
-
-            # Fire on_graph_end hook before final state sync
-            if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-                state = await self.callback_mgr.fire_on_graph_end(
-                    lifecycle_context,
-                    final_state=state,
-                    messages=messages,
-                    total_steps=step,
-                )  # type: ignore
-            publish_graph_end(config, step)
-
-            res = await sync_data(
-                state=state,
-                config=config,
-                messages=messages,
-                trim=True,
-                last_save=last_save,
-            )
-            event.event_type = EventType.END
-            event.data["state"] = state
-            event.data["messages"] = messages
-            if messages:
-                fm = messages[-1]
-                event.content = fm.text() if isinstance(fm.content, list) else fm.content  # type: ignore
-                if isinstance(fm.content, list):
-                    event.content_blocks = fm.content
-            event.content_type = [ContentType.STATE, ContentType.MESSAGE]
-            event.metadata["status"] = "Graph execution completed"
-            event.metadata["step"] = step
-            event.metadata["current_node"] = current_node
-            event.metadata["is_context_trimmed"] = res
-
-            publish_event(event)
-
             return state, messages
 
         except asyncio.CancelledError:
@@ -616,37 +350,16 @@ class InvokeHandler[StateT: AgentState](
             )
             raise
         except Exception as e:
-            # Handle execution errors
-            logger.exception("Graph execution failed: %s", e)
-            state.error(client_error_text(e))
-            # Close tool calls the failed node never answered, so the saved history is valid.
-            await close_unanswered_tool_calls(state, config, messages)
-
-            # Publish error event
-            event.event_type = EventType.ERROR
-            event.metadata["error"] = str(e)
-            event.data["state"] = state
-            publish_event(event)
-
-            # Fire on_graph_error hook before persisting the error state
-            error_message = str(e)
-            if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-                state, error_message = await self.callback_mgr.fire_on_graph_error(
-                    lifecycle_context,
-                    error=e,
-                    partial_state=state,
-                    messages=messages,
-                    step=step,
-                    node_name=current_node,
-                )  # type: ignore
-            publish_graph_error(config, error_message, step, current_node)
-
-            await sync_data(
-                state=state,
-                config=config,
-                messages=messages,
-                trim=True,
-                last_save=last_save,
+            await self._fail_run(
+                e,
+                state,
+                config,
+                event,
+                lifecycle_context,
+                messages,
+                step,
+                current_node,
+                last_save,
             )
             raise
 
@@ -677,21 +390,7 @@ class InvokeHandler[StateT: AgentState](
             response_granularity,
         )
         input_data = input_data or {}
-
-        # Load or initialize state
-        logger.debug("Loading or creating state from input data")
-        new_state = await load_or_create_state(
-            input_data,
-            config,
-            default_state,
-        )
-        state: StateT = new_state  # type: ignore[assignment]
-        logger.debug(
-            "State loaded: interrupted=%s, current_node=%s, step=%d",
-            state.is_interrupted(),
-            state.execution_meta.current_node,
-            state.execution_meta.step,
-        )
+        state: StateT = await self._load_state(input_data, config, default_state)
 
         # Event publishing logic
         event = EventModel.default(
@@ -708,14 +407,8 @@ class InvokeHandler[StateT: AgentState](
         event.event_type = EventType.START
         publish_event(event)
 
-        # Check if this is a resume case
-        state, config = await check_interrupted(state, input_data, config)
-
-        # Fire on_graph_start hook before execution begins
-        if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-            lc_context = GraphLifecycleContext(config=public_config(config))
-            state = await self.callback_mgr.fire_on_graph_start(lc_context, state)  # type: ignore
-        publish_lifecycle(config, "graph_start", {})
+        # Apply a resume, then fire on_graph_start before execution begins
+        state, config = await self._start_run(state, input_data, config)
 
         event.event_type = EventType.UPDATE
         event.metadata["status"] = "Graph invoked"

@@ -1,10 +1,9 @@
 """Tests for BackgroundTaskManager with performance and load testing."""
 
 import asyncio
-import logging
 import pytest
 import time
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import patch
 
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 

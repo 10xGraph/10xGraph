@@ -781,9 +781,13 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             "SELECT thread_data FROM af_threads WHERE thread_id = ?", (str(thread_id),)
         ) as cursor:
             row = await cursor.fetchone()
-        if row is None:
-            return None
-        return json.loads(row["thread_data"]).get("user_id")
+        if row is not None:
+            return json.loads(row["thread_data"]).get("user_id")
+        async with conn.execute(
+            "SELECT owner_id FROM af_thread_owner WHERE thread_id = ?", (str(thread_id),)
+        ) as cursor:
+            owner_row = await cursor.fetchone()
+        return None if owner_row is None else owner_row["owner_id"]
 
     async def alist_threads(
         self,

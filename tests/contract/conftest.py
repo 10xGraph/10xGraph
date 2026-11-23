@@ -18,7 +18,6 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from tenxgraph.qa.testing.in_memory_store import InMemoryStore
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
 
@@ -39,12 +38,6 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {
     ("test_message_search_matches_text_only", "sqlite"): "G8: S searches the repr of the block list (field names match); maintainer decision",
     ("test_put_messages_metadata_argument", "memory"): "G9: M stores aput_messages(metadata=) and never reads it back; maintainer decision",
     ("test_put_messages_metadata_argument", "sqlite"): "G9: S ignores aput_messages(metadata=); P merges it into the message; maintainer decision",
-    ("test_int_message_id_found_by_str_and_int", "memory"): "G5: M compares message ids with ==, so int 5 and \"5\" differ; S compares as text",
-    ("test_str_message_id_found_by_int", "memory"): "G5: M compares message ids with ==, so int 5 and \"5\" differ; S compares as text",
-    ("test_int_message_id_delete_and_update", "memory"): "G5: M compares message ids with ==, so int 5 and \"5\" differ; S compares as text",
-    ("test_ledger_first_result_wins", "memory"): "G1: M overwrites on a second aput_tool_result; S and P keep the first (P docstring says first wins)",
-    ("test_thread_owner_with_state_but_no_record", "memory"): "G15: M returns None for a thread that has state but no thread record although it holds the owner",
-    ("test_thread_owner_with_state_but_no_record", "sqlite"): "G15: S returns None for a thread that has state but no thread record although it holds the owner",
     ("test_stop_request_and_active_run_cleared_with_thread", "memory"): "G17: aclean_thread leaves the stop request (expires by TTL); maintainer decision",
     ("test_stop_request_and_active_run_cleared_with_thread", "sqlite"): "G17: aclean_thread leaves the stop request (expires by TTL); maintainer decision",
     ("test_cache_clear_returns_a_plain_value", "memory"): "G3: M returns the stored (value, expires_at) tuple from aclear_cache_value; maintainer decision",

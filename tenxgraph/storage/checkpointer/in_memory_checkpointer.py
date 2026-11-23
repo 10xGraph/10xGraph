@@ -8,7 +8,7 @@ from datetime import timedelta
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from tenxgraph.core.authz import owner_id
+from tenxgraph.core.authz import Reach, owner_filter, owner_id
 from tenxgraph.core.exceptions import ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.thread_info import ThreadInfo
@@ -89,6 +89,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # thread owns it. Used to enforce owner-only access when the caller identity
         # (config["user"]) asks for it -- see _owner_denied / _claim.
         self._thread_owner: dict[str, str] = {}
+        # The owner's tenant column values, recorded with the owner on backends that declare
+        # ``tenant_column_names``; see aget_thread_scope.
+        self._thread_tenant: dict[str, dict[str, str]] = {}
 
         self.record_tool_result = record_tool_result
         # Tool execution ledger (idempotency): (thread, tool_call_id) -> (result, recorded at)
@@ -141,6 +144,11 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         owner: str | None
         if user_id:
+            if key not in self._thread_owner:
+                tenant_columns = getattr(self, "tenant_column_names", ())
+                if tenant_columns:
+                    values = owner_filter(config, tenant_columns, reach=Reach.OWN) or {}
+                    self._thread_tenant[key] = {c: values[c] for c in tenant_columns if c in values}
             owner = self._thread_owner.setdefault(key, str(user_id))
         else:
             owner = self._thread_owner.get(key)
@@ -330,7 +338,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """Record that a tool call completed, with its result."""
         async with self._tool_lock:
             self._claim(config)
-            self._tool_results[self._tool_key(config, tool_call_id)] = (result, time.time())
+            self._tool_results.setdefault(
+                self._tool_key(config, tool_call_id), (result, time.time())
+            )
             return True
 
     async def aclear_tool_results(
@@ -474,7 +484,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._messages_lock:
             messages = self._messages.get(key, [])
             for msg in messages:
-                if msg.message_id == message_id:
+                if str(msg.message_id) == str(message_id):
                     return msg
             raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
 
@@ -501,7 +511,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._messages_lock:
             for msg in self._messages.get(key, []):
-                if msg.message_id == message_id:
+                if str(msg.message_id) == str(message_id):
                     msg.metadata = {**(msg.metadata or {}), **metadata}
                     return msg
             return None
@@ -563,7 +573,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                 return 0
             messages = self._messages.get(key, [])
             for msg in messages:
-                if msg.message_id == message_id:
+                if str(msg.message_id) == str(message_id):
                     messages.remove(msg)
                     logger.debug(f"Deleted message with ID {message_id} for key: {key}")
                     break
@@ -614,14 +624,30 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
         Threads are keyed by ``thread_id`` here, so the stored record's ``user_id``
         is the owner (``aput_thread`` stores the owner there). Note the in-memory registry
-        is only populated by explicit ``aput_thread`` calls; a thread that only ever had
-        state written is not recorded, so this returns None for it.
+        is only populated by explicit ``aput_thread`` calls. For a thread that only ever had
+        state written, there is no record, so the owner recorded by the first write is returned.
         """
         async with self._threads_lock:
             record = self._threads.get(str(thread_id))
-        if not record:
-            return None
+            if not record:
+                return self._thread_owner.get(str(thread_id))
         return record.get("user_id")
+
+    async def aget_thread_scope(self, thread_id: str | int) -> dict[str, Any] | None:
+        """Return ``{"user_id": ..., <tenant column>: ...}`` for a thread, globally.
+
+        Same shape as ``PgCheckpointer``: every tenant column the backend declares, ``None``
+        for a value the first writer did not carry. Returns ``None`` when the thread has no
+        owner and no record.
+        """
+        owner = await self.aget_thread_owner(thread_id)
+        if owner is None:
+            return None
+        tenant = self._thread_tenant.get(str(thread_id), {})
+        scope: dict[str, Any] = {"user_id": owner}
+        for column in getattr(self, "tenant_column_names", ()):
+            scope[column] = tenant.get(column)
+        return scope
 
     async def aget_thread(
         self,
@@ -723,6 +749,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._threads_lock:
             found = self._threads.pop(key, None) is not None or found
             found = self._thread_owner.pop(key, None) is not None or found
+            self._thread_tenant.pop(key, None)
         logger.debug(f"Cleaned thread for key: {key}")
         return 1 if found else 0
 
@@ -754,6 +781,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             self._message_metadata.clear()
             self._threads.clear()
             self._thread_owner.clear()
+            self._thread_tenant.clear()
             self._tool_results.clear()
             logger.info("Released all in-memory resources")
             return True

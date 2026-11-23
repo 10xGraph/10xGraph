@@ -21,8 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any, TypeVar
+
+from tenxgraph.core.exceptions import GraphStopRequested, NodeTimeoutError
+from tenxgraph.utils import metrics
+from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 
 from .run_registry import RunHandle, current_run
 
@@ -293,3 +298,52 @@ def resolve_timeout(config: dict[str, Any], key: str, default: float | None) -> 
         logger.warning("Invalid %s=%r in config; falling back to %s", key, config[key], default)
         return default
     return value if value > 0 else None
+
+
+def node_guards(node_name: str, config: dict[str, Any], checkpointer: Any) -> dict[str, Any]:
+    """The guard arguments for one node run (``execute_with_guards`` or ``stream_with_guards``).
+
+    The deadline is the developer's ``node_timeout``; the stop check asks the checkpointer, so
+    a stop from another process cancels the node mid-flight.
+    """
+    timeout = resolve_timeout(config, "node_timeout", DEFAULT_NODE_TIMEOUT_SECONDS)
+
+    stop_check = None
+    if checkpointer:
+
+        async def stop_check() -> bool:
+            return await checkpointer.ais_stop_requested(config)
+
+    return {
+        "timeout": timeout,
+        "stop_check": stop_check,
+        "on_timeout": lambda: NodeTimeoutError(
+            message=f"Node '{node_name}' exceeded its timeout of {timeout}s and was cancelled",
+            error_code="NODE_TIMEOUT_001",
+            context={"node_name": node_name, "timeout": timeout},
+        ),
+        "on_stop": lambda: GraphStopRequested(node_name),
+    }
+
+
+@contextmanager
+def node_metrics(node_name: str) -> Iterator[None]:
+    """Count and time one node run, tagged with how it ended.
+
+    The timer tags each observation with its outcome, so success and failure latencies
+    can be separated; timeouts, stops and errors each have their own counter.
+    """
+    attrs = {"node": node_name}
+    metrics.counter("tenxgraph.node.executions").inc(attributes=attrs)
+    try:
+        with metrics.timer("tenxgraph.node.duration", attributes=attrs):
+            yield
+    except NodeTimeoutError:
+        metrics.counter("tenxgraph.node.timeouts").inc(attributes=attrs)
+        raise
+    except GraphStopRequested:
+        metrics.counter("tenxgraph.node.stopped").inc(attributes=attrs)
+        raise
+    except Exception:
+        metrics.counter("tenxgraph.node.errors").inc(attributes=attrs)
+        raise

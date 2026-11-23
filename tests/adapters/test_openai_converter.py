@@ -4,7 +4,6 @@ Basic tests for OpenAI converter functionality.
 
 import json
 from unittest.mock import Mock, patch
-from typing import Any
 
 import pytest
 

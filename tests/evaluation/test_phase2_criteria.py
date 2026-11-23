@@ -11,8 +11,6 @@ from tenxgraph.qa.evaluation import (
     MatchType,
     MessageContent,
     ToolCall,
-    TrajectoryStep,
-    StepType,
 )
 from tenxgraph.qa.evaluation.collectors.trajectory_collector import TrajectoryCollector
 from tenxgraph.qa.evaluation.execution.result import ExecutionResult

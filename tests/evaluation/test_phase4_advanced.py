@@ -2,18 +2,12 @@
 Tests for Phase 4: Advanced criteria and user simulation.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tenxgraph.qa.evaluation import (
     CriterionConfig,
-    CriterionResult,
     EvalCase,
-    EvalConfig,
-    Invocation,
-    MatchType,
-    MessageContent,
     TrajectoryCollector,
 )
 from tenxgraph.qa.evaluation.execution.result import ExecutionResult

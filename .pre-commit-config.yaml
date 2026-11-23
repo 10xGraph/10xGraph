@@ -43,6 +43,18 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
         exclude: ^(tests|docs|examples)/
 
+  # Tests are excluded from the main ruff hook (and from pyproject's ruff config), so unused
+  # imports in tests/ would slip through. --isolated ignores that exclude. Imports a test needs
+  # for a side effect or fixture must carry `# noqa: F401`.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        name: "ruff (tests: unused imports)"
+        alias: ruff-tests-unused-imports
+        args: [--select, F401, --isolated]
+        files: ^tests/
+
   - repo: https://github.com/PyCQA/bandit
     rev: 1.7.9
     hooks:

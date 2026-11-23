@@ -3,17 +3,11 @@ Tests for the evaluation criteria and result models.
 """
 
 import pytest
-from typing import Any
 
 from tenxgraph.qa.evaluation import (
     CriterionConfig,
     EvalCase,
-    EvalConfig,
-    Invocation,
     MatchType,
-    MessageContent,
-    ToolCall,
-    TrajectoryStep,
 )
 from tenxgraph.qa.evaluation.eval_result import (
     CriterionResult,

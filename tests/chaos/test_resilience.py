@@ -7,11 +7,10 @@ and state consistency.
 
 import random
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from tenxgraph.storage.checkpointer import BaseCheckpointer, InMemoryCheckpointer
+from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.state import AgentState, ExecutionStatus, Message
@@ -292,7 +291,6 @@ class TestConcurrentExecutionResilience:
         checkpointer = InMemoryCheckpointer()
         
         def slow_node(state: AgentState) -> AgentState:
-            import asyncio
             # Simulate slow operation
             # Note: In real scenario, use await asyncio.sleep()
             state.context.append(Message.text_message("Response", role="assistant"))

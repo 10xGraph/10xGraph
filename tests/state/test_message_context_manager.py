@@ -2,7 +2,7 @@ import pytest
 from tenxgraph.core.state.message_context_manager import MessageContextManager
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.message import Message
-from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.message_block import ToolCallBlock, ToolResultBlock
 
 @pytest.fixture
 def system_msg():

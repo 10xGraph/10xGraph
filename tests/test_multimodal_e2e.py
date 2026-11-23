@@ -13,16 +13,12 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
-from tenxgraph.core.state.message import Message, TokenUsages, generate_id
+from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import (
     AudioBlock,
     DocumentBlock,
@@ -34,13 +30,9 @@ from tenxgraph.core.state.message_block import (
     VideoBlock,
 )
 from tenxgraph.utils.converter import (
-    _audio_block_to_openai,
     _build_content,
     _convert_dict,
-    _document_block_to_openai,
     _has_multimodal_blocks,
-    _image_block_to_openai,
-    _video_block_to_openai,
     convert_messages,
     strip_media_blocks,
 )
@@ -385,7 +377,6 @@ class TestContentPartsToGoogle:
         return mixin
 
     def test_text_part(self):
-        from google.genai import types
 
         parts = self.mixin._content_parts_to_google([{"type": "text", "text": "hello"}])
         assert len(parts) == 1
@@ -1196,7 +1187,6 @@ class TestGoogleHandleRegularMessage:
         self.mixin = AgentGoogleMixin()
 
     def test_string_content(self):
-        from google.genai import types
 
         result = self.mixin._handle_regular_message("Hello!", "user")
         assert result.role == "user"

@@ -6,8 +6,6 @@ optional dependency handling, dynamic imports, and module structure.
 """
 
 import sys
-from unittest.mock import patch, Mock, MagicMock
-from importlib import import_module
 
 
 class TestPublisherModuleImports:

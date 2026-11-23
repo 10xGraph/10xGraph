@@ -12,7 +12,6 @@ import pytest
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.prebuilt.tools import (
     create_file_tools,
-    fetch_url,
     file_read,
     file_search,
     file_write,

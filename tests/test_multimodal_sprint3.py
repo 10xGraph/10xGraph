@@ -16,12 +16,11 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
-from tenxgraph.storage.media.config import MultimodalConfig
 from tenxgraph.storage.media.offload import (
     MediaOffloadPolicy,
     ensure_media_offloaded,
@@ -37,7 +36,6 @@ from tenxgraph.core.state.message_block import (
     ImageBlock,
     MediaRef,
     TextBlock,
-    VideoBlock,
 )
 from tenxgraph.utils.converter import resolve_media_refs
 

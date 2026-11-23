@@ -11,7 +11,6 @@ import pytest
 
 from tenxgraph.qa.evaluation.config.presets import EvalPresets
 from tenxgraph.qa.evaluation.dataset.builder import EvalSetBuilder
-from tenxgraph.qa.evaluation.dataset.eval_set import EvalSet
 from tenxgraph.qa.evaluation.eval_result import EvalReport, EvalSummary
 from tenxgraph.qa.evaluation.quick_eval import QuickEval
 

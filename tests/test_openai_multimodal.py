@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -331,7 +329,6 @@ class TestResponsesConverterMultimodal:
         )
         msg = await converter.convert_response(response)
         # Should have: ReasoningBlock + TextBlock + ImageBlock + AudioBlock
-        from tenxgraph.core.state.message_block import ReasoningBlock, TextBlock
 
         block_types = [type(b).__name__ for b in msg.content]
         assert "ReasoningBlock" in block_types

@@ -1,8 +1,6 @@
 """Tests for Google GenAI converter functionality."""
 
-import json
-from datetime import datetime
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
 import logging
 

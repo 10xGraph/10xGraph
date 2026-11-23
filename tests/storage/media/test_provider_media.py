@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 from tenxgraph.storage.media.provider_media import (
     ProviderMediaCache,
     should_use_google_file_api,

@@ -7,8 +7,7 @@ proper imports, optional dependency handling, and module structure.
 
 import pytest
 import sys
-from unittest.mock import patch, MagicMock
-from importlib import import_module
+from unittest.mock import patch
 
 
 class TestStoreModuleImports:
@@ -94,7 +93,7 @@ class TestOptionalDependencies:
         """Test OpenAIEmbedding availability based on openai package."""
         # Check if openai is available
         try:
-            import openai
+            import openai  # noqa: F401
             openai_available = True
         except ImportError:
             openai_available = False
@@ -162,7 +161,7 @@ class TestStoreModuleConstants:
         
         # Should reflect actual openai availability
         try:
-            import openai
+            import openai  # noqa: F401
             expected = True
         except ImportError:
             expected = False
@@ -223,7 +222,6 @@ class TestStoreModuleCompatibility:
         if 'tenxgraph.storage.store' in sys.modules:
             del sys.modules['tenxgraph.storage.store']
         
-        import tenxgraph.storage.store
         
         import_time = time.time() - start_time
         
@@ -235,7 +233,6 @@ class TestStoreModuleCompatibility:
         # These imports should all work without circular dependency errors
         from tenxgraph.storage.store import BaseStore
         from tenxgraph.storage.store import BaseEmbedding
-        from tenxgraph.storage.store import MemoryRecord, MemorySearchResult
         from tenxgraph.storage.store.base_store import BaseStore as BaseStoreFromModule
         from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding as BaseEmbeddingFromModule
         

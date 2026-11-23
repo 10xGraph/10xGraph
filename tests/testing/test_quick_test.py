@@ -177,7 +177,6 @@ class TestQuickTestCustom:
     @pytest.mark.asyncio
     async def test_custom_with_graph_setup(self):
         """Test custom with a graph_setup callback."""
-        from tenxgraph.utils.constants import END
 
         agent = TestAgent(responses=["Modified graph response"])
 

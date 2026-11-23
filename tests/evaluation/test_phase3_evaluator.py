@@ -5,7 +5,7 @@ Tests for Phase 3: AgentEvaluator and reporters.
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,11 +19,7 @@ from tenxgraph.qa.evaluation import (
     EvalConfig,
     EvalReport,
     EvalSet,
-    EvalSummary,
     EvaluationRunner,
-    Invocation,
-    MatchType,
-    MessageContent,
     TrajectoryCollector,
 )
 from tenxgraph.qa.evaluation.reporters.console import ConsoleReporter, Colors, print_report

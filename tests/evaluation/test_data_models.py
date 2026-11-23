@@ -4,15 +4,12 @@ Tests for the evaluation module data models.
 Tests for EvalSet, EvalCase, EvalConfig, and related models.
 """
 
-import json
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from tenxgraph.qa.evaluation import (
     CriterionConfig,
-    CriteriaConfig,
     EvalCase,
     EvalConfig,
     EvalSet,

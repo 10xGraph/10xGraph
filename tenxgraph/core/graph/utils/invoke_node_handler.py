@@ -22,34 +22,29 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
-from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     hidden_tool_message,
     invalid_arguments_message,
-    parse_call_arguments,
     resolve_max_parallel_tool_calls,
 )
 from tenxgraph.core.graph.utils.utils import process_node_result
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.events import EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
-    CallbackContext,
     CallbackManager,
-    InvocationType,
     call_sync_or_async,
 )
 from tenxgraph.utils.command import Command
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import GraphInterrupt
 from tenxgraph.utils.interrupt import activate as activate_interrupts
-from tenxgraph.utils.log_safety import error_details, log_safe
 
-from .handler_mixins import BaseLoggingMixin
+from .handler_mixins import BaseLoggingMixin, mirror_last_message
 from .tool_runtime import ToolRuntimeMixin
 
 
@@ -125,44 +120,15 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         # Replay guard: if this exact tool call already completed, reuse its
         # recorded result instead of invoking the tool a second time.
-        # None turns both the replay lookup and the record below off.
-        ledger_key = (
-            self._ledger_key(origin_message_id, tool_call_id)
-            if self._ledger_enabled(checkpointer, self.func, function_name)
-            else None
+        ledger_key, recorded = await self._ledger_lookup(
+            checkpointer, config, origin_message_id, tool_call_id, function_name
         )
-        if checkpointer and ledger_key:
-            recorded = await self._get_recorded_tool_result(checkpointer, config, ledger_key)
-            if recorded is not None:
-                logger.info(
-                    "Node '%s': tool '%s' (call %s) already executed; "
-                    "replaying recorded result instead of re-running it",
-                    self.name,
-                    log_safe(function_name),
-                    log_safe(tool_call_id),
-                )
-                return recorded
+        if recorded is not None:
+            return recorded
 
-        # An LLM can emit malformed arguments (cut off at the token limit, empty,
-        # not an object). That is the model's mistake: report it back as a tool
-        # error and let it retry. The tool must not run with guessed arguments.
-        function_args, args_error = parse_call_arguments(tool_call)
+        function_args, args_error = self._checked_tool_args(tool_call, function_name)
         if args_error:
-            logger.warning(
-                "Node '%s': tool '%s' called with invalid arguments: %s",
-                self.name,
-                log_safe(function_name),
-                log_safe(args_error, 500),
-            )
             return invalid_arguments_message(tool_call)
-
-        logger.info(
-            "Node '%s' executing tool '%s' with %d arguments",
-            self.name,
-            log_safe(function_name),
-            len(function_args),
-        )
-        logger.debug("Tool arguments: %s", function_args)
 
         # Bound the call: a tool that hangs (half-open socket, unresponsive MCP
         # server) would otherwise block the node -- and therefore the whole run --
@@ -201,128 +167,115 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         Raises:
             NodeError: If no tool calls are present.
         """
-        logger.debug("Node '%s' calling tools from message", self.name)
         result: list[Message | dict[str, Any]] = []
-        if (
-            hasattr(last_message, "tools_calls")
-            and last_message.tools_calls
-            and len(last_message.tools_calls) > 0
-        ):
-            # Only tools the model was actually offered may run (Agent.tools_tags).
-            allowed = allowed_tool_names(last_message)
+        calls = self._tool_calls_or_raise(last_message)
+        # Only tools the model was actually offered may run (Agent.tools_tags).
+        allowed = allowed_tool_names(last_message)
 
-            # A handoff is honoured only for a registered handoff tool. A name that
-            # merely starts with "transfer_to_" is an ordinary (unknown) tool call.
-            # Every tool call of the message is answered before control moves on.
-            handoff = self._find_handoff(last_message)
-            if handoff:
-                target_agent, winner, regular = handoff
-                ran: list[Message] = []
-                if regular:
-                    # The message's other tool calls run first, so the target sees their
-                    # results (state changes from them are merged into ``state`` here).
-                    result = await self._call_tools(
-                        self._regular_calls_message(last_message, regular), state, config
-                    )
-                    ran = _tool_messages(self._merge_tool_results(result, state))
-                answers = self._handoff_answers(last_message, winner, target_agent, regular)
-                return Command(  # type: ignore
-                    update=[*ran, *answers],
-                    goto=target_agent,
+        # A handoff is honoured only for a registered handoff tool. A name that
+        # merely starts with "transfer_to_" is an ordinary (unknown) tool call.
+        # Every tool call of the message is answered before control moves on.
+        handoff = self._find_handoff(last_message)
+        if handoff:
+            target_agent, winner, regular = handoff
+            ran: list[Message] = []
+            if regular:
+                # The message's other tool calls run first, so the target sees their
+                # results (state changes from them are merged into ``state`` here).
+                result = await self._call_tools(
+                    self._regular_calls_message(last_message, regular), state, config
                 )
-
-            # Continue with normal tool execution if no handoff detected
-            # Execute tool calls in parallel (preserve order of the input list)
-            logger.info(
-                "Node '%s' executing %d tool calls in parallel",
-                self.name,
-                len(last_message.tools_calls),
+                ran = _tool_messages(self._merge_tool_results(result, state))
+            answers = self._handoff_answers(last_message, winner, target_agent, regular)
+            return Command(  # type: ignore
+                update=[*ran, *answers],
+                goto=target_agent,
             )
 
-            # The assistant message that issued these calls is what makes each
-            # invocation uniquely identifiable for the idempotency ledger.
-            origin_message_id = getattr(last_message, "message_id", None)
+        # Continue with normal tool execution if no handoff detected
+        # Execute tool calls in parallel (preserve order of the input list)
+        logger.info(
+            "Node '%s' executing %d tool calls in parallel",
+            self.name,
+            len(calls),
+        )
 
-            # Branch isolation. Tools mutate the injected state in place, so
-            # handing every parallel tool the SAME object let them race: two tools
-            # writing different fields still clobbered each other. Each branch now
-            # gets its own copy, and we merge them afterwards against a baseline so
-            # only fields a branch actually changed are written back.
-            #
-            # A single tool call cannot race with anything, so it keeps operating
-            # directly on the shared state -- no copying cost in the common case.
-            is_parallel = len(last_message.tools_calls) > 1
-            baseline = copy.deepcopy(state) if is_parallel else None
-            branch_states: list[AgentState | None] = [None] * len(last_message.tools_calls)
+        # The assistant message that issued these calls is what makes each
+        # invocation uniquely identifiable for the idempotency ledger.
+        origin_message_id = getattr(last_message, "message_id", None)
 
-            # At most this many tools run at once. The branch copy is taken only once
-            # a tool holds a slot, so peak copies are bounded by the limit rather than
-            # by however many calls the model emitted.
-            semaphore = asyncio.Semaphore(resolve_max_parallel_tool_calls(config))
+        # Branch isolation. Tools mutate the injected state in place, so
+        # handing every parallel tool the SAME object let them race: two tools
+        # writing different fields still clobbered each other. Each branch now
+        # gets its own copy, and we merge them afterwards against a baseline so
+        # only fields a branch actually changed are written back.
+        #
+        # A single tool call cannot race with anything, so it keeps operating
+        # directly on the shared state -- no copying cost in the common case.
+        is_parallel = len(calls) > 1
+        baseline = copy.deepcopy(state) if is_parallel else None
+        branch_states: list[AgentState | None] = [None] * len(calls)
 
-            async def _run_branch(index: int, tool_call: dict[str, Any]) -> Any:
-                name = tool_call.get("function", {}).get("name", "")
-                if allowed is not None and name not in allowed:
-                    logger.warning(
-                        "Node '%s': tool '%s' was not offered to the model; not executing",
-                        self.name,
-                        name,
-                    )
+        # At most this many tools run at once. The branch copy is taken only once
+        # a tool holds a slot, so peak copies are bounded by the limit rather than
+        # by however many calls the model emitted.
+        semaphore = asyncio.Semaphore(resolve_max_parallel_tool_calls(config))
+
+        async def _run_branch(index: int, tool_call: dict[str, Any]) -> Any:
+            name = tool_call.get("function", {}).get("name", "")
+            if allowed is not None and name not in allowed:
+                logger.warning(
+                    "Node '%s': tool '%s' was not offered to the model; not executing",
+                    self.name,
+                    name,
+                )
+                branch_states[index] = None
+                return hidden_tool_message(tool_call)
+
+            async with semaphore:
+                branch = copy.deepcopy(state) if is_parallel else state
+                branch_states[index] = branch
+                outcome = await self._handle_single_tool(
+                    tool_call,
+                    branch,
+                    config,
+                    origin_message_id=origin_message_id,
+                )
+                if is_parallel and self._branch_untouched(branch, baseline, outcome):
+                    # Merging it would be a no-op, so free the copy now instead of
+                    # holding it until the merge.
                     branch_states[index] = None
-                    return hidden_tool_message(tool_call)
+                return outcome
 
-                async with semaphore:
-                    branch = copy.deepcopy(state) if is_parallel else state
-                    branch_states[index] = branch
-                    outcome = await self._handle_single_tool(
-                        tool_call,
-                        branch,
-                        config,
-                        origin_message_id=origin_message_id,
-                    )
-                    if is_parallel and self._branch_untouched(branch, baseline, outcome):
-                        # Merging it would be a no-op, so free the copy now instead of
-                        # holding it until the merge.
-                        branch_states[index] = None
-                    return outcome
+        tasks = [
+            asyncio.ensure_future(_run_branch(index, tool_call))
+            for index, tool_call in enumerate(calls)
+        ]
 
-            tasks = [
-                asyncio.ensure_future(_run_branch(index, tool_call))
-                for index, tool_call in enumerate(last_message.tools_calls)
-            ]
+        # gather(...) without return_exceptions let one failing tool propagate
+        # immediately while its siblings were left running -- never cancelled,
+        # never awaited. Collect every outcome instead, so a single tool error
+        # cannot orphan the others, then convert failures into tool-error
+        # messages the model can actually see and react to.
+        # gather preserves the order corresponding to the tasks list.
+        settled = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # gather(...) without return_exceptions let one failing tool propagate
-            # immediately while its siblings were left running -- never cancelled,
-            # never awaited. Collect every outcome instead, so a single tool error
-            # cannot orphan the others, then convert failures into tool-error
-            # messages the model can actually see and react to.
-            # gather preserves the order corresponding to the tasks list.
-            settled = await asyncio.gather(*tasks, return_exceptions=True)
+        # A tool that called interrupt() paused the run; that is not a tool failure.
+        # Siblings that finished are in the tool-result ledger, so resuming does not
+        # run them again.
+        for outcome in settled:
+            if isinstance(outcome, GraphInterrupt):
+                raise outcome
 
-            # A tool that called interrupt() paused the run; that is not a tool failure.
-            # Siblings that finished are in the tool-result ledger, so resuming does not
-            # run them again.
-            for outcome in settled:
-                if isinstance(outcome, GraphInterrupt):
-                    raise outcome
+        result = []
+        for tool_call, outcome in zip(calls, settled, strict=True):
+            if isinstance(outcome, BaseException):
+                result.append(self._failure_message(tool_call, outcome))
+            else:
+                result.append(outcome)
 
-            result = []
-            for tool_call, outcome in zip(last_message.tools_calls, settled, strict=True):
-                if isinstance(outcome, BaseException):
-                    result.append(self._failure_message(tool_call, outcome))
-                else:
-                    result.append(outcome)
-
-            if is_parallel:
-                self._fold_parallel_branches(state, baseline, branch_states, result)
-        else:
-            # No tool calls to execute, return available tools
-            logger.exception("Node '%s': No tool calls to execute", self.name)
-            raise NodeError(
-                message="No tool calls to execute",
-                error_code="NODE_002",
-                context={"node_name": self.name},
-            )
+        if is_parallel:
+            self._fold_parallel_branches(state, baseline, branch_states, result)
 
         return result
 
@@ -408,7 +361,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             callback_mgr,
         )
 
-    async def _call_normal_node(  # noqa: PLR0915
+    async def _call_normal_node(
         self,
         state: "AgentState",
         config: dict[str, Any],
@@ -433,36 +386,13 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         logger.debug("Node '%s' is a regular function, executing with callbacks", self.name)
         # This is a regular function - likely AI function
-        # Create callback context for AI invocation
-        context = CallbackContext(
-            invocation_type=InvocationType.AI,
-            node_name=self.name,
-            function_name=getattr(self.func, "__name__", str(self.func)),
-            metadata={"config": public_config(config)},
-        )
-
-        # Event publishing logic (similar to stream_node_handler)
-
+        function_name = getattr(self.func, "__name__", str(self.func))
+        context = self._node_callback_context(config, function_name)
         input_data = self._prepare_input_data(
             state,
             config,
         )
-
-        last_message = state.context[-1] if state.context and len(state.context) > 0 else None
-
-        event = EventModel.default(
-            config,
-            data={"state": state},
-            event=Event.NODE_EXECUTION,
-            content_type=[ContentType.STATE],
-            node_name=self.name,
-            extra={
-                "node": self.name,
-                "function_name": getattr(self.func, "__name__", str(self.func)),
-                "last_message": last_message,
-            },
-        )
-        publish_event(event)
+        event = self._publish_node_start(config, state, function_name)
 
         try:
             logger.debug("Node '%s' executing before_invoke callbacks", self.name)
@@ -500,12 +430,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             event.data["messages"] = messages
             event.data["next_node"] = next_node
             # mirror simple content + structured blocks for the last message
-            if messages:
-                last = messages[-1]
-                event.content = str(last.text() if isinstance(last.content, list) else last.content)
-                if isinstance(last.content, list):
-                    event.content_blocks = last.content
-
+            mirror_last_message(event, messages, stringify=True)
             publish_event(event)
 
             return {
@@ -522,29 +447,17 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)
 
             if recovery_result is not None:
-                logger.info(
-                    "Node '%s' recovered from error using callback result",
-                    self.name,
-                )
                 # Use recovery result instead of raising the error
-                event.event_type = EventType.END
                 event.metadata["status"] = "Function execution recovered from error"
-                event.data["message"] = recovery_result
-                event.content_type = [ContentType.MESSAGE, ContentType.STATE]
-                publish_event(event)
+                self._publish_node_recovered(event, recovery_result)
                 return {
                     "state": state,
                     "messages": [recovery_result],
                     "next_node": None,
                 }
             # Re-raise the original error
-            logger.error("Node '%s' could not recover from error", self.name)
-            event.event_type = EventType.ERROR
             event.metadata["status"] = f"Function execution failed: {e}"
-            event.data["error"] = str(e)
-            event.data.update(error_details(e, config))
-            event.content_type = [ContentType.ERROR, ContentType.STATE]
-            publish_event(event)
+            self._publish_node_failed(event, e, config)
             raise
 
     async def _call_agent_node(
@@ -567,31 +480,11 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         agent = self.func  # type: ignore - func is Agent instance here
 
-        # Create callback context for AI invocation
-        context = CallbackContext(
-            invocation_type=InvocationType.AI,
-            node_name=self.name,
-            function_name=getattr(agent, "__class__", type(agent)).__name__,
-            metadata={"config": public_config(config)},
+        context = self._node_callback_context(
+            config, getattr(agent, "__class__", type(agent)).__name__
         )
-
         input_data = {"state": state, "config": config}
-
-        last_message = state.context[-1] if state.context and len(state.context) > 0 else None
-
-        event = EventModel.default(
-            config,
-            data={"state": state},
-            event=Event.NODE_EXECUTION,
-            content_type=[ContentType.STATE],
-            node_name=self.name,
-            extra={
-                "node": self.name,
-                "function_name": type(agent).__name__,
-                "last_message": last_message,
-            },
-        )
-        publish_event(event)
+        event = self._publish_node_start(config, state, type(agent).__name__)
 
         try:
             # Execute before_invoke callbacks
@@ -628,11 +521,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             event.metadata["status"] = "Agent execution completed"
             event.data["messages"] = messages
             event.data["next_node"] = result.get("next_node")
-            if messages:
-                last = messages[-1]
-                event.content = last.text() if isinstance(last.content, list) else last.content
-                if isinstance(last.content, list):
-                    event.content_blocks = last.content
+            mirror_last_message(event, messages, stringify=False)
             publish_event(event)
 
             return result
@@ -646,24 +535,15 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)
 
             if recovery_result is not None:
-                logger.info("Node '%s' recovered from error using callback result", self.name)
-                event.event_type = EventType.END
                 event.metadata["status"] = "Agent execution recovered from error"
-                event.data["message"] = recovery_result
-                event.content_type = [ContentType.MESSAGE, ContentType.STATE]
-                publish_event(event)
+                self._publish_node_recovered(event, recovery_result)
                 return {
                     "state": state,
                     "messages": [recovery_result],
                     "next_node": None,
                 }
-            logger.error("Node '%s' could not recover from error", self.name)
-            event.event_type = EventType.ERROR
             event.metadata["status"] = f"Agent execution failed: {e}"
-            event.data["error"] = str(e)
-            event.data.update(error_details(e, config))
-            event.content_type = [ContentType.ERROR, ContentType.STATE]
-            publish_event(event)
+            self._publish_node_failed(event, e, config)
             raise
 
     async def invoke(

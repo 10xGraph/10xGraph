@@ -1,7 +1,6 @@
 """Tests for MockMCPClient."""
 
 import pytest
-import pytest_asyncio
 
 from tenxgraph.qa.testing.mock_mcp import MockMCPClient
 

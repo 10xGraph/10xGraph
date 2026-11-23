@@ -4,7 +4,6 @@ Tests that ToolResult state updates and Command/handoff work correctly
 in both invoke and stream modes of the node handlers.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,8 +12,7 @@ from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
 from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
 from tenxgraph.core.state import AgentState, Message, ToolResult
-from tenxgraph.core.state.message_block import ToolCallBlock, ToolResultBlock
-from tenxgraph.core.state.stream_chunks import StreamChunk
+from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.command import Command

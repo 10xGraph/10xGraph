@@ -8,10 +8,9 @@ configuration handling, and error scenarios.
 import pytest
 import json
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from typing import Any
 
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.runtime.publisher.events import EventModel, Event, EventType, ContentType
+from tenxgraph.runtime.publisher.events import EventModel, Event, EventType
 
 
 class TestRedisPublisher:
