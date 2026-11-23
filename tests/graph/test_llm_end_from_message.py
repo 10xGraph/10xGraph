@@ -128,7 +128,7 @@ async def test_openai_responses_non_stream():
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "total_tokens": 15,
-                "input_tokens_details": {"cached_tokens": 4},
+                "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 0},
                 "output_tokens_details": {"reasoning_tokens": 2},
             },
         }

@@ -62,7 +62,7 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {
     ("test_replace_metadata_keeps_category", "qdrant"): "S3: Q resets the category to \"general\" on aupdate(replace_metadata=True) without a category; V keeps it",
     ("test_metadata_roundtrip_without_payload_leak", "qdrant"): "S1: Q returns the whole payload (content, user_id, thread_id, timestamp) as result metadata; V returns caller metadata plus category, memory_type, memory_key",
     ("test_get_all_newest_first_and_limit", "inmem"): "S7: InMemoryStore returns insertion order; V returns newest first; maintainer decision",
-    ("test_get_all_newest_first_and_limit", "qdrant"): "S7: Q returns scroll order; V returns newest first; maintainer decision",
+    ("test_get_all_newest_first_and_limit", "qdrant"): "S7: Q returns scroll order (random, sorted by uuid4 point id); V returns newest first; maintainer decision",
     ("test_get_all_honours_filters", "inmem"): "S7: InMemoryStore ignores the filters keyword; V honours it",
     ("test_get_all_honours_filters", "qdrant"): "S7: Q ignores the filters keyword; V honours it",
     ("test_update_foreign_memory_is_refused", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82); a foreign aupdate succeeds",
@@ -83,6 +83,10 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {
 }
 
 
+# Order is random by uuid id, so the test passes by chance about 1 run in 6: not strict.
+NON_STRICT = {("test_get_all_newest_first_and_limit", "qdrant")}
+
+
 def pytest_collection_modifyitems(config, items):
     for item in items:
         callspec = getattr(item, "callspec", None)
@@ -92,7 +96,8 @@ def pytest_collection_modifyitems(config, items):
         name = item.originalname
         reason = KNOWN_GAPS.get((name, backend))
         if reason:
-            item.add_marker(pytest.mark.xfail(strict=True, reason=reason))
+            strict = (name, backend) not in NON_STRICT
+            item.add_marker(pytest.mark.xfail(strict=strict, reason=reason))
 
 
 # ---------------------------------------------------------------- checkpointers

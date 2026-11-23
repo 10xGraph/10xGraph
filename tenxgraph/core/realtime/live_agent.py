@@ -178,6 +178,8 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         self._session_tool_names: frozenset[str] = frozenset()
         # Tool calls still running; each yields its ToolResultEvent when it finishes.
         self._tool_tasks: set[asyncio.Task[ToolResultEvent]] = set()
+        # Ledger key -> the call running under it, so a re-sent call id waits for it.
+        self._inflight_tools: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
         # Error-driven reconnect backoff (go_away reconnects are immediate; only transient
         # drops back off). Seeded from RealtimeConfig.reconnect; kept as instance attributes
@@ -235,6 +237,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         session._session_tool_names = frozenset()
         session._session_checkpointer = None
         session._tool_tasks = set()
+        session._inflight_tools = {}
         return session
 
     # ------------------------------------------------------------------ #
@@ -377,8 +380,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         gather() absorbs the tasks' own cancellation but still raises if the cancel was
         aimed at this task.
         """
-        tasks = list(self._tool_tasks)
+        tasks = [*self._tool_tasks, *self._inflight_tools.values()]
         self._tool_tasks.clear()
+        self._inflight_tools.clear()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -712,6 +716,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         The call runs under the run's ``tool_timeout`` and records the tool metrics, like
         the invoke and stream paths. A timeout or an error becomes the same failure result
         those paths give the model, and is not recorded in the ledger.
+
+        A call re-sent while the first one still runs (same key) waits for that call and
+        gets its result, failure included, instead of running the tool a second time.
         """
         checkpointer = self._session_checkpointer
         thread_id = str((config or {}).get("thread_id") or "")
@@ -726,6 +733,32 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             if ToolRuntimeMixin._ledger_enabled(checkpointer, tool_node, event.name)
             else None
         )
+        if not key:
+            return await self._invoke_once(tool_node, event, config, state, callback_manager, None)
+        task = self._inflight_tools.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                self._invoke_once(tool_node, event, config, state, callback_manager, key)
+            )
+            self._inflight_tools[key] = task
+            task.add_done_callback(
+                lambda t: (
+                    self._inflight_tools.pop(key) if self._inflight_tools.get(key) is t else None
+                )
+            )
+        # shield: cancelling one waiting call must not cancel the run the others wait on.
+        return await asyncio.shield(task)
+
+    async def _invoke_once(
+        self,
+        tool_node: ToolNode,
+        event: ToolCallEvent,
+        config: dict[str, Any],
+        state: AgentState,
+        callback_manager: CallbackManager,
+        key: str | None,
+    ) -> dict[str, Any]:
+        checkpointer = self._session_checkpointer
         ledger = _LedgerAccess(self._node_name_or_default(), tool_node)
         if checkpointer is not None and key:
             recorded = await ledger._get_recorded_tool_result(checkpointer, config, key)

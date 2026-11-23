@@ -257,7 +257,7 @@ def _responses_response(text: str) -> object:
                 "input_tokens": 20,
                 "output_tokens": 15,
                 "total_tokens": 35,
-                "input_tokens_details": {"cached_tokens": 7},
+                "input_tokens_details": {"cached_tokens": 7, "cache_write_tokens": 0},
                 "output_tokens_details": {"reasoning_tokens": 0},
             },
         }
