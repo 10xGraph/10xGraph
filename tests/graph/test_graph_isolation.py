@@ -240,3 +240,12 @@ def test_compile_without_callback_manager_gives_each_graph_its_own():
     graph_a.compile()
     graph_b.compile()
     assert graph_a._container.get(CallbackManager) is not graph_b._container.get(CallbackManager)
+
+
+def test_prebuilt_agents_compiled_without_callback_manager_get_their_own(monkeypatch):
+    from tenxgraph.prebuilt.agent import ReactAgent  # noqa: PLC0415
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    app_a = ReactAgent(model="gpt-5-mini").compile()
+    app_b = ReactAgent(model="gpt-5-mini").compile()
+    assert app_a._container.get(CallbackManager) is not app_b._container.get(CallbackManager)

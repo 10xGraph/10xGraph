@@ -598,7 +598,7 @@ class PlanActReflectAgent[StateT: AgentState]:
         store: BaseStore | None = None,
         interrupt_before: list[str] | None = None,
         interrupt_after: list[str] | None = None,
-        callback_manager: CallbackManager = CallbackManager(),
+        callback_manager: CallbackManager | None = None,
         media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
         media_policy: MediaFetchPolicy | None = None,
