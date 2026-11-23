@@ -244,7 +244,9 @@ def setup_phoenix(
     """
     processor = _build_phoenix_processor(api_key=api_key, endpoint=endpoint)
 
-    _attach_processor(processor, graph, level, tracer_provider, user_id_mode, project=_phoenix_project(project))
+    _attach_processor(
+        processor, graph, level, tracer_provider, user_id_mode, project=_phoenix_project(project)
+    )
 
 
 def setup_otlp(

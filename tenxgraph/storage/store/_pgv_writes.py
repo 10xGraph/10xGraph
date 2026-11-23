@@ -12,6 +12,7 @@ from tenxgraph.storage.columns import (
     rows_affected,
 )
 
+from ._pgv_host import PgvHostBase
 from ._pgv_support import (
     _SYSTEM_METADATA_KEYS,
     asyncpg,
@@ -25,7 +26,7 @@ from .store_schema import (
 logger = logging.getLogger("tenxgraph.store.pgvector")
 
 
-class _PgvWritesMixin:
+class _PgvWritesMixin(PgvHostBase):
     """Writes: store, update, delete, forget and embedding backfill."""
 
     # ------------------------------------------------------------------

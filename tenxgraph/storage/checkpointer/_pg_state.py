@@ -17,6 +17,7 @@ from tenxgraph.storage.columns import (
 from tenxgraph.utils import metrics
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from ._pg_support import (
     STATE_VERSION_CONFIG_KEY,
     StateT,
@@ -27,7 +28,7 @@ from ._pg_support import (
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgStateMixin:
+class _PgStateMixin(PgHostBase):
     """Durable state reads and writes with optimistic versioning."""
 
     async def _state_row_matches(

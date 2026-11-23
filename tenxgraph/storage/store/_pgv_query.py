@@ -18,6 +18,7 @@ from tenxgraph.storage.sql_filter import (
     validate_filters,
 )
 
+from ._pgv_host import PgvHostBase
 from ._pgv_support import (
     _ITERATIVE_SCAN_SETTING,
     _SELECT_COLUMNS,
@@ -38,7 +39,7 @@ from .store_schema import (
 logger = logging.getLogger("tenxgraph.store.pgvector")
 
 
-class _PgvQueryMixin:
+class _PgvQueryMixin(PgvHostBase):
     """Query helpers: scoping, filters, vector literals, embedding and row conversion."""
 
     # ------------------------------------------------------------------

@@ -4,6 +4,7 @@ import logging
 import math
 from typing import Any
 
+from ._pgv_host import PgvHostBase
 from ._pgv_support import (
     _METRIC_SQL,
     _similarity_sql,
@@ -21,7 +22,7 @@ from .store_schema import (
 logger = logging.getLogger("tenxgraph.store.pgvector")
 
 
-class _PgvReadsMixin:
+class _PgvReadsMixin(PgvHostBase):
     """Reads: get, list and search (vector, text and hybrid)."""
 
     # ------------------------------------------------------------------

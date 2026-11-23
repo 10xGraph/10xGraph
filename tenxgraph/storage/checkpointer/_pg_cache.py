@@ -1,5 +1,6 @@
 """Redis: breaker-guarded calls, the state cache and generic cache values."""
 
+import functools
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from urllib.parse import quote, unquote
 
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from ._pg_support import (
     _CACHE_CAS_LUA,
     _CACHE_VERSION_KEY,
@@ -26,7 +28,7 @@ from ._pg_support import (
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgCacheMixin:
+class _PgCacheMixin(PgHostBase):
     """Redis: breaker-guarded calls, the state cache and generic cache values."""
 
     async def _redis_call(self, call: Callable[[], Awaitable[Any]]) -> Any:
@@ -154,7 +156,7 @@ class _PgCacheMixin:
         """
         try:
             keys = [self._get_thread_key(thread_id, user_id, config)]
-            if self._thread_identity(config) is not None:
+            if config is not None and self._thread_identity(config) is not None:
                 caller_config = {k: v for k, v in config.items() if k != _THREAD_IDENTITY_KEY}
                 caller_key = self._get_thread_key(thread_id, user_id, caller_config)
                 if caller_key not in keys:
@@ -458,10 +460,10 @@ class _PgCacheMixin:
                 re.sub(r"([\\*?\[\]])", r"\\\1", ns_prefix) + quote(prefix or "", safe="") + "*"
             )
             keys: list[str] = []
-            cursor = 0
+            cursor: int = 0
             while True:
                 cursor, found = await self._redis_call(
-                    lambda c=cursor: self.redis.scan(cursor=c, match=pattern, count=100)
+                    functools.partial(self.redis.scan, cursor=cursor, match=pattern, count=100)
                 )
                 for raw_key in found:
                     key_str = raw_key.decode() if isinstance(raw_key, bytes) else raw_key

@@ -20,6 +20,8 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.prebuilt.agent._graph_base import _PrebuiltGraph
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import MemoryConfig
 from tenxgraph.utils.callbacks import CallbackManager
@@ -89,12 +91,18 @@ class AudioAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
         self,
         checkpointer: BaseCheckpointer[StateT] | None = None,
         store: BaseStore | None = None,
+        interrupt_before: list[str] | None = None,
+        interrupt_after: list[str] | None = None,
         callback_manager: CallbackManager | None = None,
+        media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
-        # No media_store: realtime media (images/video) is sent frame-by-frame straight to
-        # the live model via the input queue (see LiveInputQueue.send_image); it is never
-        # offloaded to or resolved from a media store, so the parameter would be dead here.
+        # Realtime media (images/video) is sent frame-by-frame straight to the live model via
+        # the input queue (see LiveInputQueue.send_image); it is never offloaded to or
+        # resolved from a media store, so a media_store would be silently dead here.
+        if media_store is not None:
+            raise ValueError("AudioAgent does not use a media_store; realtime media is not stored")
         self._configure_graph()
 
         if self._graph is None:  # pragma: no cover - _configure_graph always assigns
@@ -103,8 +111,11 @@ class AudioAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
         return self._graph.compile(
             checkpointer=checkpointer,
             store=store,
+            interrupt_before=interrupt_before,
+            interrupt_after=interrupt_after,
             callback_manager=callback_manager
             if callback_manager is not None
             else CallbackManager(),
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

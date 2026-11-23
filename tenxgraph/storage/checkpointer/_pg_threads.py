@@ -19,13 +19,14 @@ from tenxgraph.storage.sql_filter import compile_filters, validate_filters
 from tenxgraph.utils import ThreadInfo
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from .base_checkpointer import validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgThreadsMixin:
+class _PgThreadsMixin(PgHostBase):
     """Thread rows: create, read, list, clean."""
 
     ###########################
@@ -36,7 +37,7 @@ class _PgThreadsMixin:
         self,
         config: dict[str, Any],
         thread_info: ThreadInfo,
-    ) -> Any | None:
+    ) -> bool:
         """
         Create or update thread information.
 

@@ -11,13 +11,14 @@ from tenxgraph.storage.columns import (
 )
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from .base_checkpointer import validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgMessagesMixin:
+class _PgMessagesMixin(PgHostBase):
     """Message reads and writes."""
 
     ###########################

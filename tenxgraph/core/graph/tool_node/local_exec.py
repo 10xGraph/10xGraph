@@ -231,7 +231,7 @@ class LocalExecMixin:
         # what was asked for when validation is what failed.
         input_data: dict[str, t.Any] = dict(args)
 
-        meta = {
+        meta: dict[str, t.Any] = {
             "function_name": name,
             "function_argument": args,
             "tool_call_id": tool_call_id,

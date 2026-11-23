@@ -1,7 +1,7 @@
 DEFAULT_DENIED_REASON = "This tool call is not allowed."
 
 
-class ToolDenied(Exception):  # noqa: N818 - a policy decision, named for what it says
+class ToolDenied(Exception):  # - a policy decision, named for what it says
     """Raised to block a tool call by policy.
 
     Raise it from a ``before_invoke`` callback for ``InvocationType.TOOL`` or

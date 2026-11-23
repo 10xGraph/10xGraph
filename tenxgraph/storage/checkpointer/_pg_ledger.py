@@ -13,11 +13,13 @@ from tenxgraph.storage.columns import (
     rows_affected as _rows_affected,
 )
 
+from ._pg_host import PgHostBase
+
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgLedgerMixin:
+class _PgLedgerMixin(PgHostBase):
     """Tool execution ledger."""
 
     ##################################

@@ -457,9 +457,9 @@ def _convert_dict(
         return result
 
     # Check for multimodal blocks
-    content = _build_content(blocks)
+    multimodal = _build_content(blocks)
 
-    result = {"role": message.role, "content": content}
+    result = {"role": message.role, "content": multimodal}
     if thinking:
         result[THINKING_BLOCKS_KEY] = thinking
     return result

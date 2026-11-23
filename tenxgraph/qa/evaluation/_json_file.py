@@ -1,4 +1,4 @@
-"""JSON file load and save shared by the eval models (``EvalConfig``, ``EvalSet``, ``EvalReport``)."""
+"""JSON file load and save shared by the eval models (EvalConfig, EvalSet, EvalReport)."""
 
 from __future__ import annotations
 

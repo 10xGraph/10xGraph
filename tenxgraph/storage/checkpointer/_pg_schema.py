@@ -22,6 +22,7 @@ from tenxgraph.storage.columns import (
 )
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from ._pg_support import (
     _THREAD_CHILD_TABLES,
     CURRENT_SCHEMA_VERSION,
@@ -33,7 +34,7 @@ from ._pg_support import (
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgSchemaMixin:
+class _PgSchemaMixin(PgHostBase):
     """Schema: DDL, migrations, indexes and setup of the Postgres tables."""
 
     def _get_sql_type(self, type_name: str) -> str:

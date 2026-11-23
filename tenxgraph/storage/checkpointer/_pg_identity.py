@@ -7,6 +7,7 @@ from urllib.parse import quote
 from tenxgraph.core.authz import owner_id
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from ._pg_support import (
     _THREAD_IDENTITY_KEY,
 )
@@ -15,7 +16,7 @@ from ._pg_support import (
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgIdentityMixin:
+class _PgIdentityMixin(PgHostBase):
     """Thread identity, Redis key building and the stop and active-run markers."""
 
     ###########################

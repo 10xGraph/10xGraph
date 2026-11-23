@@ -23,6 +23,7 @@ from tenxgraph.storage.columns import (
 from tenxgraph.utils import ThreadInfo
 from tenxgraph.utils.log_safety import describe_error
 
+from ._pg_host import PgHostBase
 from ._pg_support import (
     _CACHE_VERSION_KEY,
     StateT,
@@ -34,7 +35,7 @@ from ._pg_support import (
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-class _PgAccessMixin:
+class _PgAccessMixin(PgHostBase):
     """Query running, isolation scoping and thread access checks."""
 
     async def _retry_on_connection_error(
@@ -363,7 +364,7 @@ class _PgAccessMixin:
         """
         return self._encode_state(state)
 
-    def _deserialize_state_payload(self, data: dict[str, Any], thread_id: Any = None) -> StateT:
+    def _deserialize_state_payload(self, data: dict[str, Any], thread_id: Any = None) -> Any:
         """Reconstruct a state from a persisted payload using the bound state class.
 
         The Redis cache copy also carries the checkpoint version, which is not a

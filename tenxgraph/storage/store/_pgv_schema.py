@@ -23,6 +23,7 @@ from tenxgraph.storage.columns import (
     warn_if_rls_bypassed,
 )
 
+from ._pgv_host import PgvHostBase
 from ._pgv_support import (
     _METRIC_SQL,
     _MIGRATIONS,
@@ -40,7 +41,7 @@ from ._pgv_support import (
 logger = logging.getLogger("tenxgraph.store.pgvector")
 
 
-class _PgvSchemaMixin:
+class _PgvSchemaMixin(PgvHostBase):
     """Schema: table, indexes, extension, migrations and setup."""
 
     # ------------------------------------------------------------------

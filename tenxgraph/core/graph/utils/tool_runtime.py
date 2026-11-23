@@ -485,9 +485,9 @@ class ToolRuntimeMixin:
             TypeError: If required parameters are missing.
         """
         # Use cached signature inspection for performance
-        sig = self._get_cached_signature(self.func)  # type: ignore Tool node won't come here
+        sig = self._get_cached_signature(self.func)  # type: ignore[arg-type]  # Tool node won't come here
         input_data = {}
-        default_data = {
+        default_data: dict[str, Any] = {
             "state": state,
             "config": config,
         }
