@@ -100,8 +100,6 @@ from ._pg_support import (
     BlockingConnectionPool,
     Pool,
     Redis,
-    RedisConnectionError,
-    RedisTimeoutError,
     StateT,
     _Isolation,
     _RedisUnavailable,

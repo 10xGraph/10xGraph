@@ -74,6 +74,9 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 - An MCP tool call that fails without recovery is no longer labelled "with recovery" in the tool event.
 - OpenInference traces now show a system prompt given as a list of message dicts; before, they showed an empty string.
 - Internal: duplicated private code was merged and the largest modules were split into smaller private ones (`pg_checkpointer.py`, `pgvector_store.py`). Every public name keeps its import path.
+- In-memory checkpointer: a second `aput_tool_result` for the same tool call keeps the first result, like SQLite and Postgres.
+- In-memory checkpointer: message ids are compared as text, so a message stored with id `5` is found, updated and deleted by `"5"` and the other way round.
+- In-memory and SQLite checkpointers: `aget_thread_owner` returns the stored owner of a thread that has state but no thread record.
 
 ### Security
 

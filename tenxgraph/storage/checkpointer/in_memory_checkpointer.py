@@ -330,7 +330,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """Record that a tool call completed, with its result."""
         async with self._tool_lock:
             self._claim(config)
-            self._tool_results[self._tool_key(config, tool_call_id)] = (result, time.time())
+            self._tool_results.setdefault(
+                self._tool_key(config, tool_call_id), (result, time.time())
+            )
             return True
 
     async def aclear_tool_results(
@@ -474,7 +476,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._messages_lock:
             messages = self._messages.get(key, [])
             for msg in messages:
-                if msg.message_id == message_id:
+                if str(msg.message_id) == str(message_id):
                     return msg
             raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
 
@@ -501,7 +503,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         async with self._messages_lock:
             for msg in self._messages.get(key, []):
-                if msg.message_id == message_id:
+                if str(msg.message_id) == str(message_id):
                     msg.metadata = {**(msg.metadata or {}), **metadata}
                     return msg
             return None
@@ -563,7 +565,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                 return 0
             messages = self._messages.get(key, [])
             for msg in messages:
-                if msg.message_id == message_id:
+                if str(msg.message_id) == str(message_id):
                     messages.remove(msg)
                     logger.debug(f"Deleted message with ID {message_id} for key: {key}")
                     break
@@ -614,13 +616,13 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
         Threads are keyed by ``thread_id`` here, so the stored record's ``user_id``
         is the owner (``aput_thread`` stores the owner there). Note the in-memory registry
-        is only populated by explicit ``aput_thread`` calls; a thread that only ever had
-        state written is not recorded, so this returns None for it.
+        is only populated by explicit ``aput_thread`` calls. For a thread that only ever had
+        state written, there is no record, so the owner recorded by the first write is returned.
         """
         async with self._threads_lock:
             record = self._threads.get(str(thread_id))
-        if not record:
-            return None
+            if not record:
+                return self._thread_owner.get(str(thread_id))
         return record.get("user_id")
 
     async def aget_thread(
