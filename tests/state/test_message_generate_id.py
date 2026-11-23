@@ -11,18 +11,25 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from injectq import DependencyNotFoundError
+
 
 from tenxgraph.core.state.message import generate_id
 
 
 def _mock_iq(id_type: str = "string", generated_id=None) -> MagicMock:
-    """Create a mock InjectQ instance with controlled try_get behaviour."""
+    """Create a mock InjectQ instance with controlled try_get / call_factory behaviour."""
     mock = MagicMock()
     mock.try_get.side_effect = lambda key, default=None: (
-        id_type if key == "generated_id_type"
-        else generated_id if key == "generated_id"
-        else default
+        id_type if key == "generated_id_type" else default
     )
+
+    def call_factory(key):
+        if key == "generated_id" and generated_id is not None:
+            return generated_id
+        raise DependencyNotFoundError(key)
+
+    mock.call_factory.side_effect = call_factory
     return mock
 
 

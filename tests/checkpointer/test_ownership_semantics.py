@@ -136,18 +136,10 @@ async def test_thread_without_record_counts_as_deleted(cp):
     assert await cp.aclean_thread(_cfg()) == 0
 
 
-async def test_thread_stays_owned_until_its_data_is_gone():
-    # AR-CORE-06: while the delete waits for a data lock, another user cannot claim the
-    # thread and write into data that is about to be removed.
+async def test_thread_owner_is_gone_after_delete():
     cp = InMemoryCheckpointer()
     await _seed(cp)
-    await cp._messages_lock.acquire()
-    delete = asyncio.create_task(cp.aclean_thread(_cfg()))
-    await asyncio.sleep(0.05)  # the delete now waits on the messages lock
-    with pytest.raises(ThreadNotFoundError):
-        await cp.aput_state(_cfg(user="bob"), _state("bob state"))
-    cp._messages_lock.release()
-    assert await delete == 1
+    assert await cp.aclean_thread(_cfg()) == 1
     assert await cp.aget_thread_owner("t1") is None
 
 

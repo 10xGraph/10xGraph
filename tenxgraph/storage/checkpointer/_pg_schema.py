@@ -53,24 +53,6 @@ class _PgSchemaMixin(PgHostBase):
         """Return current expected schema version."""
         return CURRENT_SCHEMA_VERSION
 
-    def _build_create_tables_sql(self) -> list[str]:
-        """
-        Build SQL statements for table creation with dynamic ID types.
-
-        Returns:
-            list[str]: List of SQL statements for table creation.
-        """
-        tables = self._build_table_statements()
-        created = {table for table, _sql in tables}
-        statements = [sql for _table, sql in tables]
-        # ``tool_executions`` is made by migration v3, so its index is not part of this list.
-        statements.extend(
-            f"CREATE INDEX IF NOT EXISTS {name} ON {self._get_table_name(table)}{definition}"
-            for name, table, definition in self._base_index_specs()
-            if table in created
-        )
-        return statements
-
     @staticmethod
     def _base_index_specs() -> list[tuple[str, str, str]]:
         """``(index name, table, definition)`` of the plain indexes of a fresh schema.

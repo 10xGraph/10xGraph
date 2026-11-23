@@ -96,15 +96,6 @@ class _PgIdentityMixin(PgHostBase):
             f"{quote(str(thread_id), safe='')}:{quote(str(owner), safe='')}{suffix}"
         )
 
-    def _tenant_key_suffix(self, config: dict[str, Any] | None) -> str:
-        """``:t:org_id=<v>:project_id=<v>`` for the key identity's tenant values ('' without).
-
-        Every declared tenant column is in the suffix (picked by the scope or not). The values
-        are the thread row's (``_thread_identity``) once read, else the caller's. A missing
-        value is written as ``col!``, which no percent-encoded value can produce.
-        """
-        return self._key_identity(None, config)[1]
-
     def _key_identity(self, user_id: Any, config: dict[str, Any] | None) -> tuple[Any, str]:
         """``(owner, tenant suffix)`` the Redis keys of a thread are built from.
 

@@ -6,9 +6,10 @@ live under ``tenxgraph.core.realtime.providers`` and normalize their wire messag
 into the :data:`RealtimeEvent` union defined below.
 """
 
-from typing import Annotated, Any, Literal, Protocol, Union, runtime_checkable
+import warnings
+from typing import Annotated, Any, Literal, Protocol, Self, Union, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # Audio format facts for Gemini Live: input PCM16 mono @ 16kHz, output PCM16 @ 24kHz.
@@ -133,14 +134,34 @@ def _default_modalities() -> list[ResponseModality]:
 
 
 class VADConfig(BaseModel):
-    """Voice-activity-detection settings. Disable for push-to-talk (manual activity)."""
+    """Voice-activity-detection settings. Disable for push-to-talk (manual activity).
+
+    Only ``enabled`` is used. ``start_sensitivity``, ``end_sensitivity``, ``prefix_padding_ms``
+    and ``silence_duration_ms`` are deprecated: no provider reads them, and they are removed
+    in 2.0.
+    """
 
     enabled: bool = True
-    # Provider-neutral sensitivity hint; mapped per provider. None = provider default.
     start_sensitivity: str | None = None
     end_sensitivity: str | None = None
     prefix_padding_ms: int | None = None
     silence_duration_ms: int | None = None
+
+    @model_validator(mode="after")
+    def _warn_unused_fields(self) -> Self:
+        for name in (
+            "start_sensitivity",
+            "end_sensitivity",
+            "prefix_padding_ms",
+            "silence_duration_ms",
+        ):
+            if getattr(self, name) != type(self).model_fields[name].default:
+                warnings.warn(
+                    f"VADConfig.{name} has no effect and will be removed in 2.0.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+        return self
 
 
 class ReconnectConfig(BaseModel):

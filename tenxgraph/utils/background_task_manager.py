@@ -6,7 +6,6 @@ asyncio background tasks, ensuring proper cleanup and error logging.
 """
 
 import asyncio
-import contextvars
 import logging
 import time
 from collections.abc import Coroutine
@@ -31,20 +30,6 @@ DROP_WARNING_INTERVAL_SECONDS = 5.0
 
 # After the shutdown timeout, how long to wait for cancelled tasks to unwind.
 CANCEL_GRACE_SECONDS = 0.5
-
-
-# The manager of the graph whose run is executing in this context. Set by CompiledGraph
-# for the duration of a run so that code resolving a manager from a possibly shared
-# container (publish_event, memory tools) queues work on the run's own graph, whose
-# aclose() then drains it.
-current_task_manager: contextvars.ContextVar["BackgroundTaskManager | None"] = (
-    contextvars.ContextVar("tenxgraph_current_task_manager", default=None)
-)
-
-
-def resolve_task_manager(injected: "BackgroundTaskManager") -> "BackgroundTaskManager":
-    """Return the running graph's own manager, falling back to the injected one."""
-    return current_task_manager.get() or injected
 
 
 @dataclass

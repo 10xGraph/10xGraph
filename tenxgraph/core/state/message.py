@@ -28,7 +28,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import pydantic
-from injectq import InjectQ
+from injectq import DependencyNotFoundError, InjectQ
 from pydantic import BaseModel, Field
 
 from tenxgraph.core.state.message_block import (
@@ -66,8 +66,13 @@ def generate_id(default_id: str | int | None) -> str | int:
         >>> generate_id(None)
         'a-uuid-string'
     """
-    id_type = InjectQ.get_instance().try_get("generated_id_type", "string")
-    generated_id = InjectQ.get_instance().try_get("generated_id", None)
+    container = InjectQ.get_instance()
+    id_type = container.try_get("generated_id_type", "string")
+    # Called, not resolved: the id generator may be async, and get() refuses async factories.
+    try:
+        generated_id = container.call_factory("generated_id")
+    except DependencyNotFoundError:
+        generated_id = None
 
     # if user provided an awaitable, resolve it
     if isinstance(generated_id, Awaitable):

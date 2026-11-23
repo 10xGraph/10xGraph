@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher, PublisherKind
 from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
 
@@ -204,7 +204,7 @@ def publish_event(
             None (default) sends to every publisher.
     """
     publisher = fresh(publisher)
-    task_manager = resolve_task_manager(fresh(task_manager))
+    task_manager = fresh(task_manager)
     # No sink bound -> nothing to publish. Spawning a task per event just to
     # discover there is nowhere to send it cost a task and kept the event alive
     # for no reason, on the hot path of every node in every run.

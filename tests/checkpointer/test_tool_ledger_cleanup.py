@@ -272,7 +272,7 @@ def test_pg_v7_index_is_managed_by_ensure_indexes(monkeypatch):
         PgCheckpointer._base_index_specs()
     )
     # tool_executions is created by migration v3, so the fresh-table script leaves it out.
-    assert not any("tool_executions" in s for s in cp._build_create_tables_sql())
+    assert not any("tool_executions" in sql for _table, sql in cp._build_table_statements())
 
 
 @pytest.mark.asyncio

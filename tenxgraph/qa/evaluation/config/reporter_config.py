@@ -8,7 +8,10 @@ This module defines:
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+import warnings
+from typing import Self
+
+from pydantic import BaseModel, model_validator
 
 
 class UserSimulatorConfig(BaseModel):
@@ -18,7 +21,7 @@ class UserSimulatorConfig(BaseModel):
         model: Model to use for generating user prompts.
         max_invocations: Maximum number of conversation turns.
         temperature: Temperature for generation.
-        thinking_enabled: Whether to enable thinking/reasoning.
+        thinking_enabled: Deprecated, no effect, removed in 2.0.
         thinking_budget: Token budget for thinking (if enabled).
         api_style: OpenAI API style — ``"responses"`` (default) or ``"chat"``
             for models that only support the legacy Chat Completions endpoint.
@@ -30,6 +33,16 @@ class UserSimulatorConfig(BaseModel):
     thinking_enabled: bool = False
     thinking_budget: int = 10240
     api_style: str = "responses"
+
+    @model_validator(mode="after")
+    def _warn_unused_fields(self) -> Self:
+        if self.thinking_enabled:
+            warnings.warn(
+                "UserSimulatorConfig.thinking_enabled has no effect and will be removed in 2.0.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        return self
 
 
 class ReporterConfig(BaseModel):

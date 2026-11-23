@@ -141,9 +141,9 @@ class TestPgCheckpointer:
 
     def test_schema_creation(self, checkpointer):
         """Test database schema creation."""
-        sql_statements = checkpointer._build_create_tables_sql()
+        sql_statements = [sql for _table, sql in checkpointer._build_table_statements()]
 
-        assert len(sql_statements) >= 6  # tables + indexes
+        assert len(sql_statements) >= 3  # the enum type and the tables
 
         # Check that key statements are present
         sql_text = " ".join(sql_statements)
@@ -151,7 +151,7 @@ class TestPgCheckpointer:
         assert 'CREATE TABLE IF NOT EXISTS "public"."threads"' in sql_text
         assert 'CREATE TABLE IF NOT EXISTS "public"."states"' in sql_text
         assert 'CREATE TABLE IF NOT EXISTS "public"."messages"' in sql_text
-        assert "CREATE INDEX" in sql_text
+        assert checkpointer._base_index_specs()
 
     @pytest.mark.real_schema_init
     @pytest.mark.asyncio
