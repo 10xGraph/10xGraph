@@ -6,17 +6,28 @@ exist only to adapt external URLs for providers that cannot consume them
 directly.
 
 Default retention: 24 hours (hardcoded for v1).
+
+Deprecated: nothing writes this cache since ``fetch_and_cache`` was removed before 1.0.
+Importing the module emits a ``DeprecationWarning``; it is removed in 2.0.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
 
 logger = logging.getLogger("tenxgraph.media.temp_cache")
+
+warnings.warn(
+    "tenxgraph.storage.media.temp_cache is deprecated and will be removed in 2.0: nothing "
+    "writes this cache since fetch_and_cache was removed.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 # Default TTL for temporary cached media (24 hours)
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
