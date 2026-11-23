@@ -283,7 +283,11 @@ class TestTenantIsolation:
             table,
             tenant_columns={"org_id": "text", "team": {"type": "text", "required": False}},
         )
-        cfg = {"user_id": "alice", "user": {"user_id": "alice", "tenant": {"org_id": "A"}}}
+        # An empty tenant value means "no value" (an identity without the claim raises).
+        cfg = {
+            "user_id": "alice",
+            "user": {"user_id": "alice", "tenant": {"org_id": "A", "team": ""}},
+        }
         first = await store.astore(cfg, "v1", memory_key="k")
         # NULLS NOT DISTINCT: a keyed write with the optional column NULL still dedupes.
         assert await store.astore(cfg, "v2", memory_key="k") == first

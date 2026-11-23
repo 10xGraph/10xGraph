@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tenxgraph.core.graph import ToolNode
-from tenxgraph.core.graph.utils import invoke_node_handler as mod
 from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
+from tenxgraph.utils import metrics
 
 
 def echo() -> str:
@@ -17,7 +17,7 @@ def echo() -> str:
     return "ok"
 
 
-_real_timer = mod.metrics.timer
+_real_timer = metrics.timer
 
 
 class _Recorder:
@@ -42,8 +42,8 @@ class _Recorder:
 @pytest.fixture
 def rec(monkeypatch):
     r = _Recorder()
-    monkeypatch.setattr(mod.metrics, "counter", r.counter)
-    monkeypatch.setattr(mod.metrics, "timer", r.timer)
+    monkeypatch.setattr(metrics, "counter", r.counter)
+    monkeypatch.setattr(metrics, "timer", r.timer)
     return r
 
 

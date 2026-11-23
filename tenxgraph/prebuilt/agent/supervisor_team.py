@@ -68,18 +68,13 @@ from injectq import InjectQ
 
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.base_agent import BaseAgent
-from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.execution_state import register_per_turn_key
 from tenxgraph.core.state.message import Message
+from tenxgraph.prebuilt.agent._graph_base import _PrebuiltGraph
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from tenxgraph.storage.media.storage.base import BaseMediaStore
-from tenxgraph.storage.media.url_policy import MediaFetchPolicy
-from tenxgraph.storage.store.base_store import BaseStore
-from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.command import Command
 from tenxgraph.utils.constants import END
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
@@ -393,7 +388,7 @@ def _make_supervisor_node(
 # ---------------------------------------------------------------------------
 
 
-class SupervisorTeamAgent[StateT: AgentState]:
+class SupervisorTeamAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
     """Supervisor → Worker routing pattern.
 
     The SUPERVISOR ``Agent`` is built internally from *supervisor_model*.  Its
@@ -491,15 +486,6 @@ class SupervisorTeamAgent[StateT: AgentState]:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _new_graph(self) -> StateGraph[StateT]:
-        return StateGraph[StateT](
-            state=self._state,
-            context_manager=self._context_manager,
-            publisher=self._publisher,
-            id_generator=self._id_generator,
-            container=self._container,
-        )
-
     def _build_supervisor_agent(self) -> Agent:
         return Agent(
             model=self._supervisor_model,
@@ -572,38 +558,3 @@ class SupervisorTeamAgent[StateT: AgentState]:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def compile(
-        self,
-        checkpointer: BaseCheckpointer[StateT] | None = None,
-        store: BaseStore | None = None,
-        interrupt_before: list[str] | None = None,
-        interrupt_after: list[str] | None = None,
-        callback_manager: CallbackManager = CallbackManager(),
-        media_store: BaseMediaStore | None = None,
-        shutdown_timeout: float = 30.0,
-        media_policy: MediaFetchPolicy | None = None,
-    ) -> CompiledGraph:
-        """Wire the graph and return a compiled, ready-to-invoke graph.
-
-        Args:
-            checkpointer: Persistence backend.
-            store: Long-term key-value store.
-            interrupt_before: Node names to pause before.
-            interrupt_after: Node names to pause after.
-            callback_manager: Observability hooks.
-            media_store: Media/file storage backend.
-            shutdown_timeout: Graceful-shutdown timeout in seconds.
-            media_policy: Which external media URLs the server may download.
-        """
-        self._configure_graph()
-        return self._graph.compile(
-            checkpointer=checkpointer,
-            store=store,
-            interrupt_before=interrupt_before,
-            interrupt_after=interrupt_after,
-            callback_manager=callback_manager,
-            media_store=media_store,
-            shutdown_timeout=shutdown_timeout,
-            media_policy=media_policy,
-        )

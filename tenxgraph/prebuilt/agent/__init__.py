@@ -1,3 +1,4 @@
+# Closed set: new prebuilt agents are not added; build your own graph with StateGraph and Agent.
 from .audio import AudioAgent
 from .plan_act_reflect import PlanActReflectAgent
 from .rag import BaseReranker, CohereReranker, CrossEncoderReranker, RAGAgent

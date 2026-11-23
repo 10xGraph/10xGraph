@@ -9,6 +9,11 @@ from enum import Enum
 from typing import Literal
 
 
+# Metadata key on a tool message whose text the framework wrote itself (handoff answers,
+# skill tools, policy denials). The model request sends such results without a fence.
+TRUSTED_TOOL_RESULT_META = "trusted_tool_result"
+
+
 # Special node names for graph execution flow
 START: Literal["__start__"] = "__start__"
 END: Literal["__end__"] = "__end__"

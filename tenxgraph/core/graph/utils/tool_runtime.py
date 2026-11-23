@@ -3,15 +3,18 @@
 Both paths run the same tool calls the same way: a durable ledger of finished calls (so a
 replayed node does not fire a tool twice), isolated state per parallel branch, and a
 deterministic merge of the branches back into the shared state. One copy, used by
-``InvokeNodeHandler`` and ``StreamNodeHandler``.
+``InvokeNodeHandler`` and ``StreamNodeHandler``; ``LiveAgent`` uses the ledger helpers and
+:meth:`ToolRuntimeMixin._invoke_tool_metered` for realtime tool calls.
 """
 
+import inspect
 import logging
 from collections.abc import Callable
 from typing import Any
 
-from tenxgraph.core.exceptions import NodeTimeoutError
+from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node._helpers import generic_tool_failure
+from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     handoff_target,
@@ -20,6 +23,8 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils import metrics
+from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
 
 
 logger = logging.getLogger("tenxgraph.graph")
@@ -117,6 +122,60 @@ class ToolRuntimeMixin:
         if not tool_call_id or not origin_message_id:
             return None
         return f"{origin_message_id}:{tool_call_id}"
+
+    async def _invoke_tool_metered(
+        self,
+        function_name: str,
+        function_args: dict,
+        tool_call_id: str,
+        state: AgentState,
+        config: dict[str, Any],
+        **invoke_kwargs: Any,
+    ) -> Any:
+        """Run one tool call under ``tool_timeout``, recording the tool metrics.
+
+        Raises ``NodeTimeoutError`` when the deadline passes (the call is cancelled), or
+        whatever the tool raised; :meth:`_failure_message` turns either into the result
+        the model sees.
+        """
+        timeout = resolve_timeout(config, "tool_timeout", DEFAULT_TOOL_TIMEOUT_SECONDS)
+        # The name comes from the model. Only a tool this node can run is a safe metric
+        # label; anything else would create a new series per made-up name.
+        known = self.func.knows_tool(function_name, config)
+        tool_attrs = {"node": self.name, "tool": function_name if known else "unknown"}
+        metrics.counter("tenxgraph.tool.calls").inc(attributes=tool_attrs)
+
+        with metrics.timer("tenxgraph.tool.duration", attributes=tool_attrs):
+            try:
+                return await execute_with_guards(
+                    self.func.invoke(
+                        function_name,
+                        function_args,
+                        tool_call_id=tool_call_id,
+                        state=state,
+                        config=config,
+                        **invoke_kwargs,
+                    ),
+                    timeout=timeout,
+                    on_timeout=lambda: NodeTimeoutError(
+                        message=(
+                            f"Tool '{function_name}' exceeded its timeout of {timeout}s "
+                            f"and was cancelled"
+                        ),
+                        error_code="NODE_TIMEOUT_002",
+                        context={
+                            "node_name": self.name,
+                            "tool_name": function_name,
+                            "timeout": timeout,
+                        },
+                    ),
+                )
+            except NodeTimeoutError:
+                metrics.counter("tenxgraph.tool.timeouts").inc(attributes=tool_attrs)
+                raise
+            except Exception:
+                metrics.counter("tenxgraph.tool.errors").inc(attributes=tool_attrs)
+                raise
 
     async def _get_recorded_tool_result(
         self,
@@ -383,3 +442,91 @@ class ToolRuntimeMixin:
         for outcome in result:
             if isinstance(outcome, dict):
                 outcome.pop("state", None)
+
+    # Class-level cache for function signatures to avoid repeated inspection
+    _signature_cache: dict[Callable, inspect.Signature] = {}
+
+    def _get_cached_signature(self, func: Callable) -> inspect.Signature:
+        """Get cached signature for a function, computing it if not cached."""
+        if func not in self._signature_cache:
+            self._signature_cache[func] = inspect.signature(func)
+        return self._signature_cache[func]
+
+    def _get_last_tool_message(self, state: AgentState) -> Message:
+        """Return the latest context message required for tool execution."""
+        if state.context and len(state.context) > 0:
+            return state.context[-1]
+
+        error_msg = "No context available for tool execution"
+        logger.error("Node '%s': %s", self.name, error_msg)
+        raise NodeError(
+            message=error_msg,
+            error_code="NODE_003",
+            context={"node_name": self.name},
+        )
+
+    def _prepare_input_data(
+        self,
+        state: "AgentState",
+        config: dict[str, Any],
+    ) -> dict:
+        """
+        Prepare input data for function invocation, handling injectable parameters.
+        Uses cached function signature to avoid repeated inspection overhead.
+
+        Args:
+            state (AgentState): Current agent state.
+            config (dict): Node configuration.
+
+        Returns:
+            dict: Input data for function call.
+
+        Raises:
+            TypeError: If required parameters are missing.
+        """
+        # Use cached signature inspection for performance
+        sig = self._get_cached_signature(self.func)  # type: ignore[arg-type]  # Tool node won't come here
+        input_data = {}
+        default_data: dict[str, Any] = {
+            "state": state,
+            "config": config,
+        }
+
+        # Collect all required parameters (excluding *args/**kwargs)
+        required_params = []
+        for param_name, param in sig.parameters.items():
+            if param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+            if param.default is inspect.Parameter.empty:
+                required_params.append((param_name, param))
+
+        # If function has exactly one required parameter and it's not 'state' or 'config',
+        # assume it should receive the state (common pattern for simple lambdas like lambda s: s)
+        if len(required_params) == 1:
+            param_name, param = required_params[0]
+            if param_name not in ["state", "config"]:
+                input_data[param_name] = state
+                return input_data
+
+        # Otherwise, handle standard named parameters
+        for param_name, param in sig.parameters.items():
+            # Skip *args/**kwargs
+            if param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+
+            # check its state, config
+            if param_name in ["state", "config"]:
+                input_data[param_name] = default_data[param_name]
+            # Include regular function arguments
+            elif param.default is inspect.Parameter.empty:
+                raise TypeError(
+                    f"Missing required parameter '{param_name}' for function '{self.func}'"
+                )
+
+        return input_data

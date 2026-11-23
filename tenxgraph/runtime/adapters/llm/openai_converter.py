@@ -96,6 +96,7 @@ class OpenAIConverter(BaseConverter):
             "provider": "openai",
             "model": response.model,
             "finish_reason": choice.finish_reason or "UNKNOWN",
+            "response_id": str(response.id or ""),
             "system_fingerprint": getattr(response, "system_fingerprint", None),
             "service_tier": getattr(response, "service_tier", None),
         }
@@ -149,6 +150,7 @@ class OpenAIConverter(BaseConverter):
                 "provider": "openai",
                 "model": response.model,
                 "finish_reason": "UNKNOWN",
+                "response_id": str(response.id or ""),
             },
             usages=usages,
         )

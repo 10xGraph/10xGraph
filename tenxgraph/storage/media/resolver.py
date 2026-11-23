@@ -4,10 +4,9 @@ The resolver translates lightweight ``MediaRef`` references (which is all
 that lives in messages/state) back into actual binary data or URLs that
 the OpenAI / Google APIs understand.
 
-``MediaRefResolver`` now acts as a capability-aware wrapper around the
-unified ``MediaResolver``.  The legacy ``resolve_for_openai()`` and
-``resolve_for_google()`` methods remain for backward compatibility but
-now route through the capability-based fallback chain.
+``MediaRefResolver`` is capability-aware.  The legacy
+``resolve_for_openai()`` and ``resolve_for_google()`` methods remain for
+backward compatibility but route through the capability-based fallback chain.
 """
 
 from __future__ import annotations

@@ -1095,6 +1095,20 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             return bool(getattr(self, "enforce_user_isolation", False) and user_id)
         return "user_id" in columns and bool(user_id)
 
+    def _foreign_owner(
+        self, config: dict[str, Any] | None, owner: Any, *, write: bool = False
+    ) -> bool:
+        """True when isolation is active and ``owner`` (a recorded thread owner) is someone else.
+
+        A thread with no recorded owner (``None``) is never foreign.
+        """
+        user_id = owner_id(config)
+        return (
+            self._isolation_enabled(config, user_id, write=write)
+            and owner is not None
+            and str(owner) != str(user_id)
+        )
+
     def _filter_columns(
         self, config: dict[str, Any] | None, *, write: bool = False
     ) -> tuple[str, ...] | None:

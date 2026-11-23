@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import TextBlock
+from tenxgraph.utils.constants import TRUSTED_TOOL_RESULT_META
 
 
 logger = logging.getLogger("tenxgraph.prebuilt")
@@ -98,6 +99,7 @@ def create_handoff_tool(
 
         return Message.tool_message(
             content=[TextBlock(text=f"Handoff to {agent_name}")],
+            meta={TRUSTED_TOOL_RESULT_META: True},
         )
 
     # Set function metadata for introspection

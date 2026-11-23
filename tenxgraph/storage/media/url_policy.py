@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from tenxgraph.utils import safe_http
+from tenxgraph.utils.log_safety import redact_url  # noqa: F401  (old import path)
 
 
 logger = logging.getLogger("tenxgraph.media.url_policy")
@@ -34,22 +35,6 @@ _HARD_SCHEMES = frozenset({"http", "https"})
 
 class MediaURLError(ValueError):
     """A media URL is refused by the policy or could not be downloaded."""
-
-
-def redact_url(url: str) -> str:
-    """Return ``url`` without its query string, fragment and credentials, for logs."""
-    try:
-        parts = urlsplit(url)
-        host = parts.hostname or ""
-        if not parts.scheme or not host:
-            return "<invalid url>"
-        if ":" in host:
-            host = f"[{host}]"
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return f"{parts.scheme}://{host}{parts.path}"
-    except ValueError:
-        return "<invalid url>"
 
 
 def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:

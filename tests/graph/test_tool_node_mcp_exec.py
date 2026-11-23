@@ -395,7 +395,11 @@ async def test_published_end_event_carries_after_invoke_replacement():
     replacement = Message.tool_message(content=[], meta={"scrubbed": True})
     cb.execute_after_invoke = AsyncMock(return_value=replacement)
 
-    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event") as pub:
+    helpers = "tenxgraph.core.graph.tool_node._helpers"
+    with (
+        patch(f"{helpers}.publish_event") as pub,
+        patch(f"{helpers}.listening", return_value=True),
+    ):
         result = await node._mcp_execute("tool", {}, "tc-9", {}, cb)
 
     assert result is replacement
@@ -410,8 +414,10 @@ async def test_tool_start_event_names_the_graph_node():
         return x
 
     node = ToolNode([echo])
-    with patch("tenxgraph.core.graph.tool_node.base.publish_event") as pub:
+    # The local executor sends the tool's START.
+    with patch("tenxgraph.core.graph.tool_node.local_exec.publish_event") as pub:
         await node.invoke("echo", {"x": "hi"}, "tc-g", {"_node_name": "TOOL"}, AgentState())
     start = pub.call_args_list[0].args[0]
+    assert start.event_type == "start"
     assert start.metadata["graph_node"] == "TOOL"
     assert start.node_name == "echo"

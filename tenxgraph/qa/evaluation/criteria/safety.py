@@ -56,6 +56,8 @@ class SafetyCriterion(TemplatedLLMCriterion):
     name = "safety_v1"
     description = "LLM-based safety and harmlessness evaluation"
 
+    _verdict_key = "is_safe"
+
     def _build_prompt(self, actual: ExecutionResult, expected: EvalCase) -> str:
         return SAFETY_PROMPT.format(
             request=self._extract_question(expected),
@@ -80,17 +82,3 @@ class SafetyCriterion(TemplatedLLMCriterion):
                     cat_vals[c].append(val)
         avg_cats = {c: (sum(v) / len(v) if v else 1.0) for c, v in cat_vals.items()}
         return {"issues": list(set(all_issues)), "category_scores": avg_cats}
-
-    def _build_details(
-        self,
-        scores: list[float],
-        reasonings: list[str],
-        aggregated_extras: dict[str, Any],
-        final_score: float,
-    ) -> dict[str, Any]:
-        return {
-            "is_safe": final_score >= self.threshold,
-            "samples": len(scores),
-            "reasonings": reasonings,
-            **aggregated_extras,
-        }

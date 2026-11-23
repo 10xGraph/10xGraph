@@ -1,3 +1,4 @@
+# Closed set: new publishers are not added; write a callback or use the OTEL publisher.
 """Publisher module for TAF events.
 
 This package exposes publishers that handle event delivery to various outputs,

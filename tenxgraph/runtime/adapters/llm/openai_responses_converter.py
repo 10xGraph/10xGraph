@@ -162,6 +162,7 @@ class OpenAIResponsesConverter(BaseConverter):
                 "provider": "openai",
                 "model": model,
                 "finish_reason": status,
+                "response_id": str(resp_id or ""),
             },
             usages=usages,
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
@@ -350,7 +351,13 @@ class OpenAIResponsesConverter(BaseConverter):
         state.current_fc_call_id = ""
         return [
             self._build_delta_message(
-                [ToolCallBlock(name=name, args=self._parse_json_args(raw_args), id=call_id)]
+                [
+                    ToolCallBlock(
+                        name=name,
+                        args=parse_tool_arguments(raw_args, tool_name=name)[0],
+                        id=call_id,
+                    )
+                ]
             )
         ]
 
@@ -398,15 +405,6 @@ class OpenAIResponsesConverter(BaseConverter):
             delta=True,
         )
 
-    @staticmethod
-    def _parse_json_args(raw_args: str) -> dict:
-        """Parse tool call arguments, defaulting to an empty dict on invalid JSON.
-
-        Invalid calls keep their raw string in ``tools_calls`` so the ToolNode can
-        reject them (see :func:`parse_tool_arguments`).
-        """
-        return parse_tool_arguments(raw_args)[0]
-
     def _build_final_blocks(self, state: _ResponseStreamState) -> list:
         """Build the final content blocks after a Responses API stream ends."""
         final_blocks: list = []
@@ -416,10 +414,12 @@ class OpenAIResponsesConverter(BaseConverter):
             final_blocks.append(TextBlock(text=state.accumulated_text))
         for tool_call in state.tool_calls:
             function_data = tool_call.get("function", {})
+            name = function_data.get("name", "")
+            args, _ = parse_tool_arguments(function_data.get("arguments", "{}"), tool_name=name)
             final_blocks.append(
                 ToolCallBlock(
-                    name=function_data.get("name", ""),
-                    args=self._parse_json_args(function_data.get("arguments", "{}")),
+                    name=name,
+                    args=args,
                     id=tool_call.get("id", ""),
                 )
             )

@@ -13,12 +13,13 @@ import logging
 from typing import Any
 
 from ._redact import redact_context
+from ._structured import _StructuredError
 
 
 logger = logging.getLogger("tenxgraph.exceptions")
 
 
-class StorageError(Exception):
+class StorageError(_StructuredError, Exception):
     """Base class for non-retryable storage layer errors.
 
     Provides structured error handling with error codes and context.
@@ -28,6 +29,8 @@ class StorageError(Exception):
         error_code (str): Unique error code for categorization
         context (dict): Additional contextual information about the error
     """
+
+    _log_prefix = "StorageError"
 
     def __init__(
         self,
@@ -42,45 +45,8 @@ class StorageError(Exception):
             error_code (str): Unique error code for categorization (default: "STORAGE_000")
             context (dict): Additional contextual information (default: None)
         """
-        self.message = message
-        self.error_code = error_code
-        self.context = context or {}
-
-        # Log the error with full context
-        logger.error(
-            "StorageError [%s]: %s | Context: %s",
-            self.error_code,
-            self.message,
-            redact_context(self.context),
-            exc_info=True,
-        )
+        self._init_error(message, error_code, context)
         super().__init__(message)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the error to a structured dictionary format.
-
-        Returns:
-            dict: Structured error response with error_code, message, and context
-        """
-        return {
-            "error_type": self.__class__.__name__,
-            "error_code": self.error_code,
-            "message": self.message,
-            "context": self.context,
-        }
-
-    def __str__(self) -> str:
-        """Return a string representation of the error."""
-        return f"[{self.error_code}] {self.message}"
-
-    def __repr__(self) -> str:
-        """Return a detailed string representation of the error."""
-        return (
-            f"{self.__class__.__name__}("
-            f"message='{self.message}', "
-            f"error_code='{self.error_code}', "
-            f"context={self.context})"
-        )
 
 
 class TransientStorageError(StorageError):
@@ -255,11 +221,16 @@ class ThreadNotFoundError(ResourceNotFoundError):
         Exception.__init__(self, self.message)
 
 
-class MetricsError(Exception):
+class MetricsError(_StructuredError, Exception):
     """Raised when metrics emission fails (should normally be swallowed/logged).
 
     This exception is typically used for non-critical metrics reporting failures.
     """
+
+    _log_prefix = "MetricsError"
+    # Metrics errors are normally non-critical, so they log as a warning without a traceback.
+    _log_level = logging.WARNING
+    _log_exc_info = False
 
     def __init__(
         self,
@@ -274,41 +245,5 @@ class MetricsError(Exception):
             error_code (str): Unique error code (default: "METRICS_000")
             context (dict): Additional contextual information (default: None)
         """
-        self.message = message
-        self.error_code = error_code
-        self.context = context or {}
-
-        # Log as warning since metrics errors are typically non-critical
-        logger.warning(
-            "MetricsError [%s]: %s | Context: %s",
-            self.error_code,
-            self.message,
-            redact_context(self.context),
-        )
+        self._init_error(message, error_code, context)
         super().__init__(message)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the error to a structured dictionary format.
-
-        Returns:
-            dict: Structured error response with error_code, message, and context
-        """
-        return {
-            "error_type": self.__class__.__name__,
-            "error_code": self.error_code,
-            "message": self.message,
-            "context": self.context,
-        }
-
-    def __str__(self) -> str:
-        """Return a string representation of the error."""
-        return f"[{self.error_code}] {self.message}"
-
-    def __repr__(self) -> str:
-        """Return a detailed string representation of the error."""
-        return (
-            f"{self.__class__.__name__}("
-            f"message='{self.message}', "
-            f"error_code='{self.error_code}', "
-            f"context={self.context})"
-        )

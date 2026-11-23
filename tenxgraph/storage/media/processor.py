@@ -22,6 +22,22 @@ from .security import check_image_pixels
 logger = logging.getLogger("tenxgraph.media.processor")
 
 
+def _with_image_data(
+    block: ImageBlock, data: bytes, img: Any, mime_type: str | None = None
+) -> ImageBlock:
+    """Return a copy of ``block`` holding the re-encoded ``data`` of ``img``."""
+    update: dict[str, Any] = {
+        "data_base64": base64.b64encode(data).decode(),
+        "width": img.width,
+        "height": img.height,
+        "size_bytes": len(data),
+    }
+    if mime_type is not None:
+        update["mime_type"] = mime_type
+    new_media = block.media.model_copy(update=update)
+    return ImageBlock(media=new_media, alt_text=block.alt_text, bbox=block.bbox)
+
+
 class MediaProcessor:
     """Validate and optionally resize images before they enter the pipeline.
 
@@ -111,17 +127,7 @@ class MediaProcessor:
         buf = io.BytesIO()
         fmt = _pil_format(block.media.mime_type)
         img.save(buf, format=fmt)
-        new_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        new_media = block.media.model_copy(
-            update={
-                "data_base64": new_b64,
-                "width": img.width,
-                "height": img.height,
-                "size_bytes": len(buf.getvalue()),
-            }
-        )
-        return ImageBlock(media=new_media, alt_text=block.alt_text, bbox=block.bbox)
+        return _with_image_data(block, buf.getvalue(), img)
 
     def process(self, block: ImageBlock) -> ImageBlock:
         """Validate and optionally resize an image block.
@@ -160,17 +166,7 @@ class MediaProcessor:
         buf = io.BytesIO()
         fmt = _pil_format(block.media.mime_type)
         corrected.save(buf, format=fmt)
-        new_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        new_media = block.media.model_copy(
-            update={
-                "data_base64": new_b64,
-                "width": corrected.width,
-                "height": corrected.height,
-                "size_bytes": len(buf.getvalue()),
-            }
-        )
-        return ImageBlock(media=new_media, alt_text=block.alt_text, bbox=block.bbox)
+        return _with_image_data(block, buf.getvalue(), corrected)
 
     def _needs_orientation_fix(self, block: ImageBlock) -> bool:
         media = block.media
@@ -235,18 +231,7 @@ class MediaProcessor:
         if img.mode in ("RGBA", "P", "LA"):
             img = img.convert("RGB")
         img.save(buf, format="JPEG", quality=80)
-        new_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        new_media = block.media.model_copy(
-            update={
-                "data_base64": new_b64,
-                "mime_type": "image/jpeg",
-                "width": img.width,
-                "height": img.height,
-                "size_bytes": len(buf.getvalue()),
-            }
-        )
-        return ImageBlock(media=new_media, alt_text=block.alt_text, bbox=block.bbox)
+        return _with_image_data(block, buf.getvalue(), img, mime_type="image/jpeg")
 
     def optimize_image(
         self,
@@ -296,18 +281,7 @@ class MediaProcessor:
             "GIF": "image/gif",
         }
         new_mime = mime_map.get(target_format.upper(), f"image/{target_format.lower()}")
-        new_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        new_media = block.media.model_copy(
-            update={
-                "data_base64": new_b64,
-                "mime_type": new_mime,
-                "width": img.width,
-                "height": img.height,
-                "size_bytes": len(buf.getvalue()),
-            }
-        )
-        return ImageBlock(media=new_media, alt_text=block.alt_text, bbox=block.bbox)
+        return _with_image_data(block, buf.getvalue(), img, mime_type=new_mime)
 
     def full_process(self, block: ImageBlock) -> ImageBlock:
         """Full processing pipeline: validate → fix orientation → resize.

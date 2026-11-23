@@ -85,14 +85,6 @@ def test_pg_payload_path_refuses_newer_format(monkeypatch):
     assert cp._deserialize_state_payload(_row(STATE_FORMAT_VERSION)) is not None
 
 
-def test_pg_legacy_deserialize_also_refuses_newer_format(monkeypatch):
-    cp = _pg(monkeypatch)
-    with pytest.raises(StateFormatVersionError):
-        cp._deserialize_state(_row(STATE_FORMAT_VERSION + 1), AgentState)
-    with pytest.raises(StateFormatVersionError):
-        cp._deserialize_state(json.dumps(_row(STATE_FORMAT_VERSION + 1)), AgentState)
-
-
 def test_pg_payload_error_names_the_thread(monkeypatch):
     cp = _pg(monkeypatch)
     with pytest.raises(StateFormatVersionError, match="t-pg"):

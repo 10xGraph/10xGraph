@@ -83,17 +83,12 @@ from injectq import InjectQ
 
 from tenxgraph.core.authz import Reach, get_identity
 from tenxgraph.core.graph.base_agent import BaseAgent
-from tenxgraph.core.graph.compiled_graph import CompiledGraph
-from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.prebuilt.agent._graph_base import _PrebuiltGraph
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
-from tenxgraph.storage.media.storage.base import BaseMediaStore
-from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore, system_user_id
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
-from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.constants import END
 from tenxgraph.utils.converter import wrap_documents_block
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
@@ -267,7 +262,7 @@ def _latest_user_query(state: AgentState) -> str:
 # ---------------------------------------------------------------------------
 
 
-class RAGAgent[StateT: AgentState]:
+class RAGAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
     """Retrieve → (Rerank) → Synthesize agent.
 
     The agent owns the full retrieval pipeline.  Users provide:
@@ -385,15 +380,6 @@ class RAGAgent[StateT: AgentState]:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _new_graph(self) -> StateGraph[StateT]:
-        return StateGraph[StateT](
-            state=self._state,
-            context_manager=self._context_manager,
-            publisher=self._publisher,
-            id_generator=self._id_generator,
-            container=self._container,
-        )
 
     # ------------------------------------------------------------------
     # Retrieval + per-run cache
@@ -543,44 +529,6 @@ class RAGAgent[StateT: AgentState]:
             self._graph.add_edge(_RETRIEVE_NODE, _SYNTHESIZE_NODE)
 
         self._graph.add_edge(_SYNTHESIZE_NODE, END)
-
-    def compile(
-        self,
-        checkpointer: BaseCheckpointer[StateT] | None = None,
-        store: BaseStore | None = None,
-        interrupt_before: list[str] | None = None,
-        interrupt_after: list[str] | None = None,
-        callback_manager: CallbackManager = CallbackManager(),
-        media_store: BaseMediaStore | None = None,
-        shutdown_timeout: float = 30.0,
-        media_policy: MediaFetchPolicy | None = None,
-    ) -> CompiledGraph:
-        """Compile the RAG graph.
-
-        Args:
-            checkpointer: Conversation-state persistence backend.
-            store: Long-term agent-memory store (separate from the
-                knowledge-base store used for retrieval).
-            interrupt_before: Node names to pause *before*.
-            interrupt_after: Node names to pause *after*.
-            callback_manager: Lifecycle callbacks.
-            media_store: Optional media/file store.
-            shutdown_timeout: Graceful shutdown timeout (seconds).
-
-        Returns:
-            A compiled, invocable :class:`~tenxgraph.core.graph.CompiledGraph`.
-        """
-        self._configure_graph()
-        return self._graph.compile(
-            checkpointer=checkpointer,
-            store=store,
-            interrupt_before=interrupt_before,
-            interrupt_after=interrupt_after,
-            callback_manager=callback_manager,
-            media_store=media_store,
-            shutdown_timeout=shutdown_timeout,
-            media_policy=media_policy,
-        )
 
 
 __all__ = [

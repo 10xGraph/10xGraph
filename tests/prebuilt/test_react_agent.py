@@ -176,7 +176,7 @@ class TestReactAgent:
             react_agent = ReactAgent[AgentState](model="fake-model", provider="openai")
 
         with patch(
-            "tenxgraph.prebuilt.agent.react.StateGraph.compile",
+            "tenxgraph.core.graph.state_graph.StateGraph.compile",
             autospec=True,
             return_value=compiled_graph,
         ) as compile_mock:
@@ -195,7 +195,7 @@ class TestReactAgent:
         client = object()
 
         with patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent), patch(
-            "tenxgraph.prebuilt.agent.react.ToolNode",
+            "tenxgraph.prebuilt.agent._graph_base.ToolNode",
             FakeToolNode,
         ):
             react_agent = ReactAgent[AgentState](
@@ -216,7 +216,7 @@ class TestReactAgent:
 
         with (
             patch("tenxgraph.prebuilt.agent.react.Agent", FakeManagedAgent),
-            patch("tenxgraph.prebuilt.agent.react.ToolNode", FakeToolNode),
+            patch("tenxgraph.prebuilt.agent._graph_base.ToolNode", FakeToolNode),
         ):
             react_agent = ReactAgent[AgentState](
                 model="fake-model", provider="openai", client=object(), mcp_auth=mcp_auth

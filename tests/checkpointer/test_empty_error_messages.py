@@ -1,7 +1,7 @@
 """Errors with an empty str (a pool acquire TimeoutError) must still be named in logs."""
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,7 +16,25 @@ def test_describe_error_names_empty_errors():
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_log_names_the_error(caplog):
+async def test_retry_log_names_the_error(caplog):
+    cp = PgCheckpointer(postgres_dsn="postgresql://x/y", redis=MagicMock())
+
+    async def op():
+        raise ConnectionError
+
+    with (
+        patch("asyncio.sleep", AsyncMock()),
+        caplog.at_level(logging.WARNING),
+        pytest.raises(ConnectionError),
+    ):
+        await cp._retry_on_connection_error(op)
+    messages = [r.getMessage() for r in caplog.records]
+    assert sum("ConnectionError()" in m for m in messages) == 3  # two retries, then the failure
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_error_is_left_to_the_caller(caplog):
+    # The calling method logs it once with its own context; the retry helper does not.
     cp = PgCheckpointer(postgres_dsn="postgresql://x/y", redis=MagicMock())
 
     async def op():
@@ -24,7 +42,7 @@ async def test_non_retryable_log_names_the_error(caplog):
 
     with caplog.at_level(logging.ERROR), pytest.raises(TimeoutError):
         await cp._retry_on_connection_error(op)
-    assert any("TimeoutError" in r.getMessage() for r in caplog.records)
+    assert caplog.records == []
 
 
 class _EmptyCheckpointer:

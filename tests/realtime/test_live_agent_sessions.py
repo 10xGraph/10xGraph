@@ -276,6 +276,41 @@ class TestToolLedger:
         assert [r[2] for r in client.tool_responses] == [{"result": "ok"}, {"result": "ok"}]
 
     @pytest.mark.asyncio
+    async def test_call_id_resent_while_running_runs_the_tool_once(self):
+        """A re-send that arrives while the first call still runs waits for its result."""
+        calls = []
+        release = asyncio.Event()
+
+        async def charge(amount: int) -> str:
+            calls.append(amount)
+            if len(calls) == 1:
+                await release.wait()  # still running when the re-send arrives
+            else:
+                release.set()  # a second run (the bug) frees the first at once
+            return "ok"
+
+        class ResendClient(FakeRealtimeClient):
+            async def receive(self):
+                yield ToolCallEvent(id="c1", name="charge", args={"amount": 5})
+                yield ToolCallEvent(id="c1", name="charge", args={"amount": 5})
+                # Both calls are dispatched; give a second run time to show, then release.
+                await asyncio.sleep(0.2)
+                release.set()
+
+        client = ResendClient()
+        agent = LiveAgent(
+            MODEL, tool_node=ToolNode([charge]), realtime_client_factory=_factory(client)
+        )
+        await _drain(
+            agent,
+            LiveInputQueue_closed(),
+            {"thread_id": "t", "user_id": "u"},
+            checkpointer=InMemoryCheckpointer(),
+        )
+        assert calls == [5]
+        assert [r[2] for r in client.tool_responses] == [{"result": "ok"}, {"result": "ok"}]
+
+    @pytest.mark.asyncio
     async def test_new_session_same_thread_replays_recorded_call(self):
         """A crash-restart session on the same thread must not rerun a re-sent call."""
         calls = []

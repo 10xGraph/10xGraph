@@ -42,6 +42,12 @@ class TemplatedLLMCriterion(LLMCallerMixin, BaseCriterion):
     without rewriting the entire evaluate() loop.
     """
 
+    # Optional class settings the default hooks below read:
+    # ``_verdict_key`` adds ``{key: final_score >= threshold}`` to the details, and
+    # ``_list_key`` collects that list field from each sample and merges the unique items.
+    _verdict_key: str | None = None
+    _list_key: str | None = None
+
     # ------------------------------------------------------------------
     # Hooks — override in subclasses as needed
     # ------------------------------------------------------------------
@@ -65,15 +71,22 @@ class TemplatedLLMCriterion(LLMCallerMixin, BaseCriterion):
     def _collect_extras(self, result_dict: dict[str, Any]) -> dict[str, Any]:
         """Extract criterion-specific fields from one LLM response dict.
 
-        Default: nothing extra.
+        Default: the ``_list_key`` list when set, else nothing extra.
         """
+        if self._list_key:
+            return {self._list_key: result_dict.get(self._list_key, [])}
         return {}
 
     def _aggregate_extras(self, per_sample: list[dict[str, Any]]) -> dict[str, Any]:
         """Merge per-sample extras into a single dict for the details block.
 
-        Default: nothing extra.
+        Default: the unique ``_list_key`` items when set, else nothing extra.
         """
+        if self._list_key:
+            items: list[str] = []
+            for sample in per_sample:
+                items.extend(sample.get(self._list_key, []))
+            return {self._list_key: list(set(items))}
         return {}
 
     def _build_details(
@@ -85,9 +98,16 @@ class TemplatedLLMCriterion(LLMCallerMixin, BaseCriterion):
     ) -> dict[str, Any]:
         """Build the details dict for the CriterionResult.
 
-        Default: samples count + reasonings + aggregated extras.
+        Default: the ``_verdict_key`` flag when set, samples count, reasonings and
+        aggregated extras.
         """
-        return {"samples": len(scores), "reasonings": reasonings, **aggregated_extras}
+        verdict = {self._verdict_key: final_score >= self.threshold} if self._verdict_key else {}
+        return {
+            **verdict,
+            "samples": len(scores),
+            "reasonings": reasonings,
+            **aggregated_extras,
+        }
 
     # ------------------------------------------------------------------
     # Shared sampling loop

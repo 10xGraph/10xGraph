@@ -19,7 +19,7 @@ from typing import Any
 from tenxgraph.runtime.publisher.events import EventModel
 from tenxgraph.storage.media.url_policy import redact_url
 
-from .base_publisher import BasePublisher
+from .base_publisher import BasePublisher, close_in_new_loop
 
 
 logger = logging.getLogger("tenxgraph.publisher")
@@ -193,8 +193,4 @@ class RedisPublisher(BasePublisher):
 
     def sync_close(self):
         """Synchronously close the Redis client."""
-        try:
-            asyncio.run(self.close())
-        except RuntimeError:
-            # Already in an event loop; fall back to scheduling close
-            logger.warning("sync_close called within an active event loop; skipping.")
+        close_in_new_loop(self)

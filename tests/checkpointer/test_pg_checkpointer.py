@@ -179,14 +179,6 @@ class TestPgCheckpointer:
         key = checkpointer._get_thread_key("thread_123", "user_456")
         assert key == "state_cache:thread_123:user_456"
 
-        # Test state serialization/deserialization
-        serialized = checkpointer._serialize_state(sample_state)
-        assert isinstance(serialized, str)
-        assert json.loads(serialized)  # Valid JSON
-
-        deserialized = checkpointer._deserialize_state(serialized, AgentState)
-        assert isinstance(deserialized, AgentState)
-        assert len(deserialized.context) == len(sample_state.context)
 
     @pytest.mark.asyncio
     async def test_state_operations_async(

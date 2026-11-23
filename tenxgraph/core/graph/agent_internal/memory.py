@@ -151,17 +151,17 @@ class AgentMemoryMixin:
         to the outgoing request only (see ``inject_memory_block``); it is never saved.
         Returns ``None`` when there is nothing to inject.
         """
-        from tenxgraph.prebuilt.tools.memory import (
+        from tenxgraph.storage.store.long_term_memory import (
+            ReadMode,
+            _format_search_results,
+            _strip_thread_id,
+        )
+        from tenxgraph.storage.store.memory_config import (
             _memory_scope_config,
             _memory_scope_limit,
             _memory_scope_retrieval_strategy,
             _memory_scope_score_threshold,
             _memory_scope_store,
-        )
-        from tenxgraph.storage.store.long_term_memory import (
-            ReadMode,
-            _format_search_results,
-            _strip_thread_id,
         )
 
         memory = getattr(self, "_memory_config", None)

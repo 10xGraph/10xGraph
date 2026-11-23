@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import mimetypes
 import os
 import time
 from collections.abc import AsyncIterator, Callable
@@ -25,18 +24,10 @@ from tenxgraph.utils.private_fs import (
     write_private_atomic,
 )
 
-from .base import BaseMediaStore, check_size_limit, validate_storage_key
+from .base import BaseMediaStore, _mime_to_ext, check_size_limit, validate_storage_key
 
 
 logger = logging.getLogger("tenxgraph.media.storage.local")
-
-# Extension map for cases where mimetypes doesn't know the type
-_FALLBACK_EXT: dict[str, str] = {
-    "application/pdf": ".pdf",
-    "audio/wav": ".wav",
-    "audio/mp3": ".mp3",
-    "image/webp": ".webp",
-}
 
 
 class LocalFileMediaStore(BaseMediaStore):
@@ -279,11 +270,3 @@ class LocalFileMediaStore(BaseMediaStore):
 
     def _meta_path(self, key: str) -> Path:
         return self._base / key[:2] / key[2:4] / f"{key}.meta.json"
-
-
-def _mime_to_ext(mime_type: str) -> str:
-    """Convert MIME type to file extension."""
-    ext = mimetypes.guess_extension(mime_type)
-    if ext:
-        return ext
-    return _FALLBACK_EXT.get(mime_type, ".bin")

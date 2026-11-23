@@ -33,7 +33,7 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import RemoteToolCallBlock, ToolResultBlock
 from tenxgraph.core.state.reducers import add_messages
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
     END,
@@ -76,6 +76,59 @@ StateT = TypeVar("StateT", bound=AgentState)
 logger = logging.getLogger("tenxgraph.graph")
 
 
+async def fire_interrupt(
+    callback_mgr: CallbackManager | None,
+    config: dict[str, Any],
+    node: str,
+    interrupt_type: str,
+    state: AgentState,
+) -> None:
+    """Run the ``on_interrupt`` hooks, then publish the ``graph_interrupt`` lifecycle event."""
+    if callback_mgr and callback_mgr._lifecycle_hooks:
+        await callback_mgr.fire_on_interrupt(
+            GraphLifecycleContext(config=public_config(config)),
+            interrupted_node=node,
+            interrupt_type=interrupt_type,
+            state=state,
+        )
+    publish_lifecycle(
+        config,
+        "graph_interrupt",
+        {"interrupted_node": node, "interrupt_type": interrupt_type},
+        {"interrupt_type": interrupt_type},
+        event_type=EventType.INTERRUPTED,
+        node_name=node,
+    )
+
+
+def publish_state_update(config: dict[str, Any], node: str, step: int) -> None:
+    publish_lifecycle(
+        config,
+        "state_update",
+        {"step": step},
+        {"step": step},
+        event=Event.NODE_EXECUTION,
+        node_name=node,
+    )
+
+
+def publish_graph_end(config: dict[str, Any], total_steps: int) -> None:
+    publish_lifecycle(
+        config, "graph_end", {"total_steps": total_steps}, {"total_steps": total_steps}
+    )
+
+
+def publish_graph_error(config: dict[str, Any], error: str, step: int, node: str) -> None:
+    publish_lifecycle(
+        config,
+        "graph_error",
+        {"error": error, "step": step, "node_name": node},
+        {"step": step},
+        content_type=ContentType.ERROR,
+        node_name=node,
+    )
+
+
 async def check_interrupted[StateT: AgentState](
     state: StateT,
     input_data: dict[str, Any],
@@ -104,9 +157,9 @@ async def check_interrupted[StateT: AgentState](
         )
 
         # Fire on_resume hook before clearing the interrupt
+        resumed_node = state.execution_meta.interrupted_node or ""
         if callback_mgr and callback_mgr._lifecycle_hooks:
             context = GraphLifecycleContext(config=public_config(config))
-            resumed_node = state.execution_meta.interrupted_node or ""
             modified = await callback_mgr.fire_on_resume(
                 context,
                 resumed_node=resumed_node,
@@ -115,6 +168,9 @@ async def check_interrupted[StateT: AgentState](
             )
             if modified is not None and modified is not state:
                 state = modified  # type: ignore[assignment]
+        publish_lifecycle(
+            config, "resume", {"resumed_node": resumed_node}, {"resumed_node": resumed_node}
+        )
 
         # Paused for a client-side tool: the resumed run continues after that node.
         if state.execution_meta.interrupt_reason == REMOTE_TOOL_REASON:
@@ -215,15 +271,7 @@ async def check_and_handle_interrupt[StateT: AgentState](
             status,
         )
 
-        # Fire on_interrupt hook
-        if callback_mgr and callback_mgr._lifecycle_hooks:
-            context = GraphLifecycleContext(config=public_config(config))
-            await callback_mgr.fire_on_interrupt(
-                context,
-                interrupted_node=current_node,
-                interrupt_type=interrupt_type,
-                state=state,
-            )
+        await fire_interrupt(callback_mgr, config, current_node, interrupt_type, state)
 
         # Save state and interrupt
         await sync_data(
@@ -361,15 +409,7 @@ async def interrupt_graph[StateT: AgentState](
         status,
     )
 
-    # Fire on_interrupt hook
-    if callback_mgr and callback_mgr._lifecycle_hooks:
-        context = GraphLifecycleContext(config=public_config(config))
-        await callback_mgr.fire_on_interrupt(
-            context,
-            interrupted_node=current_node,
-            interrupt_type="remote_tool",
-            state=state,
-        )
+    await fire_interrupt(callback_mgr, config, current_node, "remote_tool", state)
 
     # Save state and interrupt
     await sync_data(
@@ -400,14 +440,7 @@ async def pause_for_interrupt[StateT: AgentState](
     callback_mgr = fresh(callback_mgr)
     pause_at(state, request)
 
-    if callback_mgr and callback_mgr._lifecycle_hooks:
-        context = GraphLifecycleContext(config=public_config(config))
-        await callback_mgr.fire_on_interrupt(
-            context,
-            interrupted_node=current_node,
-            interrupt_type="interrupt",
-            state=state,
-        )
+    await fire_interrupt(callback_mgr, config, current_node, "interrupt", state)
 
     await sync_data(
         state=state,
@@ -494,15 +527,7 @@ async def check_stop_requested[StateT: AgentState](
             data={"source": "stop", "info": "requested via is_stopped_requested"},
         )
 
-        # Fire on_interrupt hook
-        if callback_mgr and callback_mgr._lifecycle_hooks:
-            context = GraphLifecycleContext(config=public_config(config))
-            await callback_mgr.fire_on_interrupt(
-                context,
-                interrupted_node=current_node,
-                interrupt_type="stop",
-                state=state,
-            )
+        await fire_interrupt(callback_mgr, config, current_node, "stop", state)
 
         await sync_data(
             state=state, config=config, messages=messages, trim=True, last_save=last_save
@@ -510,7 +535,7 @@ async def check_stop_requested[StateT: AgentState](
         event.event_type = EventType.INTERRUPTED
         event.metadata["interrupted"] = "Stop"
         event.metadata["status"] = "Graph execution stopped by request"
-        event.data["state"] = state.model_dump()
+        event.data["state"] = state
         publish_event(event)
         return True
     return False
@@ -686,7 +711,7 @@ def _publish_cancel_event(state: AgentState, event: EventModel) -> None:
         event.event_type = EventType.INTERRUPTED
         event.metadata["interrupted"] = "Cancelled"
         event.metadata["status"] = "Graph execution cancelled"
-        event.data["state"] = state.model_dump()
+        event.data["state"] = state
         publish_event(event)
     except Exception as e:  # publishing must never mask the cancel
         logger.warning("Could not publish cancel event (%s)", e)
@@ -760,7 +785,7 @@ async def recover_crashed_run(
         metrics.counter("tenxgraph.run.recovered").inc()
         event = EventModel.default(
             config,
-            data={"state": state.model_dump(), "dead_run_id": dead_run},
+            data={"state": state, "dead_run_id": dead_run},
             event=Event.GRAPH_EXECUTION,
             event_type=EventType.INTERRUPTED,
             content_type=[ContentType.STATE],

@@ -44,14 +44,6 @@ def _tool_call_parts(calls: Any) -> list[dict[str, Any]]:
     return parts
 
 
-def _system_text(system_prompt: Any) -> str:
-    """Text of a system prompt given as a string or as a list of message dicts or strings."""
-    if isinstance(system_prompt, list):
-        texts = [s if isinstance(s, str) else oi.message_text(s) for s in system_prompt]
-        return "\n".join(t for t in texts if t)
-    return oi.content_text(system_prompt)
-
-
 def input_messages(messages: Any, system_prompt: Any = None) -> list[dict[str, Any]]:
     """Request messages in semconv form; the system prompt leads when no system message exists."""
     out: list[dict[str, Any]] = []
@@ -68,7 +60,7 @@ def input_messages(messages: Any, system_prompt: Any = None) -> list[dict[str, A
             parts = _text_parts(text) + _tool_call_parts(m.get("tool_calls"))
         out.append({"role": role, "parts": parts})
     if system_prompt and not any(m["role"] == "system" for m in out):
-        text = _system_text(system_prompt)
+        text = oi.system_text(system_prompt)
         if text:
             out.insert(0, {"role": "system", "parts": _text_parts(text)})
     return out

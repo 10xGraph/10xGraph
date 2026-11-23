@@ -120,7 +120,9 @@ class TestScopeSql:
         assert params == ["t1", "u1"]
         params2 = ["m1", "t1"]
         query = cp._append_owner_scope("SELECT 1 WHERE x", params2, "u1", cfg)
-        assert query.endswith(f"AND {cp._thread_owned_by_sql(3)}")
+        assert query.endswith(
+            'AND thread_id IN (SELECT thread_id FROM "public"."threads" WHERE user_id = $3)'
+        )
 
     def test_tenant_columns_join_every_scope(self):
         cp = _cp(tenant_columns=TENANTS)

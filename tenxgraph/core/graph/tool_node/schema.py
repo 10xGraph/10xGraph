@@ -163,43 +163,6 @@ class SchemaMixin:
             return {"type": "integer", "enum": list(values)}
         return {"enum": list(values)}
 
-    @staticmethod
-    def _handle_optional_annotation(annotation: t.Any, default: t.Any) -> dict | None:
-        """Handle ``Optional[T]`` annotations by generating schema for ``T``.
-
-        Kept for backwards compatibility with callers that used this directly.
-
-        Args:
-            annotation: The type annotation to process, potentially an Optional type.
-            default: The default value for the parameter, used for schema generation.
-
-        Returns:
-            Schema for the non-None member if the annotation is Optional, else None.
-        """
-        args = getattr(annotation, "__args__", None)
-        if args and any(a is type(None) for a in args):
-            non_none = [a for a in args if a is not type(None)]
-            if non_none:
-                return SchemaMixin._annotation_to_schema(non_none[0], default)
-        return None
-
-    @staticmethod
-    def _handle_complex_annotation(annotation: t.Any) -> dict:
-        """Handle generic annotations (list, Literal, dict).
-
-        Retained for backwards compatibility; delegates to the main resolver.
-
-        Args:
-            annotation: The complex type annotation to process.
-
-        Returns:
-            The JSON schema for the annotation.
-
-        Raises:
-            UnsupportedToolParameterError: If the annotation is not supported.
-        """
-        return SchemaMixin._schema_for(annotation, (), 0)
-
     # ------------------------------------------------------------ object walking
 
     @staticmethod

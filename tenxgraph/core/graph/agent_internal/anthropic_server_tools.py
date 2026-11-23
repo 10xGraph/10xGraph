@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .anthropic_request import strip_bedrock_prefix
+from .anthropic_request import bare_model_id
 
 
 logger = logging.getLogger("tenxgraph.agent.anthropic")
@@ -45,7 +45,7 @@ CODE_EXECUTION = "code_execution_20260521"
 
 
 def _supports_dynamic_filtering(model: str) -> bool:
-    return strip_bedrock_prefix(model) in _DYNAMIC_FILTER_MODELS
+    return bare_model_id(model) in _DYNAMIC_FILTER_MODELS
 
 
 def web_search_tool(

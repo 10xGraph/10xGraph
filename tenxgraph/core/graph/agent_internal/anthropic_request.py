@@ -26,6 +26,7 @@ from typing import Any
 
 from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
 from tenxgraph.utils.converter import THINKING_BLOCKS_KEY
+from tenxgraph.utils.media_scheme import parse_data_uri
 
 
 logger = logging.getLogger("tenxgraph.agent.anthropic")
@@ -71,6 +72,18 @@ def strip_bedrock_prefix(model: str) -> str:
     (does this model reject sampling params?), never for building the request.
     """
     return model[len(_BEDROCK_PREFIX) :] if model.startswith(_BEDROCK_PREFIX) else model
+
+
+def bare_model_id(model: str) -> str:
+    """Bare lowercase Claude id for capability lookups only, never for the request.
+
+    Strips a provider prefix, a Bedrock ``anthropic.`` or cross-region ``us.anthropic.``
+    prefix, and a Vertex ``@date`` suffix.
+    """
+    bare = model.split("/")[-1].split("@")[0]
+    if "anthropic." in bare:
+        bare = bare.split("anthropic.", 1)[1]
+    return strip_bedrock_prefix(bare).lower()
 
 
 def split_system(
@@ -163,7 +176,7 @@ def _convert_image_part(part: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     if url.startswith(_DATA_URI_PREFIX):
-        media_type, data = _parse_data_uri(url)
+        media_type, data = parse_data_uri(url, "application/octet-stream")
         if data is None:
             logger.warning("Dropping malformed image data URI.")
             return None
@@ -191,7 +204,7 @@ def _convert_document_part(part: dict[str, Any]) -> dict[str, Any]:
 
     url = doc_info.get("url", "")
     if url.startswith(_DATA_URI_PREFIX):
-        media_type, data = _parse_data_uri(url)
+        media_type, data = parse_data_uri(url, "application/octet-stream")
         if data is not None:
             return {
                 "type": "document",
@@ -201,22 +214,6 @@ def _convert_document_part(part: dict[str, Any]) -> dict[str, Any]:
         return {"type": "document", "source": {"type": "url", "url": url}}
 
     return {"type": "text", "text": str(doc_info)}
-
-
-def _parse_data_uri(url: str) -> tuple[str, str | None]:
-    """Split a ``data:<media_type>;base64,<payload>`` URI.
-
-    Returns ``(media_type, payload)``; payload is ``None`` when the URI is
-    malformed. Defaults the media type when the URI omits it.
-    """
-    try:
-        header, payload = url.split(",", 1)
-    except ValueError:
-        return "application/octet-stream", None
-
-    meta = header[len(_DATA_URI_PREFIX) :]
-    media_type = meta.split(";", 1)[0] or "application/octet-stream"
-    return media_type, payload
 
 
 def convert_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
@@ -273,27 +270,14 @@ def convert_assistant_tool_calls(message: dict[str, Any]) -> dict[str, Any]:
 
     for tool_call in message.get("tool_calls") or []:
         function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-        raw_args = function.get("arguments", "{}")
+        name = function.get("name", "")
+        # Anthropic wants a decoded object; never string-match: Claude varies its JSON escaping.
+        args, _ = parse_tool_arguments(function.get("arguments", "{}"), tool_name=name)
         blocks.append(
-            {
-                "type": "tool_use",
-                "id": tool_call.get("id", ""),
-                "name": function.get("name", ""),
-                "input": _parse_tool_arguments(raw_args),
-            }
+            {"type": "tool_use", "id": tool_call.get("id", ""), "name": name, "input": args}
         )
 
     return {"role": "assistant", "content": blocks}
-
-
-def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
-    """Parse tool-call arguments into an object.
-
-    Agentflow carries arguments as a JSON *string* (the OpenAI shape); Anthropic
-    wants a decoded object. Never string-match these: current Claude models vary
-    their JSON escaping, so they must go through a real parser.
-    """
-    return parse_tool_arguments(raw)[0]
 
 
 def merge_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -80,6 +80,14 @@ MemoryTypeName = Literal[
 ]
 
 
+def _check_vector(v: Any) -> Any:
+    if v is not None and (
+        not isinstance(v, list) or any(not isinstance(x, int | float) for x in v)
+    ):
+        raise ValueError("vector must be list[float] or None")
+    return v
+
+
 class MemorySearchResult(BaseModel):
     """Result from a memory search operation (Pydantic model)."""
 
@@ -96,11 +104,7 @@ class MemorySearchResult(BaseModel):
     @field_validator("vector")
     @classmethod
     def validate_vector(cls, v):
-        if v is not None and (
-            not isinstance(v, list) or any(not isinstance(x, int | float) for x in v)
-        ):
-            raise ValueError("vector must be list[float] or None")
-        return v
+        return _check_vector(v)
 
 
 class MemoryRecord(BaseModel):
@@ -119,11 +123,7 @@ class MemoryRecord(BaseModel):
     @field_validator("vector")
     @classmethod
     def validate_vector(cls, v):
-        if v is not None and (
-            not isinstance(v, list) or any(not isinstance(x, (int | float)) for x in v)
-        ):
-            raise ValueError("vector must be list[float] or None")
-        return v
+        return _check_vector(v)
 
     @classmethod
     def from_message(

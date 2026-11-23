@@ -72,6 +72,7 @@ TOOL_NAME = "tenxgraph.tool.name"
 TOOL_TYPE = "tenxgraph.tool.type"  # "local" | "mcp"
 
 TOOL_REMOTE = "tenxgraph.tool.remote"  # True when the tool runs on the client
+TOOL_DENIED = "tenxgraph.tool.denied"  # True when a policy blocked the call (ToolDenied)
 
 # ── span display names and LangSmith run fields ──────────────────────────────
 LOGFIRE_MSG = "logfire.msg"

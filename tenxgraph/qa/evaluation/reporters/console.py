@@ -213,16 +213,16 @@ class ConsoleReporter(BaseReporter):
 
         fail_color = c.RED if summary.failed_cases > 0 else c.DIM
         self._print(
-            f"  {c.DIM}├─{c.RESET} Failed:       " f"{fail_color}{summary.failed_cases}{c.RESET}"
+            f"  {c.DIM}├─{c.RESET} Failed:       {fail_color}{summary.failed_cases}{c.RESET}"
         )
 
         error_color = c.YELLOW if summary.error_cases > 0 else c.DIM
         self._print(
-            f"  {c.DIM}├─{c.RESET} Errors:       " f"{error_color}{summary.error_cases}{c.RESET}"
+            f"  {c.DIM}├─{c.RESET} Errors:       {error_color}{summary.error_cases}{c.RESET}"
         )
 
         duration_str = (
-            f"{summary.total_duration_seconds:.2f}s " f"(avg: {summary.avg_duration_seconds:.2f}s)"
+            f"{summary.total_duration_seconds:.2f}s (avg: {summary.avg_duration_seconds:.2f}s)"
         )
         self._print(f"  {c.DIM}└─{c.RESET} Duration:     {duration_str}")
         self._print()
@@ -275,9 +275,7 @@ class ConsoleReporter(BaseReporter):
             icon, color, status = "✗", c.RED, "FAIL"
 
         name = case_display_name(result)
-        self._print(
-            f"  {color}{icon} {status}{c.RESET} " f"{name} ({result.duration_seconds:.2f}s)"
-        )
+        self._print(f"  {color}{icon} {status}{c.RESET} {name} ({result.duration_seconds:.2f}s)")
 
         if result.error:
             self._print(f"      {c.YELLOW}Error: {result.error}{c.RESET}")

@@ -15,10 +15,12 @@ from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 from .agent import Agent
+from .agent_internal.execution import attach_tool_node
 from .base_agent import BaseAgent
 from .edge import Edge
 from .node import Node
 from .tool_node import ToolNode
+from .utils.graph_container import GraphContainer
 from .utils.tenant_check import check_tenant_columns
 
 
@@ -130,16 +132,21 @@ class StateGraph[StateT: AgentState]:
         self._publisher: BasePublisher | None = publisher
         self._id_generator: BaseIDGenerator = id_generator or DefaultIDGenerator()
         self._context_manager: BaseContextManager[StateT] | None = context_manager
-        # save container for dependency injection
-        # if any container is passed then we will activate that
-        # otherwise we can skip it and use the default one
+        # The parent container holds the developer's own bindings (the global one, or the
+        # container passed in, which is activated as before). This graph's own values go into
+        # its own GraphContainer, which a run makes current for its task, so two graphs in one
+        # process never see each other's checkpointer, store, callback manager or publisher.
         if container is None:
-            self._container = InjectQ.get_instance()
+            parent = InjectQ.get_instance()
             logger.debug("No container provided, using global singleton instance")
         else:
             logger.debug("Using provided dependency container instance")
-            self._container = container
-            self._container.activate()
+            parent = container
+            parent.activate()
+        if isinstance(parent, GraphContainer):  # built while another graph runs
+            parent = parent.parent
+        self._parent_container: InjectQ = parent
+        self._container: GraphContainer = GraphContainer(parent)
 
         # Register task_manager, for async tasks
         # This will be used to run background tasks
@@ -165,21 +172,21 @@ class StateGraph[StateT: AgentState]:
         # register dependencies
 
         # register state and context manager as singletons (these are nullable)
-        self._container.bind_instance(
+        self._bind_instance(
             BaseContextManager,
             self._context_manager,
             allow_none=True,
             allow_concrete=True,
         )
-        # Bind our own publisher when we have one. When we don't, respect a
-        # publisher already provided via the DI container (e.g. wired by an
-        # external bootstrap such as the API server before compilation) instead
-        # of clobbering it with None. Binding is frozen at container.compile(),
-        # so a pre-compile container binding is the only reliable attach point.
+        # With no publisher of its own the graph uses one already bound in the parent
+        # container (e.g. wired by an external bootstrap such as the API server before
+        # compilation) instead of binding None over it.
         # Ask whether one is bound; resolving would make injectq try to build the abstract
         # BasePublisher whenever its constructor's dependencies happen to be bound.
-        if self._publisher is not None or not self._container.has(BasePublisher):
-            self._container.bind_instance(
+        if self._publisher is not None:
+            self._container.bind_instance(BasePublisher, self._publisher, allow_concrete=True)
+        if self._publisher is not None or not self._parent_container.has(BasePublisher):
+            self._parent_container.bind_instance(
                 BasePublisher,
                 self._publisher,
                 allow_none=True,
@@ -187,24 +194,36 @@ class StateGraph[StateT: AgentState]:
             )
 
         # register id generator as factory
-        self._container.bind_instance(
+        self._bind_instance(
             BaseIDGenerator,
             self._id_generator,
             allow_concrete=True,
         )
-        self._container.bind("generated_id_type", self._id_generator.id_type)
+        for target in (self._container, self._parent_container):
+            target.bind("generated_id_type", self._id_generator.id_type)
         # Allow async method also
-        self._container.bind_factory(
-            "generated_id",
-            self._id_generator.generate,
-        )
+        self._bind_factory("generated_id", self._id_generator.generate)
 
         # Save BackgroundTaskManager
-        self._container.bind_instance(
+        self._bind_instance(
             BackgroundTaskManager,
             self._task_manager,
             allow_concrete=False,
         )
+
+    def _bind_instance(self, service_type, value, **kwargs) -> None:
+        """Bind one of this graph's values in its own container and in the parent container.
+
+        A run reads this graph's own container. The parent copy keeps code that reads the
+        process container outside a run (the API server) working as before.
+        """
+        for target in (self._container, self._parent_container):
+            target.bind_instance(service_type, value, **kwargs)
+
+    def _bind_factory(self, service_type, factory) -> None:
+        """Bind one of this graph's factories in its own container and in the parent one."""
+        for target in (self._container, self._parent_container):
+            target.bind_factory(service_type, factory)
 
     def add_node(
         self,
@@ -427,7 +446,7 @@ class StateGraph[StateT: AgentState]:
         media_store: "BaseMediaStore | None" = None,
         interrupt_before: list[str] | None = None,
         interrupt_after: list[str] | None = None,
-        callback_manager: CallbackManager = CallbackManager(),
+        callback_manager: CallbackManager | None = None,
         shutdown_timeout: float = 30.0,
         media_policy: "MediaFetchPolicy | None" = None,
         owns_resources: bool = True,
@@ -444,7 +463,8 @@ class StateGraph[StateT: AgentState]:
             debug: Enable debug mode
             interrupt_before: List of node names to interrupt before execution
             interrupt_after: List of node names to interrupt after execution
-            callback_manager: Callback manager for executing hooks
+            callback_manager: Callback manager for executing hooks. This graph's runs use
+                only this manager (a new empty one when omitted), never another graph's.
             shutdown_timeout: Timeout in seconds for graceful shutdown (default: 30.0)
             media_policy: Which external media URLs the server may download (hosts, content
                 types, size, timeout). Defaults to ``MediaFetchPolicy()``.
@@ -531,9 +551,8 @@ class StateGraph[StateT: AgentState]:
         ):
             logger.warning(
                 "This checkpointer is already used by another compiled graph in this process. "
-                "Graphs that share a checkpointer share its threads, and the store and "
-                "context manager bound in one InjectQ container. Run one graph per process "
-                "or container, or give each graph its own checkpointer and container."
+                "Graphs that share a checkpointer share its threads. Give each graph its own "
+                "checkpointer to keep their threads apart."
             )
 
         # Stored rows hold data only; the checkpointer rebuilds them into this class.
@@ -551,49 +570,9 @@ class StateGraph[StateT: AgentState]:
         # Import the CompiledGraph class
         from .compiled_graph import CompiledGraph
 
-        # Setup dependencies
-        self._container.bind_instance(
-            BaseCheckpointer,
-            checkpointer,
-            allow_concrete=True,
-        )  # not null as we set default
-        self._container.bind_instance(
-            BaseStore,
-            store,
-            allow_none=True,
-            allow_concrete=True,
+        media_policy = self._bind_compile_values(
+            checkpointer, store, media_store, media_policy, callback_manager
         )
-        # Bind media store for multimodal content
-        if media_store is not None:
-            from tenxgraph.storage.media.storage.base import BaseMediaStore
-
-            self._container.bind_instance(
-                BaseMediaStore,
-                media_store,
-                allow_concrete=True,
-            )
-        # Bind the media download policy. Always bound, so a policy from an earlier compile in
-        # the same container does not leak into a graph that sets none. A factory is used
-        # because the container ignores a second bind_instance once a value has been resolved.
-        from tenxgraph.storage.media.url_policy import MediaFetchPolicy
-
-        media_policy = media_policy or MediaFetchPolicy()
-        bound_policy = media_policy
-
-        def _media_policy_factory() -> MediaFetchPolicy:
-            return bound_policy
-
-        self._container.bind_factory(MediaFetchPolicy, _media_policy_factory)
-        self._container.bind_instance(
-            CallbackManager,
-            callback_manager,
-            allow_concrete=True,
-        )  # not null as we set default
-        self._container.bind_instance(StateGraph, self)
-
-        # Bind Nodes
-        self._container.bind_factory("get_node", lambda x: self.nodes[x])
-        self._container.bind_factory("get_entry_point_node", lambda: self.nodes[self.entry_point])  # type: ignore
 
         # Resolve named ToolNode references at compile time.
         # Any agent that was constructed with tool_node="SOME_NODE" has
@@ -617,10 +596,75 @@ class StateGraph[StateT: AgentState]:
             node_aliases=node_aliases,
         )
 
-        self._container.bind(CompiledGraph, app)
-        # Compile the Graph, so it will optimize the dependency graph
-        self._container.compile()
+        for target in (self._container, self._parent_container):
+            target.bind(CompiledGraph, app)
+            # Compile the Graph, so it will optimize the dependency graph
+            target.compile()
         return app
+
+    def _bind_compile_values(
+        self,
+        checkpointer: BaseCheckpointer[StateT],
+        store: BaseStore | None,
+        media_store: "BaseMediaStore | None",
+        media_policy: "MediaFetchPolicy | None",
+        callback_manager: CallbackManager | None,
+    ) -> "MediaFetchPolicy":
+        """Bind the values ``compile()`` was given; returns the media policy in force."""
+        if callback_manager is None:
+            callback_manager = CallbackManager()
+        # A second compile() of this graph rebinds its values; injectq would otherwise keep
+        # serving the ones it already resolved.
+        self._container.clear_all_scopes()
+
+        # Setup dependencies
+        self._bind_instance(
+            BaseCheckpointer,
+            checkpointer,
+            allow_concrete=True,
+        )  # not null as we set default
+        # A graph with no store uses one bound in the parent container (the API server binds
+        # the store from 10xgraph.json after compile); the parent keeps None as before.
+        if store is not None:
+            self._container.bind_instance(BaseStore, store, allow_concrete=True)
+        self._parent_container.bind_instance(
+            BaseStore,
+            store,
+            allow_none=True,
+            allow_concrete=True,
+        )
+        # Bind media store for multimodal content
+        if media_store is not None:
+            from tenxgraph.storage.media.storage.base import BaseMediaStore
+
+            self._bind_instance(
+                BaseMediaStore,
+                media_store,
+                allow_concrete=True,
+            )
+        # Bind the media download policy. Always bound, so a policy from an earlier compile in
+        # the same container does not leak into a graph that sets none. A factory is used
+        # because the container ignores a second bind_instance once a value has been resolved.
+        from tenxgraph.storage.media.url_policy import MediaFetchPolicy
+
+        media_policy = media_policy or MediaFetchPolicy()
+        bound_policy = media_policy
+
+        def _media_policy_factory() -> MediaFetchPolicy:
+            return bound_policy
+
+        self._bind_factory(MediaFetchPolicy, _media_policy_factory)
+        self._bind_instance(
+            CallbackManager,
+            callback_manager,
+            allow_concrete=True,
+        )
+        self._bind_instance(StateGraph, self)
+
+        # Bind Nodes
+        self._bind_factory("get_node", lambda x: self.nodes[x])
+        self._bind_factory("get_entry_point_node", lambda: self.nodes[self.entry_point])  # type: ignore
+        return media_policy
 
     def _validate_graph(self):
         """Validate the graph structure."""
@@ -669,8 +713,6 @@ class StateGraph[StateT: AgentState]:
         are registered immediately.  After this call the runtime
         ``_resolve_tools`` path needs no DI lookup for those agents.
         """
-        from tenxgraph.core.graph.tool_node import ToolNode
-
         for node in self.nodes.values():
             agent = node.func
             tool_node_name = getattr(agent, "tool_node_name", None)
@@ -707,19 +749,11 @@ class StateGraph[StateT: AgentState]:
                     },
                 )
 
-            resolved_tool_node = target.func
-            agent._tool_node = resolved_tool_node
-            agent.tool_node_name = None  # mark as resolved
-
-            for fn in getattr(agent, "_extra_tools", []):
-                resolved_tool_node.add_tool(fn)
-
-            agent._extra_tools = []
-
+            registered = attach_tool_node(agent, target.func)
             logger.info(
                 "Compile-time: resolved tool_node '%s' for agent node '%s' "
                 "(%d extra tool(s) registered)",
                 tool_node_name,
                 node.name,
-                0,  # already drained above
+                registered,
             )

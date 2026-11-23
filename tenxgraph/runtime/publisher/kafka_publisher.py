@@ -15,7 +15,7 @@ import logging
 import ssl
 from typing import Any
 
-from .base_publisher import BasePublisher
+from .base_publisher import BasePublisher, close_in_new_loop
 from .events import EventModel
 
 
@@ -203,7 +203,4 @@ class KafkaPublisher(BasePublisher):
         This method runs the async close in a new event loop. If called within an
         active event loop, it logs a warning and skips the operation.
         """
-        try:
-            asyncio.run(self.close())
-        except RuntimeError:
-            logger.warning("sync_close called within an active event loop; skipping.")
+        close_in_new_loop(self)

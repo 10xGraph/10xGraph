@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
@@ -228,3 +229,20 @@ class BaseMediaStore(ABC):
             mime_type=mime_type,
             **kwargs,
         )
+
+
+# Extension map for cases where mimetypes doesn't know the type
+_FALLBACK_EXT: dict[str, str] = {
+    "application/pdf": ".pdf",
+    "audio/wav": ".wav",
+    "audio/mp3": ".mp3",
+    "image/webp": ".webp",
+}
+
+
+def _mime_to_ext(mime_type: str) -> str:
+    """Convert MIME type to file extension."""
+    ext = mimetypes.guess_extension(mime_type)
+    if ext:
+        return ext
+    return _FALLBACK_EXT.get(mime_type, ".bin")

@@ -11,7 +11,6 @@ in agent workflows, supporting both synchronous and asynchronous execution patte
 
 import asyncio
 import copy
-import inspect
 import logging
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from injectq import Inject
 from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node.denial import TOOL_DENIED_CODE
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.stream_utils import check_non_streaming
 from tenxgraph.core.graph.utils.tool_dispatch import (
@@ -318,13 +318,16 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 None,
             )
             if error is not None:
+                denied = error.code == TOOL_DENIED_CODE
                 return [
                     StreamChunk(
                         event=StreamEvent.ERROR,
                         data={
-                            "status": "tool_failed",
+                            "status": "tool_denied" if denied else "tool_failed",
                             **meta,
-                            "reason": "Tool execution resulted in error",
+                            "reason": (
+                                "Denied by policy" if denied else "Tool execution resulted in error"
+                            ),
                             "error": error.message,
                         },
                         **ids,
@@ -518,70 +521,6 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 context={"node_name": self.name},
             )
 
-    def _prepare_input_data(
-        self,
-        state: "AgentState",
-        config: dict[str, Any],
-    ) -> dict:
-        sig = inspect.signature(self.func)  # type: ignore Tool node won't come here
-        input_data = {}
-        default_data = {
-            "state": state,
-            "config": config,
-        }
-
-        # Collect all required parameters (excluding *args/**kwargs)
-        required_params = []
-        for param_name, param in sig.parameters.items():
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
-                continue
-            if param.default is inspect.Parameter.empty:
-                required_params.append((param_name, param))
-
-        # If function has exactly one required parameter and it's not 'state' or 'config',
-        # assume it should receive the state (common pattern for simple lambdas like lambda s: s)
-        if len(required_params) == 1:
-            param_name, param = required_params[0]
-            if param_name not in ["state", "config"]:
-                input_data[param_name] = state
-                return input_data
-
-        # Otherwise, handle standard named parameters
-        for param_name, param in sig.parameters.items():
-            # Skip *args/**kwargs
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
-                continue
-
-            # check its state, config
-            if param_name in ["state", "config"]:
-                input_data[param_name] = default_data[param_name]
-            # Include regular function arguments
-            elif param.default is inspect.Parameter.empty:
-                raise TypeError(
-                    f"Missing required parameter '{param_name}' for function '{self.func}'"
-                )
-
-        return input_data
-
-    def _get_last_tool_message(self, state: AgentState) -> Message:
-        """Return the latest context message required for tool execution."""
-        if state.context and len(state.context) > 0:
-            return state.context[-1]
-
-        error_msg = "No context available for tool execution"
-        logger.error("Node '%s': %s", self.name, error_msg)
-        raise NodeError(
-            message=error_msg,
-            error_code="NODE_003",
-            context={"node_name": self.name},
-        )
-
     def _collect_tool_stream_dict(
         self,
         item: dict[str, Any],
@@ -715,14 +654,14 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": function_name,
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -828,11 +767,9 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                     messages,
                     seen_message_ids,
                 )
-                event.data["state"] = new_state.model_dump()
+                event.data["state"] = new_state
                 event.event_type = EventType.END
-                event.data["messages"] = (
-                    [m.model_dump() for m in messages if not m.delta] if messages else []
-                )
+                event.data["messages"] = [m for m in messages if not m.delta]
                 event.data["next_node"] = next_node
                 publish_event(event)
                 for m in messages:
@@ -866,7 +803,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             event.event_type = EventType.END
             if messages:
                 final_msg = messages[-1]
-                event.data["message"] = final_msg.model_dump()
+                event.data["message"] = final_msg
                 # Populate simple content and structured blocks when available
                 event.content = (
                     final_msg.text() if isinstance(final_msg.content, list) else final_msg.content
@@ -901,7 +838,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 # Use recovery result instead of raising the error
                 event.event_type = EventType.END
                 event.content = "Function execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
 
@@ -954,14 +891,14 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": type(agent).__name__,
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -1011,10 +948,10 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
             is_dict = isinstance(result, dict)
             final_messages = result.get("messages", messages) if is_dict else messages
-            event.data["state"] = state.model_dump()
+            event.data["state"] = state
             event.event_type = EventType.END
             event.metadata["status"] = "Agent execution completed"
-            event.data["messages"] = [m.model_dump() for m in final_messages]
+            event.data["messages"] = final_messages
             event.data["next_node"] = None
             if final_messages:
                 last = final_messages[-1]
@@ -1042,7 +979,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 logger.info("Node '%s' recovered from error using callback result", self.name)
                 event.event_type = EventType.END
                 event.metadata["status"] = "Agent execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
                 yield recovery_result

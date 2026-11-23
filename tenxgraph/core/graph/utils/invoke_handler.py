@@ -33,7 +33,7 @@ from tenxgraph.core.graph.utils.error_text import client_error_text
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import END, START, ResponseGranularity, metrics
 from tenxgraph.utils.command import Command
@@ -52,6 +52,9 @@ from .handler_utils import (
     interrupt_graph,
     node_after,
     pause_for_interrupt,
+    publish_graph_end,
+    publish_graph_error,
+    publish_state_update,
     skip_answered_tool_node,
     split_remote_calls,
 )
@@ -227,7 +230,7 @@ class InvokeHandler[StateT: AgentState](
         # Create event for graph execution
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.GRAPH_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=current_node,
@@ -257,7 +260,7 @@ class InvokeHandler[StateT: AgentState](
                 state.set_current_node(current_node)
                 state.execution_meta.step = step
                 await call_realtime_sync(state, config)
-                event.data["state"] = state.model_dump()
+                event.data["state"] = state
                 event.metadata["step"] = step
                 event.metadata["current_node"] = current_node
                 event.event_type = EventType.PROGRESS
@@ -286,12 +289,13 @@ class InvokeHandler[StateT: AgentState](
                 logger.debug("Executing node '%s'", current_node)
                 node = self._get_node(current_node)
 
-                # Snapshot state before node execution for on_state_update hook
-                old_state_snapshot = state.model_copy(deep=True)
+                # Snapshot state before node execution, only for on_state_update hooks.
+                has_hooks = bool(self.callback_mgr and self.callback_mgr._lifecycle_hooks)
+                old_state_snapshot = state.model_copy(deep=True) if has_hooks else state
 
                 node_event = EventModel.default(
                     config,
-                    data={"step": step, "state": state.model_dump()},
+                    data={"step": step, "state": state},
                     event=Event.NODE_EXECUTION,
                     event_type=EventType.START,
                     content_type=[ContentType.STATE],
@@ -405,7 +409,7 @@ class InvokeHandler[StateT: AgentState](
                 )
 
                 node_event.event_type = EventType.END
-                node_event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+                node_event.data["messages"] = messages
                 node_event.content_type = [ContentType.MESSAGE]
                 publish_event(node_event)
 
@@ -437,20 +441,21 @@ class InvokeHandler[StateT: AgentState](
                     return state, messages
 
                 # Fire on_state_update hook after state has been merged
-                if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-                    state = await self.callback_mgr.fire_on_state_update(
+                if has_hooks:
+                    state = await self.callback_mgr.fire_on_state_update(  # type: ignore[union-attr]
                         lifecycle_context,
                         node_name=current_node,
                         old_state=old_state_snapshot,
                         new_state=state,
                         step=step,
                     )  # type: ignore
+                publish_state_update(config, current_node, step)
 
                 # Call realtime sync after node execution (if state/messages changed)
                 await call_realtime_sync(state, config)
                 event.event_type = EventType.UPDATE
-                event.data["state"] = state.model_dump()
-                event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+                event.data["state"] = state
+                event.data["messages"] = messages
                 if messages:
                     lm = messages[-1]
                     event.content = lm.text() if isinstance(lm.content, list) else lm.content  # type: ignore
@@ -482,7 +487,7 @@ class InvokeHandler[StateT: AgentState](
                     event.event_type = EventType.INTERRUPTED
                     event.data["interrupted"] = "After"
                     event.metadata["interrupted"] = "After"
-                    event.data["state"] = state.model_dump()
+                    event.data["state"] = state
                     publish_event(event)
 
                 # Get next node (only if no explicit navigation from Command)
@@ -527,7 +532,7 @@ class InvokeHandler[StateT: AgentState](
                 event.event_type = EventType.UPDATE
 
                 event.metadata["State_Updated"] = "State Updated"
-                event.data["state"] = state.model_dump()
+                event.data["state"] = state
                 publish_event(event)
 
                 # If we interrupted after, exit now
@@ -544,7 +549,7 @@ class InvokeHandler[StateT: AgentState](
                     state.execution_meta.step = 0
                     await call_realtime_sync(state, config)
                     event.event_type = EventType.ERROR
-                    event.data["state"] = state.model_dump()
+                    event.data["state"] = state
                     event.metadata["error"] = error_msg
                     event.metadata["step"] = step
                     event.metadata["current_node"] = current_node
@@ -576,6 +581,7 @@ class InvokeHandler[StateT: AgentState](
                     messages=messages,
                     total_steps=step,
                 )  # type: ignore
+            publish_graph_end(config, step)
 
             res = await sync_data(
                 state=state,
@@ -585,8 +591,8 @@ class InvokeHandler[StateT: AgentState](
                 last_save=last_save,
             )
             event.event_type = EventType.END
-            event.data["state"] = state.model_dump()
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["state"] = state
+            event.data["messages"] = messages
             if messages:
                 fm = messages[-1]
                 event.content = fm.text() if isinstance(fm.content, list) else fm.content  # type: ignore
@@ -619,12 +625,13 @@ class InvokeHandler[StateT: AgentState](
             # Publish error event
             event.event_type = EventType.ERROR
             event.metadata["error"] = str(e)
-            event.data["state"] = state.model_dump()
+            event.data["state"] = state
             publish_event(event)
 
             # Fire on_graph_error hook before persisting the error state
+            error_message = str(e)
             if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-                state, _ = await self.callback_mgr.fire_on_graph_error(
+                state, error_message = await self.callback_mgr.fire_on_graph_error(
                     lifecycle_context,
                     error=e,
                     partial_state=state,
@@ -632,6 +639,7 @@ class InvokeHandler[StateT: AgentState](
                     step=step,
                     node_name=current_node,
                 )  # type: ignore
+            publish_graph_error(config, error_message, step, current_node)
 
             await sync_data(
                 state=state,
@@ -688,7 +696,7 @@ class InvokeHandler[StateT: AgentState](
         # Event publishing logic
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.GRAPH_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=state.execution_meta.current_node,
@@ -707,6 +715,7 @@ class InvokeHandler[StateT: AgentState](
         if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
             lc_context = GraphLifecycleContext(config=public_config(config))
             state = await self.callback_mgr.fire_on_graph_start(lc_context, state)  # type: ignore
+        publish_lifecycle(config, "graph_start", {})
 
         event.event_type = EventType.UPDATE
         event.metadata["status"] = "Graph invoked"
@@ -727,8 +736,8 @@ class InvokeHandler[StateT: AgentState](
             event.event_type = EventType.END
             event.metadata["status"] = "Graph execution completed"
             event.metadata.update(token_usage)
-            event.data["state"] = final_state.model_dump()
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["state"] = final_state
+            event.data["messages"] = messages
             publish_event(event)
 
             return await parse_response(

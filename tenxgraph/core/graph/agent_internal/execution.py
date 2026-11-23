@@ -30,19 +30,26 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils import metrics
 from tenxgraph.utils.converter import (
+    TOOL_RESULT_FENCE_LINE,
     convert_messages,
     inject_request_blocks,
     strip_media_blocks,
     strip_provider_blocks,
 )
 from tenxgraph.utils.injection import fresh
-from tenxgraph.utils.log_safety import describe_error, error_details
-from tenxgraph.utils.validators import clean_unstorable
+from tenxgraph.utils.log_safety import describe_error, error_details, redact_url
+from tenxgraph.utils.media_scheme import is_internal_media_url
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
-from .constants import RetryConfig
+from .constants import (
+    ENDPOINT_KWARGS,
+    REASONING_REJECTED_MODELS,
+    RetryConfig,
+    is_default_reasoning,
+    reasoning_for,
+)
 from .model_registry import ModelEntry, bind_entry, entry_attempt, named_entry, select_entry
-from .openai import _REASONING_REJECTED_MODELS, is_endpoint_unsupported, is_reasoning_rejected
+from .openai import is_endpoint_unsupported, is_reasoning_rejected
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -103,6 +110,23 @@ _PERMANENT_QUOTA_MARKERS = (
     "credit balance is too low",
     "billing hard limit",
 )
+
+
+def attach_tool_node(agent: Any, tool_node: Any) -> int:
+    """Wire a resolved named ToolNode onto ``agent``; returns the queued tools it registered.
+
+    Used at compile time (``StateGraph``) and at run time (``_resolve_tools``, for an Agent the
+    compile step did not see, such as one called inside a plain function node). Clears
+    ``tool_node_name`` so the lookup never runs twice and drains ``_extra_tools`` (skill and
+    memory tools queued before the ToolNode was known).
+    """
+    agent._tool_node = tool_node
+    agent.tool_node_name = None
+    extra = list(getattr(agent, "_extra_tools", None) or [])
+    for fn in extra:
+        tool_node.add_tool(fn)
+    agent._extra_tools = []
+    return len(extra)
 
 
 def _is_permanent_quota_error(exc: BaseException) -> bool:
@@ -216,32 +240,34 @@ def _record_llm_metrics(llm_event: Any, started: float | None, status: str) -> N
         logger.debug("LLM metric not recorded", exc_info=True)
 
 
-def _make_stream_end_hook(llm_event: Any, started: float | None = None) -> Any:
-    """Build the callback that ends a streaming LLM span with the stream's token usage."""
+def _make_llm_end_hook(llm_event: Any, started: float | None = None) -> Any:
+    """Build the converter callback that ends the LLM span from the converted message.
+
+    Used for streaming and non-streaming calls alike, so tokens, response id and model come
+    from the provider converter, never from the raw response.
+    """
 
     def hook(final: Any, error: BaseException | None) -> None:
         from tenxgraph.runtime.publisher.events import EventType
         from tenxgraph.runtime.publisher.publish import publish_event
 
+        data = llm_event.data
         if error is not None:
             llm_event.event_type = EventType.ERROR  # type: ignore[assignment]
             llm_event.is_error = True
-            llm_event.data["error"] = type(error).__name__
-            llm_event.data.update(error_details(error))
+            data["error"] = type(error).__name__
+            data.update(error_details(error))
         else:
             llm_event.event_type = EventType.END  # type: ignore[assignment]
         usages = getattr(final, "usages", None)
-        if usages is not None:
-            llm_event.data["input_tokens"] = getattr(usages, "prompt_tokens", 0) or 0
-            llm_event.data["output_tokens"] = getattr(usages, "completion_tokens", 0) or 0
-            llm_event.data["cache_read_tokens"] = getattr(usages, "cache_read_input_tokens", 0) or 0
-            llm_event.data["cache_creation_tokens"] = (
-                getattr(usages, "cache_creation_input_tokens", 0) or 0
-            )
-            llm_event.data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
+        data["input_tokens"] = getattr(usages, "prompt_tokens", 0) or 0
+        data["output_tokens"] = getattr(usages, "completion_tokens", 0) or 0
+        data["cache_read_tokens"] = getattr(usages, "cache_read_input_tokens", 0) or 0
+        data["cache_creation_tokens"] = getattr(usages, "cache_creation_input_tokens", 0) or 0
+        data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
         if error is None and callable(getattr(final, "text", None)):
-            llm_event.data["output_response"] = final.text().strip()
-            llm_event.data["output_tool_calls"] = [
+            data["output_response"] = final.text().strip()
+            data["output_tool_calls"] = [
                 {
                     "id": str(b.id),
                     "name": str(b.name),
@@ -253,225 +279,17 @@ def _make_stream_end_hook(llm_event: Any, started: float | None = None) -> Any:
                 if getattr(b, "type", None) == "tool_call"
             ]
         meta = getattr(final, "metadata", None) or {}
-        if meta.get("finish_reason"):
-            llm_event.data["finish_reason"] = str(meta["finish_reason"])
-        if meta.get("model"):
-            llm_event.data["response_model"] = str(meta["model"])
+        for key, field in (
+            ("finish_reason", "finish_reason"),
+            ("response_id", "response_id"),
+            ("response_model", "model"),
+        ):
+            if meta.get(field):
+                data[key] = str(meta[field])
         publish_event(llm_event)
         _record_llm_metrics(llm_event, started, "error" if error is not None else "success")
 
     return hook
-
-
-def _extract_input_tokens(response: Any) -> int:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0
-    return getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None) or 0
-
-
-def _extract_output_tokens(response: Any) -> int:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0
-    return getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None) or 0
-
-
-def _extract_cache_read_tokens(response: Any) -> int:
-    """Tokens served from provider cache (OpenAI cached prompt tokens, Anthropic cache read)."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0
-    # Anthropic: usage.cache_read_input_tokens
-    v = getattr(usage, "cache_read_input_tokens", None)
-    if v:
-        return int(v)
-    # OpenAI chat completions: usage.prompt_tokens_details.cached_tokens
-    details = getattr(usage, "prompt_tokens_details", None)
-    if details:
-        v = getattr(details, "cached_tokens", None)
-        if v:
-            return int(v)
-    # OpenAI responses API: usage.input_tokens_details.cached_tokens
-    details = getattr(usage, "input_tokens_details", None)
-    if details:
-        v = getattr(details, "cached_tokens", None)
-        if v:
-            return int(v)
-    # Google: usage_metadata.cached_content_token_count
-    usage_meta = getattr(response, "usage_metadata", None)
-    if usage_meta:
-        v = getattr(usage_meta, "cached_content_token_count", None)
-        if v:
-            return int(v)
-    return 0
-
-
-def _extract_cache_creation_tokens(response: Any) -> int:
-    """Tokens written to provider cache (Anthropic cache_creation only;
-    OpenAI has no equivalent)."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0
-    v = getattr(usage, "cache_creation_input_tokens", None)
-    return int(v) if v else 0
-
-
-def _extract_reasoning_tokens(response: Any) -> int:
-    """Reasoning/thinking tokens (OpenAI o-series completion_tokens_details, Google thoughts)."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return 0
-    # OpenAI: usage.completion_tokens_details.reasoning_tokens
-    details = getattr(usage, "completion_tokens_details", None)
-    if details:
-        v = getattr(details, "reasoning_tokens", None)
-        if v:
-            return int(v)
-    # OpenAI responses API: usage.output_tokens_details.reasoning_tokens
-    details = getattr(usage, "output_tokens_details", None)
-    if details:
-        v = getattr(details, "reasoning_tokens", None)
-        if v:
-            return int(v)
-    # Google thinking models: usage_metadata.thoughts_token_count
-    usage_meta = getattr(response, "usage_metadata", None)
-    if usage_meta:
-        v = getattr(usage_meta, "thoughts_token_count", None)
-        if v:
-            return int(v)
-    return 0
-
-
-def _extract_finish_reason(response: Any) -> str:
-    """Return a single finish reason string from the raw provider response."""
-    # OpenAI chat completions: response.choices[0].finish_reason
-    choices = getattr(response, "choices", None)
-    if choices:
-        reason = getattr(choices[0], "finish_reason", None)
-        if reason:
-            return str(reason)
-    # OpenAI responses API: response.status ("completed", "incomplete", etc.)
-    status = getattr(response, "status", None)
-    if status and isinstance(status, str) and status not in ("", "in_progress"):
-        return status
-    # Anthropic / generic: response.stop_reason
-    stop_reason = getattr(response, "stop_reason", None)
-    if stop_reason:
-        return str(stop_reason)
-    # Google: response.candidates[0].finish_reason (may be an enum)
-    candidates = getattr(response, "candidates", None)
-    if candidates:
-        fr = getattr(candidates[0], "finish_reason", None)
-        if fr is not None:
-            name = getattr(fr, "name", None)
-            return str(name) if name else str(fr)
-    return ""
-
-
-def _extract_response_id(response: Any) -> str:
-    """Return the unique completion ID from the provider response."""
-    v = getattr(response, "id", None)
-    return str(v) if v else ""
-
-
-def _extract_response_model(response: Any) -> str:
-    """Return the model name the provider actually used (may differ from requested)."""
-    v = getattr(response, "model", None)
-    return str(v) if v else ""
-
-
-def _typed_blocks(response: Any) -> list[Any]:
-    """Anthropic-style ``response.content`` blocks (a list of objects carrying ``.type``)."""
-    content = getattr(response, "content", None)
-    if isinstance(content, list) and all(hasattr(b, "type") for b in content):
-        return content
-    return []
-
-
-def _google_parts(response: Any) -> list[Any]:
-    """First Google genai candidate parts, read directly (``response.text`` warns on tool calls)."""
-    candidates = getattr(response, "candidates", None)
-    if not isinstance(candidates, list) or not candidates:
-        return []
-    parts = getattr(getattr(candidates[0], "content", None), "parts", None)
-    return list(parts) if isinstance(parts, list) else []
-
-
-def _extract_response_text(response: Any) -> str:
-    parts = _google_parts(response)
-    if parts:
-        texts = [
-            p.text
-            for p in parts
-            if isinstance(getattr(p, "text", None), str) and not getattr(p, "thought", None)
-        ]
-        return "".join(texts).strip()
-    text = getattr(response, "text", None)
-    if text:
-        return str(text).strip()
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return str(output_text).strip()
-    blocks = _typed_blocks(response)
-    if blocks:
-        return "".join(
-            str(getattr(b, "text", "") or "") for b in blocks if b.type == "text"
-        ).strip()
-    choices = getattr(response, "choices", None)
-    if choices:
-        return str(getattr(getattr(choices[0], "message", None), "content", "") or "").strip()
-    return ""
-
-
-def _extract_tool_calls(response: Any) -> list[dict[str, str]]:
-    """Tool calls as ``{"id", "name", "arguments"}`` dicts (arguments is a JSON string).
-
-    Handles OpenAI chat, OpenAI Responses, Anthropic and Google genai responses.
-    """
-    calls: list[dict[str, str]] = []
-    for part in _google_parts(response):
-        fc = getattr(part, "function_call", None)
-        if fc is not None:
-            calls.append(
-                {
-                    "id": str(getattr(fc, "id", None) or ""),
-                    "name": str(getattr(fc, "name", None) or ""),
-                    "arguments": json.dumps(getattr(fc, "args", None) or {}, default=str),
-                }
-            )
-    for block in _typed_blocks(response):
-        if block.type == "tool_use":
-            calls.append(
-                {
-                    "id": str(getattr(block, "id", "") or ""),
-                    "name": str(getattr(block, "name", "")),
-                    "arguments": json.dumps(getattr(block, "input", None) or {}, default=str),
-                }
-            )
-    output = getattr(response, "output", None)
-    for item in output if isinstance(output, list) else []:
-        if getattr(item, "type", None) == "function_call":
-            calls.append(
-                {
-                    "id": str(getattr(item, "call_id", "") or ""),
-                    "name": str(getattr(item, "name", "")),
-                    "arguments": str(getattr(item, "arguments", "")),
-                }
-            )
-    choices = getattr(response, "choices", None)
-    message = getattr(choices[0], "message", None) if choices else None
-    for call in getattr(message, "tool_calls", None) or []:
-        fn = getattr(call, "function", None)
-        if fn is not None:
-            calls.append(
-                {
-                    "id": str(getattr(call, "id", "") or ""),
-                    "name": str(getattr(fn, "name", "")),
-                    "arguments": str(getattr(fn, "arguments", "")),
-                }
-            )
-    return calls
 
 
 class AgentExecutionMixin:
@@ -670,11 +488,7 @@ class AgentExecutionMixin:
                 kwargs = self.llm_kwargs
                 base_url = self.base_url
             else:
-                kwargs = {
-                    k: v
-                    for k, v in self.llm_kwargs.items()
-                    if k not in ("api_key", "base_url", "anthropic_backend")
-                }
+                kwargs = {k: v for k, v in self.llm_kwargs.items() if k not in ENDPOINT_KWARGS}
                 base_url = None
             helper = self._bind_attempt(self.model, provider, None, base_url, llm_kwargs=kwargs)
             client = self._without_sdk_retries(
@@ -951,14 +765,9 @@ class AgentExecutionMixin:
         _api_style_var.set(style)
 
     def _apply_chat_reasoning(self, kwargs: dict[str, Any]) -> None:
-        """Add reasoning parameters to a Chat Completions request, in place.
-
-        Only an explicit ``reasoning_config`` is sent. The implicit default
-        (the provider's lowest effort) is skipped because many models reject
-        ``reasoning_effort`` on chat, notably together with function tools.
-        """
-        config = self._openai_reasoning_config()
-        if not config or not getattr(self, "_reasoning_explicit", True):
+        """Add reasoning parameters to a Chat Completions request, in place."""
+        config = reasoning_for(self, "openai_chat")
+        if not config:
             return
         if config.get("effort"):
             kwargs.setdefault("reasoning_effort", config["effort"])
@@ -989,12 +798,12 @@ class AgentExecutionMixin:
                 self._set_api_style("responses")
                 return await self._openai_with_reasoning_retry(
                     lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
-                    sent=bool(self._openai_reasoning_config()),
+                    sent=bool(reasoning_for(self, "openai_responses")),
                 )
             try:
                 result = await self._openai_with_reasoning_retry(
                     lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
-                    sent=bool(self._openai_reasoning_config()),
+                    sent=bool(reasoning_for(self, "openai_responses")),
                 )
             except Exception as exc:
                 # Only "endpoint not found / not implemented" means the server lacks the
@@ -1002,8 +811,6 @@ class AgentExecutionMixin:
                 if not is_endpoint_unsupported(exc):
                     raise
                 if self.base_url not in unsupported:
-                    from tenxgraph.storage.media.url_policy import redact_url
-
                     unsupported.add(self.base_url)
                     logger.warning(
                         "Responses API not supported at %s (%s). "
@@ -1022,7 +829,7 @@ class AgentExecutionMixin:
             self._apply_chat_reasoning(chat_kwargs)
             return await self._call_openai(messages, tools, stream, **chat_kwargs)
 
-        sent = bool(self._openai_reasoning_config()) and getattr(self, "_reasoning_explicit", True)
+        sent = bool(reasoning_for(self, "openai_chat"))
         return await self._openai_with_reasoning_retry(call_chat, sent=sent)
 
     async def _openai_with_reasoning_retry(self, call: Any, sent: bool) -> Any:
@@ -1035,11 +842,9 @@ class AgentExecutionMixin:
         try:
             return await call()
         except Exception as exc:
-            if not (
-                sent and getattr(self, "_reasoning_default", False) and is_reasoning_rejected(exc)
-            ):
+            if not (sent and is_default_reasoning(self) and is_reasoning_rejected(exc)):
                 raise
-            _REASONING_REJECTED_MODELS.add(self.model)
+            REASONING_REJECTED_MODELS.add(self.model)
             logger.warning(
                 "Model %s rejected the default reasoning parameter (%s). "
                 "Retrying without reasoning; later calls skip it for this model.",
@@ -1145,12 +950,25 @@ class AgentExecutionMixin:
 
         state = await self._trim_context(state)
 
+        # Always resolve tools - even after tool results, the model may want to call
+        # additional tools (e.g., Gemini 2.5+ with sequential tool calls). Resolved before
+        # the messages are built, so a named ToolNode's ``fence_results`` is known.
+        tools = await self._resolve_tools(container, config)
+
+        # Tool results are fenced as untrusted data unless the ToolNode turns it off. The
+        # line explaining the fence is added whenever tools exist, so the system prompt
+        # stays the same from the first turn on (prompt cache).
+        fence = getattr(getattr(self, "_tool_node", None), "fence_results", True)
+        fence_line = fence and (bool(tools) or any(m.role == "tool" for m in state.context or []))
+
         # Skill text is loaded, so it is added after the developer's system prompt is
         # interpolated and never goes through str.format.
         extra_system_prompts: list[dict[str, Any]] = []
+        if fence_line:
+            extra_system_prompts.append({"role": "system", "content": TOOL_RESULT_FENCE_LINE})
 
         if hasattr(self, "_build_skill_prompts") and callable(self._build_skill_prompts):
-            extra_system_prompts = self._build_skill_prompts(state, [])
+            extra_system_prompts += self._build_skill_prompts(state, [])
 
         # Retrieved memories are user-level data, not system text: they are fenced and added
         # to the latest user message of this request only (never to state.context).
@@ -1167,6 +985,7 @@ class AgentExecutionMixin:
             extra_messages=self.extra_messages or [],
             extra_system_prompts=extra_system_prompts,
             node=config.get("_node_name"),
+            fence_tool_results=fence,
         )
         # Image, video and audio endpoints take a plain prompt, so memories only apply to
         # text-like output.
@@ -1190,10 +1009,6 @@ class AgentExecutionMixin:
             messages = strip_media_blocks(messages)
 
         is_stream = config.get("is_stream", False)
-
-        # Always resolve tools - even after tool results, the model may want to call
-        # additional tools (e.g., Gemini 2.5+ with sequential tool calls)
-        tools = await self._resolve_tools(container, config)
 
         from tenxgraph.runtime.publisher.events import (
             ContentType,
@@ -1262,24 +1077,6 @@ class AgentExecutionMixin:
             _record_llm_metrics(llm_event, llm_started, "error")
             raise
 
-        if not is_stream:
-            # A stream is read later by the caller, so its span ends when the stream does
-            # (see ``on_stream_end`` below), with the usage from the last chunks.
-            llm_event.event_type = EventType.END  # type: ignore[assignment]
-            # Raw provider text: cleaned so span export never meets NUL or a lone surrogate.
-            llm_event.data["output_response"] = clean_unstorable(_extract_response_text(response))
-            llm_event.data["output_tool_calls"] = clean_unstorable(_extract_tool_calls(response))
-            llm_event.data["input_tokens"] = _extract_input_tokens(response)
-            llm_event.data["output_tokens"] = _extract_output_tokens(response)
-            llm_event.data["cache_read_tokens"] = _extract_cache_read_tokens(response)
-            llm_event.data["cache_creation_tokens"] = _extract_cache_creation_tokens(response)
-            llm_event.data["reasoning_tokens"] = _extract_reasoning_tokens(response)
-            llm_event.data["finish_reason"] = _extract_finish_reason(response)
-            llm_event.data["response_id"] = _extract_response_id(response)
-            llm_event.data["response_model"] = _extract_response_model(response)
-            publish_event(llm_event)
-            _record_llm_metrics(llm_event, llm_started, "success")
-
         # The converter must match the attempt that answered, which is not the primary
         # when a fallback on another provider took over.
         converter_key = converter_key_var.get() or run._get_converter_key()
@@ -1289,7 +1086,7 @@ class AgentExecutionMixin:
             # One more call after an empty reply. A fallback model on another provider may
             # answer, so the converter follows the provider that did.
             converter_key_var.set(None)
-            # Still open for a stream; a non-stream call ended its span, so the node span.
+            # The LLM span is still open: it ends when the converted message is ready.
             with use_trace_span(llm_span(config, node_name)):
                 retry_response = await self._call_llm_with_retry(
                     messages=messages,
@@ -1305,8 +1102,10 @@ class AgentExecutionMixin:
         converter.empty_reply_retry = _retry_empty
         converter.on_empty_reply = _make_empty_reply_logger(node_name, str(run.model))
         converter.empty_reply_error = _make_empty_reply_error(node_name, str(run.model))
+        # The span ends when the reply is converted (``invoke()``) or the stream is read, with
+        # the tokens, id and model the converter found.
+        converter.on_stream_end = _make_llm_end_hook(llm_event, llm_started)
         if is_stream:
-            converter.on_stream_end = _make_stream_end_hook(llm_event, llm_started)
             # A stream sends its request (Anthropic ``messages.stream()``) and reads its body
             # while the converter is iterated, so the span is current around each read too.
             converter.trace_span = span
@@ -1358,7 +1157,7 @@ class AgentExecutionMixin:
                 part_type = part.get("type", "")
                 if part_type == "image_url":
                     url = part.get("image_url", {}).get("url", "")
-                    if url.startswith(("graph://media/", "agentflow://media/")):
+                    if is_internal_media_url(url):
                         ref_media = type(
                             "MediaRef",
                             (),
@@ -1412,7 +1211,7 @@ class AgentExecutionMixin:
                 elif part_type in ("document", "video"):
                     media_info = part.get(part_type, {})
                     url = media_info.get("url", "")
-                    if url and url.startswith(("graph://media/", "agentflow://media/")):
+                    if is_internal_media_url(url):
                         ref_media = type(
                             "MediaRef",
                             (),
@@ -1481,12 +1280,8 @@ class AgentExecutionMixin:
         if self.tool_node_name:
             try:
                 node = container.call_factory("get_node", self.tool_node_name)
-            except (KeyError, DependencyNotFoundError) as exc:
-                raise RuntimeError(
-                    f"ToolNode named '{self.tool_node_name}' was not found in the compiled graph. "
-                    "Register the named ToolNode in the graph before executing the Agent."
-                ) from exc
-
+            except (KeyError, DependencyNotFoundError):
+                node = None
             if node is None:
                 raise RuntimeError(
                     f"ToolNode named '{self.tool_node_name}' was not found in the compiled graph. "
@@ -1499,13 +1294,7 @@ class AgentExecutionMixin:
                     "Pass a ToolNode instance or register the proper graph node."
                 )
 
-            self._tool_node = node.func
-            self.tool_node_name = None  # prevent duplicate resolution on future calls
-
-            # Drain any tools that were queued before the graph was compiled
-            for fn in getattr(self, "_extra_tools", []):
-                self._tool_node.add_tool(fn)
-            self._extra_tools = []
+            attach_tool_node(self, node.func)
 
         if not self._tool_node:
             return []
@@ -1526,7 +1315,4 @@ class AgentExecutionMixin:
 
     def _get_converter_key(self) -> str:
         """Return the correct response converter key for the active provider."""
-        effective = getattr(self, "_effective_api_style", self.api_style)
-        if self.provider == "openai" and effective == "responses":
-            return "openai_responses"
-        return self.provider
+        return self._converter_key_of(self)

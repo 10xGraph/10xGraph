@@ -66,21 +66,6 @@ def test_validate_config_errors(cp):
         cp._validate_config({"user_id": "u"})
 
 
-def test_json_serializer_fallback(monkeypatch, cp):
-    monkeypatch.setenv("FAST_JSON", "1")
-    assert callable(cp._get_json_serializer())
-
-
-def test_deserialize_state_from_bytes_and_dict(cp):
-    state = AgentState()
-    payload = cp._serialize_state(state).encode()
-    out1 = cp._deserialize_state(payload, AgentState)
-    assert isinstance(out1, AgentState)
-
-    out2 = cp._deserialize_state(state.model_dump(), AgentState)
-    assert isinstance(out2, AgentState)
-
-
 def test_row_to_message_handles_string_and_bytes_json(cp):
     row = {
         "message_id": "m1",
@@ -319,28 +304,11 @@ async def test_get_pg_pool_lazy(monkeypatch):
     assert cp._pg_pool is mock_pool
 
 
-def test_json_serializer_fast_json_importers(monkeypatch, cp):
-    monkeypatch.setenv("FAST_JSON", "1")
-
-    import builtins
-
-    real_import = builtins.__import__
-
-    def mock_import(name, *args, **kwargs):
-        if name in ("orjson", "msgspec"):
-            raise ImportError
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", side_effect=mock_import):
-        serializer = cp._get_json_serializer()
-        assert serializer == json.dumps
-
-
 @pytest.mark.asyncio
 async def test_check_and_apply_schema_version_upgrade(cp):
     # Recorded at v1, target v2 -> runs the v2 migration steps, then records v2.
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"version": 1})
+    conn.fetchval = AsyncMock(return_value=1)  # SELECT max(version)
 
     await cp._check_and_apply_schema_version(conn)
 
@@ -358,7 +326,7 @@ async def test_check_and_apply_schema_version_exception(cp):
     from tenxgraph.core.exceptions.storage_exceptions import SchemaVersionError
 
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(side_effect=RuntimeError("db error"))
+    conn.fetchval = AsyncMock(side_effect=RuntimeError("db error"))
 
     with pytest.raises(SchemaVersionError):
         await cp._check_and_apply_schema_version(conn)
@@ -383,35 +351,6 @@ async def test_initialize_schema_error(cp):
 
     with pytest.raises(RuntimeError):
         await cp._initialize_schema()
-
-
-def test_serialize_state_enum_handler(cp):
-    class MockEnum(Enum):
-        VAL = "enum_val"
-
-    class MockObj:
-        def __str__(self):
-            return "str_obj"
-
-    mock_state = MagicMock()
-    mock_state.model_dump.return_value = {"enum": MockEnum.VAL, "obj": MockObj()}
-    serialized = cp._serialize_state(mock_state)
-    loaded = json.loads(serialized)
-    assert loaded["enum"] == "enum_val"
-    assert loaded["obj"] == "str_obj"
-
-
-def test_deserialize_state_errors(cp):
-    class BadState:
-        @classmethod
-        def model_validate(cls, d):
-            raise TypeError("validation error")
-
-    with pytest.raises(TypeError):
-        cp._deserialize_state({"invalid": "data"}, BadState)
-
-    with pytest.raises(json.JSONDecodeError):
-        cp._deserialize_state("invalid-str", BadState)
 
 
 # ---------------------------------------------------------------------------

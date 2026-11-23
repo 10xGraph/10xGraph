@@ -14,14 +14,13 @@ Supporting models are defined in sibling modules:
 from __future__ import annotations
 
 import copy
-import json
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 # Re-export everything from sibling modules so that existing imports of the form
 #   from tenxgraph.qa.evaluation.config.eval_config import XYZ
 # continue to work without modification.
+from tenxgraph.qa.evaluation._json_file import _JsonFileModel
 from tenxgraph.qa.evaluation.config.criterion_config import CriterionConfig, Rubric
 from tenxgraph.qa.evaluation.config.reporter_config import ReporterConfig, UserSimulatorConfig
 from tenxgraph.qa.evaluation.config.types import DEFAULT_JUDGE_MODEL, MatchType
@@ -62,7 +61,7 @@ class CriteriaConfig(BaseModel):
     simulation_goals: CriterionConfig | None = None
 
 
-class EvalConfig(BaseModel):
+class EvalConfig(_JsonFileModel):
     """Main evaluation configuration.
 
     Contains all settings for running an evaluation, including
@@ -149,29 +148,6 @@ class EvalConfig(BaseModel):
                 ),
             )
         )
-
-    @classmethod
-    def from_file(cls, path: str) -> EvalConfig:
-        """Load configuration from a JSON file.
-
-        Args:
-            path: Path to the JSON configuration file.
-
-        Returns:
-            Loaded EvalConfig instance.
-        """
-        with Path(path).open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return cls.model_validate(data)
-
-    def to_file(self, path: str) -> None:
-        """Save configuration to a JSON file.
-
-        Args:
-            path: Path to save the JSON file.
-        """
-        with Path(path).open("w", encoding="utf-8") as f:
-            json.dump(self.model_dump(), f, indent=2)
 
     def get_criterion_config(self, name: str) -> CriterionConfig | None:
         """Get configuration for a specific criterion by field name."""

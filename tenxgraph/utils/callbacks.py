@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
 
+from tenxgraph.core.exceptions.tool_denied import ToolDenied
 from tenxgraph.core.state.message import Message
 
 
@@ -482,6 +483,9 @@ class CallbackManager:
                         current_data = await result
                     else:
                         current_data = result
+            except ToolDenied:
+                # A policy decision, not an error: on_error callbacks are not run for it.
+                raise
             except Exception as e:
                 await self.execute_on_error(context, input_data, e)
                 raise
@@ -520,6 +524,8 @@ class CallbackManager:
                         current_output = await result
                     else:
                         current_output = result
+            except ToolDenied:
+                raise
             except Exception as e:
                 await self.execute_on_error(context, input_data, e)
                 raise
@@ -598,8 +604,7 @@ class CallbackManager:
 
         Args:
             messages: List of Message objects to validate
-            config: Optional execution config; when provided, publishes an error event
-                    on validation failure so the publisher stream captures the rejection.
+            config: Unused, kept for compatibility. The graph publishes the rejection event.
 
         Returns:
             True if all validators pass
@@ -613,30 +618,8 @@ class CallbackManager:
 
         logger.debug("Running %d validators on %d messages", len(self._validators), len(messages))
 
-        try:
-            for validator in self._validators:
-                await validator.validate(messages)
-        except Exception as e:
-            if config:
-                from tenxgraph.runtime.publisher.events import (
-                    ContentType,
-                    Event,
-                    EventModel,
-                    EventType,
-                )
-                from tenxgraph.runtime.publisher.publish import publish_event
-
-                publish_event(
-                    EventModel.default(
-                        config,
-                        data={"error": str(e), "rejected_count": len(messages)},
-                        event=Event.GRAPH_EXECUTION,
-                        event_type=EventType.ERROR,
-                        content_type=[ContentType.ERROR],
-                        extra={"lifecycle": "validation_rejected"},
-                    )
-                )
-            raise
+        for validator in self._validators:
+            await validator.validate(messages)
 
         logger.debug("All validators passed")
         return True
@@ -676,44 +659,38 @@ class CallbackManager:
 
     # ── Graph Lifecycle Fire Methods ─────────────────────────────────────────
 
+    async def _run_hooks(
+        self,
+        method: str,
+        value: Any,
+        call: Callable[[Any, Any], Awaitable[Any]],
+        merge: Callable[[Any, Any], Any] | None = None,
+    ) -> Any:
+        """Call ``call(hook, value)`` on each lifecycle hook, in order.
+
+        A non-None result replaces ``value`` (through ``merge(value, result)`` when given).
+        A failing hook is logged and skipped.
+        """
+        for hook in self._lifecycle_hooks:
+            try:
+                out = await call(hook, value)
+                if out is not None:
+                    value = merge(value, out) if merge else out
+            except Exception as e:
+                logger.exception(
+                    "Lifecycle hook %s.%s failed: %s", hook.__class__.__name__, method, e
+                )
+        return value
+
     async def fire_on_graph_start(
         self,
         context: GraphLifecycleContext,
         state: StateT,
     ) -> StateT:
         """Fire all on_graph_start hooks and return the (potentially modified) state."""
-        result = state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_graph_start(context, result)
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_graph_start failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
+        return await self._run_hooks(
+            "on_graph_start", state, lambda h, s: h.on_graph_start(context, s)
         )
-        from tenxgraph.runtime.publisher.publish import publish_event
-
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={},
-                event=Event.GRAPH_EXECUTION,
-                event_type=EventType.UPDATE,
-                content_type=[ContentType.STATE],
-                extra={"lifecycle": "graph_start"},
-            )
-        )
-        return result
 
     async def fire_on_graph_end(
         self,
@@ -723,38 +700,11 @@ class CallbackManager:
         total_steps: int,
     ) -> StateT:
         """Fire all on_graph_end hooks and return the (potentially modified) state."""
-        result = final_state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_graph_end(context, result, messages, total_steps)
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_graph_end failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
+        return await self._run_hooks(
+            "on_graph_end",
+            final_state,
+            lambda h, s: h.on_graph_end(context, s, messages, total_steps),
         )
-        from tenxgraph.runtime.publisher.publish import publish_event
-
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={"total_steps": total_steps},
-                event=Event.GRAPH_EXECUTION,
-                event_type=EventType.UPDATE,
-                content_type=[ContentType.STATE],
-                extra={"lifecycle": "graph_end", "total_steps": total_steps},
-            )
-        )
-        return result
 
     async def fire_on_graph_error(
         self,
@@ -769,41 +719,17 @@ class CallbackManager:
         Fire all on_graph_error hooks. Returns (state, error_message).
         Error is always re-raised.
         """
-        result_state = partial_state
-        error_message = str(error)
-        for hook in self._lifecycle_hooks:
-            try:
-                result = await hook.on_graph_error(
-                    context, error, result_state, messages, step, node_name
-                )
-                if result is not None:
-                    result_state, error_message = result
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_graph_error failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
-        )
-        from tenxgraph.runtime.publisher.publish import publish_event
 
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={"error": error_message, "step": step, "node_name": node_name},
-                event=Event.GRAPH_EXECUTION,
-                event_type=EventType.UPDATE,
-                node_name=node_name,
-                content_type=[ContentType.ERROR],
-                extra={"lifecycle": "graph_error", "step": step},
-            )
+        def merge(_: Any, out: Any) -> tuple[StateT, str]:
+            new_state, new_message = out
+            return new_state, new_message
+
+        return await self._run_hooks(
+            "on_graph_error",
+            (partial_state, str(error)),
+            lambda h, v: h.on_graph_error(context, error, v[0], messages, step, node_name),
+            merge,
         )
-        return result_state, error_message
 
     async def fire_on_interrupt(
         self,
@@ -813,40 +739,11 @@ class CallbackManager:
         state: StateT,
     ) -> StateT:
         """Fire all on_interrupt hooks and return the (potentially modified) state."""
-        result = state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_interrupt(
-                    context, interrupted_node, interrupt_type, result
-                )
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_interrupt failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
+        return await self._run_hooks(
+            "on_interrupt",
+            state,
+            lambda h, s: h.on_interrupt(context, interrupted_node, interrupt_type, s),
         )
-        from tenxgraph.runtime.publisher.publish import publish_event
-
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={"interrupted_node": interrupted_node, "interrupt_type": interrupt_type},
-                event=Event.GRAPH_EXECUTION,
-                event_type=EventType.INTERRUPTED,
-                node_name=interrupted_node,
-                content_type=[ContentType.STATE],
-                extra={"lifecycle": "graph_interrupt", "interrupt_type": interrupt_type},
-            )
-        )
-        return result
 
     async def fire_on_resume(
         self,
@@ -856,37 +753,11 @@ class CallbackManager:
         resume_data: dict[str, Any],
     ) -> StateT:
         """Fire all on_resume hooks and return the (potentially modified) state."""
-        result = state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_resume(context, resumed_node, result, resume_data)
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_resume failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
+        return await self._run_hooks(
+            "on_resume",
+            state,
+            lambda h, s: h.on_resume(context, resumed_node, s, resume_data),
         )
-        from tenxgraph.runtime.publisher.publish import publish_event
-
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={"resumed_node": resumed_node},
-                event=Event.GRAPH_EXECUTION,
-                event_type=EventType.UPDATE,
-                content_type=[ContentType.STATE],
-                extra={"lifecycle": "resume", "resumed_node": resumed_node},
-            )
-        )
-        return result
 
     async def fire_on_checkpoint(
         self,
@@ -896,42 +767,18 @@ class CallbackManager:
         is_context_trimmed: bool,
     ) -> tuple[StateT, list[Message]]:
         """Fire all on_checkpoint hooks and return (state, messages) for persistence."""
-        result_state = state
-        result_messages = messages
-        for hook in self._lifecycle_hooks:
-            try:
-                result = await hook.on_checkpoint(
-                    context, result_state, result_messages, is_context_trimmed
-                )
-                if isinstance(result, tuple):
-                    result_state, result_messages = cast(tuple[StateT, list[Message]], result)
-                elif result is not None:
-                    result_state = cast(StateT, result)
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_checkpoint failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
-        )
-        from tenxgraph.runtime.publisher.publish import publish_event
 
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={},
-                event=Event.GRAPH_EXECUTION,
-                event_type=EventType.UPDATE,
-                content_type=[ContentType.STATE],
-                extra={"lifecycle": "checkpoint", "trimmed": is_context_trimmed},
-            )
+        def merge(current: tuple[StateT, list[Message]], out: Any) -> tuple[StateT, list[Message]]:
+            if isinstance(out, tuple):
+                return cast(tuple[StateT, list[Message]], out)
+            return cast(StateT, out), current[1]
+
+        return await self._run_hooks(
+            "on_checkpoint",
+            (state, messages),
+            lambda h, v: h.on_checkpoint(context, v[0], v[1], is_context_trimmed),
+            merge,
         )
-        return result_state, result_messages
 
     async def fire_on_state_update(
         self,
@@ -942,38 +789,11 @@ class CallbackManager:
         step: int,
     ) -> StateT:
         """Fire all on_state_update hooks and return the (potentially modified) state."""
-        result = new_state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_state_update(context, node_name, old_state, result, step)
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_state_update failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
+        return await self._run_hooks(
+            "on_state_update",
+            new_state,
+            lambda h, s: h.on_state_update(context, node_name, old_state, s, step),
         )
-        from tenxgraph.runtime.publisher.publish import publish_event
-
-        publish_event(
-            EventModel.default(
-                context.config,
-                data={"step": step},
-                event=Event.NODE_EXECUTION,
-                event_type=EventType.UPDATE,
-                node_name=node_name,
-                content_type=[ContentType.STATE],
-                extra={"lifecycle": "state_update", "step": step},
-            )
-        )
-        return result
 
     async def fire_on_turn_start(
         self,
@@ -982,19 +802,9 @@ class CallbackManager:
         turn_index: int,
     ) -> StateT:
         """Fire all on_turn_start hooks and return the (potentially modified) state."""
-        result = state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_turn_start(context, result, turn_index)
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_turn_start failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        return result
+        return await self._run_hooks(
+            "on_turn_start", state, lambda h, s: h.on_turn_start(context, s, turn_index)
+        )
 
     async def fire_on_turn_end(
         self,
@@ -1003,16 +813,6 @@ class CallbackManager:
         turn_index: int,
     ) -> StateT:
         """Fire all on_turn_end hooks and return the (potentially modified) state."""
-        result = state
-        for hook in self._lifecycle_hooks:
-            try:
-                modified = await hook.on_turn_end(context, result, turn_index)
-                if modified is not None:
-                    result = modified
-            except Exception as e:
-                logger.exception(
-                    "Lifecycle hook %s.on_turn_end failed: %s",
-                    hook.__class__.__name__,
-                    e,
-                )
-        return result
+        return await self._run_hooks(
+            "on_turn_end", state, lambda h, s: h.on_turn_end(context, s, turn_index)
+        )

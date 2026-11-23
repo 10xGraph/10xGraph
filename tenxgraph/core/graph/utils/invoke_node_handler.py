@@ -16,7 +16,6 @@ Usage:
 
 import asyncio
 import copy
-import inspect
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Union
@@ -24,9 +23,8 @@ from typing import TYPE_CHECKING, Any, Union
 from injectq import Inject
 
 from tenxgraph.core.authz import public_config
-from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
+from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph.tool_node import ToolNode
-from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     hidden_tool_message,
@@ -44,10 +42,8 @@ from tenxgraph.utils import (
     CallbackManager,
     InvocationType,
     call_sync_or_async,
-    metrics,
 )
 from tenxgraph.utils.command import Command
-from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import GraphInterrupt
 from tenxgraph.utils.interrupt import activate as activate_interrupts
@@ -87,14 +83,6 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         name (str): Name of the node.
         func (Callable | ToolNode | Agent): The function, ToolNode, or Agent to execute.
     """
-
-    # Class-level cache for function signatures to avoid repeated inspection
-    _signature_cache: dict[Callable, inspect.Signature] = {}
-
-    @classmethod
-    def clear_signature_cache(cls) -> None:
-        """Clear the function signature cache. Useful for testing or memory management."""
-        cls._signature_cache.clear()
 
     def __init__(
         self,
@@ -179,18 +167,9 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         # Bound the call: a tool that hangs (half-open socket, unresponsive MCP
         # server) would otherwise block the node -- and therefore the whole run --
         # forever, since the LLM SDK timeout does not cover tool execution.
-        timeout = resolve_timeout(config, "tool_timeout", DEFAULT_TOOL_TIMEOUT_SECONDS)
-
-        # The name comes from the model. Only a tool this node can run is a safe metric
-        # label; anything else would create a new series per made-up name.
-        known = self.func.knows_tool(function_name, config)  # type: ignore
-        tool_attrs = {"node": self.name, "tool": function_name if known else "unknown"}
-        metrics.counter("tenxgraph.tool.calls").inc(attributes=tool_attrs)
-
-        with metrics.timer("tenxgraph.tool.duration", attributes=tool_attrs):
-            tool_result = await self._invoke_tool_guarded(
-                function_name, function_args, tool_call_id, state, config, timeout, tool_attrs
-            )
+        tool_result = await self._invoke_tool_metered(
+            function_name, function_args, tool_call_id, state, config
+        )
 
         logger.debug("Node '%s' tool execution completed successfully", self.name)
 
@@ -201,47 +180,6 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             await self._record_tool_result(checkpointer, config, ledger_key, tool_result)
 
         return tool_result
-
-    async def _invoke_tool_guarded(
-        self,
-        function_name: str,
-        function_args: dict,
-        tool_call_id: str,
-        state: AgentState,
-        config: dict[str, Any],
-        timeout: float | None,
-        tool_attrs: dict[str, str],
-    ):
-        """Run the tool under its deadline, counting timeouts and errors."""
-        try:
-            return await execute_with_guards(
-                self.func.invoke(  # type: ignore
-                    function_name,  # type: ignore
-                    function_args,
-                    tool_call_id=tool_call_id,
-                    state=state,
-                    config=config,
-                ),
-                timeout=timeout,
-                on_timeout=lambda: NodeTimeoutError(
-                    message=(
-                        f"Tool '{function_name}' exceeded its timeout of {timeout}s "
-                        f"and was cancelled"
-                    ),
-                    error_code="NODE_TIMEOUT_002",
-                    context={
-                        "node_name": self.name,
-                        "tool_name": function_name,
-                        "timeout": timeout,
-                    },
-                ),
-            )
-        except NodeTimeoutError:
-            metrics.counter("tenxgraph.tool.timeouts").inc(attributes=tool_attrs)
-            raise
-        except Exception:
-            metrics.counter("tenxgraph.tool.errors").inc(attributes=tool_attrs)
-            raise
 
     async def _call_tools(
         self,
@@ -388,25 +326,6 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         return result
 
-    def _get_cached_signature(self, func: Callable) -> inspect.Signature:
-        """Get cached signature for a function, computing it if not cached."""
-        if func not in self._signature_cache:
-            self._signature_cache[func] = inspect.signature(func)
-        return self._signature_cache[func]
-
-    def _get_last_tool_message(self, state: AgentState) -> Message:
-        """Return the latest context message required for tool execution."""
-        if state.context and len(state.context) > 0:
-            return state.context[-1]
-
-        error_msg = "No context available for tool execution"
-        logger.error("Node '%s': %s", self.name, error_msg)
-        raise NodeError(
-            message=error_msg,
-            error_code="NODE_003",
-            context={"node_name": self.name},
-        )
-
     def _merge_tool_results(
         self,
         result: list[Message | dict[str, Any]] | Command,
@@ -489,72 +408,6 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             callback_mgr,
         )
 
-    def _prepare_input_data(
-        self,
-        state: "AgentState",
-        config: dict[str, Any],
-    ) -> dict:
-        """
-        Prepare input data for function invocation, handling injectable parameters.
-        Uses cached function signature to avoid repeated inspection overhead.
-
-        Args:
-            state (AgentState): Current agent state.
-            config (dict): Node configuration.
-
-        Returns:
-            dict: Input data for function call.
-
-        Raises:
-            TypeError: If required parameters are missing.
-        """
-        # Use cached signature inspection for performance
-        sig = self._get_cached_signature(self.func)  # type: ignore Tool node won't come here
-        input_data = {}
-        default_data = {
-            "state": state,
-            "config": config,
-        }
-
-        # Collect all required parameters (excluding *args/**kwargs)
-        required_params = []
-        for param_name, param in sig.parameters.items():
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
-                continue
-            if param.default is inspect.Parameter.empty:
-                required_params.append((param_name, param))
-
-        # If function has exactly one required parameter and it's not 'state' or 'config',
-        # assume it should receive the state (common pattern for simple lambdas like lambda s: s)
-        if len(required_params) == 1:
-            param_name, param = required_params[0]
-            if param_name not in ["state", "config"]:
-                input_data[param_name] = state
-                return input_data
-
-        # Otherwise, handle standard named parameters
-        for param_name, param in sig.parameters.items():
-            # Skip *args/**kwargs
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
-                continue
-
-            # check its state, config
-            if param_name in ["state", "config"]:
-                input_data[param_name] = default_data[param_name]
-            # Include regular function arguments
-            elif param.default is inspect.Parameter.empty:
-                raise TypeError(
-                    f"Missing required parameter '{param_name}' for function '{self.func}'"
-                )
-
-        return input_data
-
     async def _call_normal_node(  # noqa: PLR0915
         self,
         state: "AgentState",
@@ -599,14 +452,14 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": getattr(self.func, "__name__", str(self.func)),
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -641,10 +494,10 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 result, state, messages, seen_message_ids
             )
             self._stamp_node_name(messages, roles=("assistant",))
-            event.data["state"] = new_state.model_dump()
+            event.data["state"] = new_state
             event.event_type = EventType.END
             event.metadata["status"] = "Function execution completed"
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["messages"] = messages
             event.data["next_node"] = next_node
             # mirror simple content + structured blocks for the last message
             if messages:
@@ -676,7 +529,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 # Use recovery result instead of raising the error
                 event.event_type = EventType.END
                 event.metadata["status"] = "Function execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
                 return {
@@ -728,14 +581,14 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": type(agent).__name__,
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -770,10 +623,10 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
             # Publish END event
             messages = result.get("messages", [])
-            event.data["state"] = result["state"].model_dump()
+            event.data["state"] = result["state"]
             event.event_type = EventType.END
             event.metadata["status"] = "Agent execution completed"
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["messages"] = messages
             event.data["next_node"] = result.get("next_node")
             if messages:
                 last = messages[-1]
@@ -796,7 +649,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 logger.info("Node '%s' recovered from error using callback result", self.name)
                 event.event_type = EventType.END
                 event.metadata["status"] = "Agent execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
                 return {

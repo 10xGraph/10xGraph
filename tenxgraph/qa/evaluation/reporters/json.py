@@ -306,7 +306,7 @@ class JUnitXMLReporter(BaseReporter):
             if getattr(result, "node_responses", None):
                 nr_json = json.dumps(result.node_responses, default=str, indent=2)
                 out_parts.append(
-                    f"=== Node Responses ({len(result.node_responses)}) ===" f"\n{nr_json}"
+                    f"=== Node Responses ({len(result.node_responses)}) ===\n{nr_json}"
                 )
 
             if getattr(result, "messages", None):
@@ -320,9 +320,7 @@ class JUnitXMLReporter(BaseReporter):
 
             if getattr(result, "turn_results", None):
                 tr_json = json.dumps(result.turn_results, default=str, indent=2)
-                out_parts.append(
-                    f"=== Turn Results ({len(result.turn_results)}) ===" f"\n{tr_json}"
-                )
+                out_parts.append(f"=== Turn Results ({len(result.turn_results)}) ===\n{tr_json}")
 
             # Include ALL criteria results (passed + failed)
             cr_parts = []

@@ -13,6 +13,8 @@ import logging
 import os
 from typing import Any
 
+from tenxgraph.utils.log_safety import redact_url
+
 
 logger = logging.getLogger("tenxgraph.llm")
 
@@ -96,7 +98,7 @@ _PROVIDER_PREFIXES = {
 # ``http_client`` passes straight through to the SDK. It must match the installed
 # openai major: an ``httpx2.AsyncClient`` for openai 3.x, an ``httpx.AsyncClient``
 # for openai 1.x/2.x. See https://github.com/openai/openai-python/blob/main/httpx2.md
-_CLIENT_CONSTRUCTOR_KWARGS = frozenset(
+CLIENT_CONSTRUCTOR_KWARGS = frozenset(
     {
         "organization",
         "project",
@@ -141,6 +143,10 @@ _ANTHROPIC_BEDROCK_CONSTRUCTOR_KWARGS = _ANTHROPIC_CONSTRUCTOR_KWARGS | frozense
         "aws_profile",
         "api_key",
     }
+)
+# Every key an Anthropic client constructor takes; none of them is a request parameter.
+ANTHROPIC_CLIENT_KWARGS = (
+    _ANTHROPIC_VERTEX_CONSTRUCTOR_KWARGS | _ANTHROPIC_BEDROCK_CONSTRUCTOR_KWARGS
 )
 
 
@@ -252,7 +258,7 @@ def create_llm_client(
         ValueError: If required configuration (project, api_key) is missing.
     """
     if provider == "google":
-        return _create_google_client(
+        return build_google_client(
             use_vertex_ai=use_vertex_ai,
             base_url=base_url,
             timeout=extra_kwargs.get("timeout"),
@@ -278,9 +284,22 @@ def create_llm_client(
     )
 
 
-def _create_google_client(
-    *, use_vertex_ai: bool, base_url: str | None = None, timeout: float | None = None
+def build_google_client(
+    *,
+    use_vertex_ai: bool,
+    api_key: str | None = None,
+    project: str | None = None,
+    location: str | None = None,
+    base_url: str | None = None,
+    timeout: float | None = None,
 ) -> Any:
+    """Build a ``google.genai.Client``; the one Google client builder.
+
+    Used by ``create_llm_client`` (which passes no ``api_key``, ``project`` or ``location``,
+    so the turn-based provider reads them from the environment) and by the Gemini Live
+    client (which takes them as arguments). ``vertexai`` is always passed explicitly, so
+    ``GOOGLE_GENAI_USE_VERTEXAI`` cannot switch the mode under the caller.
+    """
     try:
         from google import genai
         from google.genai.types import HttpOptions
@@ -296,10 +315,14 @@ def _create_google_client(
         http_options.base_url = base_url
 
     if use_vertex_ai:
-        project = os.getenv("GOOGLE_CLOUD_PROJECT")
-        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        project = project or os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = location or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
         if not project:
-            raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set for Vertex AI.")
+            raise ValueError(
+                "GOOGLE_CLOUD_PROJECT environment variable must be set for Vertex AI "
+                "(no project was passed). Credentials come from Application Default "
+                "Credentials."
+            )
         logger.info(
             "Creating Google GenAI client (Vertex AI, project=%s, location=%s)",
             project,
@@ -309,7 +332,7 @@ def _create_google_client(
             vertexai=True, project=project, location=location, http_options=http_options
         )
 
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError(
             "GEMINI_API_KEY or GOOGLE_API_KEY environment variable must be set "
@@ -321,10 +344,6 @@ def _create_google_client(
     # default, unless GOOGLE_GENAI_API_VERSION picks one.
     if not os.getenv("GOOGLE_GENAI_API_VERSION"):
         http_options.api_version = "v1beta"
-    # Pass vertexai=False explicitly: google-genai's Client() otherwise reads the
-    # GOOGLE_GENAI_USE_VERTEXAI env var and silently switches to Vertex mode,
-    # which rejects API keys (401 UNAUTHENTICATED). The caller asked for the
-    # Developer API (use_vertex_ai=False), so honour that over the env.
     return genai.Client(vertexai=False, api_key=api_key, http_options=http_options)
 
 
@@ -349,12 +368,10 @@ def _create_openai_client(
             "custom base_url that doesn't require authentication."
         )
 
-    client_kwargs = {k: v for k, v in extra_kwargs.items() if k in _CLIENT_CONSTRUCTOR_KWARGS}
+    client_kwargs = {k: v for k, v in extra_kwargs.items() if k in CLIENT_CONSTRUCTOR_KWARGS}
     # Bound the request unless the caller opted into their own timeout.
     client_kwargs.setdefault("timeout", get_default_llm_timeout())
     if base_url:
-        from tenxgraph.storage.media.url_policy import redact_url
-
         logger.info("Creating OpenAI client with custom base_url: %s", redact_url(base_url))
         return AsyncOpenAI(api_key=resolved_key, base_url=base_url, **client_kwargs)
 
@@ -481,8 +498,6 @@ def _create_anthropic_client(
     if resolved_key:
         client_kwargs["api_key"] = resolved_key
     if base_url:
-        from tenxgraph.storage.media.url_policy import redact_url
-
         logger.info("Creating Anthropic client with custom base_url: %s", redact_url(base_url))
         client_kwargs["base_url"] = base_url
 

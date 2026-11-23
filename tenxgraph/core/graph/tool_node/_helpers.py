@@ -11,7 +11,10 @@ import pathlib
 import typing as t
 import uuid
 
-from tenxgraph.utils.log_safety import log_safe
+from tenxgraph.core.state import Message, ToolCallBlock, ToolResultBlock
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import listening, publish_event
+from tenxgraph.utils.log_safety import error_details, log_safe
 
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
@@ -159,3 +162,75 @@ def generic_tool_failure(
         exc_info=(type(exc), exc, exc.__traceback__),
     )
     return f"Tool '{tool_name}' failed with an internal error (reference {ref})."
+
+
+def tool_start_event(
+    config: dict[str, t.Any],
+    name: str,
+    args: dict[str, t.Any],
+    tool_call_id: str,
+    *,
+    is_mcp: bool | None = None,
+    is_remote: bool = False,
+) -> EventModel:
+    """The TOOL_EXECUTION START event of one tool call; the caller publishes it.
+
+    One tool call sends one START and one END (or ERROR), from the code that runs it.
+    ``node_name`` is the tool name; ``metadata["graph_node"]`` is the graph node running it.
+    """
+    event = EventModel.default(
+        config,
+        data={"args": args, "tool_call_id": tool_call_id, "function_name": name},
+        content_type=[ContentType.TOOL_CALL],
+        event=Event.TOOL_EXECUTION,
+        event_type=EventType.START,
+        node_name=name,
+        # The graph node running this tool, so tracing can parent the tool span to it.
+        extra={"graph_node": config.get("_node_name", "")},
+    )
+    event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
+    if is_remote:
+        event.metadata["is_remote"] = True
+    if is_mcp is not None:
+        event.data["is_mcp"] = is_mcp
+        event.metadata["is_mcp"] = is_mcp
+        event.metadata["function_type"] = "mcp" if is_mcp else "internal"
+    return event
+
+
+def publish_tool_end(
+    event: EventModel,
+    status: str,
+    *,
+    message: Message | None = None,
+    error: str | None = None,
+    exc: BaseException | None = None,
+    config: dict[str, t.Any] | None = None,
+    event_type: EventType = EventType.END,
+) -> None:
+    """Publish the END (or ERROR) of a tool call with its result ``message`` and/or ``error``.
+
+    ``exc`` adds ``error_details`` (trace backends only). Nothing is built when no publisher
+    is bound.
+    """
+    if not listening():
+        return
+    event.event_type = event_type
+    event.metadata["status"] = status
+    kind = ContentType.ERROR if error else ContentType.MESSAGE
+    event.content_type = [ContentType.TOOL_RESULT, kind]
+    if message is not None:
+        dumped = message.model_dump()
+        event.data["message"] = dumped
+        event.content_blocks = [
+            ToolResultBlock(
+                call_id=event.data.get("tool_call_id", ""),
+                name=event.data.get("function_name"),
+                output=dumped,
+            )
+        ]
+    if error:
+        event.data["error"] = error
+    if exc is not None:
+        event.data.update(error_details(exc, config))
+    publish_event(event)

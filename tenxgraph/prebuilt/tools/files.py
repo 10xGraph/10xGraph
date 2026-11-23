@@ -1,4 +1,7 @@
-"""Workspace-scoped file tools for AgentFlow agents."""
+"""Workspace-scoped file tools for AgentFlow agents.
+
+Deprecated: will be removed in 2.0.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from tenxgraph.utils.decorators import tool
+
+from ._deprecation import deprecated_factory, deprecated_tool
 
 
 _DEFAULT_MAX_READ_CHARS = 20_000
@@ -118,16 +123,6 @@ def _is_hidden(path: Path, root: Path, rules: _DenyRules) -> bool:
     )
 
 
-def _warn_module_level(name: str) -> None:
-    warnings.warn(
-        f"The module-level {name} tool is deprecated and will be removed in 2.0: its root "
-        "comes from the run config. Use create_file_tools(root=...) from "
-        "tenxgraph.prebuilt.tools instead.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
 def _configured_root(config: dict[str, Any] | None) -> Path:
     cfg = config or {}
     root = cfg.get("file_tool_root") or cfg.get("workspace_root")
@@ -135,8 +130,8 @@ def _configured_root(config: dict[str, Any] | None) -> Path:
         warnings.warn(
             "Setting the file tool root through the run config (file_tool_root / "
             "workspace_root) is deprecated and will be removed in 2.0: anyone who can set "
-            "the run config can point the tools at any directory. Use "
-            "create_file_tools(root=...) instead.",
+            "the run config can point the tools at any directory. Write your own tool "
+            "or use an MCP server.",
             DeprecationWarning,
             stacklevel=3,
         )
@@ -429,6 +424,7 @@ def _search(
     tags=_READ_TAGS,
     capabilities=["read_files"],
 )
+@deprecated_tool
 def file_read(
     path: str,
     start_line: int = 1,
@@ -437,7 +433,6 @@ def file_read(
     config: dict[str, Any] | None = None,
 ) -> str:
     """Read a workspace-scoped text file."""
-    _warn_module_level("file_read")
     return _read(path, start_line, end_line, max_chars, _configured_root(config))
 
 
@@ -446,6 +441,7 @@ def file_read(
     tags=_WRITE_TAGS,
     capabilities=["write_files"],
 )
+@deprecated_tool
 def file_write(
     path: str,
     content: str,
@@ -454,7 +450,6 @@ def file_write(
     config: dict[str, Any] | None = None,
 ) -> str:
     """Write UTF-8 text to a workspace-scoped file."""
-    _warn_module_level("file_write")
     return _write(path, content, mode, create_dirs, _configured_root(config))
 
 
@@ -463,6 +458,7 @@ def file_write(
     tags=_SEARCH_TAGS,
     capabilities=["read_files"],
 )
+@deprecated_tool
 def file_search(
     query: str,
     path: str = "",
@@ -471,10 +467,10 @@ def file_search(
     config: dict[str, Any] | None = None,
 ) -> str:
     """Search workspace-scoped text files by filename and content."""
-    _warn_module_level("file_search")
     return _search(query, path, glob, max_results, _configured_root(config))
 
 
+@deprecated_factory
 def create_file_tools(
     root: str | Path,
     *,

@@ -77,6 +77,7 @@ from .otel_attributes import (
     PROVIDER_NAME_MAP,
     SESSION_ID,
     SPAN_UNFINISHED,
+    TOOL_DENIED,
     TOOL_NAME,
     TOOL_REMOTE,
     TOOL_TYPE,
@@ -556,10 +557,14 @@ class OtelPublisher(BasePublisher):
         span.end(end_time=_ns(event.timestamp))
 
     def _on_node_error(self, event: EventModel) -> None:
-        span = self._registry.pop_child(event.run_id, event.node_name)
+        self._end_with_error(event, event.node_name, "node.error")
+
+    def _end_with_error(self, event: EventModel, key: str, name: str) -> None:
+        """End the open child span ``key`` of the run as failed, with the ``<name>`` event."""
+        span = self._registry.pop_child(event.run_id, key)
         if span is None:
             return
-        _record_error(span, event, "node.error")
+        _record_error(span, event, name)
         span.end(end_time=_ns(event.timestamp))
 
     def _on_node_update(self, event: EventModel) -> None:
@@ -694,11 +699,7 @@ class OtelPublisher(BasePublisher):
         span.end(end_time=_ns(event.timestamp))
 
     def _on_llm_error(self, event: EventModel) -> None:
-        span = self._registry.pop_child(event.run_id, llm_span_key(event.node_name))
-        if span is None:
-            return
-        _record_error(span, event, "llm.error")
-        span.end(end_time=_ns(event.timestamp))
+        self._end_with_error(event, llm_span_key(event.node_name), "llm.error")
 
     # ── Tool span handlers ────────────────────────────────────────────────────
 
@@ -763,6 +764,8 @@ class OtelPublisher(BasePublisher):
                 )
             _set_attrs(span, oi.tool_output_attrs(event.data))
 
+        if event.metadata.get("denied"):
+            span.set_attribute(TOOL_DENIED, True)
         if event.data.get("error"):
             _record_error(span, event, "tool.error")
         else:
@@ -770,11 +773,7 @@ class OtelPublisher(BasePublisher):
         span.end(end_time=_ns(event.timestamp))
 
     def _on_tool_error(self, event: EventModel) -> None:
-        span = self._registry.pop_child(event.run_id, _tool_key(event))
-        if span is None:
-            return
-        _record_error(span, event, "tool.error")
-        span.end(end_time=_ns(event.timestamp))
+        self._end_with_error(event, _tool_key(event), "tool.error")
 
     # ── BasePublisher interface ───────────────────────────────────────────────
 

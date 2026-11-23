@@ -23,7 +23,6 @@ import contextlib
 import copy
 import logging
 import sys
-from collections.abc import Callable
 from typing import Any, TypeVar
 
 from injectq import Inject
@@ -35,6 +34,8 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.execution_state import ExecutionState as ExecMeta
 from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.runtime.publisher.events import ContentType, EventType
+from tenxgraph.runtime.publisher.publish import publish_lifecycle
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
     END,
@@ -268,8 +269,19 @@ async def validate_message_content(
         logger.debug("No callback manager provided, skipping validation")
         return True
 
-    # Execute validation
-    await callback_mgr.execute_validators(message, config=config)
+    try:
+        await callback_mgr.execute_validators(message)
+    except Exception as e:
+        # Publish the rejection so the event stream captures it.
+        if config:
+            publish_lifecycle(
+                config,
+                "validation_rejected",
+                {"error": str(e), "rejected_count": len(message)},
+                event_type=EventType.ERROR,
+                content_type=ContentType.ERROR,
+            )
+        raise
 
     logger.debug("All validators passed")
     return True
@@ -683,41 +695,6 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
     return state, messages, next_node
 
 
-async def check_and_handle_interrupt(
-    interrupt_before: list[str],
-    interrupt_after: list[str],
-    current_node: str,
-    interrupt_type: str,
-    state: AgentState,
-    config: dict[str, Any],
-    _sync_data: Callable,
-) -> bool:
-    """Check for interrupts and save state if needed. Returns True if interrupted."""
-    interrupt_nodes = interrupt_before if interrupt_type == "before" else interrupt_after
-
-    if current_node in interrupt_nodes:
-        status = (
-            ExecutionStatus.INTERRUPTED_BEFORE
-            if interrupt_type == "before"
-            else ExecutionStatus.INTERRUPTED_AFTER
-        )
-        state.set_interrupt(
-            current_node,
-            f"interrupt_{interrupt_type}: {current_node}",
-            status,
-        )
-        # Save state and interrupt
-        await _sync_data(state, config, [])
-        logger.debug("Node '%s' interrupted", current_node)
-        return True
-
-    logger.debug(
-        "No interrupts found for node '%s', continuing execution",
-        current_node,
-    )
-    return False
-
-
 def get_next_node(
     current_node: str,
     state: AgentState,
@@ -832,6 +809,7 @@ async def sync_data(
             messages=messages,
             is_context_trimmed=is_context_trimmed,
         )
+    publish_lifecycle(config, "checkpoint", {}, {"trimmed": is_context_trimmed})
 
     if checkpointer:
         logger.debug("Persisting state and %d messages to checkpointer", len(messages))

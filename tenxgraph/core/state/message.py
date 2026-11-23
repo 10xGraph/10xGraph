@@ -399,6 +399,20 @@ class Message(BaseModel):
             Message with the appropriate content block.
         """
         import base64
+
+        path, mime_type, data = cls._read_file(file_path, mime_type)
+        media = MediaRef(
+            kind="data",
+            data_base64=base64.b64encode(data).decode(),
+            mime_type=mime_type,
+            filename=path.name,
+            size_bytes=len(data),
+        )
+        return cls._media_message(media, mime_type, text, role, message_id)
+
+    @staticmethod
+    def _read_file(file_path: str, mime_type: str | None) -> tuple[Any, str, bytes]:
+        """Read a local file; return its path, MIME type (guessed if ``None``) and bytes."""
         import mimetypes
         import pathlib
 
@@ -410,20 +424,21 @@ class Message(BaseModel):
             guessed, _ = mimetypes.guess_type(str(path))
             mime_type = guessed or "application/octet-stream"
 
-        data = path.read_bytes()
-        b64 = base64.b64encode(data).decode()
+        return path, mime_type, path.read_bytes()
 
+    @classmethod
+    def _media_message(
+        cls,
+        media: MediaRef,
+        mime_type: str,
+        text: str | None,
+        role: Literal["user", "assistant", "system", "tool"],
+        message_id: str | None,
+    ) -> Message:
+        """Build a message of optional text plus the block type that matches ``mime_type``."""
         blocks: list[ContentBlock] = []
         if text:
             blocks.append(TextBlock(text=text))
-
-        media = MediaRef(
-            kind="data",
-            data_base64=b64,
-            mime_type=mime_type,
-            filename=path.name,
-            size_bytes=len(data),
-        )
 
         if mime_type.startswith("image/"):
             blocks.append(ImageBlock(media=media))
@@ -502,41 +517,12 @@ class Message(BaseModel):
             role: Message role.
             message_id: Optional message ID.
         """
-        import mimetypes as _mt
-        import pathlib
-
-        path = pathlib.Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        if mime_type is None:
-            guessed, _ = _mt.guess_type(str(path))
-            mime_type = guessed or "application/octet-stream"
-
-        data = path.read_bytes()
+        _path, mime_type, data = cls._read_file(file_path, mime_type)
         key = await store.store(data, mime_type)
         ref = store.to_media_ref(
             key,
             mime_type,
-            filename=path.name,
+            filename=_path.name,
             size_bytes=len(data),
         )
-
-        blocks: list[ContentBlock] = []
-        if text:
-            blocks.append(TextBlock(text=text))
-
-        if mime_type.startswith("image/"):
-            blocks.append(ImageBlock(media=ref))
-        elif mime_type.startswith("audio/"):
-            blocks.append(AudioBlock(media=ref))
-        elif mime_type.startswith("video/"):
-            blocks.append(VideoBlock(media=ref))
-        else:
-            blocks.append(DocumentBlock(media=ref))
-
-        return cls(
-            message_id=generate_id(message_id),
-            role=role,
-            content=blocks,
-        )
+        return cls._media_message(ref, mime_type, text, role, message_id)

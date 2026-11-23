@@ -5,20 +5,26 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from tenxgraph.core.llm.client_factory import ANTHROPIC_CLIENT_KWARGS
+
 from .anthropic_request import (
     apply_cache_control,
+    bare_model_id,
     convert_tools,
     drop_trailing_assistant,
     merge_tool_results,
     split_system,
-    strip_bedrock_prefix,
 )
 from .constants import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     ANTHROPIC_DEFAULT_MAX_TOKENS_STREAMING,
+    ANTHROPIC_LEGACY_BUDGET_BY_EFFORT,
+    ANTHROPIC_LEGACY_EFFORT_PREFIXES,
+    ANTHROPIC_LEGACY_THINKING_PREFIXES,
+    ANTHROPIC_MIN_THINKING_BUDGET,
     ANTHROPIC_NO_SAMPLING_MODELS,
     CALL_EXCLUDED_KWARGS,
-    resolve_reasoning_config,
+    reasoning_for,
 )
 from .sdk_kwargs import accepted_params, filter_kwargs
 
@@ -28,44 +34,112 @@ logger = logging.getLogger("tenxgraph.agent")
 # Rejected with a 400 by the models in ANTHROPIC_NO_SAMPLING_MODELS.
 _SAMPLING_KEYS = ("temperature", "top_p", "top_k")
 
-# Anthropic client-constructor keys and the OpenAI-style effort key; none is a request
-# parameter. The keys 10xGraph reads itself are already in CALL_EXCLUDED_KWARGS.
-_ANTHROPIC_EXCLUDED_KWARGS = CALL_EXCLUDED_KWARGS | frozenset(
-    {"reasoning_effort", "auth_token", "middleware", "open_telemetry"}
+# Anthropic client-constructor keys (they went to the client) and the OpenAI-style effort key;
+# none is a request parameter. The keys 10xGraph reads itself are in CALL_EXCLUDED_KWARGS.
+_ANTHROPIC_EXCLUDED_KWARGS = (
+    CALL_EXCLUDED_KWARGS | ANTHROPIC_CLIENT_KWARGS | frozenset({"reasoning_effort"})
 )
+
+
+def _drop_sampling_params(model: str, call_kwargs: dict[str, Any], when: str) -> None:
+    """Remove temperature/top_p/top_k from ``call_kwargs`` in place, with one warning."""
+    dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
+    for key in dropped:
+        call_kwargs.pop(key)
+    if dropped:
+        logger.warning(
+            "Model %s rejects sampling parameters%s; dropped %s from the request.",
+            model,
+            when,
+            ", ".join(dropped),
+        )
+
+
+def rejects_sampling(model: str) -> bool:
+    """True for Claude models that answer temperature/top_p/top_k with a 400."""
+    return bare_model_id(model) in ANTHROPIC_NO_SAMPLING_MODELS
 
 
 def strip_rejected_sampling_params(model: str, call_kwargs: dict[str, Any]) -> None:
     """Drop temperature/top_p/top_k for models that 400 on them, in place."""
-    if strip_bedrock_prefix(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
+    if rejects_sampling(model):
+        _drop_sampling_params(model, call_kwargs, " (use reasoning_config effort instead)")
+
+
+def is_legacy_thinking_model(model: str) -> bool:
+    """True for Claude models before 4.6, which need budget-based thinking."""
+    return bare_model_id(model).startswith(ANTHROPIC_LEGACY_THINKING_PREFIXES)
+
+
+def _apply_legacy_reasoning(
+    model: str,
+    reasoning_config: dict[str, Any],
+    call_kwargs: dict[str, Any],
+) -> None:
+    """Budget-based thinking for pre-4.6 models, in place."""
+    effort = reasoning_config.get("effort")
+    if effort and bare_model_id(model).startswith(ANTHROPIC_LEGACY_EFFORT_PREFIXES):
+        # Opus 4.5 accepts low/medium/high only.
+        output_config = dict(call_kwargs.get("output_config") or {})
+        output_config.setdefault("effort", "high" if effort in ("xhigh", "max") else effort)
+        call_kwargs["output_config"] = output_config
+
+    if "thinking" in call_kwargs:
         return
 
-    dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
-    if not dropped:
+    max_tokens = call_kwargs.get("max_tokens")
+    if max_tokens is not None and max_tokens <= ANTHROPIC_MIN_THINKING_BUDGET:
+        logger.warning(
+            "Model %s needs max_tokens above %d for thinking (got %s); thinking skipped.",
+            model,
+            ANTHROPIC_MIN_THINKING_BUDGET,
+            max_tokens,
+        )
         return
 
-    for key in dropped:
-        call_kwargs.pop(key)
-    logger.warning(
-        "Model %s rejects sampling parameters; dropped %s from the request. "
-        "Use reasoning_config effort to control depth instead.",
-        model,
-        ", ".join(dropped),
-    )
+    budget = reasoning_config.get("budget_tokens") or reasoning_config.get("thinking_budget")
+    if not budget:
+        budget = ANTHROPIC_LEGACY_BUDGET_BY_EFFORT.get(effort or "", None)
+    if not budget:
+        budget = ANTHROPIC_LEGACY_BUDGET_BY_EFFORT["low"]
+    budget = max(int(budget), ANTHROPIC_MIN_THINKING_BUDGET)
+    if max_tokens is not None:
+        budget = min(budget, max_tokens - 1)
+    call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+
+    # Thinking rejects top_k and any non-default temperature; drop them like the
+    # no-sampling models do.
+    _drop_sampling_params(model, call_kwargs, " with thinking on")
 
 
 def apply_reasoning_config(
     reasoning_config: dict[str, Any] | None,
     call_kwargs: dict[str, Any],
+    model: str = "",
 ) -> None:
     """Map agentflow's reasoning_config onto Anthropic thinking/effort, in place.
 
-    ``budget_tokens`` is never emitted: it is removed on every current Claude
-    model and returns a 400. Depth is controlled by ``output_config.effort``.
-    ``thinking.display`` is sent only when ``reasoning_config`` has a ``display`` key; the
-    API default is "omitted" (empty summary). A ``thinking`` already in ``call_kwargs`` wins.
+    Claude 4.6 and newer (and unknown models): ``thinking={"type": "adaptive"}`` plus
+    ``output_config.effort``. ``budget_tokens`` is never emitted there: it is removed on
+    those models and returns a 400. ``thinking.display`` is sent only when
+    ``reasoning_config`` has a ``display`` key; the API default is "omitted".
+
+    Older models (Haiku 4.5, Sonnet 4.5, Opus 4.5 and before, see
+    ``ANTHROPIC_LEGACY_THINKING_PREFIXES``) reject adaptive thinking. They get
+    ``thinking={"type": "enabled", "budget_tokens": N}``: N is ``budget_tokens`` or
+    ``thinking_budget`` from the config, else mapped from effort (low 1024, medium 4096,
+    high 8192, xhigh/max 16384), at least 1024 and below ``max_tokens``. With ``max_tokens``
+    of 1024 or less thinking is skipped. ``display`` is dropped, ``output_config.effort`` is
+    sent only for Opus 4.5 (xhigh/max sent as high), and temperature, top_p and top_k are
+    dropped because thinking rejects them.
+
+    A ``thinking`` already in ``call_kwargs`` always wins.
     """
     if not reasoning_config:
+        return
+
+    if is_legacy_thinking_model(model):
+        _apply_legacy_reasoning(model, reasoning_config, call_kwargs)
         return
 
     thinking = {"type": "adaptive"}
@@ -129,7 +203,7 @@ class AgentAnthropicMixin:
         )
 
         strip_rejected_sampling_params(self.model, call_kwargs)
-        apply_reasoning_config(resolve_reasoning_config(self), call_kwargs)
+        apply_reasoning_config(reasoning_for(self, "anthropic"), call_kwargs, self.model)
 
         anthropic_tools = convert_tools(tools)
 

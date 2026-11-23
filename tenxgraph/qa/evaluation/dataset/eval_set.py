@@ -18,6 +18,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tenxgraph.qa.evaluation._json_file import _JsonFileModel
+
 
 class StepType(StrEnum):
     """Type of step in execution trajectory."""
@@ -281,7 +283,7 @@ class EvalCase(BaseModel):
         )
 
 
-class EvalSet(BaseModel):
+class EvalSet(_JsonFileModel):
     """A collection of evaluation cases."""
 
     eval_set_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -307,24 +309,6 @@ class EvalSet(BaseModel):
 
     def filter_by_tags(self, tags: list[str]) -> list[EvalCase]:
         return [case for case in self.eval_cases if all(tag in case.tags for tag in tags)]
-
-    @classmethod
-    def from_file(cls, path: str) -> EvalSet:
-        """Load an EvalSet from a JSON file."""
-        import json
-        from pathlib import Path
-
-        with Path(path).open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return cls.model_validate(data)
-
-    def to_file(self, path: str) -> None:
-        """Save the EvalSet to a JSON file."""
-        import json
-        from pathlib import Path
-
-        with Path(path).open("w", encoding="utf-8") as f:
-            json.dump(self.model_dump(), f, indent=2)
 
     # Alias so builder.save() works
     def save(self, path: str) -> None:

@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.thread_info import ThreadInfo
 
 from .base_checkpointer import (
@@ -145,11 +144,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             owner = self._thread_owner.setdefault(key, str(user_id))
         else:
             owner = self._thread_owner.get(key)
-        if (
-            self._isolation_enabled(config, user_id, write=True)
-            and owner is not None
-            and owner != str(user_id)
-        ):
+        if self._foreign_owner(config, owner, write=True):
             raise ThreadNotFoundError(config.get("thread_id"))
         return owner
 
@@ -160,11 +155,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         it. A thread with no recorded owner (brand new) is never denied: the caller becomes
         its owner on write, and reads simply find nothing.
         """
-        user_id = owner_id(config)
-        if not self._isolation_enabled(config, user_id, write=write):
-            return False
         owner = self._thread_owner.get(self._get_config_key(config))
-        return owner is not None and str(owner) != str(user_id)
+        return self._foreign_owner(config, owner, write=write)
 
     # -------------------------
     # State methods Async
@@ -423,29 +415,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             return keys
 
     # -------------------------
-    # State methods Sync
-    # -------------------------
-    def put_state(self, config: dict[str, Any], state: StateT) -> StateT:
-        """Store state synchronously."""
-        return run_coroutine(self.aput_state(config, state))
-
-    def get_state(self, config: dict[str, Any]) -> StateT | None:
-        """Retrieve state synchronously."""
-        return run_coroutine(self.aget_state(config))
-
-    def clear_state(self, config: dict[str, Any]) -> int:
-        """Clear state synchronously."""
-        return run_coroutine(self.aclear_state(config))
-
-    def put_state_cache(self, config: dict[str, Any], state: StateT) -> StateT:
-        """Store state cache synchronously."""
-        return run_coroutine(self.aput_state_cache(config, state))
-
-    def get_state_cache(self, config: dict[str, Any]) -> StateT | None:
-        """Retrieve state cache synchronously."""
-        return run_coroutine(self.aget_state_cache(config))
-
-    # -------------------------
     # Message methods async
     # -------------------------
     async def aput_messages(
@@ -609,36 +578,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         return 1
 
     # -------------------------
-    # Message methods sync
-    # -------------------------
-    def put_messages(
-        self,
-        config: dict[str, Any],
-        messages: list[Message],
-        metadata: dict[str, Any] | None = None,
-    ) -> bool:
-        """Store messages synchronously."""
-        return run_coroutine(self.aput_messages(config, messages, metadata))
-
-    def get_message(self, config: dict[str, Any], message_id: str | int) -> Message:
-        """Retrieve a specific message synchronously."""
-        return run_coroutine(self.aget_message(config, message_id))
-
-    def list_messages(
-        self,
-        config: dict[str, Any],
-        search: str | None = None,
-        offset: int | None = None,
-        limit: int | None = None,
-    ) -> list[Message]:
-        """List messages synchronously with optional filtering."""
-        return run_coroutine(self.alist_messages(config, search, offset, limit))
-
-    def delete_message(self, config: dict[str, Any], message_id: str | int) -> int:
-        """Delete a specific message synchronously."""
-        return run_coroutine(self.adelete_message(config, message_id))
-
-    # -------------------------
     # Thread methods async
     # -------------------------
     async def aput_thread(
@@ -788,32 +727,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         return 1 if found else 0
 
     # -------------------------
-    # Thread methods sync
-    # -------------------------
-    def put_thread(self, config: dict[str, Any], thread_info: ThreadInfo) -> bool:
-        """Store thread info synchronously."""
-        return run_coroutine(self.aput_thread(config, thread_info))
-
-    def get_thread(self, config: dict[str, Any]) -> ThreadInfo | None:
-        """Retrieve thread info synchronously."""
-        return run_coroutine(self.aget_thread(config))
-
-    def list_threads(
-        self,
-        config: dict[str, Any],
-        search: str | None = None,
-        offset: int | None = None,
-        limit: int | None = None,
-        filters: dict[str, Any] | None = None,
-    ) -> list[ThreadInfo]:
-        """List all threads synchronously with optional filtering."""
-        return run_coroutine(self.alist_threads(config, search, offset, limit, filters))
-
-    def clean_thread(self, config: dict[str, Any]) -> int:
-        """Clean/delete thread synchronously."""
-        return run_coroutine(self.aclean_thread(config))
-
-    # -------------------------
     # Clean Resources
     # -------------------------
     async def aping(self) -> None:
@@ -844,7 +757,3 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             self._tool_results.clear()
             logger.info("Released all in-memory resources")
             return True
-
-    def release(self) -> bool:
-        """Release resources synchronously."""
-        return run_coroutine(self.arelease())

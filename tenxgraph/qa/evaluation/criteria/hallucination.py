@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from tenxgraph.qa.evaluation.criteria.llm_base import TemplatedLLMCriterion
 
@@ -48,6 +48,9 @@ class HallucinationCriterion(TemplatedLLMCriterion):
     name = "hallucinations_v1"
     description = "LLM-based hallucination/groundedness detection"
 
+    _verdict_key = "is_grounded"
+    _list_key = "hallucinations"
+
     def _build_prompt(self, actual: ExecutionResult, expected: EvalCase) -> str:
         context = self._extract_context(actual, expected)
         return HALLUCINATION_PROMPT.format(
@@ -55,29 +58,6 @@ class HallucinationCriterion(TemplatedLLMCriterion):
             question=self._extract_question(expected),
             response=actual.actual_response,
         )
-
-    def _collect_extras(self, result_dict: dict[str, Any]) -> dict[str, Any]:
-        return {"hallucinations": result_dict.get("hallucinations", [])}
-
-    def _aggregate_extras(self, per_sample: list[dict[str, Any]]) -> dict[str, Any]:
-        all_items: list[str] = []
-        for s in per_sample:
-            all_items.extend(s.get("hallucinations", []))
-        return {"hallucinations": list(set(all_items))}
-
-    def _build_details(
-        self,
-        scores: list[float],
-        reasonings: list[str],
-        aggregated_extras: dict[str, Any],
-        final_score: float,
-    ) -> dict[str, Any]:
-        return {
-            "is_grounded": final_score >= self.threshold,
-            "samples": len(scores),
-            "reasonings": reasonings,
-            **aggregated_extras,
-        }
 
     def _extract_context(self, actual: ExecutionResult, expected: EvalCase) -> str:
         parts: list[str] = []

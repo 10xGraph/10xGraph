@@ -60,9 +60,9 @@ class ModelResponseConverter:
         # Extra metadata merged into every Message this converter produces, e.g.
         # {"allowed_tools": [...]} so dispatch can tell which tools the model was shown.
         self.message_metadata: dict[str, Any] = {}
-        # Called once when ``stream()`` ends (finished, failed or closed early) with the
-        # last message that carried token usage (or None) and the error (or None). Lets the
-        # caller attach usage that is only known once the stream has been read.
+        # Called once when ``invoke()`` or ``stream()`` ends (finished, failed or closed early)
+        # with the converted message (for a stream, the last one that carried token usage; or
+        # None) and the error (or None). The Agent ends its LLM span here, from the message.
         self.on_stream_end: Callable[[Any, BaseException | None], None] | None = None
         # Callbacks run on every complete (non-delta) Message this converter produces, after
         # ``message_metadata`` is merged. They may mutate the message in place (the saved
@@ -147,15 +147,21 @@ class ModelResponseConverter:
 
         self._warn_if_empty_response(response, context="converting a model response")
         logger.debug("Converting response to Message")
-        message = clean_unstorable(await self.converter.convert_response(response))  # type: ignore
-        if self.empty_reply_retry is not None and is_empty_reply(message):
-            self._note_empty(message, will_retry=True)
-            response = await self.empty_reply_retry()
+        message: Any = None
+        try:
             message = clean_unstorable(await self.converter.convert_response(response))  # type: ignore
-            if is_empty_reply(message):
-                self._note_empty(message, will_retry=False)
-                raise self._empty_error(message)
+            if self.empty_reply_retry is not None and is_empty_reply(message):
+                self._note_empty(message, will_retry=True)
+                response = await self.empty_reply_retry()
+                message = clean_unstorable(await self.converter.convert_response(response))  # type: ignore
+                if is_empty_reply(message):
+                    self._note_empty(message, will_retry=False)
+                    raise self._empty_error(message)
+        except BaseException as exc:
+            self._notify_stream_end(message, exc)
+            raise
         self._apply_metadata(message)
+        self._notify_stream_end(message, None)
         return message
 
     def _note_empty(self, message: Any, *, will_retry: bool) -> None:

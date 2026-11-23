@@ -17,7 +17,7 @@ from typing import Any
 
 from tenxgraph.storage.media.url_policy import redact_url
 
-from .base_publisher import BasePublisher
+from .base_publisher import BasePublisher, close_in_new_loop
 from .events import EventModel
 
 
@@ -247,7 +247,4 @@ class RabbitMQPublisher(BasePublisher):
 
     def sync_close(self):
         """Synchronously close the RabbitMQ connection."""
-        try:
-            asyncio.run(self.close())
-        except RuntimeError:
-            logger.warning("sync_close called within an active event loop; skipping.")
+        close_in_new_loop(self)

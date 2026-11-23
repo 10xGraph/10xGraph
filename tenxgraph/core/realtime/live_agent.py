@@ -9,7 +9,9 @@ It is entered by ``CompiledGraph.arealtime`` (Phase 3) via :meth:`arun`, which:
 1. opens one provider socket (the spine, held for the whole session),
 2. runs a pump task (queue -> provider) concurrently with a receive loop,
 3. dispatches tool calls through the existing :class:`ToolNode` (callbacks + publisher
-   events fire inside ToolNode, so transparency is identical to text mode),
+   events fire inside ToolNode, so transparency is identical to text mode), each in a
+   task of its own under the run's ``tool_timeout`` and with the tool metrics, so the
+   receive loop keeps going while a tool runs,
 4. persists finished transcripts as ``Message``s (no audio at rest), and
 5. transparently reconnects on ``go_away``/drop using the cached resumption handle.
 
@@ -47,7 +49,7 @@ from tenxgraph.core.realtime.base import (
 from tenxgraph.core.realtime.providers.gemini_live import GeminiLiveClient
 from tenxgraph.core.state import AgentState, Message, TextBlock, add_messages
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.callbacks import GraphLifecycleContext
 
@@ -56,7 +58,7 @@ from tenxgraph.utils.callbacks import GraphLifecycleContext
 # after a turn boundary and ends on turn_complete/interrupted; control frames (session_update,
 # go_away, error) never open a turn.
 _TURN_CONTENT_TYPES = frozenset(
-    {"audio_delta", "input_transcript", "output_transcript", "tool_call", "tool_result"}
+    {"audio_delta", "input_transcript", "output_transcript", "tool_call"}
 )
 
 
@@ -96,10 +98,11 @@ def _advertised_tool_names(tools: list[Any] | None) -> frozenset[str]:
 
 
 class _LedgerAccess(ToolRuntimeMixin):
-    """Borrows the text path's ledger read/write helpers (they need only ``name``)."""
+    """Borrows the text path's tool helpers: ledger, timeout, metrics and failure result."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, func: ToolNode) -> None:
         self.name = name
+        self.func = func
 
 
 class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
@@ -173,6 +176,10 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         # Names of the tools advertised to the model this session; a tool call for any
         # other name is refused. Set in arun() once the session's tools are resolved.
         self._session_tool_names: frozenset[str] = frozenset()
+        # Tool calls still running; each yields its ToolResultEvent when it finishes.
+        self._tool_tasks: set[asyncio.Task[ToolResultEvent]] = set()
+        # Ledger key -> the call running under it, so a re-sent call id waits for it.
+        self._inflight_tools: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
         # Error-driven reconnect backoff (go_away reconnects are immediate; only transient
         # drops back off). Seeded from RealtimeConfig.reconnect; kept as instance attributes
@@ -229,6 +236,8 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         session._output_transcript_buf = ""
         session._session_tool_names = frozenset()
         session._session_checkpointer = None
+        session._tool_tasks = set()
+        session._inflight_tools = {}
         return session
 
     # ------------------------------------------------------------------ #
@@ -294,6 +303,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                 received_any = False
                 try:
                     async for event in self._receive_until_stop(self._active_client, stop_event):
+                        if event.type == "tool_result":
+                            yield event  # a finished tool call, not a provider event
+                            continue
                         received_any = True
                         if not turn_active and event.type in _TURN_CONTENT_TYPES:
                             turn_index += 1
@@ -343,9 +355,12 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             await self._fire_graph_end(callback_manager, config, state, turn_index)
         finally:
             try:
-                # Text still buffered (a turn cut off by a disconnect) and the final state.
-                if connected:
-                    await self._final_save(config, state, checkpointer)
+                try:
+                    await self._cancel_tool_tasks()
+                finally:
+                    # Text still buffered (a turn cut off by a disconnect) and the final state.
+                    if connected:
+                        await self._final_save(config, state, checkpointer)
             finally:
                 try:
                     if pump_task is not None:
@@ -358,6 +373,19 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                         await self._close_active_client()
                     finally:
                         self._session_active = False
+
+    async def _cancel_tool_tasks(self) -> None:
+        """Cancel the tool calls still running and wait for them to unwind.
+
+        gather() absorbs the tasks' own cancellation but still raises if the cancel was
+        aimed at this task.
+        """
+        tasks = [*self._tool_tasks, *self._inflight_tools.values()]
+        self._tool_tasks.clear()
+        self._inflight_tools.clear()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _close_active_client(self) -> None:
         client = self._active_client
@@ -457,28 +485,46 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     ) -> AsyncIterator[RealtimeEvent]:
         """Yield provider events, but return when ``stop_event`` fires *and* the provider
         is idle. Already-available events are always drained first (a closed input queue
-        must not truncate the model's in-flight response)."""
+        must not truncate the model's in-flight response).
+
+        The result of a tool call is yielded when its task finishes. While one runs, the
+        stop is not honoured and an ended provider stream does not end this generator, so
+        the model still gets the result it waits for.
+        """
         receiver = client.receive().__aiter__()
         stop_task = asyncio.ensure_future(stop_event.wait())
         next_task: asyncio.Future[Any] | None = None
+        provider_open = True
         try:
-            while True:
-                next_task = asyncio.ensure_future(receiver.__anext__())
-                done, _ = await asyncio.wait(
-                    {next_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
-                )
-                if next_task in done:
+            while provider_open or self._tool_tasks:
+                waiting: set[asyncio.Future[Any]] = set(self._tool_tasks)
+                if provider_open:
+                    if next_task is None:
+                        next_task = asyncio.ensure_future(receiver.__anext__())
+                    waiting.add(next_task)
+                    if not self._tool_tasks:
+                        waiting.add(stop_task)
+                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                # Only _cancel_tool_tasks() cancels these, after taking them out of the set.
+                for task in done & self._tool_tasks:
+                    self._tool_tasks.discard(task)
+                    yield task.result()
+                if next_task is not None and next_task in done:
+                    finished, next_task = next_task, None
                     try:
-                        yield next_task.result()
-                        continue
+                        event = finished.result()
                     except StopAsyncIteration:
-                        return
-                # Provider idle and stop requested: abandon the pending receive and end.
-                return
+                        provider_open = False
+                        continue
+                    yield event
+                elif stop_task in done:
+                    # Provider idle, no tool running and stop requested: end.
+                    return
         finally:
             # Also reached when this generator is cancelled or closed mid-wait: never leave
             # the pending receive running. gather() absorbs the tasks' own cancellation but
-            # still raises if the cancel was aimed at this task.
+            # still raises if the cancel was aimed at this task. Running tool calls are left
+            # alone: they survive a reconnect, and arun() cancels them when the session ends.
             pending: list[asyncio.Future[Any]] = [stop_task]
             if next_task is not None and not next_task.done():
                 pending.append(next_task)
@@ -534,7 +580,12 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         callback_manager: CallbackManager,
     ) -> list[RealtimeEvent]:
         if event.type == "tool_call":
-            return await self._run_tool(event, config, state, callback_manager)
+            # In a task of its own, so audio and barge-in keep arriving while the tool
+            # runs; _receive_until_stop yields its result when it finishes.
+            self._tool_tasks.add(
+                asyncio.create_task(self._run_tool(event, config, state, callback_manager))
+            )
+            return [event]
 
         if event.type == "input_transcript":
             return await self._accumulate_transcript(event, "user", config, state, checkpointer)
@@ -614,7 +665,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         config: dict[str, Any],
         state: AgentState,
         callback_manager: CallbackManager,
-    ) -> list[RealtimeEvent]:
+    ) -> ToolResultEvent:
         tool_node = self._resolve_tool_node()
         if tool_node is None:
             result: Any = {"error": f"no tools registered for '{event.name}'"}
@@ -636,8 +687,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         async with self._send_lock:
             client = self._active_client
             if client is not None:
-                await client.send_tool_response(event.id, event.name, result)
-        return [event, ToolResultEvent(id=event.id, result=result)]
+                try:
+                    await client.send_tool_response(event.id, event.name, result)
+                except Exception:
+                    logger.warning(
+                        "realtime tool response send failed for '%s'", event.name, exc_info=True
+                    )
+        return ToolResultEvent(id=event.id, result=result)
 
     async def _invoke_with_ledger(
         self,
@@ -656,6 +712,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         different call, while a call re-sent after a reconnect or a crash restart of the
         same thread replays the recorded result instead of running the tool again. Without
         a thread id the key falls back to the session id (replay within the session only).
+
+        The call runs under the run's ``tool_timeout`` and records the tool metrics, like
+        the invoke and stream paths. A timeout or an error becomes the same failure result
+        those paths give the model, and is not recorded in the ledger.
+
+        A call re-sent while the first one still runs (same key) waits for that call and
+        gets its result, failure included, instead of running the tool a second time.
         """
         checkpointer = self._session_checkpointer
         thread_id = str((config or {}).get("thread_id") or "")
@@ -670,7 +733,33 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             if ToolRuntimeMixin._ledger_enabled(checkpointer, tool_node, event.name)
             else None
         )
-        ledger = _LedgerAccess(self._node_name_or_default())
+        if not key:
+            return await self._invoke_once(tool_node, event, config, state, callback_manager, None)
+        task = self._inflight_tools.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                self._invoke_once(tool_node, event, config, state, callback_manager, key)
+            )
+            self._inflight_tools[key] = task
+            task.add_done_callback(
+                lambda t: (
+                    self._inflight_tools.pop(key) if self._inflight_tools.get(key) is t else None
+                )
+            )
+        # shield: cancelling one waiting call must not cancel the run the others wait on.
+        return await asyncio.shield(task)
+
+    async def _invoke_once(
+        self,
+        tool_node: ToolNode,
+        event: ToolCallEvent,
+        config: dict[str, Any],
+        state: AgentState,
+        callback_manager: CallbackManager,
+        key: str | None,
+    ) -> dict[str, Any]:
+        checkpointer = self._session_checkpointer
+        ledger = _LedgerAccess(self._node_name_or_default(), tool_node)
         if checkpointer is not None and key:
             recorded = await ledger._get_recorded_tool_result(checkpointer, config, key)
             if recorded is not None:
@@ -678,9 +767,13 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                     "realtime tool '%s' (call %s) replayed from ledger", event.name, event.id
                 )
                 return self._extract_tool_result(recorded)
-        invoked = await tool_node.invoke(
-            event.name, event.args, event.id, config, state, callback_manager=callback_manager
-        )
+        try:
+            invoked = await ledger._invoke_tool_metered(
+                event.name, event.args, event.id, state, config, callback_manager=callback_manager
+            )
+        except Exception as exc:
+            call = {"id": event.id, "function": {"name": event.name}}
+            return self._extract_tool_result(ledger._failure_message(call, exc))
         if checkpointer is not None and key:
             await ledger._record_tool_result(checkpointer, config, key, invoked)
         return self._extract_tool_result(invoked)
@@ -925,21 +1018,22 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     async def _fire_graph_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState
     ) -> AgentState:
-        if not cb._lifecycle_hooks:
-            return state
-        return await cb.fire_on_graph_start(
-            GraphLifecycleContext(config=public_config(config)), state
-        )
+        if cb._lifecycle_hooks:
+            state = await cb.fire_on_graph_start(
+                GraphLifecycleContext(config=public_config(config)), state
+            )
+        publish_lifecycle(config, "graph_start", {})
+        return state
 
     async def _fire_graph_end(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turns: int
     ) -> None:
-        if not cb._lifecycle_hooks:
-            return
-        messages = list(getattr(state, "context", []) or [])
-        await cb.fire_on_graph_end(
-            GraphLifecycleContext(config=public_config(config)), state, messages, turns
-        )
+        if cb._lifecycle_hooks:
+            messages = list(getattr(state, "context", []) or [])
+            await cb.fire_on_graph_end(
+                GraphLifecycleContext(config=public_config(config)), state, messages, turns
+            )
+        publish_lifecycle(config, "graph_end", {"total_steps": turns}, {"total_steps": turns})
 
     async def _fire_turn_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int

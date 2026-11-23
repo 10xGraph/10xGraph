@@ -1,4 +1,7 @@
-"""Safe arithmetic tools for AgentFlow agents."""
+"""Safe arithmetic tools for AgentFlow agents.
+
+Deprecated: will be removed in 2.0.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +12,8 @@ import operator
 from typing import Any
 
 from tenxgraph.utils.decorators import tool
+
+from ._deprecation import deprecated_tool
 
 
 _BINARY_OPERATORS: dict[type[ast.operator], Any] = {
@@ -73,6 +78,7 @@ def _evaluate_node(node: ast.AST) -> int | float:
     tags=["math", "calculator"],
     capabilities=["calculate"],
 )
+@deprecated_tool
 def safe_calculator(expression: str, precision: int | None = None) -> str:
     """Evaluate a basic arithmetic expression safely."""
     if not expression or not expression.strip():

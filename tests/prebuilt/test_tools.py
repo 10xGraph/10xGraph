@@ -213,7 +213,7 @@ def test_create_file_tools_rejects_missing_root(tmp_path) -> None:
 def test_run_config_file_root_is_deprecated(tmp_path) -> None:
     (tmp_path / "a.txt").write_text("hi")
 
-    with pytest.warns(DeprecationWarning, match="create_file_tools"):
+    with pytest.warns(DeprecationWarning, match="run config"):
         result = json.loads(file_read("a.txt", config={"file_tool_root": str(tmp_path)}))
     assert result["content"] == "hi"
 

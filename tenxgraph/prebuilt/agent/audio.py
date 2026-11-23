@@ -12,14 +12,16 @@ from typing import Any
 
 from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
-from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.realtime.base import RealtimeClient, RealtimeConfig
 from tenxgraph.core.realtime.live_agent import LiveAgent
 from tenxgraph.core.skills.models import SkillConfig
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
+from tenxgraph.prebuilt.agent._graph_base import _PrebuiltGraph
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
+from tenxgraph.storage.media.storage.base import BaseMediaStore
+from tenxgraph.storage.media.url_policy import MediaFetchPolicy
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import MemoryConfig
 from tenxgraph.utils.callbacks import CallbackManager
@@ -27,7 +29,7 @@ from tenxgraph.utils.constants import END
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 
-class AudioAgent[StateT: AgentState]:
+class AudioAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
     """Build and compile a single realtime audio agent graph."""
 
     def __init__(  # noqa: PLR0913
@@ -77,34 +79,8 @@ class AudioAgent[StateT: AgentState]:
         )
         self._graph: StateGraph[StateT] | None = None
 
-    @staticmethod
-    def _build_tool_node(
-        *,
-        tools: list[Callable],
-        client: Any,
-        pass_user_info_to_mcp: bool,
-        mcp_auth: Any = None,
-    ) -> ToolNode | None:
-        if not tools and client is None:
-            return None
-        return ToolNode(
-            tools,
-            client=client,
-            pass_user_info_to_mcp=pass_user_info_to_mcp,
-            mcp_auth=mcp_auth,
-        )
-
-    def _create_graph(self) -> StateGraph[StateT]:
-        return StateGraph[StateT](
-            state=self._state,
-            context_manager=self._context_manager,
-            publisher=self._publisher,
-            id_generator=self._id_generator,
-            container=self._container,
-        )
-
     def _configure_graph(self) -> None:
-        self._graph = self._create_graph()
+        self._graph = self._new_graph()
         self._graph.add_node(self._live_node_name, self._agent)
         self._graph.set_entry_point(self._live_node_name)
         # The edge is never traversed in realtime (the live node owns the loop); it exists
@@ -115,12 +91,18 @@ class AudioAgent[StateT: AgentState]:
         self,
         checkpointer: BaseCheckpointer[StateT] | None = None,
         store: BaseStore | None = None,
+        interrupt_before: list[str] | None = None,
+        interrupt_after: list[str] | None = None,
         callback_manager: CallbackManager | None = None,
+        media_store: BaseMediaStore | None = None,
         shutdown_timeout: float = 30.0,
+        media_policy: MediaFetchPolicy | None = None,
     ) -> CompiledGraph:
-        # No media_store: realtime media (images/video) is sent frame-by-frame straight to
-        # the live model via the input queue (see LiveInputQueue.send_image); it is never
-        # offloaded to or resolved from a media store, so the parameter would be dead here.
+        # Realtime media (images/video) is sent frame-by-frame straight to the live model via
+        # the input queue (see LiveInputQueue.send_image); it is never offloaded to or
+        # resolved from a media store, so a media_store would be silently dead here.
+        if media_store is not None:
+            raise ValueError("AudioAgent does not use a media_store; realtime media is not stored")
         self._configure_graph()
 
         if self._graph is None:  # pragma: no cover - _configure_graph always assigns
@@ -129,8 +111,11 @@ class AudioAgent[StateT: AgentState]:
         return self._graph.compile(
             checkpointer=checkpointer,
             store=store,
+            interrupt_before=interrupt_before,
+            interrupt_after=interrupt_after,
             callback_manager=callback_manager
             if callback_manager is not None
             else CallbackManager(),
             shutdown_timeout=shutdown_timeout,
+            media_policy=media_policy,
         )

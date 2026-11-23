@@ -35,6 +35,52 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `ToolDenied` (`tenxgraph.core.exceptions`) blocks a tool call by policy. Raise it from a `before_invoke` callback for `InvocationType.TOOL` or `InvocationType.MCP`, or from the tool itself. The tool does not run, `on_error` recovery is skipped (it can no longer turn a block into a success), and the model gets a failed tool result `"Denied by policy: <tool>. <reason>"` instead of a generic error it would retry. The denial is logged with tool name, user id and reason (never argument values), the tool event has status `denied`, the stream chunk has status `tool_denied` and the trace span gets `tenxgraph.tool.denied`. Example: `raise ToolDenied("Deleting is turned off.")`.
+- `ToolGuard` (`tenxgraph.core.graph`) is a ready-made tool policy for local and MCP tools: an allow list of name patterns, required permissions per tool checked with `Identity.can` on `config["user"]`, an optional argument check (sync or async), and `strict=True` to deny tools with a permission rule when the caller has no identity or unrestricted permissions. Tools without a rule run as before. Client tools run in the frontend and are not covered. Example: `ToolGuard(allow={"search_*", "refund"}, permissions={"refund": "tools:refund"}).register(callback_manager)`.
+- Per-tool human approval: `ToolGuard(approval={"refund"})` pauses the run with `interrupt()` (reason `tool_approval`) before that tool runs, with the tool name, arguments and call id in the interrupt value. Resume with `True` or `{"approved": True}` to run it once; `None`, `False` or `{"approved": False}` returns the denied result. Parallel calls are approved one by one. Needs a checkpointer. `before_invoke` callbacks of local and MCP tools now run in the tool call's interrupt scope, so any callback can call `interrupt()`. Example: `await app.ainvoke({"resume": True}, config)`.
+- Tool result fencing, on by default: the text of every tool result (local, MCP and client tools) reaches the model inside a `<tool_output_xxxxxxxx>` fence, and one system prompt line tells the model the content is data, not instructions. Text inside a result that looks like the fence's tags is escaped, so a result cannot close the fence. The suffix is derived from the message and tool call ids, so the same result gets the same fence on every turn and the prompt cache keeps working. Only the model request changes: saved messages, API responses, events and traces keep the plain output. Results the framework writes itself (handoff answers, skill tools, `ToolDenied` results) are not fenced. Turn it off with `ToolNode(fence_results=False)`.
+
+### Changed
+
+- Behaviour change: tool results now reach the model inside a fence (see Added), for OpenAI (Chat Completions and Responses), Anthropic and Google. This also applies to tool results saved before 1.1 and to client tool results. Stored messages are unchanged. When tools are present, the system prompt gets one extra line, so a prompt cache from 1.0 misses once after the upgrade. Set `ToolNode(fence_results=False)` to keep the 1.0 behaviour.
+- Tool events: each tool call now sends one `TOOL_EXECUTION` start event and one end (or error) event, from the executor that runs the call. Before, a call sent about five events from two layers (the tool node and the executor, including progress and update events). The tool event `node_name` is always the tool name (stream runs used to say `ToolNode`); the graph node is in `metadata["graph_node"]`. Kafka, Redis and RabbitMQ consumers that counted the duplicate events see fewer.
+- Lifecycle events (graph start, end, error, interrupt, resume, checkpoint and state update) now reach publishers on every run. Before, they were published only when a lifecycle callback hook was registered. Hooks still run first, and `CallbackManager.fire_on_*` keep their names and signatures.
+- Event payloads (state and message dumps) are built only when a publisher is bound. A run with no publisher and no hooks no longer serialises the state for events.
+- LLM end events are built from the converted reply for both streaming and non-streaming calls, so token counts, finish reason, model and response id follow one rule for every provider. The non-streaming LLM span now ends after the reply is converted. Non-streaming replies carry `metadata["response_id"]`. Google's finish reason is the enum name (`STOP`, was `FinishReason.STOP` on non-streaming calls), and OpenAI's is `UNKNOWN` when the provider sends none.
+- `call_llm` now uses the same client and request code as `Agent`. Unknown keyword arguments are dropped with a warning instead of raising `TypeError`, and Google `llm_kwargs` that are real generation config fields (such as `temperature`) are now applied; before, they were ignored.
+- `PgVectorStore` writes with an identity now require a value for every tenant column the reach picks, as `PgCheckpointer` and the multi-tenant guide already said. Before, a missing optional claim wrote NULL. Callers with no identity, or an empty value, still write NULL. The Postgres identifier rule is the same 63-character one for both backends, so a `PgCheckpointer` schema name longer than 63 characters is now refused instead of being cut by Postgres.
+
+### Deprecated
+
+- The prebuilt tools `safe_calculator`, `fetch_url`, `create_fetch_url`, `google_web_search`, `create_google_web_search`, `vertex_ai_search`, `create_vertex_ai_search`, `file_read`, `file_write`, `file_search` and `create_file_tools` are deprecated and will be removed in 2.0. They keep working and now emit a `DeprecationWarning` when called (tools) or created (factories). The fetch and file tools are network and filesystem access, a security surface the framework should not own, and the calculator and search tools are outside the product's scope. Write your own `@tool` or use an MCP server. `create_handoff_tool`, `is_handoff_tool`, `make_agent_memory_tool` and `make_user_memory_tool` stay.
+
+### Removed
+
+- `AnthropicBatch`, `OpenAIBatch` and `BatchResult` (`tenxgraph.core.llm`) are removed. They were an unfinished feature: standalone wrappers over the provider batch APIs that no part of the graph runtime used, and batch support will not be continued. This is an exception to the deprecation policy: they are removed in a minor release without a deprecation period. Call the provider SDK's batch API directly (`client.messages.batches` for Anthropic, `client.batches` for OpenAI).
+
+### Fixed
+
+- Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and older models no longer fail with a 400 on the default reasoning config; they get budget-based thinking (`thinking` type `enabled` with `budget_tokens`, mapped from the effort), and `output_config.effort` only on Opus 4.5.
+- Two graphs in one process no longer share their checkpointer, store, callback manager, publisher or background task manager, whether they use the global InjectQ container or one passed as `container=`. Before, the second graph could store its threads in the first graph's checkpointer, send events to the first graph's publisher, and run with the first graph's callback manager, so a `ToolGuard` registered on the second graph's manager was skipped. Each graph now keeps its values in its own container, which its runs (including concurrent runs on one event loop) resolve from; bindings you make in the global or your own container stay visible to tools and nodes. `compile()` without `callback_manager`, on `StateGraph` and on every prebuilt agent, now gives each graph its own new `CallbackManager` instead of one shared default. Graphs still share a checkpointer when you pass them the same instance.
+- Non-streaming Gemini calls now report their input, output, cached and reasoning tokens, the response id and the model in LLM events, traces and the `tenxgraph.llm.tokens` metric. Before, they reported 0 tokens and an empty id and model, because the readers looked for a `usage` field that Google responses do not have.
+- `temperature`, `top_p` and `top_k` are now removed for Claude models that reject them also when the model id is a Bedrock cross-region id (`us.anthropic.`, `eu.anthropic.`, `global.anthropic.`) or a Vertex id with an `@date` suffix. Before, those requests failed with a 400. Every model capability check on the Anthropic path now uses one id normalizer; the id sent to the provider is unchanged.
+- `call_llm` with a Claude model and `use_vertex_ai=True` now calls Claude on Vertex, as `Agent` does, instead of the direct Claude API. This also applies to LLM-as-judge eval criteria.
+- Realtime (live agent) tool calls now honour `tool_timeout`, record the tool metrics and send the model the same failure text as a normal graph run. The tool runs in its own task, so audio keeps flowing while it runs, and tools still running when the session ends are cancelled.
+- `PgCheckpointer` message methods (`aget_message`, `alist_messages`, `adelete_message`, `aupdate_message_metadata`) now convert a string thread id for `id_type` `int` and `bigint`, like the other methods. Before, they passed the string to an integer column.
+- An MCP tool call that fails without recovery is no longer labelled "with recovery" in the tool event.
+- OpenInference traces now show a system prompt given as a list of message dicts; before, they showed an empty string.
+- Internal: duplicated private code was merged and the largest modules were split into smaller private ones (`pg_checkpointer.py`, `pgvector_store.py`). Every public name keeps its import path.
+
+### Security
+
+- `sanitize_filename` now removes control characters, zero-width characters, bidirectional overrides and isolates (such as U+202E, which made `a\u202egpj.exe` display as `aexe.jpg`) and any path part, and `validate_magic_bytes` checks the full signature table the API server uses (images, PDF, ZIP and Office files, OLE, MP3, WAV, OGG, FLAC, MP4, WebM). Odd names come out differently: an empty or `..` name becomes `unnamed`, and leading dots are removed.
+- Writes to `PgVectorStore` by a caller with an identity can no longer leave a picked tenant column NULL when the identity lacks that claim (see Changed).
+
+
 ## [1.0.0] - 2026-11-16
 
 The first stable release of `10xgraph`, released with `10xgraph-api` 1.0.0 and `10xgraph-client` 1.0.0.
