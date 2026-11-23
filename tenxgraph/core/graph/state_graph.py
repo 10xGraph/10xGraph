@@ -558,6 +558,8 @@ class StateGraph[StateT: AgentState]:
         )
 
         self._container.bind(CompiledGraph, app)
+        # Build every resolver now, so a broken binding fails at compile, not mid-run.
+        self._container.compile()
         return app
 
     def _bind_compile_values(

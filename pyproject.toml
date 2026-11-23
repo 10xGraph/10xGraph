@@ -59,7 +59,7 @@ dependencies = [
     # install of this package. Cap at the next minor until each release is verified.
     # 0.6.0 is required: its active container is per task (no thread-local leak between
     # concurrent runs) and set_current() returns a token that reset_current() restores.
-    "injectq>=0.6.0,<0.7",
+    "injectq>=0.6.1,<0.7",
     "pydantic>=2.0,<3",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
