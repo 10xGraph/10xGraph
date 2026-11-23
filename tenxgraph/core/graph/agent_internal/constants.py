@@ -76,17 +76,12 @@ DEFAULT_RETRY_CONFIG = RetryConfig()
 # Keys 10xGraph reads itself from ``llm_kwargs``; no SDK call defines them.
 FRAMEWORK_KWARGS = frozenset({"stream_idle_timeout", "anthropic_cache", "anthropic_backend"})
 
+# One model's credentials and endpoint. Passed to its client explicitly, never in the
+# constructor kwargs, and never handed to a fallback on another provider.
+ENDPOINT_KWARGS = frozenset({"api_key", "base_url", "anthropic_backend"})
+
 # Keys that must never be forwarded to request calls.
-CALL_EXCLUDED_KWARGS = (
-    CLIENT_CONSTRUCTOR_KWARGS
-    | FRAMEWORK_KWARGS
-    | frozenset(
-        {
-            "api_key",
-            "base_url",
-        }
-    )
-)
+CALL_EXCLUDED_KWARGS = CLIENT_CONSTRUCTOR_KWARGS | FRAMEWORK_KWARGS | ENDPOINT_KWARGS
 
 VALID_OUTPUT_TYPES = ("text", "image", "video", "audio", "json")
 GOOGLE_OUTPUT_TYPES = ("text", "image", "video", "audio", "json")
@@ -170,6 +165,27 @@ DEFAULT_REASONING_EFFORT_BY_PROVIDER: dict[str, str] = {
 # Sentinel that distinguishes the default reasoning config from an explicit None.
 REASONING_DEFAULT: object = object()
 
+# Models that answered the default reasoning parameter with a 400 (non-reasoning models such as
+# gpt-4o). Process-local: later calls with the default config skip reasoning for them. An
+# explicit reasoning_config is never affected. Filled by the OpenAI route only.
+REASONING_REJECTED_MODELS: set[str] = set()
+
+
+def reasoning_mode(value: Any) -> str:
+    """Classify a ``reasoning_config`` argument.
+
+    ``"default"`` (not passed), ``"on"`` (``True``), ``"off"`` (``False`` or ``None``) or
+    ``"explicit"`` (a dict, sent as given). "default" and "on" both mean the provider's lowest
+    effort; they differ only on OpenAI Chat Completions, which sends "on" but not "default".
+    """
+    if value is REASONING_DEFAULT:
+        return "default"
+    if value is True:
+        return "on"
+    if value is False or value is None:
+        return "off"
+    return "explicit"
+
 
 def default_reasoning_config(provider: str) -> dict[str, Any]:
     """Return the request config ``reasoning_config=True`` stands for on ``provider``.
@@ -182,16 +198,31 @@ def default_reasoning_config(provider: str) -> dict[str, Any]:
     return config
 
 
-def resolve_reasoning_config(agent: Any) -> dict[str, Any] | None:
-    """Return the reasoning config to send for ``agent``'s current provider, or None.
+def is_default_reasoning(agent: Any) -> bool:
+    """True when ``agent``'s reasoning comes from the default (``True`` or not passed)."""
+    return getattr(agent, "_reasoning_mode", "explicit") in ("default", "on")
 
-    An explicit dict is returned as given. The default (``True`` or unset) is resolved from
-    the attempt's ``provider`` here rather than at construction, so a fallback model on
-    another provider gets that provider's lowest effort.
+
+def reasoning_for(agent: Any, api: str) -> dict[str, Any] | None:
+    """The reasoning config to send on this request, or None. The one place that decides it.
+
+    ``api`` is ``"anthropic"``, ``"google"``, ``"openai_responses"`` or ``"openai_chat"``.
+    An explicit dict is returned as given. The default is resolved from the attempt's
+    ``provider`` here rather than at construction, so a fallback model on another provider
+    gets that provider's lowest effort. On OpenAI the default is skipped for a model in
+    ``REASONING_REJECTED_MODELS``, and Chat Completions skips the implicit default because
+    many models reject ``reasoning_effort`` there, notably together with function tools.
+    A config set on an agent that was built without a default counts as explicit.
     """
     config = getattr(agent, "reasoning_config", None)
     if not config:
         return None
-    if getattr(agent, "_reasoning_default", False):
-        return default_reasoning_config(getattr(agent, "provider", ""))
-    return config
+    mode = getattr(agent, "_reasoning_mode", "explicit")
+    if mode not in ("default", "on"):
+        return config
+    if api.startswith("openai"):
+        if api == "openai_chat" and mode == "default":
+            return None
+        if getattr(agent, "model", None) in REASONING_REJECTED_MODELS:
+            return None
+    return default_reasoning_config(getattr(agent, "provider", ""))

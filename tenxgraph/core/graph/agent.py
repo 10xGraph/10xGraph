@@ -346,8 +346,7 @@ class Agent(
         self._responses_unsupported_urls: set[str] = set()
 
         # Reasoning and retry settings, resolved by resolve_entry (see model_registry.py).
-        self._reasoning_explicit = default.reasoning_explicit
-        self._reasoning_default = default.reasoning_default
+        self._reasoning_mode = default.reasoning_mode
         self.reasoning_config: dict[str, Any] | None = default.reasoning_config
         self.retry_config: RetryConfig | None = default.retry_config
 

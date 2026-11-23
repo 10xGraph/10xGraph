@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from tenxgraph.core.llm.client_factory import ANTHROPIC_CLIENT_KWARGS
+
 from .anthropic_request import (
     apply_cache_control,
     bare_model_id,
@@ -22,7 +24,7 @@ from .constants import (
     ANTHROPIC_MIN_THINKING_BUDGET,
     ANTHROPIC_NO_SAMPLING_MODELS,
     CALL_EXCLUDED_KWARGS,
-    resolve_reasoning_config,
+    reasoning_for,
 )
 from .sdk_kwargs import accepted_params, filter_kwargs
 
@@ -32,30 +34,36 @@ logger = logging.getLogger("tenxgraph.agent")
 # Rejected with a 400 by the models in ANTHROPIC_NO_SAMPLING_MODELS.
 _SAMPLING_KEYS = ("temperature", "top_p", "top_k")
 
-# Anthropic client-constructor keys and the OpenAI-style effort key; none is a request
-# parameter. The keys 10xGraph reads itself are already in CALL_EXCLUDED_KWARGS.
-_ANTHROPIC_EXCLUDED_KWARGS = CALL_EXCLUDED_KWARGS | frozenset(
-    {"reasoning_effort", "auth_token", "middleware", "open_telemetry"}
+# Anthropic client-constructor keys (they went to the client) and the OpenAI-style effort key;
+# none is a request parameter. The keys 10xGraph reads itself are in CALL_EXCLUDED_KWARGS.
+_ANTHROPIC_EXCLUDED_KWARGS = (
+    CALL_EXCLUDED_KWARGS | ANTHROPIC_CLIENT_KWARGS | frozenset({"reasoning_effort"})
 )
+
+
+def _drop_sampling_params(model: str, call_kwargs: dict[str, Any], when: str) -> None:
+    """Remove temperature/top_p/top_k from ``call_kwargs`` in place, with one warning."""
+    dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
+    for key in dropped:
+        call_kwargs.pop(key)
+    if dropped:
+        logger.warning(
+            "Model %s rejects sampling parameters%s; dropped %s from the request.",
+            model,
+            when,
+            ", ".join(dropped),
+        )
+
+
+def rejects_sampling(model: str) -> bool:
+    """True for Claude models that answer temperature/top_p/top_k with a 400."""
+    return bare_model_id(model) in ANTHROPIC_NO_SAMPLING_MODELS
 
 
 def strip_rejected_sampling_params(model: str, call_kwargs: dict[str, Any]) -> None:
     """Drop temperature/top_p/top_k for models that 400 on them, in place."""
-    if bare_model_id(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
-        return
-
-    dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
-    if not dropped:
-        return
-
-    for key in dropped:
-        call_kwargs.pop(key)
-    logger.warning(
-        "Model %s rejects sampling parameters; dropped %s from the request. "
-        "Use reasoning_config effort to control depth instead.",
-        model,
-        ", ".join(dropped),
-    )
+    if rejects_sampling(model):
+        _drop_sampling_params(model, call_kwargs, " (use reasoning_config effort instead)")
 
 
 def is_legacy_thinking_model(model: str) -> bool:
@@ -101,15 +109,7 @@ def _apply_legacy_reasoning(
 
     # Thinking rejects top_k and any non-default temperature; drop them like the
     # no-sampling models do.
-    dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
-    for key in dropped:
-        call_kwargs.pop(key)
-    if dropped:
-        logger.warning(
-            "Thinking on model %s rejects sampling parameters; dropped %s from the request.",
-            model,
-            ", ".join(dropped),
-        )
+    _drop_sampling_params(model, call_kwargs, " with thinking on")
 
 
 def apply_reasoning_config(
@@ -203,7 +203,7 @@ class AgentAnthropicMixin:
         )
 
         strip_rejected_sampling_params(self.model, call_kwargs)
-        apply_reasoning_config(resolve_reasoning_config(self), call_kwargs, self.model)
+        apply_reasoning_config(reasoning_for(self, "anthropic"), call_kwargs, self.model)
 
         anthropic_tools = convert_tools(tools)
 

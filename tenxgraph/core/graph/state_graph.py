@@ -15,6 +15,7 @@ from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
 from .agent import Agent
+from .agent_internal.execution import attach_tool_node
 from .base_agent import BaseAgent
 from .edge import Edge
 from .node import Node
@@ -712,8 +713,6 @@ class StateGraph[StateT: AgentState]:
         are registered immediately.  After this call the runtime
         ``_resolve_tools`` path needs no DI lookup for those agents.
         """
-        from tenxgraph.core.graph.tool_node import ToolNode
-
         for node in self.nodes.values():
             agent = node.func
             tool_node_name = getattr(agent, "tool_node_name", None)
@@ -750,19 +749,11 @@ class StateGraph[StateT: AgentState]:
                     },
                 )
 
-            resolved_tool_node = target.func
-            agent._tool_node = resolved_tool_node
-            agent.tool_node_name = None  # mark as resolved
-
-            for fn in getattr(agent, "_extra_tools", []):
-                resolved_tool_node.add_tool(fn)
-
-            agent._extra_tools = []
-
+            registered = attach_tool_node(agent, target.func)
             logger.info(
                 "Compile-time: resolved tool_node '%s' for agent node '%s' "
                 "(%d extra tool(s) registered)",
                 tool_node_name,
                 node.name,
-                0,  # already drained above
+                registered,
             )
