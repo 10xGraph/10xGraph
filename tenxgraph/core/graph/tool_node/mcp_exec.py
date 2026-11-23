@@ -19,14 +19,18 @@ from tenxgraph.core.state import (
     Message,
     ToolResultBlock,
 )
-from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.events import EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.runtime.publisher.trace_context import tool_span, use_trace_span
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType
 from tenxgraph.utils.interrupt import activate as activate_interrupts
-from tenxgraph.utils.log_safety import error_details
 
-from ._helpers import _normalize_resource_uri, generic_tool_failure
+from ._helpers import (
+    _normalize_resource_uri,
+    generic_tool_failure,
+    publish_tool_end,
+    tool_start_event,
+)
 from .denial import denied_tool_message
 from .mcp_auth import mcp_call_headers, resolve_mcp_headers
 
@@ -306,7 +310,7 @@ class MCPMixin:
 
         return tools
 
-    async def _mcp_execute(  # noqa: PLR0915
+    async def _mcp_execute(
         self,
         name: str,
         args: dict,
@@ -332,19 +336,7 @@ class MCPMixin:
             "tool_call_id": tool_call_id,
         }
 
-        event = EventModel.default(
-            base_config=config,
-            data={
-                "tool_call_id": tool_call_id,
-                "args": args,
-                "function_name": name,
-                "is_mcp": True,
-            },
-            content_type=[ContentType.TOOL_CALL],
-            event=Event.TOOL_EXECUTION,
-        )
-        event.event_type = EventType.PROGRESS
-        event.node_name = "ToolNode"
+        event = tool_start_event(config, name, args, tool_call_id, is_mcp=True)
         publish_event(event)
 
         input_data = {**args}
@@ -353,9 +345,6 @@ class MCPMixin:
             # In the call's interrupt scope, so a callback can ask a human (ToolGuard approval).
             with activate_interrupts(config, tool_call_id):
                 input_data = await callback_mgr.execute_before_invoke(context, input_data)
-            event.event_type = EventType.UPDATE
-            event.metadata["status"] = "before_invoke_complete Invoke MCP"
-            publish_event(event)
 
             if not self._client:
                 error_result = Message.tool_message(
@@ -374,9 +363,14 @@ class MCPMixin:
                     meta=meta,
                 )
                 res = await callback_mgr.execute_after_invoke(context, input_data, error_result)
-                event.event_type = EventType.ERROR
                 event.metadata["error"] = "No MCP client configured"
-                publish_event(event)
+                publish_tool_end(
+                    event,
+                    "No MCP client configured",
+                    message=res if isinstance(res, Message) else error_result,
+                    error="No MCP client configured",
+                    event_type=EventType.ERROR,
+                )
                 return res
 
             # No ping first: call_tool fails on its own when the server is down (handled
@@ -411,13 +405,9 @@ class MCPMixin:
                 )
 
                 res = await callback_mgr.execute_after_invoke(context, input_data, result)
-                event.event_type = EventType.END
                 # Publish what after_invoke returned, not the raw result it replaced.
-                published = res if hasattr(res, "model_dump") else result
-                event.data["message"] = published.model_dump()
-                event.metadata["status"] = "MCP tool execution complete"
-                event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-                publish_event(event)
+                published = res if isinstance(res, Message) else result
+                publish_tool_end(event, "MCP tool execution complete", message=published)
                 return res
 
         except ToolDenied as denied:
@@ -428,24 +418,15 @@ class MCPMixin:
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)
 
             if isinstance(recovery_result, Message):
-                event.event_type = EventType.END
-                event.data["message"] = recovery_result.model_dump()
-                event.metadata["status"] = "MCP tool execution complete, with recovery"
-                event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-                publish_event(event)
+                publish_tool_end(
+                    event, "MCP tool execution complete, with recovery", message=recovery_result
+                )
                 return recovery_result
 
             # The raw text can hold server internals; the model and the event get a reference.
             error_text = generic_tool_failure(name, tool_call_id, e, log=logger)
 
-            event.event_type = EventType.END
-            event.data["error"] = error_text
-            event.data.update(error_details(e, config))
-            event.metadata["status"] = "MCP tool execution complete, with error"
-            event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
-            publish_event(event)
-
-            return Message.tool_message(
+            failed = Message.tool_message(
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
@@ -458,3 +439,12 @@ class MCPMixin:
                 ],
                 meta=meta,
             )
+            publish_tool_end(
+                event,
+                "MCP tool execution complete, with error",
+                message=failed,
+                error=error_text,
+                exc=e,
+                config=config,
+            )
+            return failed

@@ -654,14 +654,14 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": function_name,
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -767,11 +767,9 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                     messages,
                     seen_message_ids,
                 )
-                event.data["state"] = new_state.model_dump()
+                event.data["state"] = new_state
                 event.event_type = EventType.END
-                event.data["messages"] = (
-                    [m.model_dump() for m in messages if not m.delta] if messages else []
-                )
+                event.data["messages"] = [m for m in messages if not m.delta]
                 event.data["next_node"] = next_node
                 publish_event(event)
                 for m in messages:
@@ -805,7 +803,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
             event.event_type = EventType.END
             if messages:
                 final_msg = messages[-1]
-                event.data["message"] = final_msg.model_dump()
+                event.data["message"] = final_msg
                 # Populate simple content and structured blocks when available
                 event.content = (
                     final_msg.text() if isinstance(final_msg.content, list) else final_msg.content
@@ -840,7 +838,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 # Use recovery result instead of raising the error
                 event.event_type = EventType.END
                 event.content = "Function execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
 
@@ -893,14 +891,14 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": type(agent).__name__,
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -950,10 +948,10 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
             is_dict = isinstance(result, dict)
             final_messages = result.get("messages", messages) if is_dict else messages
-            event.data["state"] = state.model_dump()
+            event.data["state"] = state
             event.event_type = EventType.END
             event.metadata["status"] = "Agent execution completed"
-            event.data["messages"] = [m.model_dump() for m in final_messages]
+            event.data["messages"] = final_messages
             event.data["next_node"] = None
             if final_messages:
                 last = final_messages[-1]
@@ -981,7 +979,7 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 logger.info("Node '%s' recovered from error using callback result", self.name)
                 event.event_type = EventType.END
                 event.metadata["status"] = "Agent execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
                 yield recovery_result

@@ -452,14 +452,14 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": getattr(self.func, "__name__", str(self.func)),
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -494,10 +494,10 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 result, state, messages, seen_message_ids
             )
             self._stamp_node_name(messages, roles=("assistant",))
-            event.data["state"] = new_state.model_dump()
+            event.data["state"] = new_state
             event.event_type = EventType.END
             event.metadata["status"] = "Function execution completed"
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["messages"] = messages
             event.data["next_node"] = next_node
             # mirror simple content + structured blocks for the last message
             if messages:
@@ -529,7 +529,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 # Use recovery result instead of raising the error
                 event.event_type = EventType.END
                 event.metadata["status"] = "Function execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
                 return {
@@ -581,14 +581,14 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
             extra={
                 "node": self.name,
                 "function_name": type(agent).__name__,
-                "last_message": last_message.model_dump() if last_message else None,
+                "last_message": last_message,
             },
         )
         publish_event(event)
@@ -623,10 +623,10 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
 
             # Publish END event
             messages = result.get("messages", [])
-            event.data["state"] = result["state"].model_dump()
+            event.data["state"] = result["state"]
             event.event_type = EventType.END
             event.metadata["status"] = "Agent execution completed"
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["messages"] = messages
             event.data["next_node"] = result.get("next_node")
             if messages:
                 last = messages[-1]
@@ -649,7 +649,7 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
                 logger.info("Node '%s' recovered from error using callback result", self.name)
                 event.event_type = EventType.END
                 event.metadata["status"] = "Agent execution recovered from error"
-                event.data["message"] = recovery_result.model_dump()
+                event.data["message"] = recovery_result
                 event.content_type = [ContentType.MESSAGE, ContentType.STATE]
                 publish_event(event)
                 return {

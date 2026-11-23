@@ -162,6 +162,7 @@ class OpenAIResponsesConverter(BaseConverter):
                 "provider": "openai",
                 "model": model,
                 "finish_reason": status,
+                "response_id": str(resp_id or ""),
             },
             usages=usages,
             raw=response.model_dump() if hasattr(response, "model_dump") else {},

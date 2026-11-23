@@ -28,10 +28,10 @@ import typing as t
 
 from injectq import Inject
 
-from tenxgraph.core.state import AgentState, ErrorBlock, Message, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state import AgentState, ErrorBlock, Message, ToolResultBlock
 from tenxgraph.core.state.message_block import RemoteToolCallBlock
 from tenxgraph.core.state.stream_emitter import StreamEmitter
-from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.events import EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.injection import fresh
@@ -39,6 +39,7 @@ from tenxgraph.utils.log_safety import log_safe
 from tenxgraph.utils.validators import clean_unstorable
 
 from . import deps
+from ._helpers import publish_tool_end, tool_start_event
 from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
 from .local_exec import check_credential_annotation
 from .mcp_auth import MCPAuth, install_mcp_auth
@@ -472,30 +473,11 @@ class ToolNode(
         logger.info("Executing tool '%s' with %d arguments", log_safe(name), len(args))
         logger.debug("Tool arguments: %s", args)
 
-        event = EventModel.default(
-            config,
-            data={"args": args, "tool_call_id": tool_call_id, "function_name": name},
-            content_type=[ContentType.TOOL_CALL],
-            event=Event.TOOL_EXECUTION,
-            # The graph node running this tool, so tracing can parent the tool span to it.
-            extra={"graph_node": config.get("_node_name", "")},
-        )
-        event.node_name = name
-        # Attach structured tool call block
-        event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
-        # Set the routing metadata before the single START publish, so listeners see it.
-        is_remote = self._is_remote_call(name, config)
-        if is_remote:
-            event.metadata["is_remote"] = True
-        elif name in self.mcp_tools:
-            event.metadata["is_mcp"] = True
-        elif name in self._funcs:
-            event.metadata["is_mcp"] = False
-        publish_event(event)
-        if is_remote:
-            # This tool in remote tools, so we can not execute it locally
-            # so we will return a message
-            # And the graph will be interrupted here
+        # Local and MCP executors publish the tool's events; only the remote and unknown
+        # cases, which run nothing here, publish from this layer.
+        if self._is_remote_call(name, config):
+            publish_event(tool_start_event(config, name, args, tool_call_id, is_remote=True))
+            # The client runs this tool, so the graph is interrupted here.
             return Message(
                 content=[RemoteToolCallBlock(id=tool_call_id, name=name, args=args)],
                 role="tool",
@@ -505,60 +487,27 @@ class ToolNode(
             )
 
         if name in self.mcp_tools:
-            res = clean_unstorable(
+            return clean_unstorable(
                 await self._mcp_execute(name, args, tool_call_id, config, callback_manager)
             )
-            event.data["message"] = res.model_dump()
-            # Attach tool result block mirroring the tool output
-            event.content_blocks = [
-                ToolResultBlock(
-                    call_id=tool_call_id,
-                    name=name,
-                    output=res.model_dump(),
-                )
-            ]
-            event.event_type = EventType.END
-            event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-            publish_event(event)
-            return res
 
         if name in self._funcs:
-            res = clean_unstorable(
+            return clean_unstorable(
                 await self._internal_execute(
                     name, args, tool_call_id, config, state, callback_manager
                 )
             )
-            if isinstance(res, Message):
-                event.data["message"] = res.model_dump()
-                event.content_blocks = [
-                    ToolResultBlock(
-                        call_id=tool_call_id,
-                        name=name,
-                        output=res.model_dump(),
-                    )
-                ]
-            elif isinstance(res, dict):
-                msg = res.get("messages")
-                if isinstance(msg, Message):
-                    event.data["message"] = msg.model_dump()
-                    event.content_blocks = [
-                        ToolResultBlock(
-                            call_id=tool_call_id,
-                            name=name,
-                            output=msg.model_dump(),
-                        )
-                    ]
 
-            event.event_type = EventType.END
-            event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-            publish_event(event)
-            return res
+        return self._unknown_tool(name, args, tool_call_id, config)
 
+    def _unknown_tool(
+        self, name: str, args: dict, tool_call_id: str, config: dict[str, t.Any]
+    ) -> Message:
+        """Publish START and ERROR for a tool that is not registered, and build its result."""
         error_msg = f"Tool '{name}' not found."
-        event.data["error"] = error_msg
-        event.event_type = EventType.ERROR
-        event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
+        event = tool_start_event(config, name, args, tool_call_id)
         publish_event(event)
+        publish_tool_end(event, "Tool not found", error=error_msg, event_type=EventType.ERROR)
         return Message.tool_message(
             content=[
                 ErrorBlock(message=error_msg),
@@ -622,22 +571,10 @@ class ToolNode(
         callback_manager = fresh(callback_manager)
         logger.info("Executing tool '%s' with %d arguments", log_safe(name), len(args))
         logger.debug("Tool arguments: %s", args)
-        event = EventModel.default(
-            config,
-            data={"args": args, "tool_call_id": tool_call_id, "function_name": name},
-            content_type=[ContentType.TOOL_CALL],
-            event=Event.TOOL_EXECUTION,
-            extra={"graph_node": config.get("_node_name", "")},
-        )
-        event.node_name = "ToolNode"
-        event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
 
         if self._is_remote_call(name, config):
-            event.metadata["is_remote"] = True
-            publish_event(event)
-            # This tool in remote tools, so we can not execute it locally
-            # so we will return a message
-            # And the graph will be interrupted here
+            publish_event(tool_start_event(config, name, args, tool_call_id, is_remote=True))
+            # The client runs this tool, so the graph is interrupted here.
             yield Message(
                 content=[RemoteToolCallBlock(id=tool_call_id, name=name, args=args)],
                 role="tool",
@@ -648,65 +585,17 @@ class ToolNode(
             return
 
         if name in self.mcp_tools:
-            event.metadata["function_type"] = "mcp"
-            event.metadata["is_mcp"] = True
-            publish_event(event)
-            message = clean_unstorable(
+            yield clean_unstorable(
                 await self._mcp_execute(name, args, tool_call_id, config, callback_manager)
             )
-            event.data["message"] = message.model_dump()
-            event.content_blocks = [
-                ToolResultBlock(call_id=tool_call_id, name=name, output=message.model_dump())
-            ]
-            event.event_type = EventType.END
-            event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-            publish_event(event)
-            yield message
             return
 
         if name in self._funcs:
-            event.metadata["function_type"] = "internal"
-            event.metadata["is_mcp"] = False
-            publish_event(event)
-
-            result = clean_unstorable(
+            yield clean_unstorable(
                 await self._internal_execute(
                     name, args, tool_call_id, config, state, callback_manager, emit=emit
                 )
             )
-            if isinstance(result, Message):
-                event.data["message"] = result.model_dump()
-                event.content_blocks = [
-                    ToolResultBlock(call_id=tool_call_id, name=name, output=result.model_dump())
-                ]
-            elif isinstance(result, dict):
-                msg = result.get("messages")
-                if isinstance(msg, Message):
-                    event.data["message"] = msg.model_dump()
-                    event.content_blocks = [
-                        ToolResultBlock(call_id=tool_call_id, name=name, output=msg.model_dump())
-                    ]
-            event.event_type = EventType.END
-            event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-            publish_event(event)
-            yield result
             return
 
-        error_msg = f"Tool '{name}' not found."
-        event.data["error"] = error_msg
-        event.event_type = EventType.ERROR
-        event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
-        publish_event(event)
-
-        yield Message.tool_message(
-            content=[
-                ErrorBlock(message=error_msg),
-                ToolResultBlock(
-                    call_id=tool_call_id,
-                    name=name,
-                    output=error_msg,
-                    is_error=True,
-                    status="failed",
-                ),
-            ],
-        )
+        yield self._unknown_tool(name, args, tool_call_id, config)

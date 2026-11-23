@@ -47,6 +47,12 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 ### Changed
 
 - Behaviour change: tool results now reach the model inside a fence (see Added), for OpenAI (Chat Completions and Responses), Anthropic and Google. This also applies to tool results saved before 1.1 and to client tool results. Stored messages are unchanged. When tools are present, the system prompt gets one extra line, so a prompt cache from 1.0 misses once after the upgrade. Set `ToolNode(fence_results=False)` to keep the 1.0 behaviour.
+- Tool events: each tool call now sends one `TOOL_EXECUTION` start event and one end (or error) event, from the executor that runs the call. Before, a call sent about five events from two layers (the tool node and the executor, including progress and update events). The tool event `node_name` is always the tool name (stream runs used to say `ToolNode`); the graph node is in `metadata["graph_node"]`. Kafka, Redis and RabbitMQ consumers that counted the duplicate events see fewer.
+- Lifecycle events (graph start, end, error, interrupt, resume, checkpoint and state update) now reach publishers on every run. Before, they were published only when a lifecycle callback hook was registered. Hooks still run first, and `CallbackManager.fire_on_*` keep their names and signatures.
+- Event payloads (state and message dumps) are built only when a publisher is bound. A run with no publisher and no hooks no longer serialises the state for events.
+- LLM end events are built from the converted reply for both streaming and non-streaming calls, so token counts, finish reason, model and response id follow one rule for every provider. The non-streaming LLM span now ends after the reply is converted. Non-streaming replies carry `metadata["response_id"]`. Google's finish reason is the enum name (`STOP`, was `FinishReason.STOP` on non-streaming calls), and OpenAI's is `UNKNOWN` when the provider sends none.
+- `call_llm` now uses the same client and request code as `Agent`. Unknown keyword arguments are dropped with a warning instead of raising `TypeError`, and Google `llm_kwargs` that are real generation config fields (such as `temperature`) are now applied; before, they were ignored.
+- `PgVectorStore` writes with an identity now require a value for every tenant column the reach picks, as `PgCheckpointer` and the multi-tenant guide already said. Before, a missing optional claim wrote NULL. Callers with no identity, or an empty value, still write NULL. The Postgres identifier rule is the same 63-character one for both backends, so a `PgCheckpointer` schema name longer than 63 characters is now refused instead of being cut by Postgres.
 
 ### Deprecated
 
@@ -66,10 +72,13 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 - Realtime (live agent) tool calls now honour `tool_timeout`, record the tool metrics and send the model the same failure text as a normal graph run. The tool runs in its own task, so audio keeps flowing while it runs, and tools still running when the session ends are cancelled.
 - `PgCheckpointer` message methods (`aget_message`, `alist_messages`, `adelete_message`, `aupdate_message_metadata`) now convert a string thread id for `id_type` `int` and `bigint`, like the other methods. Before, they passed the string to an integer column.
 - An MCP tool call that fails without recovery is no longer labelled "with recovery" in the tool event.
+- OpenInference traces now show a system prompt given as a list of message dicts; before, they showed an empty string.
+- Internal: duplicated private code was merged and the largest modules were split into smaller private ones (`pg_checkpointer.py`, `pgvector_store.py`). Every public name keeps its import path.
 
 ### Security
 
 - `sanitize_filename` now removes control characters, zero-width characters, bidirectional overrides and isolates (such as U+202E, which made `a\u202egpj.exe` display as `aexe.jpg`) and any path part, and `validate_magic_bytes` checks the full signature table the API server uses (images, PDF, ZIP and Office files, OLE, MP3, WAV, OGG, FLAC, MP4, WebM). Odd names come out differently: an empty or `..` name becomes `unnamed`, and leading dots are removed.
+- Writes to `PgVectorStore` by a caller with an identity can no longer leave a picked tenant column NULL when the identity lacks that claim (see Changed).
 
 
 ## [1.0.0] - 2026-11-16

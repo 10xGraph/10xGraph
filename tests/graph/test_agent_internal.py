@@ -34,18 +34,6 @@ from tenxgraph.storage.store.memory_config import (
 from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
 from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
 
-from tenxgraph.core.graph.agent_internal.execution import (
-    _extract_cache_creation_tokens,
-    _extract_cache_read_tokens,
-    _extract_finish_reason,
-    _extract_input_tokens,
-    _extract_output_tokens,
-    _extract_reasoning_tokens,
-    _extract_response_id,
-    _extract_response_model,
-    _extract_response_text,
-    _extract_tool_calls,
-)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -464,238 +452,6 @@ class TestExtractPrompt:
         agent = _make_openai_agent()
         messages = [{"role": "user", "content": ""}]
         assert agent._extract_prompt(messages) == ""
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# Token / response extraction helpers
-# ═════════════════════════════════════════════════════════════════════════════
-
-
-class TestExtractInputTokens:
-    def test_no_usage_returns_zero(self):
-        assert _extract_input_tokens(SimpleNamespace()) == 0
-
-    def test_prompt_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=42))
-        assert _extract_input_tokens(resp) == 42
-
-    def test_input_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(input_tokens=99))
-        assert _extract_input_tokens(resp) == 99
-
-    def test_prompt_tokens_preferred_over_input_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10, input_tokens=20))
-        assert _extract_input_tokens(resp) == 10
-
-
-class TestExtractOutputTokens:
-    def test_no_usage_returns_zero(self):
-        assert _extract_output_tokens(SimpleNamespace()) == 0
-
-    def test_completion_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(completion_tokens=42))
-        assert _extract_output_tokens(resp) == 42
-
-    def test_output_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(output_tokens=99))
-        assert _extract_output_tokens(resp) == 99
-
-    def test_completion_tokens_preferred_over_output_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(completion_tokens=10, output_tokens=20))
-        assert _extract_output_tokens(resp) == 10
-
-
-class TestExtractCacheReadTokens:
-    def test_no_usage_returns_zero(self):
-        assert _extract_cache_read_tokens(SimpleNamespace()) == 0
-
-    def test_anthropic_cache_read(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(cache_read_input_tokens=100))
-        assert _extract_cache_read_tokens(resp) == 100
-
-    def test_openai_chat_cached_tokens(self):
-        resp = SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens_details=SimpleNamespace(cached_tokens=50)),
-        )
-        assert _extract_cache_read_tokens(resp) == 50
-
-    def test_openai_responses_cached_tokens(self):
-        resp = SimpleNamespace(
-            usage=SimpleNamespace(input_tokens_details=SimpleNamespace(cached_tokens=75)),
-        )
-        assert _extract_cache_read_tokens(resp) == 75
-
-    def test_google_cached_content_token_count(self):
-        from google.genai import types
-
-        resp = types.GenerateContentResponse(
-            usage_metadata=types.GenerateContentResponseUsageMetadata(
-                cached_content_token_count=200
-            )
-        )
-        assert _extract_cache_read_tokens(resp) == 200
-
-    def test_no_cache_hits_returns_zero(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=5, completion_tokens=10))
-        assert _extract_cache_read_tokens(resp) == 0
-
-    def test_cache_value_zero_returns_zero(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(cache_read_input_tokens=0))
-        assert _extract_cache_read_tokens(resp) == 0
-
-
-class TestExtractCacheCreationTokens:
-    def test_no_usage_returns_zero(self):
-        assert _extract_cache_creation_tokens(SimpleNamespace()) == 0
-
-    def test_cache_creation_tokens(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(cache_creation_input_tokens=50))
-        assert _extract_cache_creation_tokens(resp) == 50
-
-    def test_cache_creation_none_returns_zero(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(cache_creation_input_tokens=None))
-        assert _extract_cache_creation_tokens(resp) == 0
-
-    def test_cache_creation_zero_returns_zero(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(cache_creation_input_tokens=0))
-        assert _extract_cache_creation_tokens(resp) == 0
-
-
-class TestExtractReasoningTokens:
-    def test_no_usage_returns_zero(self):
-        assert _extract_reasoning_tokens(SimpleNamespace()) == 0
-
-    def test_openai_completion_details(self):
-        resp = SimpleNamespace(
-            usage=SimpleNamespace(completion_tokens_details=SimpleNamespace(reasoning_tokens=42)),
-        )
-        assert _extract_reasoning_tokens(resp) == 42
-
-    def test_openai_responses_output_details(self):
-        resp = SimpleNamespace(
-            usage=SimpleNamespace(output_tokens_details=SimpleNamespace(reasoning_tokens=77)),
-        )
-        assert _extract_reasoning_tokens(resp) == 77
-
-    def test_google_thoughts_token_count(self):
-        from google.genai import types
-
-        resp = types.GenerateContentResponse(
-            usage_metadata=types.GenerateContentResponseUsageMetadata(thoughts_token_count=120)
-        )
-        assert _extract_reasoning_tokens(resp) == 120
-
-    def test_no_reasoning_tokens_returns_zero(self):
-        resp = SimpleNamespace(usage=SimpleNamespace(completion_tokens=10))
-        assert _extract_reasoning_tokens(resp) == 0
-
-
-class TestExtractGoogleResponseFields:
-    """A real google-genai response has usage_metadata, response_id and model_version only."""
-
-    def _resp(self):
-        from google.genai import types
-
-        return types.GenerateContentResponse(
-            response_id="resp-1",
-            model_version="gemini-2.5-flash",
-            usage_metadata=types.GenerateContentResponseUsageMetadata(
-                prompt_token_count=10, candidates_token_count=5, thoughts_token_count=3
-            ),
-        )
-
-    def test_tokens(self):
-        resp = self._resp()
-        assert _extract_input_tokens(resp) == 10
-        assert _extract_output_tokens(resp) == 5
-        assert _extract_reasoning_tokens(resp) == 3
-
-    def test_id_and_model(self):
-        resp = self._resp()
-        assert _extract_response_id(resp) == "resp-1"
-        assert _extract_response_model(resp) == "gemini-2.5-flash"
-
-
-class TestExtractFinishReason:
-    def test_openai_chat_choices_finish_reason(self):
-        resp = SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop")])
-        assert _extract_finish_reason(resp) == "stop"
-
-    def test_openai_responses_status(self):
-        resp = SimpleNamespace(status="completed")
-        assert _extract_finish_reason(resp) == "completed"
-
-    def test_status_in_progress_is_skipped(self):
-        resp = SimpleNamespace(status="in_progress")
-        assert _extract_finish_reason(resp) == ""
-
-    def test_anthropic_stop_reason(self):
-        resp = SimpleNamespace(stop_reason="end_turn")
-        assert _extract_finish_reason(resp) == "end_turn"
-
-    def test_google_candidates_finish_reason_with_name(self):
-        resp = SimpleNamespace(
-            candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="STOP"))],
-        )
-        assert _extract_finish_reason(resp) == "STOP"
-
-    def test_google_candidates_int_finish_reason(self):
-        resp = SimpleNamespace(candidates=[SimpleNamespace(finish_reason=1)])
-        assert _extract_finish_reason(resp) == "1"
-
-    def test_no_match_returns_empty(self):
-        assert _extract_finish_reason(SimpleNamespace()) == ""
-
-    def test_empty_status_string_skipped(self):
-        resp = SimpleNamespace(status="")
-        assert _extract_finish_reason(resp) == ""
-
-
-class TestExtractResponseId:
-    def test_with_id(self):
-        resp = SimpleNamespace(id="chatcmpl-abc123")
-        assert _extract_response_id(resp) == "chatcmpl-abc123"
-
-    def test_no_id_returns_empty(self):
-        assert _extract_response_id(SimpleNamespace()) == ""
-
-
-class TestExtractResponseModel:
-    def test_with_model(self):
-        resp = SimpleNamespace(model="gpt-4o")
-        assert _extract_response_model(resp) == "gpt-4o"
-
-    def test_no_model_returns_empty(self):
-        assert _extract_response_model(SimpleNamespace()) == ""
-
-
-class TestExtractResponseText:
-    def test_text_attribute(self):
-        resp = SimpleNamespace(text="  Hello world  ")
-        assert _extract_response_text(resp) == "Hello world"
-
-    def test_output_text_attribute(self):
-        resp = SimpleNamespace(output_text="  Hi there  ")
-        assert _extract_response_text(resp) == "Hi there"
-
-    def test_choices_content(self):
-        resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="From choice"))])
-        assert _extract_response_text(resp) == "From choice"
-
-    def test_no_text_found_returns_empty(self):
-        assert _extract_response_text(SimpleNamespace()) == ""
-
-    def test_text_preferred_over_choices(self):
-        resp = SimpleNamespace(text="Direct", choices=[SimpleNamespace(message=SimpleNamespace(content="Choice"))])
-        assert _extract_response_text(resp) == "Direct"
-
-    def test_output_text_preferred_over_choices(self):
-        resp = SimpleNamespace(output_text="Output", choices=[SimpleNamespace(message=SimpleNamespace(content="Choice"))])
-        assert _extract_response_text(resp) == "Output"
-
-    def test_choices_empty_content_returns_empty(self):
-        resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=""))])
-        assert _extract_response_text(resp) == ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1959,8 +1715,9 @@ class TestExecute:
         mock_converter.assert_called_once()
         assert mock_converter.call_args.args[0] is mock_response
         assert mock_converter.call_args.kwargs.get("converter") is not None
-        # START + END events published
-        assert mock_publish.call_count >= 2
+        # START only: the END comes from the converter once the reply is converted.
+        assert mock_publish.call_count == 1
+        assert mock_converter_instance.on_stream_end is not None
 
     async def test_execute_keeps_memory_and_skill_text_out_of_format(self):
         agent = _make_openai_agent()
@@ -2031,12 +1788,12 @@ class TestExecute:
         assert end.data["response_model"] == "m-1"
 
     async def test_execute_stream_hook_reports_stream_error(self):
-        from tenxgraph.core.graph.agent_internal.execution import _make_stream_end_hook
+        from tenxgraph.core.graph.agent_internal.execution import _make_llm_end_hook
         from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
 
         ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
         with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
-            _make_stream_end_hook(ev)(None, RuntimeError("boom"))
+            _make_llm_end_hook(ev)(None, RuntimeError("boom"))
         sent = pub.call_args.args[0]
         assert sent.event_type == EventType.ERROR
         assert sent.data["error"] == "RuntimeError"
@@ -2061,11 +1818,15 @@ class TestExecute:
             return agent, mock_metrics, hook
 
     async def test_llm_metrics_recorded_on_non_stream_success(self):
-        response = SimpleNamespace(
-            id="r1", model="gpt-4o", text="ok",
-            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=5),
+        agent, m, hook = await self._run_execute_for_metrics(stream=False, response=MagicMock())
+        # Recorded once the reply is converted, from the converted message's usage.
+        m.timer.assert_not_called()
+        final = SimpleNamespace(
+            usages=SimpleNamespace(prompt_tokens=12, completion_tokens=5), metadata={}
         )
-        agent, m, _ = await self._run_execute_for_metrics(stream=False, response=response)
+        with patch("tenxgraph.runtime.publisher.publish.publish_event"), \
+             patch("tenxgraph.core.graph.agent_internal.execution.metrics", m):
+            hook(final, None)
         observe = m.timer.return_value.metric.observe
         assert m.timer.call_args.args == ("tenxgraph.llm.duration",)
         attrs = observe.call_args.args[1]
@@ -2834,49 +2595,8 @@ class TestLlmSpanClosed:
 
 
 class TestProviderOutputExtraction:
-    def test_anthropic_text_and_tool_use(self):
-        types = pytest.importorskip("anthropic.types")
-        resp = types.Message(
-            id="m",
-            model="claude",
-            role="assistant",
-            type="message",
-            content=[
-                types.TextBlock(type="text", text="Hello "),
-                types.ToolUseBlock(
-                    type="tool_use", id="tu_1", name="get_w", input={"city": "Paris"}
-                ),
-            ],
-            stop_reason="tool_use",
-            usage=types.Usage(input_tokens=1, output_tokens=1),
-        )
-        assert _extract_response_text(resp) == "Hello"
-        assert _extract_tool_calls(resp) == [
-            {"id": "tu_1", "name": "get_w", "arguments": '{"city": "Paris"}'}
-        ]
-
-    def test_responses_function_call(self):
-        rt = pytest.importorskip("openai.types.responses")
-        resp = SimpleNamespace(
-            output=[
-                rt.ResponseFunctionToolCall(
-                    type="function_call", call_id="c1", name="f", arguments='{"a": 1}'
-                )
-            ]
-        )
-        assert _extract_tool_calls(resp) == [{"id": "c1", "name": "f", "arguments": '{"a": 1}'}]
-
-    def test_google_function_call(self):
-        gt = pytest.importorskip("google.genai.types")
-        part = gt.Part(function_call=gt.FunctionCall(name="f", args={"x": 2}))
-        resp = gt.GenerateContentResponse(
-            candidates=[gt.Candidate(content=gt.Content(role="model", parts=[part]))]
-        )
-        assert _extract_tool_calls(resp) == [{"id": "", "name": "f", "arguments": '{"x": 2}'}]
-        assert _extract_response_text(resp) == ""
-
     def test_stream_hook_sets_output(self):
-        from tenxgraph.core.graph.agent_internal.execution import _make_stream_end_hook
+        from tenxgraph.core.graph.agent_internal.execution import _make_llm_end_hook
         from tenxgraph.core.state import Message
         from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock
         from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
@@ -2887,7 +2607,7 @@ class TestProviderOutputExtraction:
         )
         ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
         with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
-            _make_stream_end_hook(ev)(final, None)
+            _make_llm_end_hook(ev)(final, None)
         data = pub.call_args.args[0].data
         assert data["output_response"] == "hi"
         assert data["output_tool_calls"] == [{"id": "t1", "name": "f", "arguments": '{"k": "v"}'}]

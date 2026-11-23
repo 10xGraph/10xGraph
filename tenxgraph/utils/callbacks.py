@@ -604,8 +604,7 @@ class CallbackManager:
 
         Args:
             messages: List of Message objects to validate
-            config: Optional execution config; when provided, publishes an error event
-                    on validation failure so the publisher stream captures the rejection.
+            config: Unused, kept for compatibility. The graph publishes the rejection event.
 
         Returns:
             True if all validators pass
@@ -619,30 +618,8 @@ class CallbackManager:
 
         logger.debug("Running %d validators on %d messages", len(self._validators), len(messages))
 
-        try:
-            for validator in self._validators:
-                await validator.validate(messages)
-        except Exception as e:
-            if config:
-                from tenxgraph.runtime.publisher.events import (
-                    ContentType,
-                    Event,
-                    EventModel,
-                    EventType,
-                )
-                from tenxgraph.runtime.publisher.publish import publish_event
-
-                publish_event(
-                    EventModel.default(
-                        config,
-                        data={"error": str(e), "rejected_count": len(messages)},
-                        event=Event.GRAPH_EXECUTION,
-                        event_type=EventType.ERROR,
-                        content_type=[ContentType.ERROR],
-                        extra={"lifecycle": "validation_rejected"},
-                    )
-                )
-            raise
+        for validator in self._validators:
+            await validator.validate(messages)
 
         logger.debug("All validators passed")
         return True
@@ -705,49 +682,15 @@ class CallbackManager:
                 )
         return value
 
-    @staticmethod
-    def _publish_lifecycle(
-        config: dict[str, Any],
-        data: dict[str, Any],
-        extra: dict[str, Any],
-        *,
-        event: str = "GRAPH_EXECUTION",
-        event_type: str = "UPDATE",
-        content_type: str = "STATE",
-        node_name: str = "",
-    ) -> None:
-        """Publish one lifecycle event. ``event``, ``event_type`` and ``content_type`` are enum names."""
-        from tenxgraph.runtime.publisher.events import (
-            ContentType,
-            Event,
-            EventModel,
-            EventType,
-        )
-        from tenxgraph.runtime.publisher.publish import publish_event
-
-        publish_event(
-            EventModel.default(
-                config,
-                data=data,
-                event=Event[event],
-                event_type=EventType[event_type],
-                node_name=node_name,
-                content_type=[ContentType[content_type]],
-                extra=extra,
-            )
-        )
-
     async def fire_on_graph_start(
         self,
         context: GraphLifecycleContext,
         state: StateT,
     ) -> StateT:
         """Fire all on_graph_start hooks and return the (potentially modified) state."""
-        result = await self._run_hooks(
+        return await self._run_hooks(
             "on_graph_start", state, lambda h, s: h.on_graph_start(context, s)
         )
-        self._publish_lifecycle(context.config, {}, {"lifecycle": "graph_start"})
-        return result
 
     async def fire_on_graph_end(
         self,
@@ -757,17 +700,11 @@ class CallbackManager:
         total_steps: int,
     ) -> StateT:
         """Fire all on_graph_end hooks and return the (potentially modified) state."""
-        result = await self._run_hooks(
+        return await self._run_hooks(
             "on_graph_end",
             final_state,
             lambda h, s: h.on_graph_end(context, s, messages, total_steps),
         )
-        self._publish_lifecycle(
-            context.config,
-            {"total_steps": total_steps},
-            {"lifecycle": "graph_end", "total_steps": total_steps},
-        )
-        return result
 
     async def fire_on_graph_error(
         self,
@@ -787,20 +724,12 @@ class CallbackManager:
             new_state, new_message = out
             return new_state, new_message
 
-        result_state, error_message = await self._run_hooks(
+        return await self._run_hooks(
             "on_graph_error",
             (partial_state, str(error)),
             lambda h, v: h.on_graph_error(context, error, v[0], messages, step, node_name),
             merge,
         )
-        self._publish_lifecycle(
-            context.config,
-            {"error": error_message, "step": step, "node_name": node_name},
-            {"lifecycle": "graph_error", "step": step},
-            content_type="ERROR",
-            node_name=node_name,
-        )
-        return result_state, error_message
 
     async def fire_on_interrupt(
         self,
@@ -810,19 +739,11 @@ class CallbackManager:
         state: StateT,
     ) -> StateT:
         """Fire all on_interrupt hooks and return the (potentially modified) state."""
-        result = await self._run_hooks(
+        return await self._run_hooks(
             "on_interrupt",
             state,
             lambda h, s: h.on_interrupt(context, interrupted_node, interrupt_type, s),
         )
-        self._publish_lifecycle(
-            context.config,
-            {"interrupted_node": interrupted_node, "interrupt_type": interrupt_type},
-            {"lifecycle": "graph_interrupt", "interrupt_type": interrupt_type},
-            event_type="INTERRUPTED",
-            node_name=interrupted_node,
-        )
-        return result
 
     async def fire_on_resume(
         self,
@@ -832,17 +753,11 @@ class CallbackManager:
         resume_data: dict[str, Any],
     ) -> StateT:
         """Fire all on_resume hooks and return the (potentially modified) state."""
-        result = await self._run_hooks(
+        return await self._run_hooks(
             "on_resume",
             state,
             lambda h, s: h.on_resume(context, resumed_node, s, resume_data),
         )
-        self._publish_lifecycle(
-            context.config,
-            {"resumed_node": resumed_node},
-            {"lifecycle": "resume", "resumed_node": resumed_node},
-        )
-        return result
 
     async def fire_on_checkpoint(
         self,
@@ -858,18 +773,12 @@ class CallbackManager:
                 return cast(tuple[StateT, list[Message]], out)
             return cast(StateT, out), current[1]
 
-        result_state, result_messages = await self._run_hooks(
+        return await self._run_hooks(
             "on_checkpoint",
             (state, messages),
             lambda h, v: h.on_checkpoint(context, v[0], v[1], is_context_trimmed),
             merge,
         )
-        self._publish_lifecycle(
-            context.config,
-            {},
-            {"lifecycle": "checkpoint", "trimmed": is_context_trimmed},
-        )
-        return result_state, result_messages
 
     async def fire_on_state_update(
         self,
@@ -880,19 +789,11 @@ class CallbackManager:
         step: int,
     ) -> StateT:
         """Fire all on_state_update hooks and return the (potentially modified) state."""
-        result = await self._run_hooks(
+        return await self._run_hooks(
             "on_state_update",
             new_state,
             lambda h, s: h.on_state_update(context, node_name, old_state, s, step),
         )
-        self._publish_lifecycle(
-            context.config,
-            {"step": step},
-            {"lifecycle": "state_update", "step": step},
-            event="NODE_EXECUTION",
-            node_name=node_name,
-        )
-        return result
 
     async def fire_on_turn_start(
         self,

@@ -120,6 +120,7 @@ class AnthropicConverter(BaseConverter):
             "provider": "anthropic",
             "model": model,
             "finish_reason": stop_reason or "UNKNOWN",
+            "response_id": str(response_id or ""),
         }
 
         if stop_reason == _REFUSAL:

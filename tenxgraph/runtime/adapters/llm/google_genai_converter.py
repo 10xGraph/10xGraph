@@ -117,7 +117,9 @@ class GoogleGenAIConverter(BaseConverter):
         metadata = {
             "provider": "google_genai",
             "model": model_version,
-            "finish_reason": str(finish_reason),
+            # The enum name ("STOP"), as the stream path writes it, not "FinishReason.STOP".
+            "finish_reason": str(getattr(finish_reason, "name", finish_reason)),
+            "response_id": str(getattr(response, "response_id", None) or ""),
         }
         mark_stop_issue(metadata, finish_reason, "Google GenAI")
 

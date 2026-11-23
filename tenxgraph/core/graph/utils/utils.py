@@ -34,6 +34,8 @@ from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.execution_state import ExecutionState as ExecMeta
 from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+from tenxgraph.runtime.publisher.events import ContentType, EventType
+from tenxgraph.runtime.publisher.publish import publish_lifecycle
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
     END,
@@ -267,8 +269,19 @@ async def validate_message_content(
         logger.debug("No callback manager provided, skipping validation")
         return True
 
-    # Execute validation
-    await callback_mgr.execute_validators(message, config=config)
+    try:
+        await callback_mgr.execute_validators(message)
+    except Exception as e:
+        # Publish the rejection so the event stream captures it.
+        if config:
+            publish_lifecycle(
+                config,
+                "validation_rejected",
+                {"error": str(e), "rejected_count": len(message)},
+                event_type=EventType.ERROR,
+                content_type=ContentType.ERROR,
+            )
+        raise
 
     logger.debug("All validators passed")
     return True
@@ -796,6 +809,7 @@ async def sync_data(
             messages=messages,
             is_context_trimmed=is_context_trimmed,
         )
+    publish_lifecycle(config, "checkpoint", {}, {"trimmed": is_context_trimmed})
 
     if checkpointer:
         logger.debug("Persisting state and %d messages to checkpointer", len(messages))

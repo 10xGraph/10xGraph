@@ -185,6 +185,8 @@ async def test_interrupted_event_carries_the_saved_state(mode, monkeypatch):
     def capture(event, *args, **kwargs):
         if event.event_type == EventType.INTERRUPTED:
             state = event.data["state"]
+            if not isinstance(state, dict):  # live state, dumped by publish_event
+                state = state.model_dump()
             events.append((state["execution_meta"]["status"], len(state["context"])))
         return original_publish(event, *args, **kwargs)
 

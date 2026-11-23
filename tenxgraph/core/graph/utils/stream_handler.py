@@ -30,7 +30,7 @@ from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils.constants import DEFAULT_NODE_TIMEOUT_SECONDS
 from tenxgraph.utils.logging import log_context_scope, set_log_context
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
 from tenxgraph.utils import END, START, ResponseGranularity, add_messages, metrics
@@ -47,6 +47,9 @@ from .handler_utils import (
     is_remote_tool_marker,
     node_after,
     pause_for_interrupt,
+    publish_graph_end,
+    publish_graph_error,
+    publish_state_update,
     skip_answered_tool_node,
 )
 
@@ -273,7 +276,7 @@ class StreamHandler[StateT: AgentState](
         # Create event for graph execution
         event = EventModel.default(
             config,
-            data={"state": state.model_dump(exclude={"execution_meta"})},
+            data={"state": state},
             content_type=[ContentType.STATE],
             extra={"step": step, "current_node": current_node},
             event=Event.GRAPH_EXECUTION,
@@ -308,7 +311,7 @@ class StreamHandler[StateT: AgentState](
                 if res:
                     event.event_type = EventType.INTERRUPTED
                     event.metadata["status"] = "Graph execution stopped by request"
-                    event.data["state"] = state.model_dump()
+                    event.data["state"] = state
                     publish_event(event)
                     # stream updated state and updates
                     yield StreamChunk(
@@ -333,7 +336,7 @@ class StreamHandler[StateT: AgentState](
                 # Update event with current step info
                 event.data["step"] = step
                 event.data["current_node"] = current_node
-                event.data["state"] = state.model_dump()
+                event.data["state"] = state
                 event.metadata["step"] = step
                 event.metadata["current_node"] = current_node
                 event.event_type = EventType.PROGRESS
@@ -376,12 +379,13 @@ class StreamHandler[StateT: AgentState](
                 logger.debug("Executing node '%s'", current_node)
                 node = self._get_node(current_node)
 
-                # Snapshot state before node execution for on_state_update hook
-                old_state_snapshot = state.model_copy(deep=True)
+                # Snapshot state before node execution, only for on_state_update hooks.
+                has_hooks = bool(self.callback_mgr and self.callback_mgr._lifecycle_hooks)
+                old_state_snapshot = state.model_copy(deep=True) if has_hooks else state
 
                 node_event = EventModel.default(
                     config,
-                    data={"step": step, "state": state.model_dump()},
+                    data={"step": step, "state": state},
                     event=Event.NODE_EXECUTION,
                     event_type=EventType.START,
                     content_type=[ContentType.STATE],
@@ -555,7 +559,7 @@ class StreamHandler[StateT: AgentState](
                 )
 
                 node_event.event_type = EventType.END
-                node_event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+                node_event.data["messages"] = messages
                 node_event.content_type = [ContentType.MESSAGE]
                 publish_event(node_event)
 
@@ -575,20 +579,21 @@ class StreamHandler[StateT: AgentState](
                     )
 
                 # Fire on_state_update hook after state has been merged
-                if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-                    state = await self.callback_mgr.fire_on_state_update(
+                if has_hooks:
+                    state = await self.callback_mgr.fire_on_state_update(  # type: ignore[union-attr]
                         lifecycle_context,
                         node_name=current_node,
                         old_state=old_state_snapshot,
                         new_state=state,
                         step=step,
                     )
+                publish_state_update(config, current_node, step)
 
                 # Call realtime sync after node execution
                 await call_realtime_sync(state, config)
                 event.event_type = EventType.UPDATE
-                event.data["state"] = state.model_dump()
-                event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+                event.data["state"] = state
+                event.data["messages"] = messages
                 if messages:
                     lm = messages[-1]
                     event.content = str(lm.text() if isinstance(lm.content, list) else lm.content)
@@ -671,7 +676,7 @@ class StreamHandler[StateT: AgentState](
                     event.event_type = EventType.INTERRUPTED
                     event.data["interrupted"] = "After"
                     event.metadata["interrupted"] = "After"
-                    event.data["state"] = state.model_dump()
+                    event.data["state"] = state
                     publish_event(event)
 
                     yield StreamChunk(
@@ -718,7 +723,7 @@ class StreamHandler[StateT: AgentState](
 
                 event.event_type = EventType.UPDATE
                 event.metadata["State_Updated"] = "State Updated"
-                event.data["state"] = state.model_dump()
+                event.data["state"] = state
                 publish_event(event)
 
                 yield StreamChunk(
@@ -748,7 +753,7 @@ class StreamHandler[StateT: AgentState](
                     await call_realtime_sync(state, config)
 
                     event.event_type = EventType.ERROR
-                    event.data["state"] = state.model_dump()
+                    event.data["state"] = state
                     event.metadata["error"] = error_msg
                     event.metadata["step"] = step
                     event.metadata["current_node"] = current_node
@@ -794,6 +799,7 @@ class StreamHandler[StateT: AgentState](
                     messages=messages,
                     total_steps=step,
                 )
+            publish_graph_end(config, step)
 
             is_context_trimmed = await sync_data(
                 state=state,
@@ -805,8 +811,8 @@ class StreamHandler[StateT: AgentState](
 
             # Create completion event
             event.event_type = EventType.END
-            event.data["state"] = state.model_dump()
-            event.data["messages"] = [m.model_dump() for m in messages] if messages else []
+            event.data["state"] = state
+            event.data["messages"] = messages
             if messages:
                 fm = messages[-1]
                 event.content = str(fm.text() if isinstance(fm.content, list) else fm.content)
@@ -854,12 +860,13 @@ class StreamHandler[StateT: AgentState](
             # Publish error event
             event.event_type = EventType.ERROR
             event.metadata["error"] = str(e)
-            event.data["state"] = state.model_dump()
+            event.data["state"] = state
             publish_event(event)
 
             # Fire on_graph_error hook before persisting the error state
+            error_message = str(e)
             if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
-                state, _ = await self.callback_mgr.fire_on_graph_error(
+                state, error_message = await self.callback_mgr.fire_on_graph_error(
                     lifecycle_context,
                     error=e,
                     partial_state=state,
@@ -867,6 +874,7 @@ class StreamHandler[StateT: AgentState](
                     step=step,
                     node_name=current_node,
                 )
+            publish_graph_error(config, error_message, step, current_node)
 
             await sync_data(
                 state=state,
@@ -979,7 +987,7 @@ class StreamHandler[StateT: AgentState](
 
         event = EventModel.default(
             config,
-            data={"state": state.model_dump()},
+            data={"state": state},
             content_type=[ContentType.STATE],
             extra={
                 "is_interrupted": state.is_interrupted(),
@@ -1000,6 +1008,7 @@ class StreamHandler[StateT: AgentState](
         if self.callback_mgr and self.callback_mgr._lifecycle_hooks:
             lc_context = GraphLifecycleContext(config=public_config(config))
             state = await self.callback_mgr.fire_on_graph_start(lc_context, state)  # type: ignore
+        publish_lifecycle(config, "graph_start", {})
 
         # Now start Execution
         # Execute graph
@@ -1042,7 +1051,7 @@ class StreamHandler[StateT: AgentState](
         event.metadata.update(
             {
                 "time_taken": time_taken,
-                "state": state.model_dump(),
+                "state": state,
                 "step": state.execution_meta.step,
                 "current_node": state.execution_meta.current_node,
                 "is_interrupted": state.is_interrupted(),

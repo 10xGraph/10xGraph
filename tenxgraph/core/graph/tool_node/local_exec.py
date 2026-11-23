@@ -17,14 +17,18 @@ from tenxgraph.core.state import (
     ToolResult,
     ToolResultBlock,
 )
-from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
 from tenxgraph.utils.constants import TRUSTED_TOOL_RESULT_META
 from tenxgraph.utils.interrupt import activate as activate_interrupts
-from tenxgraph.utils.log_safety import error_details
 
-from ._helpers import _extract_block_meta, _safe_serialize, generic_tool_failure
+from ._helpers import (
+    _extract_block_meta,
+    _safe_serialize,
+    generic_tool_failure,
+    publish_tool_end,
+    tool_start_event,
+)
 from .coercion import ToolArgumentError, coerce_tool_argument
 from .constants import CREDENTIAL_PARAM, INJECTABLE_PARAMS, SKILL_TOOL_ATTR, has_injected_default
 from .denial import denied_tool_message
@@ -116,18 +120,6 @@ class LocalExecMixin:
                 )
 
         return input_data
-
-    def _publish_internal_completion(
-        self,
-        event: EventModel,
-        message: Message,
-        status: str,
-    ) -> None:
-        event.event_type = EventType.END
-        event.data["message"] = message.model_dump()
-        event.metadata["status"] = status
-        event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-        publish_event(event)
 
     def _build_internal_result_blocks(
         self,
@@ -248,19 +240,7 @@ class LocalExecMixin:
             # Skill text is the developer's instructions, so it reaches the model unfenced.
             meta[TRUSTED_TOOL_RESULT_META] = True
 
-        event = EventModel.default(
-            base_config=config,
-            data={
-                "tool_call_id": tool_call_id,
-                "args": args,
-                "function_name": name,
-                "is_mcp": False,
-            },
-            content_type=[ContentType.TOOL_CALL],
-            event=Event.TOOL_EXECUTION,
-        )
-        event.event_type = EventType.PROGRESS
-        event.node_name = "ToolNode"
+        event = tool_start_event(config, name, args, tool_call_id, is_mcp=False)
         publish_event(event)
 
         try:
@@ -283,10 +263,6 @@ class LocalExecMixin:
             with activate_interrupts(config, tool_call_id):
                 input_data = await callback_mgr.execute_before_invoke(context, input_data)
 
-            event.event_type = EventType.UPDATE
-            event.metadata["status"] = "before_invoke_complete Invoke internal"
-            publish_event(event)
-
             # Added after the callbacks, so their input_data never holds the credential.
             call_data = dict(input_data)
             call_data.pop(CREDENTIAL_PARAM, None)
@@ -304,19 +280,9 @@ class LocalExecMixin:
             )
 
             msg = self._message_from_internal_result(result, state, tool_call_id, meta, name)
-            if isinstance(msg, Message):
-                self._publish_internal_completion(event, msg, "Internal tool execution complete")
-            elif isinstance(msg, dict):
-                self._publish_internal_completion(
-                    event,
-                    Message.tool_message(
-                        content=self._build_internal_result_blocks(
-                            msg.get("messages"), tool_call_id, name
-                        ),
-                        meta=meta,
-                    ),
-                    "Internal tool execution complete",
-                )
+            done = msg.get("messages") if isinstance(msg, dict) else msg
+            if isinstance(done, Message):
+                publish_tool_end(event, "Internal tool execution complete", message=done)
             return msg
 
         except ToolDenied as denied:
@@ -327,11 +293,11 @@ class LocalExecMixin:
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)
 
             if isinstance(recovery_result, Message):
-                event.event_type = EventType.END
-                event.data["message"] = recovery_result.model_dump()
-                event.metadata["status"] = "Internal tool execution complete, with recovery"
-                event.content_type = [ContentType.TOOL_RESULT, ContentType.MESSAGE]
-                publish_event(event)
+                publish_tool_end(
+                    event,
+                    "Internal tool execution complete, with recovery",
+                    message=recovery_result,
+                )
                 return recovery_result
 
             # Argument errors are the model's to correct and carry no server detail. Anything
@@ -341,14 +307,7 @@ class LocalExecMixin:
             else:
                 error_text = generic_tool_failure(name, tool_call_id, e, log=logger)
 
-            event.event_type = EventType.END
-            event.data["error"] = error_text
-            event.data.update(error_details(e, config))
-            event.metadata["status"] = "Internal tool execution complete, with error"
-            event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
-            publish_event(event)
-
-            return Message.tool_message(
+            failed = Message.tool_message(
                 content=[
                     ToolResultBlock(
                         call_id=tool_call_id,
@@ -361,3 +320,12 @@ class LocalExecMixin:
                 ],
                 meta=meta,
             )
+            publish_tool_end(
+                event,
+                "Internal tool execution complete, with error",
+                message=failed,
+                error=error_text,
+                exc=e,
+                config=config,
+            )
+            return failed

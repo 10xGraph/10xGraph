@@ -49,7 +49,7 @@ from tenxgraph.core.realtime.base import (
 from tenxgraph.core.realtime.providers.gemini_live import GeminiLiveClient
 from tenxgraph.core.state import AgentState, Message, TextBlock, add_messages
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.utils import CallbackManager
 from tenxgraph.utils.callbacks import GraphLifecycleContext
 
@@ -985,21 +985,22 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
     async def _fire_graph_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState
     ) -> AgentState:
-        if not cb._lifecycle_hooks:
-            return state
-        return await cb.fire_on_graph_start(
-            GraphLifecycleContext(config=public_config(config)), state
-        )
+        if cb._lifecycle_hooks:
+            state = await cb.fire_on_graph_start(
+                GraphLifecycleContext(config=public_config(config)), state
+            )
+        publish_lifecycle(config, "graph_start", {})
+        return state
 
     async def _fire_graph_end(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turns: int
     ) -> None:
-        if not cb._lifecycle_hooks:
-            return
-        messages = list(getattr(state, "context", []) or [])
-        await cb.fire_on_graph_end(
-            GraphLifecycleContext(config=public_config(config)), state, messages, turns
-        )
+        if cb._lifecycle_hooks:
+            messages = list(getattr(state, "context", []) or [])
+            await cb.fire_on_graph_end(
+                GraphLifecycleContext(config=public_config(config)), state, messages, turns
+            )
+        publish_lifecycle(config, "graph_end", {"total_steps": turns}, {"total_steps": turns})
 
     async def _fire_turn_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int

@@ -1,5 +1,6 @@
 """Unexpected tool exceptions reach the model and events as a generic message only."""
 
+import contextlib
 import logging
 import re
 from types import SimpleNamespace
@@ -52,13 +53,21 @@ def _assert_generic(msg: Message, name: str, events: list[str], caplog) -> None:
     assert block.is_error is True and block.status == "failed"
 
 
+@contextlib.contextmanager
 def _capture(module: str, events: list[str]):
     def _record(event):
         # Exception text goes to trace backends only; publish_event drops it for event streams.
         data = {k: v for k, v in event.data.items() if k not in TRACE_ONLY_ERROR_KEYS}
         events.append(repr(data) + repr(event.metadata) + repr(event.content))
 
-    return patch(f"tenxgraph.core.graph.tool_node.{module}.publish_event", side_effect=_record)
+    # START is sent by the executor module, END by the shared tool event helper.
+    helpers = "tenxgraph.core.graph.tool_node._helpers"
+    with (
+        patch(f"tenxgraph.core.graph.tool_node.{module}.publish_event", side_effect=_record),
+        patch(f"{helpers}.publish_event", side_effect=_record),
+        patch(f"{helpers}.listening", return_value=True),
+    ):
+        yield
 
 
 class TestLocalTool:

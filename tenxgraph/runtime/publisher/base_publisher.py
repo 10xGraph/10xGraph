@@ -1,8 +1,12 @@
+import asyncio
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
 from .events import EventModel
 
+
+logger = logging.getLogger("tenxgraph.publisher")
 
 PublisherKind = Literal["events", "observability"]
 
@@ -87,3 +91,14 @@ class BasePublisher(ABC):
         """Exit async context manager, ensuring cleanup."""
         await self.close()
         return False  # Don't suppress exceptions
+
+
+def close_in_new_loop(publisher: BasePublisher) -> None:
+    """Run ``publisher.close()`` in a new event loop, for ``sync_close``.
+
+    Inside a running loop ``asyncio.run`` refuses, so it logs a warning and skips.
+    """
+    try:
+        asyncio.run(publisher.close())
+    except RuntimeError:
+        logger.warning("sync_close called within an active event loop; skipping.")

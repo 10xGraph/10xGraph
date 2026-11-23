@@ -8,10 +8,11 @@ import typing as t
 from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import ToolDenied
 from tenxgraph.core.state import ErrorBlock, Message, ToolResultBlock
-from tenxgraph.runtime.publisher.events import ContentType, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
+from tenxgraph.runtime.publisher.events import EventModel
 from tenxgraph.utils.constants import TRUSTED_TOOL_RESULT_META
 from tenxgraph.utils.log_safety import log_safe
+
+from ._helpers import publish_tool_end
 
 
 logger = logging.getLogger("tenxgraph.graph.tool_node")
@@ -51,14 +52,7 @@ def denied_tool_message(
         log_safe(denied.reason, 500),
     )
 
-    event.event_type = EventType.END
-    event.data["error"] = text
-    event.metadata["status"] = "denied"
-    event.metadata["denied"] = True
-    event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
-    publish_event(event)
-
-    return Message.tool_message(
+    result = Message.tool_message(
         content=[
             ToolResultBlock(
                 call_id=tool_call_id,
@@ -71,3 +65,6 @@ def denied_tool_message(
         ],
         meta={**meta, TOOL_DENIED_META: True, TRUSTED_TOOL_RESULT_META: True},
     )
+    event.metadata["denied"] = True
+    publish_tool_end(event, "denied", message=result, error=text)
+    return result

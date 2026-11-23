@@ -9,7 +9,7 @@ Postgres needs ``--integration`` plus ``POSTGRES_DSN`` / ``REDIS_URL`` (the vari
 """
 
 # SQL here is built only from identifiers the fixtures generate (uuid hex), never input.
-# ruff: noqa: S608
+# ruff: noqa: S608, E501
 
 import asyncio
 import os
@@ -57,6 +57,29 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {
     ("test_anonymous_use", "pg"): "G12: P raises ValueError without a user_id on thread and ledger calls; maintainer decision (unverified, no database)",
     ("test_cache_clear_returns_a_plain_value", "pg"): "G3: P returns the Redis delete count from aclear_cache_value (unverified, no database)",
     ("test_stop_request_and_active_run_cleared_with_thread", "pg"): "G17: aclean_thread leaves the stop request (expires by TTL) (unverified, no database)",
+    # ---- stores: verified by running inmem and qdrant (local mode); pgvector not run
+    ("test_replace_metadata_keeps_category", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82); aupdate ignores replace_metadata and stores no category",
+    ("test_replace_metadata_keeps_category", "qdrant"): "S3: Q resets the category to \"general\" on aupdate(replace_metadata=True) without a category; V keeps it",
+    ("test_metadata_roundtrip_without_payload_leak", "qdrant"): "S1: Q returns the whole payload (content, user_id, thread_id, timestamp) as result metadata; V returns caller metadata plus category, memory_type, memory_key",
+    ("test_get_all_newest_first_and_limit", "inmem"): "S7: InMemoryStore returns insertion order; V returns newest first; maintainer decision",
+    ("test_get_all_newest_first_and_limit", "qdrant"): "S7: Q returns scroll order; V returns newest first; maintainer decision",
+    ("test_get_all_honours_filters", "inmem"): "S7: InMemoryStore ignores the filters keyword; V honours it",
+    ("test_get_all_honours_filters", "qdrant"): "S7: Q ignores the filters keyword; V honours it",
+    ("test_update_foreign_memory_is_refused", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82); a foreign aupdate succeeds",
+    ("test_update_foreign_memory_under_reach_all_raises_value_error", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82); a foreign aupdate succeeds",
+    ("test_update_foreign_memory_under_reach_all_raises_value_error", "qdrant"): "S4: Q raises PermissionError for a foreign update under reach all (aget is unscoped there); V raises ValueError; maintainer decision",
+    ("test_get_when_backend_fails_raises", "qdrant"): "S6: Q swallows every exception in aget and returns None; V raises; maintainer decision",
+    ("test_write_requires_user_id", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_blank_user_id_rejected", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_own_reach_isolates_users", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_reach_all_write_stays_own", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_reach_tenant_without_tenant_columns_raises", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_delete_foreign_memory_raises_and_keeps_row", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_forget_memory_deletes_only_the_owner", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_forget_memory_under_reach_all_still_names_an_owner", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_forget_memory_needs_an_owner", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_collections_are_separate", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
+    ("test_blank_collection_rejected", "inmem"): "S-I (new): InMemoryStore ignores user_id, reach and collection (documented as satisfying the BaseStore interface, server/configure.md:82)",
 }
 
 
