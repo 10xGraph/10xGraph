@@ -52,7 +52,9 @@ def test_new_schema_keys_messages_per_thread(id_type):
             id_type=id_type,
         )
     messages_sql = next(
-        s for s in cp._build_create_tables_sql() if "TABLE IF NOT EXISTS" in s and '"messages"' in s
+        sql
+        for _table, sql in cp._build_table_statements()
+        if "TABLE IF NOT EXISTS" in sql and '"messages"' in sql
     )
     assert "PRIMARY KEY (thread_id, message_id)" in messages_sql
     assert "message_id SERIAL PRIMARY KEY" not in messages_sql
@@ -124,9 +126,9 @@ def test_migration_v5_drops_the_reasoning_column(checkpointer):
 
 def test_new_schema_has_no_reasoning_column(checkpointer):
     messages_sql = next(
-        s
-        for s in checkpointer._build_create_tables_sql()
-        if "TABLE IF NOT EXISTS" in s and '"messages"' in s
+        sql
+        for _table, sql in checkpointer._build_table_statements()
+        if "TABLE IF NOT EXISTS" in sql and '"messages"' in sql
     )
     assert "reasoning" not in messages_sql
 

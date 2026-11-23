@@ -14,8 +14,10 @@ Supporting models are defined in sibling modules:
 from __future__ import annotations
 
 import copy
+import warnings
+from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # Re-export everything from sibling modules so that existing imports of the form
 #   from tenxgraph.qa.evaluation.config.eval_config import XYZ
@@ -74,7 +76,7 @@ class EvalConfig(_JsonFileModel):
         max_concurrency: Maximum concurrent evaluations if parallel.
         timeout: Timeout for each evaluation case (seconds).
         verbose: Whether to output verbose logging.
-        mock_mode: Whether to run in mock mode (no actual execution).
+        mock_mode: Deprecated, no effect, removed in 2.0.
         reporter: Configuration for automatic report generation.
     """
 
@@ -86,6 +88,16 @@ class EvalConfig(_JsonFileModel):
     verbose: bool = False
     mock_mode: bool = False
     reporter: ReporterConfig = Field(default_factory=ReporterConfig)
+
+    @model_validator(mode="after")
+    def _warn_unused_fields(self) -> Self:
+        if self.mock_mode:
+            warnings.warn(
+                "EvalConfig.mock_mode has no effect and will be removed in 2.0.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        return self
 
     @classmethod
     def default(cls) -> EvalConfig:

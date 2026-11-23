@@ -5,6 +5,8 @@ defaults without ``@inject``. Those proxies cache the first object they resolve,
 graph that ever ran in a process decided which checkpointer every later graph persisted to.
 """
 
+from abc import ABC, abstractmethod
+
 import pytest
 from injectq import Inject, InjectQ
 
@@ -17,6 +19,11 @@ from tenxgraph.utils.injection import fresh
 
 class _Service:
     pass
+
+
+class _AbstractService(ABC):
+    @abstractmethod
+    def run(self) -> None: ...
 
 
 def test_fresh_returns_explicit_values_unchanged():
@@ -38,7 +45,9 @@ def test_fresh_resolves_from_the_current_container_each_time():
 
 
 def test_fresh_returns_none_for_an_unbound_service():
-    assert fresh(Inject[_Service]) is None
+    # Abstract, as the core's optional services are (BasePublisher, BaseStore): injectq 0.6
+    # builds an unbound concrete class instead.
+    assert fresh(Inject[_AbstractService]) is None
 
 
 def _graph(checkpointer: BaseCheckpointer):

@@ -40,10 +40,9 @@ from tenxgraph.utils.validators import clean_unstorable
 
 from . import deps
 from ._helpers import publish_tool_end, tool_start_event
-from .executors import KwargsResolverMixin, LocalExecMixin, MCPMixin
-from .local_exec import check_credential_annotation
+from .local_exec import LocalExecMixin, check_credential_annotation
 from .mcp_auth import MCPAuth, install_mcp_auth
-from .mcp_exec import DEFAULT_MCP_CONNECT_TIMEOUT
+from .mcp_exec import DEFAULT_MCP_CONNECT_TIMEOUT, MCPMixin
 from .run_tools import run_remote_tools, tool_name
 from .schema import SchemaMixin
 
@@ -55,7 +54,6 @@ class ToolNode(
     SchemaMixin,
     LocalExecMixin,
     MCPMixin,
-    KwargsResolverMixin,
 ):
     """A unified registry and executor for callable functions from various tool providers.
 

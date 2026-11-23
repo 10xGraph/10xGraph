@@ -6,8 +6,7 @@ This module provides common fixtures and setup for the entire test suite.
 import os
 
 import pytest
-from injectq import InjectQ
-from injectq.core.context import ContainerContext
+from injectq.testing import isolated_container
 
 from tenxgraph.core.graph.node import Node
 
@@ -60,18 +59,12 @@ def isolate_injectq_container():
     passed per-file but failed in full-suite order -- a test asserting on its own
     spy publisher was silently still publishing into a previous test's binding.
 
-    Resetting the singleton around each test makes the suite order-independent,
-    which is a precondition for the suite meaning anything at all.
-
-    The activated container is cleared too: a graph built with its own container activates
-    it, and ``InjectQ.get_instance()`` returns the active container before the singleton, so
-    without this one test's container stays in force for every later test in the worker.
+    ``isolated_container()`` makes a fresh container both the global instance and the active
+    one for the test, and restores both afterwards, so the suite is order-independent. That
+    includes a container a test activates (a graph built with ``container=`` activates it).
     """
-    ContainerContext.clear_current()
-    InjectQ.reset_instance()
-    yield
-    ContainerContext.clear_current()
-    InjectQ.reset_instance()
+    with isolated_container():
+        yield
 
 
 @pytest.fixture(autouse=True)

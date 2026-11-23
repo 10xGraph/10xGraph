@@ -1,4 +1,4 @@
-"""Shared resources are closed only by the last live graph that uses them (BE1, F10)."""
+"""A graph closes its resources, unless it was compiled with owns_resources=False."""
 
 import asyncio as _asyncio
 
@@ -51,22 +51,6 @@ def _graph(publisher=None, container=None) -> StateGraph:
 
 
 @pytest.mark.asyncio
-async def test_resource_closed_only_by_last_graph():
-    cp = CountingCheckpointer()
-    pub = CountingPublisher()
-    g1 = _graph(pub).compile(checkpointer=cp)
-    g2 = _graph(pub).compile(checkpointer=cp)
-
-    await g1.aclose()
-    assert cp.released == 0
-    assert pub.closed == 0
-
-    await g2.aclose()
-    assert cp.released == 1
-    assert pub.closed == 1
-
-
-@pytest.mark.asyncio
 async def test_single_graph_still_closes_its_resources():
     cp = CountingCheckpointer()
     pub = CountingPublisher()
@@ -96,31 +80,6 @@ async def test_non_owning_graph_does_not_block_owner():
     assert cp.released == 1
     await borrower.aclose()
     assert cp.released == 1
-
-
-@pytest.mark.asyncio
-async def test_background_tasks_belong_to_their_own_graph():
-    """F9: with a shared container, each run queues its work on its own graph's manager."""
-    container = InjectQ()
-    g1 = _graph(CountingPublisher(), container).compile(checkpointer=InMemoryCheckpointer())
-    g2 = _graph(CountingPublisher(), container).compile(checkpointer=InMemoryCheckpointer())
-
-    created = {"g1": 0, "g2": 0}
-    for key, graph in (("g1", g1), ("g2", g2)):
-        original = graph._task_manager.create_task
-
-        def counting(coro, *, _key=key, _orig=original, **kwargs):
-            created[_key] += 1
-            return _orig(coro, **kwargs)
-
-        graph._task_manager.create_task = counting
-
-    await g1.ainvoke({"messages": [Message.text_message("hi")]}, {"thread_id": "t1"})
-
-    assert created["g1"] > 0
-    assert created["g2"] == 0
-    await g1.aclose()
-    await g2.aclose()
 
 
 class SlowPublisher(CountingPublisher):

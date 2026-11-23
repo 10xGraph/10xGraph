@@ -117,8 +117,9 @@ Note: the root `tenxgraph/__init__.py` exports `StateGraph`, `Agent`, `ToolNode`
   client tool call pauses the graph after the tool node; the client's `ToolResultBlock`
   resumes it after that node.
 - Core functions take DI deps as `Inject[...]` defaults and call `fresh()` (in
-  `tenxgraph.utils.injection`) at the top: the proxy caches its first resolution for the
-  process otherwise. New code taking an `Inject[...]` default must do the same.
+  `tenxgraph.utils.injection`) at the top: outside `@inject` the default is a lazy marker, and
+  `fresh()` turns it into the bound service or `None`. New code taking an `Inject[...]`
+  default must do the same.
 - Input shape: `{"messages": [Message...]}`.
 - Config keys: `user_id`, `thread_id`, `run_id`, `recursion_limit` (default 25).
 - `response_granularity`: `LOW` (messages only, default), `PARTIAL` (context+summary+messages),

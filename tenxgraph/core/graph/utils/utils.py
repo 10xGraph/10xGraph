@@ -44,7 +44,7 @@ from tenxgraph.utils import (
     ResponseGranularity,
     add_messages,
 )
-from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.validators import has_unstorable_text, strip_unstorable
@@ -387,21 +387,6 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
 
                 await recover_crashed_run(existing_state, config)
 
-            # Normalize legacy node names (backward compatibility)
-            # Some older runs may have persisted 'start'/'end' instead of '__start__'/'__end__'
-            if existing_state.execution_meta.current_node == "start":
-                existing_state.execution_meta.current_node = START
-                logger.debug("Normalized legacy current_node 'start' to '%s'", START)
-            elif existing_state.execution_meta.current_node == "end":
-                existing_state.execution_meta.current_node = END
-                logger.debug("Normalized legacy current_node 'end' to '%s'", END)
-            elif existing_state.execution_meta.current_node == "__start__":
-                existing_state.execution_meta.current_node = START
-                logger.debug("Normalized legacy current_node '__start__' to '%s'", START)
-            elif existing_state.execution_meta.current_node == "__end__":
-                existing_state.execution_meta.current_node = END
-                logger.debug("Normalized legacy current_node '__end__' to '%s'", END)
-
             # A run that was cut off (cancel, shutdown, crash, stop) and now gets a new user
             # message: start a new turn on the repaired context. Without new input the call
             # resumes at the saved node (see check_interrupted).
@@ -512,13 +497,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
         "Created new state with %d context messages", len(state.context) if state.context else 0
     )
     if "current_node" in partial_state and partial_state["current_node"] is not None:
-        # Normalize legacy values if provided in partial state
-        next_node = partial_state["current_node"]
-        if next_node == "__start__":
-            next_node = START
-        elif next_node == "__end__":
-            next_node = END
-        state.set_current_node(next_node)
+        state.set_current_node(partial_state["current_node"])
     return state  # type: ignore[return-value]
 
 
@@ -557,20 +536,6 @@ async def reload_state[StateT: AgentState](
         existing_state.execution_meta.current_node,
         existing_state.execution_meta.step,
     )
-    # Normalize legacy node names (backward compatibility)
-    # Some older runs may have persisted 'start'/'end' instead of '__start__'/'__end__'
-    if existing_state.execution_meta.current_node == "start":
-        existing_state.execution_meta.current_node = START
-        logger.debug("Normalized legacy current_node 'start' to '%s'", START)
-    elif existing_state.execution_meta.current_node == "end":
-        existing_state.execution_meta.current_node = END
-        logger.debug("Normalized legacy current_node 'end' to '%s'", END)
-    elif existing_state.execution_meta.current_node == "__start__":
-        existing_state.execution_meta.current_node = START
-        logger.debug("Normalized legacy current_node '__start__' to '%s'", START)
-    elif existing_state.execution_meta.current_node == "__end__":
-        existing_state.execution_meta.current_node = END
-        logger.debug("Normalized legacy current_node '__end__' to '%s'", END)
     return existing_state
 
 
@@ -896,11 +861,10 @@ def _schedule_ledger_clear(
     """
     if not origin_ids or not getattr(checkpointer, "record_tool_result", True):
         return
-    manager = resolve_task_manager(task_manager)
-    if manager is None:
+    if task_manager is None:
         return
     # A copy: the caller goes on using (and popping keys from) its config.
-    task = manager.create_task(
+    task = task_manager.create_task(
         _clear_ledger(checkpointer, dict(config), origin_ids), name="clear_tool_ledger"
     )
     if task is None:

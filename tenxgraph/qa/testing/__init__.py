@@ -41,10 +41,11 @@ Example:
     ```
 """
 
+import contextvars
 import logging
 from typing import Any
 
-from injectq import InjectQ
+from injectq import ContainerContext, InjectQ
 
 from .in_memory_store import InMemoryStore
 from .mock_mcp import MockMCPClient
@@ -84,17 +85,20 @@ class TestContext:
         self.container = InjectQ()
         self.store = InMemoryStore()
         self._mock_tools = MockToolRegistry()
+        self._token: contextvars.Token | None = None
         logger.debug("TestContext initialized")
 
     def __enter__(self) -> "TestContext":
         """Enter context manager - activates isolated container."""
-        self.container.activate()
+        self._token = self.container.activate()
         logger.debug("TestContext entered, container activated")
         return self
 
     def __exit__(self, *args: Any) -> None:
-        """Exit context manager - cleans up resources."""
-        # InjectQ doesn't have deactivate, so we just clear the store
+        """Exit context manager - restores the previous container and cleans up resources."""
+        if self._token is not None:
+            ContainerContext.reset_current(self._token)
+            self._token = None
         self.store.clear()
         self._mock_tools.clear()
         logger.debug("TestContext exited, resources cleaned up")

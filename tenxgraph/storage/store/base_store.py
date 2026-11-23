@@ -10,7 +10,6 @@ This module provides a clean, modern interface for memory stores with:
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable
 from typing import Any
 from uuid import uuid4
 
@@ -231,11 +230,9 @@ class BaseStore(ABC):
         back to a ``uuid4`` value when the DI context is not
         available (e.g. in unit tests that don't compile a graph).
         """
-        generated_id = InjectQ.get_instance().try_get("generated_id", None)
+        generated_id = await InjectQ.get_instance().atry_get("generated_id")
         if not generated_id:
             return str(uuid4())
-        if isinstance(generated_id, Awaitable):
-            generated_id = await generated_id
         return str(generated_id)
 
     # --- Core Memory Operations ---

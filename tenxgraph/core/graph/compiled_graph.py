@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable, Generator
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 
-from injectq import InjectQ
+from injectq import ContainerContext, DependencyNotFoundError, InjectQ
 
 from tenxgraph.core.authz import Identity, can_reach, get_identity
 from tenxgraph.core.exceptions.closed_error import GraphClosedError
@@ -28,15 +28,13 @@ from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.utils import (
     CallbackManager,
     ResponseGranularity,
-    resource_registry,
 )
-from tenxgraph.utils.background_task_manager import BackgroundTaskManager, current_task_manager
+from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.callable_utils import ensure_no_running_loop, resolve_awaitable_id
 from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
-from .utils.graph_container import activate, deactivate
 from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
@@ -56,23 +54,20 @@ logger = logging.getLogger("tenxgraph.graph")
 
 def _new_id() -> Any:
     """A fresh id from the graph's id generator (sync or async), else a uuid4 string."""
-    return resolve_awaitable_id(InjectQ.get_instance().try_get("generated_id")) or str(uuid4())
+    try:
+        # Called, not resolved: get() refuses an async factory.
+        generated_id = InjectQ.get_instance().call_factory("generated_id")
+    except DependencyNotFoundError:
+        return str(uuid4())
+    return resolve_awaitable_id(generated_id) or str(uuid4())
 
 
-def _reset_task_manager(token: contextvars.Token) -> None:
-    """Undo the per-run task manager binding.
+def _reset_current_run(token: contextvars.Token) -> None:
+    """Undo the per-run handle binding.
 
     An async generator can be closed from a different context than the one that started
     it, where reset() raises. The binding then simply lapses with that context.
     """
-    try:
-        current_task_manager.reset(token)
-    except ValueError:
-        logger.debug("Task manager binding was set in another context; leaving it")
-
-
-def _reset_current_run(token: contextvars.Token) -> None:
-    """Undo the per-run handle binding (same rule as :func:`_reset_task_manager`)."""
     try:
         current_run.reset(token)
     except ValueError:
@@ -195,20 +190,13 @@ class CompiledGraph[StateT: AgentState]:
         self._closing = False
         # Runs active right now (any loop or thread); aclose() and astop() act on them.
         self._runs = RunRegistry()
-        # Resource ownership: aclose() closes a shared resource only when the last live
-        # graph holding it closes; a graph with owns_resources=False never closes it.
+        # A graph with owns_resources=False never closes its checkpointer, store or publisher.
         self._owns_resources = owns_resources
-        if owns_resources:
-            for resource in (checkpointer, publisher, store):
-                resource_registry.register(resource, self)
 
-    def _skip_close(self, resource: object, name: str) -> dict[str, Any] | None:
-        """Return a skip result when this graph must not close ``resource``, else None."""
+    def _skip_close(self) -> dict[str, Any] | None:
+        """Return a skip result when this graph must not close its resources, else None."""
         if not self._owns_resources:
             return {"status": "skipped", "reason": "owns_resources=False"}
-        if not resource_registry.release(resource, self):
-            logger.info("%s is still used by another live graph; not closing it", name)
-            return {"status": "skipped", "reason": "shared with another live graph"}
         return None
 
     def _refuse_if_closing(self) -> None:
@@ -218,8 +206,8 @@ class CompiledGraph[StateT: AgentState]:
 
     def _begin_run(
         self, cfg: dict[str, Any], kind: str, heartbeat: bool = True
-    ) -> tuple[RunHandle, contextvars.Token, contextvars.Token]:
-        """Register this run and bind its handle and task manager to the current context."""
+    ) -> tuple[RunHandle, contextvars.Token]:
+        """Register this run and bind its handle to the current context."""
         identity = get_identity(cfg)
         owner, tenant = (
             (identity.user_id, identity.tenant) if identity else (cfg.get("user_id"), {})
@@ -228,18 +216,17 @@ class CompiledGraph[StateT: AgentState]:
         if heartbeat:
             handle.heartbeat = self._start_heartbeat(cfg)
         self._runs.register(handle)
-        return handle, current_run.set(handle), current_task_manager.set(self._task_manager)
+        return handle, current_run.set(handle)
 
     async def _finish_run(
         self,
         cfg: dict[str, Any],
         handle: RunHandle,
-        tokens: tuple[contextvars.Token, contextvars.Token],
+        token: contextvars.Token,
         end_run: bool = True,
     ) -> None:
         """Undo :meth:`_begin_run`. Runs in the same ``finally`` that ends the run."""
-        _reset_current_run(tokens[0])
-        _reset_task_manager(tokens[1])
+        _reset_current_run(token)
         try:
             if end_run:
                 await self._end_run(cfg, handle.heartbeat)
@@ -450,10 +437,9 @@ class CompiledGraph[StateT: AgentState]:
         self._refuse_if_closing()
         self._guard_not_realtime()
         self._check_model_choice(config)
-        container_token = activate(self._container)
-        try:
+        async with ContainerContext.use_async(self._container):
             cfg = self._prepare_config(config, is_stream=False)
-            handle, *tokens = self._begin_run(cfg, "invoke")
+            handle, token = self._begin_run(cfg, "invoke")
 
             try:
                 return await self._invoke_handler.invoke(
@@ -463,9 +449,7 @@ class CompiledGraph[StateT: AgentState]:
                     response_granularity,
                 )
             finally:
-                await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
-        finally:
-            deactivate(container_token)
+                await self._finish_run(cfg, handle, token)
 
     def _start_heartbeat(self, cfg: dict[str, Any]) -> asyncio.Task | None:
         """Keep this run's active-run marker alive while the run lasts.
@@ -545,8 +529,7 @@ class CompiledGraph[StateT: AgentState]:
           owner's keys, which the running worker polls. A refused stop answers exactly like a
           thread with no run. With no identity every run on the thread is stopped.
         """
-        container_token = activate(self._container)
-        try:
+        async with ContainerContext.use_async(self._container):
             cfg = self._prepare_config(
                 config, is_stream=bool((config or {}).get("is_stream", False))
             )
@@ -581,8 +564,6 @@ class CompiledGraph[StateT: AgentState]:
                     e,
                 )
                 return {"ok": True, "running": True, "local": True}
-        finally:
-            deactivate(container_token)
 
     async def _owner_stop_config(self, cfg: dict[str, Any]) -> dict[str, Any] | None:
         """The config a cross-process stop is read and written with: the thread owner's.
@@ -794,10 +775,10 @@ class CompiledGraph[StateT: AgentState]:
         self._refuse_if_closing()
         self._guard_not_realtime()
         self._check_model_choice(config)
-        container_token = activate(self._container)
+        container_token = ContainerContext.set_current(self._container)
         try:
             cfg = self._prepare_config(config, is_stream=True)
-            handle, *tokens = self._begin_run(cfg, "stream")
+            handle, token = self._begin_run(cfg, "stream")
 
             try:
                 async for chunk in self._stream_handler.stream(
@@ -811,11 +792,12 @@ class CompiledGraph[StateT: AgentState]:
                     # does); a hard cancel must reach the task running the run now, and that
                     # task must resolve from this graph's container too.
                     handle.task = asyncio.current_task()
-                    container_token = activate(self._container) or container_token
+                    if ContainerContext.get_current() is not self._container:
+                        container_token = ContainerContext.set_current(self._container)
             finally:
-                await self._finish_run(cfg, handle, (tokens[0], tokens[1]))
+                await self._finish_run(cfg, handle, token)
         finally:
-            deactivate(container_token)
+            ContainerContext.reset_current(container_token)
 
     def attach_remote_tools(
         self,
@@ -970,14 +952,14 @@ class CompiledGraph[StateT: AgentState]:
         # socket, resume handle, transcript buffers), so a shared one would cross-wire users.
         agent = node.func.new_session()
         agent._node_name = name
-        container_token = activate(self._container)
+        container_token = ContainerContext.set_current(self._container)
         try:
             cfg = self._prepare_config(config, is_stream=True)
             callback_manager = self._container.try_get(CallbackManager)
             context_manager = self._state_graph._context_manager
             run_state = state if state is not None else await self._realtime_start_state(cfg)
 
-            handle, *tokens = self._begin_run(cfg, "realtime", heartbeat=False)
+            handle, token = self._begin_run(cfg, "realtime", heartbeat=False)
             try:
                 async for event in agent.arun(
                     input_queue,
@@ -988,11 +970,12 @@ class CompiledGraph[StateT: AgentState]:
                     context_manager=context_manager,
                 ):
                     yield event
-                    container_token = activate(self._container) or container_token
+                    if ContainerContext.get_current() is not self._container:
+                        container_token = ContainerContext.set_current(self._container)
             finally:
-                await self._finish_run(cfg, handle, (tokens[0], tokens[1]), end_run=False)
+                await self._finish_run(cfg, handle, token, end_run=False)
         finally:
-            deactivate(container_token)
+            ContainerContext.reset_current(container_token)
 
     async def _realtime_start_state(self, cfg: dict[str, Any]) -> AgentState:
         """The state a realtime session starts from: the thread's saved state, else a copy.
@@ -1228,7 +1211,7 @@ class CompiledGraph[StateT: AgentState]:
             logger.exception("Error shutting down background tasks: %s", e)
 
         # 6a. Close checkpointer (may have pending writes)
-        if self._checkpointer and (skip := self._skip_close(self._checkpointer, "Checkpointer")):
+        if self._checkpointer and (skip := self._skip_close()):
             stats["checkpointer"] = skip
         elif self._checkpointer:
             try:
@@ -1247,7 +1230,7 @@ class CompiledGraph[StateT: AgentState]:
             stats["checkpointer"] = {"status": "skipped", "reason": "no checkpointer"}
 
         # 6b. Close publisher (event delivery)
-        if self._publisher and (skip := self._skip_close(self._publisher, "Publisher")):
+        if self._publisher and (skip := self._skip_close()):
             stats["publisher"] = skip
         elif self._publisher:
             try:
@@ -1266,7 +1249,7 @@ class CompiledGraph[StateT: AgentState]:
             stats["publisher"] = {"status": "skipped", "reason": "no publisher"}
 
         # 6c. Close store (data persistence)
-        if self._store and (skip := self._skip_close(self._store, "Store")):
+        if self._store and (skip := self._skip_close()):
             stats["store"] = skip
         elif self._store:
             try:

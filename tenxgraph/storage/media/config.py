@@ -1,8 +1,10 @@
 """Configuration models for multimodal content handling."""
 
+import warnings
 from enum import Enum
+from typing import Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ImageHandling(str, Enum):
@@ -25,14 +27,14 @@ class MultimodalConfig(BaseModel):
     """Per-agent configuration for multimodal content processing.
 
     Attributes:
-        image_handling: How to send images to the provider.
-        document_handling: How to process documents before sending.
+        image_handling: Deprecated, no effect, removed in 2.0.
+        document_handling: Deprecated, no effect, removed in 2.0.
         max_image_size_mb: Maximum allowed image size in megabytes.
         max_image_dimension: Resize images if either dimension exceeds this.
         max_image_pixels: Refuse images with more pixels than this before decoding
             (``None`` disables the check).
         supported_image_types: Allowed image MIME types.
-        supported_doc_types: Allowed document MIME types.
+        supported_doc_types: Deprecated, no effect, removed in 2.0.
     """
 
     image_handling: ImageHandling = ImageHandling.BASE64
@@ -50,3 +52,14 @@ class MultimodalConfig(BaseModel):
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
+
+    @model_validator(mode="after")
+    def _warn_unused_fields(self) -> Self:
+        for name in ("image_handling", "document_handling", "supported_doc_types"):
+            if getattr(self, name) != type(self).model_fields[name].default:
+                warnings.warn(
+                    f"MultimodalConfig.{name} has no effect and will be removed in 2.0.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
+        return self
