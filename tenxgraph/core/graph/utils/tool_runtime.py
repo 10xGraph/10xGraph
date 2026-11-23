@@ -9,9 +9,11 @@ deterministic merge of the branches back into the shared state. One copy, used b
 
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
+from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node._helpers import generic_tool_failure
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
@@ -19,19 +21,23 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     handoff_target,
     handoff_tool_messages,
+    parse_call_arguments,
 )
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.storage.checkpointer import BaseCheckpointer
-from tenxgraph.utils import metrics
+from tenxgraph.utils import CallbackContext, InvocationType, metrics
 from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
+from tenxgraph.utils.log_safety import error_details, log_safe
 
 
 logger = logging.getLogger("tenxgraph.graph")
 
 
 class ToolRuntimeMixin:
-    """Ledger and parallel-merge helpers. The host class provides ``self.name``."""
+    """Ledger, parallel-merge and node-call helpers. The host provides ``name`` and ``func``."""
 
     name: str
     func: Any
@@ -138,44 +144,176 @@ class ToolRuntimeMixin:
         whatever the tool raised; :meth:`_failure_message` turns either into the result
         the model sees.
         """
+        timeout, tool_attrs = self._start_tool_metrics(function_name, config)
+        with self._tool_metrics(tool_attrs):
+            return await execute_with_guards(
+                self.func.invoke(
+                    function_name,
+                    function_args,
+                    tool_call_id=tool_call_id,
+                    state=state,
+                    config=config,
+                    **invoke_kwargs,
+                ),
+                timeout=timeout,
+                on_timeout=lambda: self._tool_timeout_error(function_name, timeout),
+            )
+
+    def _start_tool_metrics(
+        self, function_name: str, config: dict[str, Any]
+    ) -> tuple[float | None, dict[str, str]]:
+        """Count one tool call. Returns its ``tool_timeout`` and metric attributes."""
         timeout = resolve_timeout(config, "tool_timeout", DEFAULT_TOOL_TIMEOUT_SECONDS)
         # The name comes from the model. Only a tool this node can run is a safe metric
         # label; anything else would create a new series per made-up name.
         known = self.func.knows_tool(function_name, config)
         tool_attrs = {"node": self.name, "tool": function_name if known else "unknown"}
         metrics.counter("tenxgraph.tool.calls").inc(attributes=tool_attrs)
+        return timeout, tool_attrs
 
+    @staticmethod
+    @contextmanager
+    def _tool_metrics(tool_attrs: dict[str, str]) -> Iterator[None]:
+        """Time one tool call and count its timeouts and errors."""
         with metrics.timer("tenxgraph.tool.duration", attributes=tool_attrs):
             try:
-                return await execute_with_guards(
-                    self.func.invoke(
-                        function_name,
-                        function_args,
-                        tool_call_id=tool_call_id,
-                        state=state,
-                        config=config,
-                        **invoke_kwargs,
-                    ),
-                    timeout=timeout,
-                    on_timeout=lambda: NodeTimeoutError(
-                        message=(
-                            f"Tool '{function_name}' exceeded its timeout of {timeout}s "
-                            f"and was cancelled"
-                        ),
-                        error_code="NODE_TIMEOUT_002",
-                        context={
-                            "node_name": self.name,
-                            "tool_name": function_name,
-                            "timeout": timeout,
-                        },
-                    ),
-                )
+                yield
             except NodeTimeoutError:
                 metrics.counter("tenxgraph.tool.timeouts").inc(attributes=tool_attrs)
                 raise
             except Exception:
                 metrics.counter("tenxgraph.tool.errors").inc(attributes=tool_attrs)
                 raise
+
+    def _tool_timeout_error(self, function_name: str, timeout: float | None) -> NodeTimeoutError:
+        return NodeTimeoutError(
+            message=f"Tool '{function_name}' exceeded its timeout of {timeout}s and was cancelled",
+            error_code="NODE_TIMEOUT_002",
+            context={"node_name": self.name, "tool_name": function_name, "timeout": timeout},
+        )
+
+    async def _ledger_lookup(
+        self,
+        checkpointer: Any,
+        config: dict[str, Any],
+        origin_message_id: str | None,
+        tool_call_id: str,
+        function_name: str,
+    ) -> tuple[str | None, Any]:
+        """The call's ledger key, and its recorded result when it already ran.
+
+        The key is None when the ledger is off for this call, which turns both the replay
+        lookup and the record after the call off. A recorded result is reused instead of
+        running the tool a second time.
+        """
+        ledger_key = (
+            self._ledger_key(origin_message_id, tool_call_id)
+            if self._ledger_enabled(checkpointer, self.func, function_name)
+            else None
+        )
+        if not (checkpointer and ledger_key):
+            return ledger_key, None
+        recorded = await self._get_recorded_tool_result(checkpointer, config, ledger_key)
+        if recorded is not None:
+            logger.info(
+                "Node '%s': tool '%s' (call %s) already executed; "
+                "replaying recorded result instead of re-running it",
+                self.name,
+                log_safe(function_name),
+                log_safe(tool_call_id),
+            )
+        return ledger_key, recorded
+
+    def _checked_tool_args(
+        self, tool_call: dict[str, Any], function_name: str
+    ) -> tuple[dict[str, Any], str | None]:
+        """Parse the call's arguments. Returns them and an error when they are unusable.
+
+        An LLM can emit malformed arguments (cut off at the token limit, empty, not an
+        object). That is the model's mistake: the caller reports it back as a tool error
+        and the tool never runs with guessed arguments.
+        """
+        function_args, args_error = parse_call_arguments(tool_call)
+        if args_error:
+            logger.warning(
+                "Node '%s': tool '%s' called with invalid arguments: %s",
+                self.name,
+                log_safe(function_name),
+                log_safe(args_error, 500),
+            )
+            return function_args, args_error
+        logger.info(
+            "Node '%s' executing tool '%s' with %d arguments",
+            self.name,
+            log_safe(function_name),
+            len(function_args),
+        )
+        logger.debug("Tool arguments: %s", function_args)
+        return function_args, None
+
+    def _tool_calls_or_raise(self, last_message: Message) -> list[dict[str, Any]]:
+        """The tool calls of ``last_message``; a ToolNode with none to run is an error."""
+        logger.debug("Node '%s' calling tools from message", self.name)
+        if (
+            hasattr(last_message, "tools_calls")
+            and last_message.tools_calls
+            and len(last_message.tools_calls) > 0
+        ):
+            return last_message.tools_calls
+        logger.exception("Node '%s': No tool calls to execute", self.name)
+        raise NodeError(
+            message="No tool calls to execute",
+            error_code="NODE_002",
+            context={"node_name": self.name},
+        )
+
+    def _node_callback_context(self, config: dict[str, Any], function_name: str) -> CallbackContext:
+        """The callback context of a function or agent node call."""
+        return CallbackContext(
+            invocation_type=InvocationType.AI,
+            node_name=self.name,
+            function_name=function_name,
+            metadata={"config": public_config(config)},
+        )
+
+    def _publish_node_start(
+        self, config: dict[str, Any], state: AgentState, function_name: str
+    ) -> EventModel:
+        """Publish the NODE_EXECUTION event of a function or agent node call."""
+        last_message = state.context[-1] if state.context and len(state.context) > 0 else None
+        event = EventModel.default(
+            config,
+            data={"state": state},
+            event=Event.NODE_EXECUTION,
+            content_type=[ContentType.STATE],
+            node_name=self.name,
+            extra={
+                "node": self.name,
+                "function_name": function_name,
+                "last_message": last_message,
+            },
+        )
+        publish_event(event)
+        return event
+
+    def _publish_node_recovered(self, event: EventModel, recovery_result: Any) -> None:
+        """Publish END for a node call that an ``on_error`` callback recovered."""
+        logger.info("Node '%s' recovered from error using callback result", self.name)
+        event.event_type = EventType.END
+        event.data["message"] = recovery_result
+        event.content_type = [ContentType.MESSAGE, ContentType.STATE]
+        publish_event(event)
+
+    def _publish_node_failed(
+        self, event: EventModel, error: Exception, config: dict[str, Any]
+    ) -> None:
+        """Publish ERROR for a node call no callback recovered; the caller re-raises."""
+        logger.error("Node '%s' could not recover from error", self.name)
+        event.event_type = EventType.ERROR
+        event.data["error"] = str(error)
+        event.data.update(error_details(error, config))
+        event.content_type = [ContentType.ERROR, ContentType.STATE]
+        publish_event(event)
 
     async def _get_recorded_tool_result(
         self,

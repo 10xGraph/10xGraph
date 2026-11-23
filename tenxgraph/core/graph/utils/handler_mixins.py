@@ -180,7 +180,7 @@ class InterruptConfigMixin:
         self.interrupt_after = interrupt_after or []
 
 
-def _mirror_last_message(event: EventModel, messages: list[Message], stringify: bool) -> None:
+def mirror_last_message(event: EventModel, messages: list[Message], stringify: bool) -> None:
     """Copy the last message's text and blocks onto ``event``.
 
     ``stringify`` wraps the text in ``str()``, as the stream path has always done.
@@ -432,7 +432,7 @@ class GraphRunMixin:
         event.event_type = EventType.UPDATE
         event.data["state"] = state
         event.data["messages"] = messages
-        _mirror_last_message(event, messages, stringify)
+        mirror_last_message(event, messages, stringify)
         event.content_type = [ContentType.STATE, ContentType.MESSAGE]
         publish_event(event)
         return state
@@ -600,7 +600,7 @@ class GraphRunMixin:
         event.event_type = EventType.END
         event.data["state"] = state
         event.data["messages"] = messages
-        _mirror_last_message(event, messages, stringify)
+        mirror_last_message(event, messages, stringify)
         event.content_type = [ContentType.STATE, ContentType.MESSAGE]
         event.metadata["status"] = "Graph execution completed"
         event.metadata["step"] = step
