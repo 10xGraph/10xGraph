@@ -7,9 +7,7 @@ across BackgroundTaskManager and all publisher implementations.
 import asyncio
 import gc
 import logging
-import sys
 import time
-from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 

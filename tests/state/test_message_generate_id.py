@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from tenxgraph.core.state.message import generate_id
 

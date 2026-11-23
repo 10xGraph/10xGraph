@@ -2,9 +2,6 @@
 Tests for QdrantStore implementation.
 """
 
-import asyncio
-import uuid
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -183,7 +180,6 @@ class TestQdrantStore:
     @pytest.mark.asyncio
     async def test_existing_collection_ensures_payload_indexes(self, qdrant_store, mock_qdrant_client):
         """Test that payload indexes are ensured even when the collection already exists."""
-        from qdrant_client.http.models import PayloadSchemaType
 
         existing = MagicMock()
         existing.name = "test_collection"

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.message import Message
-from tenxgraph.core.state.message_block import TextBlock, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state.message_block import ToolCallBlock, ToolResultBlock
 from tenxgraph.core.state.summary_context_manager import (
     SummaryContextManager,
     _estimate_tokens,

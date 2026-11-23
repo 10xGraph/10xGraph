@@ -17,7 +17,7 @@ from tenxgraph.qa.evaluation.criteria.llm_utils import LLMCallerMixin, _parse_mo
 from tenxgraph.qa.evaluation.token_usage import TokenUsage
 from tenxgraph.qa.evaluation.criteria.rubric import RubricBasedCriterion
 from tenxgraph.qa.evaluation.criteria.simulation_goals import SimulationGoalsCriterion
-from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase, ToolCall
+from tenxgraph.qa.evaluation.dataset.eval_set import EvalCase
 from tenxgraph.qa.evaluation.execution.result import ExecutionResult
 
 

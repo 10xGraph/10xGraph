@@ -18,7 +18,6 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from tenxgraph.qa.testing.in_memory_store import InMemoryStore
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.storage.checkpointer.sqlite_checkpointer import SqliteCheckpointer
 

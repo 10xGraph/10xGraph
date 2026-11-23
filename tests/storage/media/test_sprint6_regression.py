@@ -1,6 +1,5 @@
 """Tests for Sprint 6: API integration, cleanup, and regression."""
 
-from unittest.mock import MagicMock, patch
 
 import pytest
 

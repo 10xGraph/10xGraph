@@ -1426,7 +1426,6 @@ class TestResolveTools:
 
     async def test_named_node_key_error_raises(self):
         """Cover lines 719-720: container.call_factory raises KeyError."""
-        from injectq.utils.exceptions import DependencyNotFoundError
 
         agent = _make_openai_agent(tool_node="MISSING")
         agent._tool_node = None

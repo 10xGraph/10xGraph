@@ -2,70 +2,26 @@
 
 The class lives here; its methods are grouped in the private ``_pg_*`` mixin modules next to
 this file. Module globals read at call time (``HAS_ASYNCPG``, ``HAS_REDIS``, ``Redis``,
-``asyncpg``, ``_monotonic``) stay here so tests can patch them. Everything the module exposed
-before the split is still importable from it.
+``asyncpg``, ``_monotonic``) stay here so tests can patch them. ``CURRENT_SCHEMA_VERSION`` is
+re-exported for callers that import it from this path.
 """
 
-# ruff: noqa: F401
 import asyncio
-import functools
-import json
 import logging
-import re
 import time
-import uuid
-from collections.abc import Awaitable, Callable, Sequence
-from datetime import timedelta
-from typing import Any, TypeVar
-from urllib.parse import quote, unquote
+from typing import Any
 
 from injectq import InjectQ
 
-from tenxgraph.core.authz import owner_id
-from tenxgraph.core.exceptions.storage_exceptions import (
-    StaleStateError,
-    StorageError,
-    ThreadNotFoundError,
-    TransientStorageError,
-)
-from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage._pg_common import (
-    DEFAULT_ACQUIRE_TIMEOUT,
     DEFAULT_DDL_LOCK_TIMEOUT,
-    DEFAULT_POOL_CONFIG,
-    apply_migrations,
-    loads_jsonb,
-    recorded_schema_version,
-    retry_on_connection_error,
-    run_on_connection,
 )
 from tenxgraph.storage.columns import (
-    ColumnSpec,
-    Isolation,
-    build_isolation_where,
-    column_ddl,
-    column_value_errors,
     ddl_lock_timeout_setting,
-    ddl_session,
-    ensure_column_indexes,
-    ensure_columns,
-    ensure_index,
-    ensure_rls,
-    index_catalog,
     parse_columns,
     quote_identifier,
-    resolve_isolation,
-    rls_all_rows_settings,
-    rls_policy_expression,
-    rls_policy_name,
-    role_bypasses_rls,
-    warn_if_rls_bypassed,
 )
-from tenxgraph.storage.columns import (
-    rows_affected as _rows_affected,
-)
-from tenxgraph.storage.sql_filter import FilterSchema, compile_filters, validate_filters
-from tenxgraph.utils import ThreadInfo, metrics
+from tenxgraph.storage.sql_filter import FilterSchema
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_access import _PgAccessMixin
@@ -76,15 +32,7 @@ from ._pg_messages import _PgMessagesMixin
 from ._pg_schema import _PgSchemaMixin
 from ._pg_state import _PgStateMixin
 from ._pg_support import (
-    _CACHE_CAS_LUA,
-    _CACHE_VERSION_KEY,
-    _CLEAR_IF_LUA,
-    _MAX_SKIPPED_INVALIDATIONS,
-    _NO_VERSION,
-    _REDIS_CONNECTION_ERRORS,
-    _THREAD_CHILD_TABLES,
-    _THREAD_IDENTITY_KEY,
-    CURRENT_SCHEMA_VERSION,
+    CURRENT_SCHEMA_VERSION,  # noqa: F401  (re-export: callers import it from this module path)
     DEFAULT_CACHE_TTL,
     DEFAULT_PG_ACQUIRE_TIMEOUT,
     DEFAULT_PG_POOL_CONFIG,
@@ -93,21 +41,14 @@ from ._pg_support import (
     DEFAULT_STATE_HISTORY_LIMIT,
     HAS_ASYNCPG,
     HAS_REDIS,
-    ID_TYPE_MAP,
-    SCHEMA_INIT_LOCK_ID,
-    STATE_VERSION_CONFIG_KEY,
     THREAD_BUILTIN_COLUMNS,
     BlockingConnectionPool,
-    Pool,
     Redis,
     StateT,
-    _Isolation,
-    _RedisUnavailable,
-    _same_value,
     asyncpg,
 )
 from ._pg_threads import _PgThreadsMixin
-from .base_checkpointer import BaseCheckpointer, validate_page
+from .base_checkpointer import BaseCheckpointer
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")

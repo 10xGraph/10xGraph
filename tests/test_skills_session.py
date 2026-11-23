@@ -15,8 +15,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from tenxgraph.core.skills.models import SkillConfig, SkillMeta
-from tenxgraph.core.skills.registry import SkillsRegistry
+from tenxgraph.core.skills.models import SkillConfig
 
 
 # ────────────────────────────────────────────────────────────────────────────

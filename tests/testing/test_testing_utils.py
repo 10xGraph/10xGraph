@@ -4,7 +4,7 @@ import pytest
 
 from tenxgraph.core.graph import StateGraph, ToolNode, BaseAgent
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.storage.store import  MemorySearchResult, MemoryType
+from tenxgraph.storage.store import  MemorySearchResult
 from tenxgraph.qa.testing import MockToolRegistry, TestAgent, TestContext, InMemoryStore
 from tenxgraph.utils import END
 

@@ -5,13 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
 import asyncio
 import json
-import uuid
 
 from tenxgraph.qa.evaluation.simulators.user_simulator import (
     UserSimulator,
     BatchSimulator,
-    ConversationScenario,
-    SimulationResult
+    ConversationScenario
 )
 from tenxgraph.qa.evaluation.config.eval_config import UserSimulatorConfig
 from tenxgraph.qa.evaluation.criteria.base import BaseCriterion, CriterionResult

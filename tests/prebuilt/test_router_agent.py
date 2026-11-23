@@ -1,7 +1,6 @@
 """Comprehensive tests for the Router prebuilt agent."""
 
 import pytest
-from unittest.mock import Mock
 
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.core.graph import ToolNode, CompiledGraph

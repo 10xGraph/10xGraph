@@ -1,6 +1,5 @@
 """Tests for EvalPresets configuration factory."""
 
-import pytest
 
 from tenxgraph.qa.evaluation.config.presets import EvalPresets
 from tenxgraph.qa.evaluation.config.eval_config import EvalConfig, MatchType

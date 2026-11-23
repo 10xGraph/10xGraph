@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import sys
 from io import StringIO
 
 import pytest

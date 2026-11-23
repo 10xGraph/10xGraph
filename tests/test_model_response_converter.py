@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import logging
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import Mock, AsyncMock, patch
 
 import pytest
 

@@ -6,7 +6,6 @@ including validation, serialization, and edge cases.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import Mock
 from uuid import UUID
 import pytest
 

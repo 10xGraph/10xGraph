@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import Mock, patch
 
 import pytest
 
-from tenxgraph.core.graph import CompiledGraph, ToolNode
+from tenxgraph.core.graph import CompiledGraph
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import END

@@ -3,7 +3,7 @@
 import pytest
 
 from tenxgraph.core.graph import Agent, StateGraph, ToolNode
-from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state import AgentState
 from tenxgraph.utils import END
 
 

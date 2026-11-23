@@ -2,7 +2,6 @@
 
 import pytest
 
-from tenxgraph.core.state import MediaRef
 from tenxgraph.storage.media.resolver import MediaRefResolver
 from tenxgraph.utils.media_scheme import is_internal_media_url, strip_media_scheme
 

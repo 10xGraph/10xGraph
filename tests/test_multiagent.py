@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 from injectq import Inject, InjectQ, inject
-from pydantic import Field
 
 from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph import CompiledGraph, StateGraph

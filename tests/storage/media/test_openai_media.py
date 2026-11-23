@@ -1,7 +1,6 @@
 """Tests for Sprint 5: OpenAI image delivery and message conversion."""
 
 import base64
-from unittest.mock import MagicMock, patch
 
 import pytest
 

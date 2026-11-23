@@ -10,7 +10,6 @@ Covers:
 """
 
 import base64
-import json
 import tempfile
 from pathlib import Path
 
@@ -20,7 +19,6 @@ from tenxgraph.storage.media.config import DocumentHandling, ImageHandling, Mult
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import (
     AudioBlock,
-    ContentBlock,
     DocumentBlock,
     ImageBlock,
     MediaRef,

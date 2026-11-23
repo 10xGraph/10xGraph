@@ -9,7 +9,7 @@ import pytest
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.core.exceptions import GraphRecursionError
 from tenxgraph.core.graph import StateGraph
-from tenxgraph.core.state import AgentState, ExecutionStatus, Message
+from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import Command, END, ResponseGranularity
 
 

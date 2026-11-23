@@ -13,56 +13,27 @@ Vectors are sent to Postgres as text literals cast to ``vector`` and the store n
 a pool you pass in as is, and open connections before the extension exists.
 """
 
-# ruff: noqa: F401
-
 import asyncio
 import hashlib
-import json
 import logging
 import math
-import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
 
-from tenxgraph.core.state import Message
 from tenxgraph.storage._pg_common import (
     DEFAULT_ACQUIRE_TIMEOUT,
     DEFAULT_DDL_LOCK_TIMEOUT,
     DEFAULT_POOL_CONFIG,
-    apply_migrations,
-    connection_errors,
-    loads_jsonb,
-    recorded_schema_version,
     retry_on_connection_error,
     run_on_connection,
 )
 from tenxgraph.storage.columns import (
-    ColumnSpec,
-    Isolation,
-    column_value_errors,
     ddl_lock_timeout_setting,
-    ddl_session,
-    drop_index,
-    ensure_column_indexes,
-    ensure_columns,
-    ensure_index,
-    ensure_rls,
-    index_catalog,
     parse_columns,
     quote_identifier,
-    resolve_isolation,
-    rls_all_rows_settings,
-    rls_policy_expression,
-    rls_policy_name,
-    rows_affected,
-    warn_if_rls_bypassed,
 )
 from tenxgraph.storage.sql_filter import (
-    MAX_CONDITIONS,
-    FilterError,
     FilterSchema,
-    compile_filters,
-    validate_filters,
 )
 from tenxgraph.utils.log_safety import describe_error
 
@@ -70,40 +41,22 @@ from ._pgv_query import _PgvQueryMixin
 from ._pgv_reads import _PgvReadsMixin
 from ._pgv_schema import _PgvSchemaMixin
 from ._pgv_support import (
-    _ITERATIVE_SCAN_SETTING,
-    _METRIC_SQL,
-    _MIGRATIONS,
-    _NULLS_NOT_DISTINCT_MIN_SERVER,
-    _OPCLASS_TO_METRIC,
-    _SELECT_COLUMNS,
     _SUPPORTED_STRATEGIES,
-    _SYSTEM_METADATA_KEYS,
     _TABLE_RE,
     _TS_CONFIG_RE,
-    CURRENT_SCHEMA_VERSION,
+    CURRENT_SCHEMA_VERSION,  # noqa: F401  (re-export: callers import it from this module path)
     DEFAULT_TABLE,
     HAS_ASYNCPG,
-    HNSW_MAX_DIMENSIONS,
-    ITERATIVE_SCAN_MIN_VERSION,
-    MIN_PGVECTOR_VERSION,
     STORE_BUILTIN_COLUMNS,
-    _loads_jsonb,
-    _parse_version,
     _quote_ident,
-    _similarity_sql,
-    _TenantContext,
-    _Where,
     asyncpg,
 )
 from ._pgv_writes import _PgvWritesMixin
-from .base_store import BaseStore, limit_to_token_budget
+from .base_store import BaseStore
 from .embedding.base_embedding import BaseEmbedding
 from .qdrant_store import DEFAULT_COLLECTION
 from .store_schema import (
     DistanceMetric,
-    MemoryRecord,
-    MemorySearchResult,
-    MemoryType,
     RetrievalStrategy,
 )
 

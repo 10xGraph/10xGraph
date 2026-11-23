@@ -20,6 +20,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from tenxgraph.core.state import AgentState
 from tenxgraph.storage.checkpointer import pg_checkpointer as pg
+from tenxgraph.storage.checkpointer import _pg_support as support
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 
 
@@ -68,7 +69,7 @@ class _FakeRedis:
 
     async def eval(self, script, numkeys, key, *args):
         self._call("eval")
-        if script == pg._CACHE_CAS_LUA:
+        if script == support._CACHE_CAS_LUA:
             self.data[key] = args[0]
             return 1
         if self.data.get(key) == args[0]:
@@ -253,7 +254,7 @@ async def test_unversioned_cache_entry_is_not_served_over_a_newer_durable_state(
     cp, fake = _cp()
     await cp.aput_state_cache(_cfg(), AgentState())  # no version: before any durable write
     key = cp._get_thread_key("t1", "u1")
-    assert pg._CACHE_VERSION_KEY not in json.loads(fake.data[key])
+    assert support._CACHE_VERSION_KEY not in json.loads(fake.data[key])
 
     durable = AgentState()
     cp.aget_state = AsyncMock(return_value=durable)
@@ -276,10 +277,10 @@ async def test_unversioned_cache_entry_is_served_while_postgres_has_no_state(clo
 @pytest.mark.asyncio
 async def test_versioned_entry_left_behind_by_a_skipped_write_through_is_dropped(clock):
     cp, fake = _cp()
-    await cp.aput_state_cache({**_cfg(), pg.STATE_VERSION_CONFIG_KEY: 1}, AgentState())
+    await cp.aput_state_cache({**_cfg(), support.STATE_VERSION_CONFIG_KEY: 1}, AgentState())
     await _open(cp, fake, RedisConnectionError("down"))
     # A durable save to version 2 happens now; its cache write-through is skipped.
-    v2 = {**_cfg(), pg.STATE_VERSION_CONFIG_KEY: 2}
+    v2 = {**_cfg(), support.STATE_VERSION_CONFIG_KEY: 2}
     assert await cp.aput_state_cache(v2, AgentState()) is None
 
     clock[0] += 5.0
@@ -295,7 +296,7 @@ async def test_skipped_invalidation_is_applied_before_anything_is_read_after_rec
     """A thread deleted (or cleared) while Redis was down could be re-created up to the cached
     version during the outage; the version check alone would then serve the deleted state."""
     cp, fake = _cp()
-    await cp.aput_state_cache({**_cfg(), pg.STATE_VERSION_CONFIG_KEY: 1}, AgentState())
+    await cp.aput_state_cache({**_cfg(), support.STATE_VERSION_CONFIG_KEY: 1}, AgentState())
     key = cp._get_thread_key("t1", "u1")
     await _open(cp, fake, RedisConnectionError("down"))
 

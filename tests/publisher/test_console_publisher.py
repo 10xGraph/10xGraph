@@ -7,13 +7,11 @@ output formats, publish behavior, and integration scenarios.
 
 import pytest
 import logging
-from io import StringIO
-from unittest.mock import patch, Mock, call
-from typing import Any
+from unittest.mock import patch
 
 from tenxgraph.runtime.publisher.console_publisher import ConsolePublisher
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.runtime.publisher.events import EventModel, Event, EventType, ContentType
+from tenxgraph.runtime.publisher.events import EventModel, Event, EventType
 
 
 class TestConsolePublisherInheritance:
