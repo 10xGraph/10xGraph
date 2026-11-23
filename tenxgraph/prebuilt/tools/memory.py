@@ -25,10 +25,8 @@ from typing import Any, Literal
 
 from injectq import Inject
 
-from tenxgraph.core.authz import Reach, get_identity
 from tenxgraph.storage.store.base_store import (
     BaseStore,
-    system_user_id,
     warn_unsupported_strategy,
 )
 from tenxgraph.storage.store.long_term_memory import (
@@ -37,6 +35,14 @@ from tenxgraph.storage.store.long_term_memory import (
     _format_search_results,
     _strip_thread_id,
     _validate_memory_type,
+)
+from tenxgraph.storage.store.memory_config import (
+    _memory_scope_config,
+    _memory_scope_limit,
+    _memory_scope_retrieval_strategy,
+    _memory_scope_score_threshold,
+    _memory_scope_store,
+    _pin_identity,  # noqa: F401
 )
 from tenxgraph.storage.store.store_schema import MemoryTypeName
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
@@ -68,99 +74,9 @@ _USER_ACTION_HELP = {
 # ---------------------------------------------------------------------------
 # Scope helpers
 # ---------------------------------------------------------------------------
-# Used by both the user/agent memory tool factories below AND by the preload
-# path in AgentMemoryMixin._build_memory_block.
+# The scope helpers live in ``tenxgraph.storage.store.memory_config`` next to
+# ``MemoryConfig``; they are re-imported here under their old names.
 # ---------------------------------------------------------------------------
-
-
-def _memory_scope_store(
-    memory_config: Any,
-    scope_config: Any,
-    injected_store: BaseStore | None,
-) -> BaseStore | None:
-    return scope_config.store or memory_config.store or injected_store
-
-
-def _memory_scope_limit(memory_config: Any, scope_config: Any, limit: int | None) -> int:
-    return limit or scope_config.limit or memory_config.limit
-
-
-def _memory_scope_score_threshold(memory_config: Any, scope_config: Any) -> float | None:
-    if scope_config.score_threshold is not None:
-        return scope_config.score_threshold
-    return memory_config.score_threshold
-
-
-def _memory_scope_retrieval_strategy(memory_config: Any, scope_config: Any) -> Any:
-    """Scope value wins over the MemoryConfig value; ``None`` = the store's default."""
-    if scope_config.retrieval_strategy is not None:
-        return scope_config.retrieval_strategy
-    return memory_config.retrieval_strategy
-
-
-def _pin_identity(cfg: dict[str, Any], owner: str | None) -> None:
-    """Set the identity in ``cfg`` to reach ``own``, with ``owner`` as its user when given.
-
-    Tenant values are kept. Without an identity, ``cfg`` is left as it is.
-    """
-    identity = get_identity(cfg)
-    if identity is None:
-        return
-    update: dict[str, Any] = {"reach": Reach.OWN}
-    if owner is not None:
-        update["user_id"] = owner
-    cfg["user"] = identity.model_copy(update=update)
-
-
-def _memory_scope_config(
-    runtime_config: dict[str, Any] | None,
-    memory_config: Any,
-    scope_config: Any,
-    *,
-    scope: Literal["user", "agent"],
-) -> dict[str, Any]:
-    cfg: dict[str, Any] = {
-        **(memory_config.config or {}),
-        **(scope_config.config or {}),
-        **(runtime_config or {}),
-    }
-
-    # The scope's own collection always wins over any collection in the merged config,
-    # including one from the run config. A function gets the run config (identity comes
-    # from the authenticated config, never state).
-    scope_collection = scope_config.resolve_collection(cfg)
-    if scope_collection is not None:
-        cfg["collection"] = scope_collection
-
-    if scope == "user":
-        user_id = getattr(scope_config, "user_id", None)
-        if user_id:
-            # Used only without an identity: with one, the identity is the owner (owner_id)
-            # so a fixed id never shares one user's memory with every authenticated caller.
-            cfg["user_id"] = user_id
-        # User memory is always the caller's own, whatever their reach.
-        _pin_identity(cfg, None)
-        return cfg
-
-    agent_id = getattr(scope_config, "agent_id", None)
-    app_id = getattr(scope_config, "app_id", None)
-    # Agent/app memory is shared data: it is owned by a reserved system owner named after the
-    # agent (or app), never by the user of the current run. The user filter then keeps one
-    # agent's shared memories apart from another's.
-    owner = agent_id or app_id
-    if not owner:
-        raise ValueError("Agent memory needs agent_id or app_id to name its shared owner")
-    cfg["user_id"] = system_user_id(owner)
-    # A wider reach must not turn the shared-data query into one over other users' rows.
-    _pin_identity(cfg, cfg["user_id"])
-    if agent_id:
-        cfg["agent_id"] = agent_id
-        # Existing Qdrant-backed stores use ``thread_id`` as the secondary
-        # scope field, so agent memory maps agent identity there intentionally.
-        cfg["thread_id"] = agent_id
-    if app_id:
-        cfg["app_id"] = app_id
-    return cfg
 
 
 def _memory_tool_metadata(scope: Literal["user", "agent"]) -> dict[str, Any]:

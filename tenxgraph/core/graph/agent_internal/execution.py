@@ -1543,7 +1543,4 @@ class AgentExecutionMixin:
 
     def _get_converter_key(self) -> str:
         """Return the correct response converter key for the active provider."""
-        effective = getattr(self, "_effective_api_style", self.api_style)
-        if self.provider == "openai" and effective == "responses":
-            return "openai_responses"
-        return self.provider
+        return self._converter_key_of(self)

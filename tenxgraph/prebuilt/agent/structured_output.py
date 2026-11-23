@@ -26,7 +26,6 @@ from injectq import InjectQ
 
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.agent_internal.constants import REASONING_DEFAULT
-from tenxgraph.core.graph.compiled_graph import CompiledGraph
 from tenxgraph.core.graph.state_graph import StateGraph
 from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.skills.models import SkillConfig
@@ -34,14 +33,10 @@ from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.execution_state import register_per_turn_key
 from tenxgraph.core.state.message import Message
+from tenxgraph.prebuilt.agent._graph_base import _PrebuiltGraph
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.config import MultimodalConfig
-from tenxgraph.storage.media.storage.base import BaseMediaStore
-from tenxgraph.storage.media.url_policy import MediaFetchPolicy
-from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import MemoryConfig
-from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.constants import END
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
@@ -267,7 +262,7 @@ def _make_format_node(format_agent: Agent) -> Callable:
 # ---------------------------------------------------------------------------
 
 
-class StructuredOutputAgent[StateT: AgentState]:
+class StructuredOutputAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
     """Self-contained agent that guarantees structured LLM output.
 
     Pass a Pydantic ``BaseModel`` or ``TypedDict`` subclass as *output_schema*.
@@ -413,32 +408,6 @@ class StructuredOutputAgent[StateT: AgentState]:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _new_graph(self) -> StateGraph[StateT]:
-        return StateGraph[StateT](
-            state=self._state,
-            context_manager=self._context_manager,
-            publisher=self._publisher,
-            id_generator=self._id_generator,
-            container=self._container,
-        )
-
-    @staticmethod
-    def _build_tool_node(
-        *,
-        tools: list[Callable],
-        client: Any,
-        pass_user_info_to_mcp: bool,
-        mcp_auth: Any = None,
-    ) -> ToolNode | None:
-        if not tools and client is None:
-            return None
-        return ToolNode(
-            tools,
-            client=client,
-            pass_user_info_to_mcp=pass_user_info_to_mcp,
-            mcp_auth=mcp_auth,
-        )
-
     def _build_generate_agent(self, *, with_schema: bool = True) -> Agent:
         extra: dict[str, Any] = {"output_schema": self._output_schema} if with_schema else {}
         return Agent(
@@ -559,41 +528,3 @@ class StructuredOutputAgent[StateT: AgentState]:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def compile(
-        self,
-        checkpointer: BaseCheckpointer[StateT] | None = None,
-        store: BaseStore | None = None,
-        interrupt_before: list[str] | None = None,
-        interrupt_after: list[str] | None = None,
-        callback_manager: CallbackManager | None = None,
-        media_store: BaseMediaStore | None = None,
-        shutdown_timeout: float = 30.0,
-        media_policy: MediaFetchPolicy | None = None,
-    ) -> CompiledGraph:
-        """Wire the graph and return a :class:`~tenxgraph.core.graph.CompiledGraph`.
-
-        Args:
-            checkpointer: Persistence backend for state snapshots.
-            store: Long-term key-value store.
-            interrupt_before: Node names to pause execution before.
-            interrupt_after: Node names to pause execution after.
-            callback_manager: Callback hooks for observability.
-            media_store: Media/file storage backend.
-            shutdown_timeout: Graceful-shutdown timeout in seconds.
-            media_policy: Which external media URLs the server may download.
-
-        Returns:
-            A compiled, ready-to-invoke graph.
-        """
-        self._configure_graph()
-        return self._graph.compile(
-            checkpointer=checkpointer,
-            store=store,
-            interrupt_before=interrupt_before,
-            interrupt_after=interrupt_after,
-            callback_manager=callback_manager,
-            media_store=media_store,
-            shutdown_timeout=shutdown_timeout,
-            media_policy=media_policy,
-        )

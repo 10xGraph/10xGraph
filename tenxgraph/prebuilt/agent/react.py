@@ -5,21 +5,14 @@ from injectq import InjectQ
 
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.agent_internal.constants import REASONING_DEFAULT
-from tenxgraph.core.graph.compiled_graph import CompiledGraph
-from tenxgraph.core.graph.state_graph import StateGraph
-from tenxgraph.core.graph.tool_node import ToolNode
 from tenxgraph.core.skills.models import SkillConfig
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.message import Message
+from tenxgraph.prebuilt.agent._graph_base import _PrebuiltGraph
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.config import MultimodalConfig
-from tenxgraph.storage.media.storage.base import BaseMediaStore
-from tenxgraph.storage.media.url_policy import MediaFetchPolicy
-from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import MemoryConfig
-from tenxgraph.utils.callbacks import CallbackManager
 from tenxgraph.utils.constants import END
 from tenxgraph.utils.id_generator import BaseIDGenerator, DefaultIDGenerator
 
@@ -59,7 +52,7 @@ def _make_should_use_tools(tool_node_name: str) -> Callable[[AgentState], str]:
     return _route
 
 
-class ReactAgent[StateT: AgentState]:
+class ReactAgent[StateT: AgentState](_PrebuiltGraph[StateT]):
     def __init__(  # noqa: PLR0913
         self,
         model: str,
@@ -95,7 +88,7 @@ class ReactAgent[StateT: AgentState]:
         self._id_generator = id_generator
         self._container = container
 
-        self._graph = self._create_graph()
+        self._graph = self._new_graph()
         self._main_node_name = main_node_name
         self._tool_node_name = tool_node_name
         self._tool_node = self._build_tool_node(
@@ -122,35 +115,8 @@ class ReactAgent[StateT: AgentState]:
             **agent_kwargs,
         )
 
-    def _create_graph(self) -> StateGraph[StateT]:
-        return StateGraph[StateT](
-            state=self._state,
-            context_manager=self._context_manager,
-            publisher=self._publisher,
-            id_generator=self._id_generator,
-            container=self._container,
-        )
-
-    def _build_tool_node(
-        self,
-        *,
-        tools: list[Callable],
-        client: Any,
-        pass_user_info_to_mcp: bool,
-        mcp_auth: Any = None,
-    ) -> ToolNode | None:
-        if not tools and client is None:
-            return None
-
-        return ToolNode(
-            tools,
-            client=client,
-            pass_user_info_to_mcp=pass_user_info_to_mcp,
-            mcp_auth=mcp_auth,
-        )
-
     def _configure_graph(self) -> None:
-        self._graph = self._create_graph()
+        self._graph = self._new_graph()
         self._graph.add_node(self._main_node_name, self._agent)
 
         if self._tool_node is None:
@@ -166,26 +132,3 @@ class ReactAgent[StateT: AgentState]:
         )
         self._graph.add_edge(self._tool_node_name, self._main_node_name)
         self._graph.set_entry_point(self._main_node_name)
-
-    def compile(
-        self,
-        checkpointer: BaseCheckpointer[StateT] | None = None,
-        store: BaseStore | None = None,
-        interrupt_before: list[str] | None = None,
-        interrupt_after: list[str] | None = None,
-        callback_manager: CallbackManager | None = None,
-        media_store: "BaseMediaStore | None" = None,
-        shutdown_timeout: float = 30.0,
-        media_policy: "MediaFetchPolicy | None" = None,
-    ) -> CompiledGraph:
-        self._configure_graph()
-        return self._graph.compile(
-            checkpointer=checkpointer,
-            store=store,
-            interrupt_before=interrupt_before,
-            interrupt_after=interrupt_after,
-            callback_manager=callback_manager,
-            media_store=media_store,
-            shutdown_timeout=shutdown_timeout,
-            media_policy=media_policy,
-        )

@@ -7,8 +7,6 @@ from typing import Any, Protocol
 
 from tenxgraph.core.llm.client_factory import (
     create_llm_client,
-    detect_provider,
-    resolve_provider_and_model,
 )
 
 from .constants import (
@@ -65,25 +63,6 @@ class AgentProviderMixin:
     def _validate_output_type(self: _ProviderAgentLike) -> None:
         """Validate that the selected provider supports the requested output type."""
         validate_output_type(self.provider, self.output_type)
-
-    def _detect_provider_from_model(self, model: str, use_vertex_ai: bool = False) -> str:
-        """Infer the provider from the model name when not explicitly supplied."""
-        return detect_provider(model, use_vertex_ai=use_vertex_ai)
-
-    def _resolve_provider_and_model(
-        self, model: str, use_vertex_ai: bool = False
-    ) -> tuple[str, str]:
-        """Resolve a model string into a ``(provider, model)`` pair.
-
-        Recognised ``provider/`` prefixes (``gemini``, ``google``, ``openai``,
-        ``gpt``) select the provider and are stripped from the model name.
-        Unknown prefixes are kept intact and resolve to the ``openai`` provider
-        so OpenAI-compatible / self-hosted models work out of the box.
-        """
-        return resolve_provider_and_model(model, use_vertex_ai=use_vertex_ai)
-
-    def _create_google_vertex_ai_client(self) -> Any:
-        return create_llm_client("google", use_vertex_ai=True)
 
     def _create_client(
         self: _ProviderAgentLike,

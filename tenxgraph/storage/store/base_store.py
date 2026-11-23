@@ -140,6 +140,23 @@ class BaseStore(ABC):
         """
         raise NotImplementedError
 
+    def _extract_config_values(self, config: dict[str, Any]) -> tuple[Any, Any, str]:
+        """Return ``(user_id, thread_id, collection)`` from the config.
+
+        The collection is the config value, else the store default (a name or a function of
+        the config); it must be a non-empty string.
+        """
+        user_id = owner_id(config)
+        thread_id = config.get("thread_id")
+        collection = config.get("collection")
+        if collection is None:
+            collection = getattr(self, "collection", None)
+            if callable(collection):
+                collection = collection(config)
+        if not isinstance(collection, str) or not collection.strip():
+            raise ValueError(f"collection must be a non-empty string, got {collection!r}")
+        return user_id, thread_id, collection
+
     def _scope_user_id(self, config: dict[str, Any], user_id: str | int | None) -> str | int | None:
         """Return the user_id to scope memory operations by, honoring the caller's reach.
 

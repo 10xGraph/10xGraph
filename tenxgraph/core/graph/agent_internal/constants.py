@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from tenxgraph.core.llm.client_factory import CLIENT_CONSTRUCTOR_KWARGS
+
 
 @dataclass(frozen=True, slots=True)
 class RetryConfig:
@@ -70,18 +72,6 @@ class RetryConfig:
 
 
 DEFAULT_RETRY_CONFIG = RetryConfig()
-
-CLIENT_CONSTRUCTOR_KWARGS = frozenset(
-    {
-        "organization",
-        "project",
-        "timeout",
-        "max_retries",
-        "default_headers",
-        "default_query",
-        "http_client",
-    }
-)
 
 # Keys 10xGraph reads itself from ``llm_kwargs``; no SDK call defines them.
 FRAMEWORK_KWARGS = frozenset({"stream_idle_timeout", "anthropic_cache", "anthropic_backend"})

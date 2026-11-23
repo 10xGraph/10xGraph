@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import traceback
 from typing import Any
+from urllib.parse import urlsplit
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
@@ -31,6 +32,22 @@ def describe_error(exc: BaseException) -> str:
     makes a log line end in a bare colon. Those fall back to ``repr``.
     """
     return str(exc) or repr(exc)
+
+
+def redact_url(url: str) -> str:
+    """Return ``url`` without its query string, fragment and credentials, for logs."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if not parts.scheme or not host:
+            return "<invalid url>"
+        if ":" in host:
+            host = f"[{host}]"
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return f"{parts.scheme}://{host}{parts.path}"
+    except ValueError:
+        return "<invalid url>"
 
 
 # Bounds of the exception text an event carries; the traceback keeps its end (the frames

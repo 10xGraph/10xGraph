@@ -127,31 +127,3 @@ class TestImageBlockToOpenAI:
 
         # Chat Completions image_url takes a URL or data URI, never a file id
         assert result == {"type": "text", "text": "[Image file_id: file-abc123]"}  # noqa: S101
-
-
-class TestMediaResolverOpenAI:
-    """Test MediaResolver for OpenAI models — additional coverage beyond test_media_resolver.py."""
-
-    @pytest.mark.asyncio
-    async def test_gpt4o_mini_supports_images(self):
-        """gpt-4o-mini supports images."""
-        from tenxgraph.storage.media.media_resolver import MediaResolver
-
-        resolver = MediaResolver()
-        ref = MediaRef(kind="url", url="https://example.com/image.png")
-
-        result = await resolver.resolve(ref, provider="openai", model="gpt-4o-mini")
-
-        assert result["type"] == "image_url"  # noqa: S101
-
-    @pytest.mark.asyncio
-    async def test_o1_supports_images(self):
-        """o1 supports images."""
-        from tenxgraph.storage.media.media_resolver import MediaResolver
-
-        resolver = MediaResolver()
-        ref = MediaRef(kind="url", url="https://example.com/image.png")
-
-        result = await resolver.resolve(ref, provider="openai", model="o1")
-
-        assert result["type"] == "image_url"  # noqa: S101

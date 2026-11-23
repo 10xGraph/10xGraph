@@ -7,6 +7,7 @@ import base64
 import logging
 from typing import Any
 
+from tenxgraph.runtime.adapters.llm.google_genai_converter import function_declaration
 from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
 from tenxgraph.storage.media.url_policy import (
     MediaURLError,
@@ -397,18 +398,11 @@ class AgentGoogleMixin:
         """Convert OpenAI-style tool definitions into Google FunctionDeclarations."""
         from google.genai import types
 
-        google_tools = []
-        for tool in tools:
-            if isinstance(tool, dict) and "function" in tool:
-                function = tool["function"]
-                function_decl_kwargs = {
-                    "name": function["name"],
-                    "description": function.get("description", ""),
-                }
-                if "parameters" in function:
-                    function_decl_kwargs["parameters_json_schema"] = function["parameters"]
-                google_tools.append(types.FunctionDeclaration(**function_decl_kwargs))
-        return google_tools
+        return [
+            function_declaration(types, tool["function"])
+            for tool in tools
+            if isinstance(tool, dict) and "function" in tool
+        ]
 
     def _build_google_config(
         self,

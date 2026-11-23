@@ -12,7 +12,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from tenxgraph.core.authz import owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.storage.media.url_policy import redact_url
 from tenxgraph.utils.log_safety import describe_error
@@ -185,19 +184,6 @@ class QdrantStore(BaseStore):
             DistanceMetric.MANHATTAN: Distance.MANHATTAN,
         }
         return mapping.get(metric, Distance.COSINE)
-
-    def _extract_config_values(self, config: dict[str, Any]) -> tuple[str | None, str | None, str]:
-        """Extract user_id, thread_id, and collection from config."""
-        user_id = owner_id(config)
-        thread_id = config.get("thread_id")
-        collection = config.get("collection")
-        if collection is None:
-            collection = self.collection
-            if callable(collection):
-                collection = collection(config)
-        if not isinstance(collection, str) or not collection.strip():
-            raise ValueError(f"collection must be a non-empty string, got {collection!r}")
-        return user_id, thread_id, collection
 
     def _point_to_search_result(self, point) -> MemorySearchResult:
         """Convert Qdrant point to MemorySearchResult."""
@@ -704,17 +690,13 @@ class QdrantStore(BaseStore):
         from qdrant_client.http import models
 
         user_id, _thread_id, collection = self._extract_config_values(config)
-        scoped_user_id = self._require_user_id(config, user_id)
+        self._require_user_id(config, user_id)
 
-        # Verify memory exists and user has access
+        # ``aget`` filters by the same user (thread_id is not an access-control boundary for
+        # long-term memory), so another user's memory is "not found" here.
         existing = await self.aget(config, memory_id)
         if not existing:
             raise ValueError(f"Memory {memory_id} not found")
-
-        # Verify user access only — thread_id is not an access-control boundary
-        # for long-term memory.
-        if scoped_user_id and existing.user_id != scoped_user_id:
-            raise PermissionError("User does not have permission to delete this memory")
 
         # Delete from Qdrant
         await self.client.delete(

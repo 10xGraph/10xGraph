@@ -96,7 +96,7 @@ _PROVIDER_PREFIXES = {
 # ``http_client`` passes straight through to the SDK. It must match the installed
 # openai major: an ``httpx2.AsyncClient`` for openai 3.x, an ``httpx.AsyncClient``
 # for openai 1.x/2.x. See https://github.com/openai/openai-python/blob/main/httpx2.md
-_CLIENT_CONSTRUCTOR_KWARGS = frozenset(
+CLIENT_CONSTRUCTOR_KWARGS = frozenset(
     {
         "organization",
         "project",
@@ -349,7 +349,7 @@ def _create_openai_client(
             "custom base_url that doesn't require authentication."
         )
 
-    client_kwargs = {k: v for k, v in extra_kwargs.items() if k in _CLIENT_CONSTRUCTOR_KWARGS}
+    client_kwargs = {k: v for k, v in extra_kwargs.items() if k in CLIENT_CONSTRUCTOR_KWARGS}
     # Bound the request unless the caller opted into their own timeout.
     client_kwargs.setdefault("timeout", get_default_llm_timeout())
     if base_url:

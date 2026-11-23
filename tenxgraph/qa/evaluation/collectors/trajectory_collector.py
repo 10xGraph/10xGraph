@@ -110,20 +110,7 @@ class TrajectoryCollector(BasePublisher):
         await self.on_event(event)
 
     async def on_event(self, event: EventModel) -> None:
-        now = time.time()
-        if self.start_time is None:
-            self.start_time = now
-        self.end_time = now
-
-        if self.capture_all_events:
-            self.events.append(event)
-
-        if event.event == Event.NODE_EXECUTION:
-            self._process_node_event(event)
-        elif event.event == Event.TOOL_EXECUTION:
-            self._process_tool_event(event)
-        elif event.event == Event.GRAPH_EXECUTION:
-            self._process_graph_event(event)
+        self.on_event_sync(event)
 
     def on_event_sync(self, event: EventModel) -> None:
         now = time.time()

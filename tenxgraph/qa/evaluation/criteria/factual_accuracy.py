@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from tenxgraph.qa.evaluation.criteria.llm_base import TemplatedLLMCriterion
 
@@ -46,6 +46,9 @@ class FactualAccuracyCriterion(TemplatedLLMCriterion):
     name = "factual_accuracy_v1"
     description = "LLM-based factual accuracy evaluation"
 
+    _verdict_key = "is_accurate"
+    _list_key = "errors"
+
     def _build_prompt(self, actual: ExecutionResult, expected: EvalCase) -> str:
         reference = self._extract_reference(expected)
         return FACTUAL_ACCURACY_PROMPT.format(
@@ -53,29 +56,6 @@ class FactualAccuracyCriterion(TemplatedLLMCriterion):
             response=actual.actual_response,
             reference=reference or "Not provided",
         )
-
-    def _collect_extras(self, result_dict: dict[str, Any]) -> dict[str, Any]:
-        return {"errors": result_dict.get("errors", [])}
-
-    def _aggregate_extras(self, per_sample: list[dict[str, Any]]) -> dict[str, Any]:
-        all_errors: list[str] = []
-        for s in per_sample:
-            all_errors.extend(s.get("errors", []))
-        return {"errors": list(set(all_errors))}
-
-    def _build_details(
-        self,
-        scores: list[float],
-        reasonings: list[str],
-        aggregated_extras: dict[str, Any],
-        final_score: float,
-    ) -> dict[str, Any]:
-        return {
-            "is_accurate": final_score >= self.threshold,
-            "samples": len(scores),
-            "reasonings": reasonings,
-            **aggregated_extras,
-        }
 
     def _extract_reference(self, expected: EvalCase) -> str:
         text = self._extract_last_expected_response(expected)

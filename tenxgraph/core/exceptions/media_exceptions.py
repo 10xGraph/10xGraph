@@ -54,7 +54,7 @@ class UnsupportedMediaInputError(Exception):
         self.message = message
 
         logger.error(
-            "UnsupportedMediaInputError [%s/%s]: %s | source=%s, " "transports=%s",
+            "UnsupportedMediaInputError [%s/%s]: %s | source=%s, transports=%s",
             provider,
             model,
             message,
@@ -83,15 +83,14 @@ class UnsupportedMediaInputError(Exception):
         """Return a helpful suggestion based on the failure context."""
         if self.media_type == "image":
             return (
-                "Use a vision-capable model (e.g. gpt-4o, gemini-1.5-pro) "
-                "or remove media inputs."
+                "Use a vision-capable model (e.g. gpt-4o, gemini-1.5-pro) or remove media inputs."
             )
         if self.source_kind == "url":
             return (
                 "Upload the file first and use a file_id reference, "
                 "or switch to a model that supports external URLs."
             )
-        return "Check the model documentation for supported media types " "and input formats."
+        return "Check the model documentation for supported media types and input formats."
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the error to a structured dictionary."""

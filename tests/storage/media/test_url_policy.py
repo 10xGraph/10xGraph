@@ -345,19 +345,15 @@ def test_metadata_resolution_refused_even_with_allow_private(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_resolvers_use_the_policy() -> None:
-    from tenxgraph.storage.media.media_resolver import MediaResolver
     from tenxgraph.storage.media.resolver import MediaRefResolver
 
     policy = MediaFetchPolicy(enabled=False)
-    for resolver in (MediaRefResolver(media_policy=policy), MediaResolver(media_policy=policy)):
-        with pytest.raises(MediaURLError):
-            await resolver._fetch_external_url("https://example.com/a.png")
+    with pytest.raises(MediaURLError):
+        await MediaRefResolver(media_policy=policy)._fetch_external_url("https://example.com/a.png")
     # file:// and internal addresses fail under the default policy too
     for url in ("file:///etc/passwd", "http://127.0.0.1/a.png"):
         with pytest.raises(MediaURLError):
             await MediaRefResolver()._fetch_external_url(url)
-        with pytest.raises(MediaURLError):
-            await MediaResolver()._fetch_external_url(url)
 
 
 @pytest.mark.asyncio

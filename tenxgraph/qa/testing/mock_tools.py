@@ -10,11 +10,13 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ._call_log import _CallLog
+
 
 logger = logging.getLogger("tenxgraph.testing")
 
 
-class MockToolRegistry:
+class MockToolRegistry(_CallLog):
     """Registry for managing mock tools in tests.
 
     Simplifies creating and tracking mock tool calls. Registered tools
@@ -38,6 +40,9 @@ class MockToolRegistry:
         assert tools.get_calls("get_weather")[0]["kwargs"]["city"] == "NYC"
         ```
     """
+
+    _label = "Tool"
+    _args_key = "kwargs"
 
     def __init__(self):
         """Initialize an empty mock tool registry."""
@@ -67,20 +72,10 @@ class MockToolRegistry:
         # Wrap to track calls, preserving the original signature
         @functools.wraps(mock_func)
         def tracked_func(*args: Any, **kwargs: Any) -> Any:
-            if name not in self.calls:
-                self.calls[name] = []
-            self.calls[name].append({"args": args, "kwargs": kwargs})
-            logger.debug("Tool %s called with args=%s, kwargs=%s", name, args, kwargs)
+            self._record_call("Tool", name, args, kwargs)
             return mock_func(*args, **kwargs)
 
-        # Override name to use the registered name
-        tracked_func.__name__ = name
-        if description:
-            tracked_func.__doc__ = description
-
-        self.functions[name] = tracked_func
-        logger.debug("Registered mock tool: %s", name)
-        return self
+        return self._add_tool("mock tool", name, tracked_func, description)
 
     def register_async(
         self,
@@ -104,97 +99,26 @@ class MockToolRegistry:
         # Wrap to track calls, preserving the original signature
         @functools.wraps(mock_func)
         async def tracked_func(*args: Any, **kwargs: Any) -> Any:
-            if name not in self.calls:
-                self.calls[name] = []
-            self.calls[name].append({"args": args, "kwargs": kwargs})
-            logger.debug("Async tool %s called with args=%s, kwargs=%s", name, args, kwargs)
+            self._record_call("Async tool", name, args, kwargs)
             return await mock_func(*args, **kwargs)
 
+        return self._add_tool("async mock tool", name, tracked_func, description)
+
+    def _record_call(self, label: str, name: str, args: tuple, kwargs: dict[str, Any]) -> None:
+        self.calls.setdefault(name, []).append({"args": args, "kwargs": kwargs})
+        logger.debug("%s %s called with args=%s, kwargs=%s", label, name, args, kwargs)
+
+    def _add_tool(
+        self, kind: str, name: str, tracked_func: Callable, description: str | None
+    ) -> "MockToolRegistry":
         # Override name to use the registered name
         tracked_func.__name__ = name
         if description:
             tracked_func.__doc__ = description
 
         self.functions[name] = tracked_func
-        logger.debug("Registered async mock tool: %s", name)
+        logger.debug("Registered %s: %s", kind, name)
         return self
-
-    def was_called(self, name: str) -> bool:
-        """Check if a tool was called at least once.
-
-        Args:
-            name: Name of the tool to check
-
-        Returns:
-            True if tool was called, False otherwise
-        """
-        return name in self.calls and len(self.calls[name]) > 0
-
-    def call_count(self, name: str) -> int:
-        """Get number of times a tool was called.
-
-        Args:
-            name: Name of the tool
-
-        Returns:
-            Number of calls made to the tool
-        """
-        return len(self.calls.get(name, []))
-
-    def get_calls(self, name: str) -> list[dict[str, Any]]:
-        """Get all calls made to a tool.
-
-        Args:
-            name: Name of the tool
-
-        Returns:
-            List of call records, each containing 'args' and 'kwargs'
-        """
-        return self.calls.get(name, [])
-
-    def get_last_call(self, name: str) -> dict[str, Any] | None:
-        """Get the most recent call to a tool.
-
-        Args:
-            name: Name of the tool
-
-        Returns:
-            Call record dict with 'args' and 'kwargs', or None if never called
-        """
-        calls = self.get_calls(name)
-        return calls[-1] if calls else None
-
-    def assert_called(self, name: str) -> None:
-        """Assert that a tool was called at least once.
-
-        Args:
-            name: Name of the tool
-
-        Raises:
-            AssertionError: If the tool was never called
-        """
-        assert self.was_called(name), f"Tool '{name}' was never called"  # noqa: S101
-
-    def assert_called_with(self, name: str, **expected_kwargs: Any) -> None:
-        """Assert that a tool was called with specific keyword arguments.
-
-        Checks the last call to the tool.
-
-        Args:
-            name: Name of the tool
-            **expected_kwargs: Expected keyword arguments
-
-        Raises:
-            AssertionError: If tool not called or kwargs don't match
-        """
-        last_call = self.get_last_call(name)
-        assert last_call is not None, f"Tool '{name}' was never called"  # noqa: S101
-
-        for key, expected in expected_kwargs.items():
-            actual = last_call["kwargs"].get(key)
-            assert (  # noqa: S101
-                actual == expected
-            ), f"Tool '{name}' called with {key}={actual}, expected {key}={expected}"
 
     def assert_call_count(self, name: str, expected: int) -> None:
         """Assert that a tool was called exactly n times.

@@ -67,6 +67,30 @@ if TYPE_CHECKING:
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 
+def _attach_processor(
+    processor: Any,
+    graph: StateGraph | None,
+    level: ObservabilityLevel,
+    tracer_provider: Any,
+    user_id_mode: UserIdMode,
+    project: str | None = None,
+) -> None:
+    """Add ``processor`` to ``tracer_provider`` (or a new global one) and instrument ``graph``."""
+    if tracer_provider is None:
+        from opentelemetry import trace
+
+        provider = _new_tracer_provider(project)
+        provider.add_span_processor(processor)
+        trace.set_tracer_provider(provider)
+    else:
+        tracer_provider.add_span_processor(processor)
+
+    # graph is None when only provider configuration is wanted (e.g. the API
+    # bootstrap binds the publisher into the DI container itself).
+    if graph is not None:
+        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+
+
 def setup_logfire(
     graph: StateGraph | None = None,
     *,
@@ -170,20 +194,7 @@ def setup_langsmith(
     """
     processor = _build_langsmith_processor(api_key=api_key, project=project, endpoint=endpoint)
 
-    from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
-
-    if tracer_provider is None:
-        provider = TracerProvider()
-        provider.add_span_processor(processor)
-        trace.set_tracer_provider(provider)
-    else:
-        tracer_provider.add_span_processor(processor)
-
-    # graph is None when only provider configuration is wanted (e.g. the API
-    # bootstrap binds the publisher into the DI container itself).
-    if graph is not None:
-        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+    _attach_processor(processor, graph, level, tracer_provider, user_id_mode)
 
 
 def setup_phoenix(
@@ -233,19 +244,7 @@ def setup_phoenix(
     """
     processor = _build_phoenix_processor(api_key=api_key, endpoint=endpoint)
 
-    from opentelemetry import trace
-
-    if tracer_provider is None:
-        provider = _new_tracer_provider(_phoenix_project(project))
-        provider.add_span_processor(processor)
-        trace.set_tracer_provider(provider)
-    else:
-        tracer_provider.add_span_processor(processor)
-
-    # graph is None when only provider configuration is wanted (e.g. the API
-    # bootstrap binds the publisher into the DI container itself).
-    if graph is not None:
-        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+    _attach_processor(processor, graph, level, tracer_provider, user_id_mode, project=_phoenix_project(project))
 
 
 def setup_otlp(
@@ -277,19 +276,7 @@ def setup_otlp(
     """
     processor = _build_otlp_processor(endpoint=endpoint)
 
-    from opentelemetry import trace
-
-    if tracer_provider is None:
-        provider = _new_tracer_provider()
-        provider.add_span_processor(processor)
-        trace.set_tracer_provider(provider)
-    else:
-        tracer_provider.add_span_processor(processor)
-
-    # graph is None when only provider configuration is wanted (e.g. the API
-    # bootstrap binds the publisher into the DI container itself).
-    if graph is not None:
-        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+    _attach_processor(processor, graph, level, tracer_provider, user_id_mode)
 
 
 def setup_observability(  # noqa: PLR0912

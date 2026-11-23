@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from tenxgraph.core.authz import Reach, filter_columns, get_identity, owner_id
+from tenxgraph.core.authz import Reach, filter_columns, get_identity
 from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import (
     ColumnSpec,
@@ -43,6 +43,7 @@ from tenxgraph.storage.columns import (
     rls_policy_expression,
     rls_policy_name,
     rls_settings,
+    rows_affected,
     warn_if_rls_bypassed,
     write_conditions,
 )
@@ -1153,19 +1154,6 @@ class PgVectorStore(BaseStore):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _extract_config_values(self, config: dict[str, Any]) -> tuple[Any, Any, str]:
-        """Return ``(user_id, thread_id, collection)`` from the config (same rules as Qdrant)."""
-        user_id = owner_id(config)
-        thread_id = config.get("thread_id")
-        collection = config.get("collection")
-        if collection is None:
-            collection = self.collection
-            if callable(collection):
-                collection = collection(config)
-        if not isinstance(collection, str) or not collection.strip():
-            raise ValueError(f"collection must be a non-empty string, got {collection!r}")
-        return user_id, thread_id, collection
-
     def _tenant_context(
         self, config: dict[str, Any], *, write: bool = False, strict: bool = True
     ) -> _TenantContext:
@@ -1755,20 +1743,12 @@ class PgVectorStore(BaseStore):
                 return await conn.execute(update_sql, *a)
 
             status = await self._run(_update, settings=settings)
-            filled += self._rows_affected(status)
+            filled += rows_affected(status)
             last_collection, last_id = rows[-1]["collection"], rows[-1]["id"]
             if len(rows) < batch_size:
                 break
         logger.info("PgVectorStore backfilled %d embeddings", filled)
         return filled
-
-    @staticmethod
-    def _rows_affected(status: Any) -> int:
-        """Rows affected from an asyncpg command tag such as ``"UPDATE 3"``."""
-        try:
-            return int(str(status).rsplit(" ", 1)[-1])
-        except (ValueError, IndexError):
-            return 0
 
     # ------------------------------------------------------------------
     # Reads

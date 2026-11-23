@@ -23,6 +23,7 @@ import pytest
 
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.llm.client_factory import detect_provider, resolve_provider_and_model
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.memory_config import (
@@ -277,54 +278,54 @@ def _google_types_patch(types_mock: MagicMock):
 class TestDetectProviderFromModel:
     def test_gpt_prefix_returns_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("gpt-4o") == "openai"
+        assert detect_provider("gpt-4o") == "openai"
 
     def test_o1_prefix_returns_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("o1-mini") == "openai"
+        assert detect_provider("o1-mini") == "openai"
 
     def test_o3_prefix_returns_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("o3") == "openai"
+        assert detect_provider("o3") == "openai"
 
     def test_o4_prefix_returns_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("o4-mini") == "openai"
+        assert detect_provider("o4-mini") == "openai"
 
     def test_gemini_prefix_returns_google(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("gemini-2.0-flash") == "google"
+        assert detect_provider("gemini-2.0-flash") == "google"
 
     def test_imagen_prefix_returns_google(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("imagen-3.0-generate-001") == "google"
+        assert detect_provider("imagen-3.0-generate-001") == "google"
 
     def test_veo_prefix_returns_google(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("veo-2.0-generate-001") == "google"
+        assert detect_provider("veo-2.0-generate-001") == "google"
 
     def test_chirp_prefix_returns_google(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("chirp-3") == "google"
+        assert detect_provider("chirp-3") == "google"
 
     def test_unknown_model_defaults_to_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("llama3:70b") == "openai"
+        assert detect_provider("llama3:70b") == "openai"
 
     def test_deepseek_defaults_to_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("deepseek-chat") == "openai"
+        assert detect_provider("deepseek-chat") == "openai"
 
     def test_unknown_prefix_falls_back_to_openai(self):
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("ollama/llama3") == "openai"
+        assert detect_provider("ollama/llama3") == "openai"
 
     def test_anthropic_prefix_is_now_recognised(self):
         """``anthropic``/``claude`` became real prefixes when the native
         Anthropic provider landed; they no longer fall through to openai."""
         agent = _make_openai_agent()
-        assert agent._detect_provider_from_model("anthropic/claude-opus-5") == "anthropic"
-        assert agent._detect_provider_from_model("claude-opus-5") == "anthropic"
+        assert detect_provider("anthropic/claude-opus-5") == "anthropic"
+        assert detect_provider("claude-opus-5") == "anthropic"
 
 
 class TestResolveProviderAndModel:
@@ -333,40 +334,40 @@ class TestResolveProviderAndModel:
 
     def test_gemini_alias_maps_to_google(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("gemini/gemini-2.5-flash") == (
+        assert resolve_provider_and_model("gemini/gemini-2.5-flash") == (
             "google",
             "gemini-2.5-flash",
         )
 
     def test_google_alias_maps_to_google(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("google/gemini-2.0-flash") == (
+        assert resolve_provider_and_model("google/gemini-2.0-flash") == (
             "google",
             "gemini-2.0-flash",
         )
 
     def test_openai_alias_maps_to_openai(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("openai/gpt-4o") == ("openai", "gpt-4o")
+        assert resolve_provider_and_model("openai/gpt-4o") == ("openai", "gpt-4o")
 
     def test_gpt_alias_maps_to_openai(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("gpt/gpt-4o") == ("openai", "gpt-4o")
+        assert resolve_provider_and_model("gpt/gpt-4o") == ("openai", "gpt-4o")
 
     def test_unknown_prefix_defaults_to_openai_and_keeps_full_model(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("meta-llama/Llama-3-70b") == (
+        assert resolve_provider_and_model("meta-llama/Llama-3-70b") == (
             "openai",
             "meta-llama/Llama-3-70b",
         )
 
     def test_bare_unknown_model_defaults_to_openai(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("llama3:70b") == ("openai", "llama3:70b")
+        assert resolve_provider_and_model("llama3:70b") == ("openai", "llama3:70b")
 
     def test_use_vertex_ai_forces_google(self):
         agent = _make_openai_agent()
-        assert agent._resolve_provider_and_model("llama3:70b", use_vertex_ai=True) == (
+        assert resolve_provider_and_model("llama3:70b", use_vertex_ai=True) == (
             "google",
             "llama3:70b",
         )

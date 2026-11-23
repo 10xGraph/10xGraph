@@ -60,6 +60,16 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 - Claude Haiku 4.5, Sonnet 4.5, Opus 4.5 and older models no longer fail with a 400 on the default reasoning config; they get budget-based thinking (`thinking` type `enabled` with `budget_tokens`, mapped from the effort), and `output_config.effort` only on Opus 4.5.
 - Two graphs in one process no longer share their checkpointer, store, callback manager, publisher or background task manager, whether they use the global InjectQ container or one passed as `container=`. Before, the second graph could store its threads in the first graph's checkpointer, send events to the first graph's publisher, and run with the first graph's callback manager, so a `ToolGuard` registered on the second graph's manager was skipped. Each graph now keeps its values in its own container, which its runs (including concurrent runs on one event loop) resolve from; bindings you make in the global or your own container stay visible to tools and nodes. `compile()` without `callback_manager`, on `StateGraph` and on every prebuilt agent, now gives each graph its own new `CallbackManager` instead of one shared default. Graphs still share a checkpointer when you pass them the same instance.
+- Non-streaming Gemini calls now report their input, output, cached and reasoning tokens, the response id and the model in LLM events, traces and the `tenxgraph.llm.tokens` metric. Before, they reported 0 tokens and an empty id and model, because the readers looked for a `usage` field that Google responses do not have.
+- `temperature`, `top_p` and `top_k` are now removed for Claude models that reject them also when the model id is a Bedrock cross-region id (`us.anthropic.`, `eu.anthropic.`, `global.anthropic.`) or a Vertex id with an `@date` suffix. Before, those requests failed with a 400. Every model capability check on the Anthropic path now uses one id normalizer; the id sent to the provider is unchanged.
+- `call_llm` with a Claude model and `use_vertex_ai=True` now calls Claude on Vertex, as `Agent` does, instead of the direct Claude API. This also applies to LLM-as-judge eval criteria.
+- Realtime (live agent) tool calls now honour `tool_timeout`, record the tool metrics and send the model the same failure text as a normal graph run. The tool runs in its own task, so audio keeps flowing while it runs, and tools still running when the session ends are cancelled.
+- `PgCheckpointer` message methods (`aget_message`, `alist_messages`, `adelete_message`, `aupdate_message_metadata`) now convert a string thread id for `id_type` `int` and `bigint`, like the other methods. Before, they passed the string to an integer column.
+- An MCP tool call that fails without recovery is no longer labelled "with recovery" in the tool event.
+
+### Security
+
+- `sanitize_filename` now removes control characters, zero-width characters, bidirectional overrides and isolates (such as U+202E, which made `a\u202egpj.exe` display as `aexe.jpg`) and any path part, and `validate_magic_bytes` checks the full signature table the API server uses (images, PDF, ZIP and Office files, OLE, MP3, WAV, OGG, FLAC, MP4, WebM). Odd names come out differently: an empty or `..` name becomes `unnamed`, and leading dots are removed.
 
 
 ## [1.0.0] - 2026-11-16

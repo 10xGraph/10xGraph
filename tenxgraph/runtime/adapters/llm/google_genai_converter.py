@@ -48,6 +48,17 @@ except ImportError:
     GenerateContentResponse = None
 
 
+def function_declaration(types: Any, function: dict[str, Any]) -> Any:
+    """Build a Gemini ``FunctionDeclaration`` from an OpenAI-style ``function`` dict."""
+    kwargs: dict[str, Any] = {
+        "name": function["name"],
+        "description": function.get("description", ""),
+    }
+    if function.get("parameters") is not None:
+        kwargs["parameters_json_schema"] = function["parameters"]
+    return types.FunctionDeclaration(**kwargs)
+
+
 class GoogleGenAIConverter(BaseConverter):
     """
     Converter for Google Generative AI responses to agentflow Message format.

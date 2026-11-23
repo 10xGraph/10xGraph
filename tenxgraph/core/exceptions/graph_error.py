@@ -1,13 +1,9 @@
-import logging
 from typing import Any
 
-from ._redact import redact_context
+from ._structured import _StructuredError
 
 
-logger = logging.getLogger("tenxgraph.exceptions")
-
-
-class GraphError(Exception):
+class GraphError(_StructuredError, Exception):
     """
     Base exception for graph-related errors.
 
@@ -28,6 +24,8 @@ class GraphError(Exception):
         ... )
     """
 
+    _log_prefix = "GraphError"
+
     def __init__(
         self,
         message: str,
@@ -42,43 +40,5 @@ class GraphError(Exception):
             error_code (str): Unique error code for categorization (default: "GRAPH_000")
             context (dict): Additional contextual information (default: None)
         """
-        self.message = message
-        self.error_code = error_code
-        self.context = context or {}
-
-        # Log the error with full context
-        logger.error(
-            "GraphError [%s]: %s | Context: %s",
-            self.error_code,
-            self.message,
-            redact_context(self.context),
-            exc_info=True,
-        )
+        self._init_error(message, error_code, context)
         super().__init__(message)
-
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Convert the error to a structured dictionary format.
-
-        Returns:
-            dict: Structured error response with error_code, message, and context
-        """
-        return {
-            "error_type": self.__class__.__name__,
-            "error_code": self.error_code,
-            "message": self.message,
-            "context": self.context,
-        }
-
-    def __str__(self) -> str:
-        """Return a string representation of the error."""
-        return f"[{self.error_code}] {self.message}"
-
-    def __repr__(self) -> str:
-        """Return a detailed string representation of the error."""
-        return (
-            f"{self.__class__.__name__}("
-            f"message='{self.message}', "
-            f"error_code='{self.error_code}', "
-            f"context={self.context})"
-        )

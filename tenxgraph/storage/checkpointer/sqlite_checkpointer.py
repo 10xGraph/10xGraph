@@ -254,11 +254,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         ) as cur:
             row = await cur.fetchone()
         owner = None if row is None else str(row["owner_id"])
-        if (
-            self._isolation_enabled(config, user_id, write=True)
-            and owner is not None
-            and owner != str(user_id)
-        ):
+        if self._foreign_owner(config, owner, write=True):
             raise ThreadNotFoundError(config.get("thread_id"))
         return owner
 
@@ -276,7 +272,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             (self._get_config_key(config),),
         ) as cur:
             row = await cur.fetchone()
-        return row is not None and str(row["owner_id"]) != str(user_id)
+        return self._foreign_owner(config, None if row is None else row["owner_id"], write=write)
 
     def _serialize_state(self, state: StateT) -> str:
         return _dumps(self._encode_state(state))
@@ -476,6 +472,34 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     # Generic cache — async (TTL, lazy prune on read)
     # ------------------------------------------------------------------
 
+    async def _upsert_cache(
+        self,
+        namespace: str,
+        key: str,
+        value: Any,
+        ttl_seconds: int | None,
+        *,
+        replace_only_expired: bool,
+    ) -> bool:
+        """Insert or replace one cache row; True when a row was written."""
+        await self._ensure_setup()
+        now = time.time()
+        expires_at = now + ttl_seconds if ttl_seconds else None
+        sql = """
+            INSERT INTO af_cache (namespace, key, value, expires_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(namespace, key) DO UPDATE SET
+                value = excluded.value,
+                expires_at = excluded.expires_at
+            """
+        params: tuple[Any, ...] = (namespace, key, _dumps(value), expires_at)
+        if replace_only_expired:
+            sql += "WHERE af_cache.expires_at IS NOT NULL AND af_cache.expires_at <= ?"
+            params += (now,)
+        async with self._write() as conn:
+            cursor = await conn.execute(sql, params)
+            return cursor.rowcount > 0
+
     async def aput_cache_value(
         self,
         namespace: str,
@@ -483,19 +507,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         value: Any,
         ttl_seconds: int | None = None,
     ) -> Any | None:
-        await self._ensure_setup()
-        expires_at = time.time() + ttl_seconds if ttl_seconds else None
-        async with self._write() as conn:
-            await conn.execute(
-                """
-                INSERT INTO af_cache (namespace, key, value, expires_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(namespace, key) DO UPDATE SET
-                    value = excluded.value,
-                    expires_at = excluded.expires_at
-                """,
-                (namespace, key, _dumps(value), expires_at),
-            )
+        await self._upsert_cache(namespace, key, value, ttl_seconds, replace_only_expired=False)
         return value
 
     async def aget_cache_value(self, namespace: str, key: str) -> Any | None:
@@ -551,22 +563,9 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         ttl_seconds: int | None = None,
     ) -> bool:
         """Insert unless a live value exists, in one statement; an expired row is replaced."""
-        await self._ensure_setup()
-        now = time.time()
-        expires_at = now + ttl_seconds if ttl_seconds else None
-        async with self._write() as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO af_cache (namespace, key, value, expires_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(namespace, key) DO UPDATE SET
-                    value = excluded.value,
-                    expires_at = excluded.expires_at
-                WHERE af_cache.expires_at IS NOT NULL AND af_cache.expires_at <= ?
-                """,
-                (namespace, key, _dumps(value), expires_at, now),
-            )
-            return cursor.rowcount > 0
+        return await self._upsert_cache(
+            namespace, key, value, ttl_seconds, replace_only_expired=True
+        )
 
     async def alist_cache_keys(
         self,

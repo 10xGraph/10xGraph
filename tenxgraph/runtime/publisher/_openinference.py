@@ -106,8 +106,12 @@ def node_output_attrs(event_data: Any) -> dict[str, Any]:
     return {OUTPUT_VALUE: _dumps(out), OUTPUT_MIME: JSON_MIME}
 
 
-def kind_attrs(kind: str) -> dict[str, Any]:
-    return {SPAN_KIND: kind}
+def system_text(system_prompt: Any) -> str:
+    """Text of a system prompt given as a string or as a list of message dicts or strings."""
+    if isinstance(system_prompt, list):
+        texts = [s if isinstance(s, str) else message_text(s) for s in system_prompt]
+        return "\n".join(t for t in texts if t)
+    return content_text(system_prompt)
 
 
 def _call_fields(call: Any) -> tuple[str, str, str]:
@@ -137,8 +141,7 @@ def llm_request_messages(input_messages: Any, system_prompt: Any = None) -> list
                 msg["tool_call_id"] = m["tool_call_id"]
             out.append(msg)
     if system_prompt and not any(m["role"] == "system" for m in out):
-        text = system_prompt if isinstance(system_prompt, str) else content_text(system_prompt)
-        out.insert(0, {"role": "system", "content": text})
+        out.insert(0, {"role": "system", "content": system_text(system_prompt)})
     return out
 
 

@@ -31,6 +31,7 @@ from tenxgraph.core.realtime.base import (
     ToolCallEvent,
     TurnCompleteEvent,
 )
+from tenxgraph.runtime.adapters.llm.google_genai_converter import function_declaration
 
 
 logger = logging.getLogger(__name__)
@@ -270,14 +271,7 @@ class GeminiLiveClient:
         passthrough: list[Any] = []
         for entry in tools:
             if isinstance(entry, dict) and "function" in entry:
-                fn = entry["function"]
-                decl_kwargs: dict[str, Any] = {
-                    "name": fn["name"],
-                    "description": fn.get("description", ""),
-                }
-                if fn.get("parameters") is not None:
-                    decl_kwargs["parameters_json_schema"] = fn["parameters"]
-                declarations.append(types.FunctionDeclaration(**decl_kwargs))
+                declarations.append(function_declaration(types, entry["function"]))
             else:
                 passthrough.append(entry)
         result = list(passthrough)

@@ -32,7 +32,6 @@ import hashlib
 import importlib
 import json
 import logging
-import mimetypes
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -40,18 +39,17 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from .base import BaseMediaStore, MediaTooLargeError, check_size_limit, validate_storage_key
+from .base import (
+    BaseMediaStore,
+    MediaTooLargeError,
+    _mime_to_ext,
+    check_size_limit,
+    validate_storage_key,
+)
 
 
 logger = logging.getLogger("tenxgraph.storage.media.cloud")
 
-# Extension map for cases where mimetypes doesn't know the type
-_FALLBACK_EXT: dict[str, str] = {
-    "application/pdf": ".pdf",
-    "audio/wav": ".wav",
-    "audio/mp3": ".mp3",
-    "image/webp": ".webp",
-}
 _ALLOWED_DOWNLOAD_SCHEMES = {"http", "https"}
 # Signed-URL downloads. This is a storage client, not an LLM client, so the 600 s LLM timeout
 # does not fit: a connect that hangs fails in 10 s, and a transfer that stalls for 60 s with no
@@ -60,14 +58,6 @@ _DOWNLOAD_CONNECT_TIMEOUT = 10.0
 _DOWNLOAD_IDLE_TIMEOUT = 60.0
 # Read-compare-write attempts before a metadata or index update gives up
 _UPDATE_ATTEMPTS = 5
-
-
-def _mime_to_ext(mime_type: str) -> str:
-    """Convert MIME type to file extension."""
-    ext = mimetypes.guess_extension(mime_type)
-    if ext:
-        return ext
-    return _FALLBACK_EXT.get(mime_type, ".bin")
 
 
 DEFAULT_PREFIX = "10xgraph-media"

@@ -23,7 +23,6 @@ import contextlib
 import copy
 import logging
 import sys
-from collections.abc import Callable
 from typing import Any, TypeVar
 
 from injectq import Inject
@@ -681,41 +680,6 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
         state.context = add_messages(state.context, new_messages)
 
     return state, messages, next_node
-
-
-async def check_and_handle_interrupt(
-    interrupt_before: list[str],
-    interrupt_after: list[str],
-    current_node: str,
-    interrupt_type: str,
-    state: AgentState,
-    config: dict[str, Any],
-    _sync_data: Callable,
-) -> bool:
-    """Check for interrupts and save state if needed. Returns True if interrupted."""
-    interrupt_nodes = interrupt_before if interrupt_type == "before" else interrupt_after
-
-    if current_node in interrupt_nodes:
-        status = (
-            ExecutionStatus.INTERRUPTED_BEFORE
-            if interrupt_type == "before"
-            else ExecutionStatus.INTERRUPTED_AFTER
-        )
-        state.set_interrupt(
-            current_node,
-            f"interrupt_{interrupt_type}: {current_node}",
-            status,
-        )
-        # Save state and interrupt
-        await _sync_data(state, config, [])
-        logger.debug("Node '%s' interrupted", current_node)
-        return True
-
-    logger.debug(
-        "No interrupts found for node '%s', continuing execution",
-        current_node,
-    )
-    return False
 
 
 def get_next_node(

@@ -4,11 +4,13 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ._call_log import _CallLog
+
 
 logger = logging.getLogger("tenxgraph.testing")
 
 
-class MockMCPClient:
+class MockMCPClient(_CallLog):
     """Mock MCP client for testing ToolNode with MCP tools.
 
     Simulates an MCP client without requiring actual MCP servers.
@@ -32,6 +34,9 @@ class MockMCPClient:
         tools = ToolNode([], client=mock_client)
         ```
     """
+
+    _label = "MCP tool"
+    _args_key = "arguments"
 
     def __init__(self):
         """Initialize an empty mock MCP client."""
@@ -122,83 +127,6 @@ class MockMCPClient:
             result = handler
 
         return result
-
-    def was_called(self, name: str) -> bool:
-        """Check if a tool was called at least once.
-
-        Args:
-            name: Name of the tool to check
-
-        Returns:
-            True if tool was called
-        """
-        return name in self.calls and len(self.calls[name]) > 0
-
-    def call_count(self, name: str) -> int:
-        """Get number of times a tool was called.
-
-        Args:
-            name: Name of the tool
-
-        Returns:
-            Number of calls
-        """
-        return len(self.calls.get(name, []))
-
-    def get_calls(self, name: str) -> list[dict[str, Any]]:
-        """Get all calls made to a tool.
-
-        Args:
-            name: Name of the tool
-
-        Returns:
-            List of call records with 'arguments' key
-        """
-        return self.calls.get(name, [])
-
-    def get_last_call(self, name: str) -> dict[str, Any] | None:
-        """Get the most recent call to a tool.
-
-        Args:
-            name: Name of the tool
-
-        Returns:
-            Call record or None if never called
-        """
-        calls = self.get_calls(name)
-        return calls[-1] if calls else None
-
-    def assert_called(self, name: str) -> None:
-        """Assert that a tool was called at least once.
-
-        Args:
-            name: Name of the tool
-
-        Raises:
-            AssertionError: If tool was never called
-        """
-        assert self.was_called(name), f"MCP tool '{name}' was never called"  # noqa: S101
-
-    def assert_called_with(self, name: str, **expected_args: Any) -> None:
-        """Assert that a tool was called with specific arguments.
-
-        Checks the last call to the tool.
-
-        Args:
-            name: Name of the tool
-            **expected_args: Expected arguments
-
-        Raises:
-            AssertionError: If tool not called or args don't match
-        """
-        last_call = self.get_last_call(name)
-        assert last_call is not None, f"MCP tool '{name}' was never called"  # noqa: S101
-
-        for key, expected in expected_args.items():
-            actual = last_call["arguments"].get(key)
-            assert actual == expected, (  # noqa: S101
-                f"MCP tool '{name}' called with {key}={actual}, expected {key}={expected}"
-            )
 
     def reset(self) -> None:
         """Clear call history (keeps tool registrations)."""

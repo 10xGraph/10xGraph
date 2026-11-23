@@ -11,10 +11,11 @@ This module defines data structures for evaluation outcomes:
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, field_serializer
 
+from tenxgraph.qa.evaluation._json_file import _JsonFileModel
 from tenxgraph.qa.evaluation.dataset.eval_set import ToolCall, TrajectoryStep
 from tenxgraph.qa.evaluation.token_usage import TokenUsage
 
@@ -357,7 +358,7 @@ class EvalSummary(BaseModel):
         )
 
 
-class EvalReport(BaseModel):
+class EvalReport(_JsonFileModel):
     """Complete evaluation report.
 
     Attributes:
@@ -369,6 +370,8 @@ class EvalReport(BaseModel):
         timestamp: When the evaluation was run.
         metadata: Additional report metadata.
     """
+
+    _json_default: ClassVar[Any] = str
 
     eval_set_id: str
     eval_set_name: str = ""
@@ -426,35 +429,6 @@ class EvalReport(BaseModel):
             if result.eval_id == eval_id:
                 return result
         return None
-
-    def to_file(self, path: str) -> None:
-        """Save report to a JSON file.
-
-        Args:
-            path: Output file path.
-        """
-        import json
-        from pathlib import Path
-
-        with Path(path).open("w", encoding="utf-8") as f:
-            json.dump(self.model_dump(), f, indent=2, default=str)
-
-    @classmethod
-    def from_file(cls, path: str) -> EvalReport:
-        """Load report from a JSON file.
-
-        Args:
-            path: Path to the JSON file.
-
-        Returns:
-            EvalReport instance.
-        """
-        import json
-        from pathlib import Path
-
-        with Path(path).open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return cls.model_validate(data)
 
     def format_summary(self) -> str:
         """Format summary as a human-readable string."""

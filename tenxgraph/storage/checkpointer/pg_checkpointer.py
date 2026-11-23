@@ -1,21 +1,18 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from enum import Enum
 from typing import Any, TypeVar
 from urllib.parse import quote, unquote
 
 from injectq import InjectQ
 
 from tenxgraph.core.authz import owner_id
-from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.exceptions.storage_exceptions import (
     SchemaVersionError,
     StaleStateError,
@@ -45,6 +42,9 @@ from tenxgraph.storage.columns import (
     role_bypasses_rls,
     warn_if_rls_bypassed,
     write_conditions,
+)
+from tenxgraph.storage.columns import (
+    rows_affected as _rows_affected,
 )
 from tenxgraph.storage.sql_filter import FilterSchema, compile_filters, validate_filters
 from tenxgraph.utils import ThreadInfo, metrics
@@ -287,14 +287,6 @@ def _same_value(spec: ColumnSpec, stored: Any, wanted: Any) -> bool:
     if spec.type == "uuid" or isinstance(stored, uuid.UUID):
         return str(stored) == str(wanted)
     return stored == wanted
-
-
-def _rows_affected(status: Any) -> int:
-    """Rows affected from an asyncpg command tag such as ``"DELETE 3"``."""
-    try:
-        return int(str(status).rsplit(" ", 1)[-1])
-    except (ValueError, IndexError):
-        return 0
 
 
 class PgCheckpointer(BaseCheckpointer[StateT]):
@@ -717,22 +709,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             str: Corresponding SQL type.
         """
         return ID_TYPE_MAP.get(type_name, "VARCHAR(255)")
-
-    def _get_json_serializer(self):
-        """Get optimal JSON serializer based on FAST_JSON env var."""
-        if os.environ.get("FAST_JSON", "0") == "1":
-            try:
-                import orjson
-
-                return orjson.dumps
-            except ImportError:
-                try:
-                    import msgspec  # type: ignore
-
-                    return msgspec.json.encode
-                except ImportError:
-                    pass
-        return json.dumps
 
     def _get_current_schema_version(self) -> int:
         """Return current expected schema version."""
@@ -1471,60 +1447,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
     def _generic_cache_prefix(self, namespace: str) -> str:
         return f"{self.redis_key_prefix}generic_cache:{quote(str(namespace), safe='')}:"
 
-    def _serialize_state(self, state: StateT) -> str:
-        """
-        Serialize state to JSON string for storage.
-
-        Args:
-            state (StateT): State object.
-
-        Returns:
-            str: JSON string.
-        """
-
-        def enum_handler(obj):
-            if isinstance(obj, Enum):
-                return obj.value
-            return str(obj)
-
-        return json.dumps(state.model_dump(), default=enum_handler)
-
-    def _deserialize_state(
-        self,
-        data: Any,
-        state_class: type[StateT],
-    ) -> StateT:
-        """
-        Deserialize JSON/JSONB back to state object.
-
-        Args:
-            data (Any): JSON string or dict/list.
-            state_class (type): State class type.
-
-        Returns:
-            StateT: Deserialized state object.
-
-        Raises:
-            Exception: If deserialization fails.
-        """
-        try:
-            if isinstance(data, bytes | bytearray):
-                data = data.decode()
-            parsed = json.loads(data) if isinstance(data, str) else data
-            if isinstance(parsed, dict):
-                self._check_state_format(parsed)  # same refusal as _decode_state
-            if isinstance(data, str):
-                return state_class.model_validate(json.loads(data))
-            # Assume it's already a dict/list
-            return state_class.model_validate(data)
-        except StateFormatVersionError:
-            raise
-        except Exception:
-            # Last-resort: coerce to string and attempt parse, else raise
-            if isinstance(data, str):
-                return state_class.model_validate(json.loads(data))
-            raise
-
     async def _retry_on_connection_error(
         self,
         operation,
@@ -1974,23 +1896,6 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         missing one would match nothing.
         """
         return self._isolation_enabled(config, user_id, write=write)
-
-    def _thread_owned_by_sql(self, user_param: int) -> str:
-        """Return a SQL fragment requiring the row's thread to belong to a user.
-
-        Applied to ``messages`` queries, whose rows carry a ``thread_id`` but no
-        ``user_id`` of their own. Without this, any authenticated caller who knows
-        (or guesses) a ``thread_id`` could read or delete another user's messages.
-
-        Callers must gate this on :meth:`_isolation_active` so a developer who has
-        turned isolation off does not pay for the join.
-        """
-        # Table name is regex-validated by _get_table_name; user_param is a bind
-        # placeholder index, never a value. No interpolation of caller data.
-        return (
-            f"thread_id IN (SELECT thread_id FROM {self._get_table_name('threads')} "  # noqa: S608
-            f"WHERE user_id = ${user_param})"
-        )
 
     async def _lock_thread_for_write(
         self,

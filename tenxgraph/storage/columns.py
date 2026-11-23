@@ -210,6 +210,14 @@ class SetupLockTimeoutError(RuntimeError):
     """
 
 
+def rows_affected(status: Any) -> int:
+    """Rows affected from an asyncpg command tag such as ``"DELETE 3"``."""
+    try:
+        return int(str(status).rsplit(" ", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 def quote_ident(name: str) -> str:
     """Return ``name`` as a double-quoted identifier after checking it against the name rule."""
     if not isinstance(name, str) or not _NAME_RE.match(name):
