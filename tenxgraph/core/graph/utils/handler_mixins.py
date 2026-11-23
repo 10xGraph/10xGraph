@@ -404,7 +404,7 @@ class GraphRunMixin:
         node_event.content_type = [ContentType.MESSAGE]
         publish_event(node_event)
 
-    async def _publish_node_update(  # noqa: PLR0913
+    async def _publish_node_update(
         self,
         has_hooks: bool,
         lifecycle_context: GraphLifecycleContext,
