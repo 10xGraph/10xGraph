@@ -8,7 +8,7 @@ from datetime import timedelta
 from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from tenxgraph.core.authz import owner_id
+from tenxgraph.core.authz import Reach, owner_filter, owner_id
 from tenxgraph.core.exceptions import ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.thread_info import ThreadInfo
@@ -89,6 +89,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # thread owns it. Used to enforce owner-only access when the caller identity
         # (config["user"]) asks for it -- see _owner_denied / _claim.
         self._thread_owner: dict[str, str] = {}
+        # The owner's tenant column values, recorded with the owner on backends that declare
+        # ``tenant_column_names``; see aget_thread_scope.
+        self._thread_tenant: dict[str, dict[str, str]] = {}
 
         self.record_tool_result = record_tool_result
         # Tool execution ledger (idempotency): (thread, tool_call_id) -> (result, recorded at)
@@ -141,6 +144,11 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         owner: str | None
         if user_id:
+            if key not in self._thread_owner:
+                tenant_columns = getattr(self, "tenant_column_names", ())
+                if tenant_columns:
+                    values = owner_filter(config, tenant_columns, reach=Reach.OWN) or {}
+                    self._thread_tenant[key] = {c: values[c] for c in tenant_columns if c in values}
             owner = self._thread_owner.setdefault(key, str(user_id))
         else:
             owner = self._thread_owner.get(key)
@@ -625,6 +633,22 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
                 return self._thread_owner.get(str(thread_id))
         return record.get("user_id")
 
+    async def aget_thread_scope(self, thread_id: str | int) -> dict[str, Any] | None:
+        """Return ``{"user_id": ..., <tenant column>: ...}`` for a thread, globally.
+
+        Same shape as ``PgCheckpointer``: every tenant column the backend declares, ``None``
+        for a value the first writer did not carry. Returns ``None`` when the thread has no
+        owner and no record.
+        """
+        owner = await self.aget_thread_owner(thread_id)
+        if owner is None:
+            return None
+        tenant = self._thread_tenant.get(str(thread_id), {})
+        scope: dict[str, Any] = {"user_id": owner}
+        for column in getattr(self, "tenant_column_names", ()):
+            scope[column] = tenant.get(column)
+        return scope
+
     async def aget_thread(
         self,
         config: dict[str, Any],
@@ -725,6 +749,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         async with self._threads_lock:
             found = self._threads.pop(key, None) is not None or found
             found = self._thread_owner.pop(key, None) is not None or found
+            self._thread_tenant.pop(key, None)
         logger.debug(f"Cleaned thread for key: {key}")
         return 1 if found else 0
 
@@ -756,6 +781,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             self._message_metadata.clear()
             self._threads.clear()
             self._thread_owner.clear()
+            self._thread_tenant.clear()
             self._tool_results.clear()
             logger.info("Released all in-memory resources")
             return True

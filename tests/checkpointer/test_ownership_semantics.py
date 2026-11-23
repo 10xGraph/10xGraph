@@ -151,6 +151,31 @@ async def test_thread_stays_owned_until_its_data_is_gone():
     assert await cp.aget_thread_owner("t1") is None
 
 
+class _OrgInMemory(InMemoryCheckpointer):
+    tenant_column_names = ("org",)
+
+
+async def test_in_memory_thread_scope_carries_tenant_values():
+    # A thread with state but no thread record still reports its owner's tenant values,
+    # in PgCheckpointer's shape, until it is deleted.
+    cp = _OrgInMemory()
+    owner = {
+        "thread_id": "t1",
+        "user_id": "alice",
+        "user": {"user_id": "alice", "tenant": {"org": "o1"}},
+    }
+    await cp.aput_state(owner, _state("hi"))
+    assert await cp.aget_thread_scope("t1") == {"user_id": "alice", "org": "o1"}
+
+    await cp.aput_state({"thread_id": "t2", "user_id": "bob"}, _state("no identity"))
+    assert await cp.aget_thread_scope("t2") == {"user_id": "bob", "org": None}
+    assert await cp.aget_thread_scope("missing") is None
+
+    assert await cp.aclean_thread(owner) == 1
+    assert await cp.aget_thread_scope("t1") is None
+    assert "t1" not in cp._thread_tenant
+
+
 async def test_reach_all_reads_and_deletes_but_never_writes(cp):
     await _seed(cp)
     admin = lambda: _cfg(user="root", reach="all")  # noqa: E731
