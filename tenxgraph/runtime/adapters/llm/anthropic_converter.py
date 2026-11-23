@@ -111,7 +111,7 @@ class AnthropicConverter(BaseConverter):
         request succeeded at the HTTP layer but ``content`` may be empty, so
         indexing into it would raise on an otherwise valid response.
         """
-        usages = self._extract_usage(response)
+        usages = self._usage_from_obj(getattr(response, "usage", None))
         stop_reason = getattr(response, "stop_reason", None)
         model = getattr(response, "model", "")
         response_id = getattr(response, "id", None)
@@ -243,31 +243,6 @@ class AnthropicConverter(BaseConverter):
             metadata=metadata,
             usages=usages,
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
-        )
-
-    @staticmethod
-    def _extract_usage(response: Any) -> TokenUsages:
-        """Map Anthropic usage onto agentflow's token fields."""
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return TokenUsages(
-                completion_tokens=0,
-                prompt_tokens=0,
-                total_tokens=0,
-                reasoning_tokens=0,
-                cache_creation_input_tokens=0,
-                cache_read_input_tokens=0,
-            )
-
-        prompt = getattr(usage, "input_tokens", 0) or 0
-        completion = getattr(usage, "output_tokens", 0) or 0
-        return TokenUsages(
-            completion_tokens=completion,
-            prompt_tokens=prompt,
-            total_tokens=prompt + completion,
-            reasoning_tokens=0,
-            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
         )
 
     async def convert_streaming_response(  # type: ignore[override]

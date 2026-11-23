@@ -37,13 +37,20 @@ from tenxgraph.utils.converter import (
     strip_provider_blocks,
 )
 from tenxgraph.utils.injection import fresh
-from tenxgraph.utils.log_safety import describe_error, error_details
+from tenxgraph.utils.log_safety import describe_error, error_details, redact_url
+from tenxgraph.utils.media_scheme import is_internal_media_url
 from tenxgraph.utils.validators import clean_unstorable
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
-from .constants import RetryConfig
+from .constants import (
+    ENDPOINT_KWARGS,
+    REASONING_REJECTED_MODELS,
+    RetryConfig,
+    is_default_reasoning,
+    reasoning_for,
+)
 from .model_registry import ModelEntry, bind_entry, entry_attempt, named_entry, select_entry
-from .openai import _REASONING_REJECTED_MODELS, is_endpoint_unsupported, is_reasoning_rejected
+from .openai import is_endpoint_unsupported, is_reasoning_rejected
 
 
 logger = logging.getLogger("tenxgraph.agent")
@@ -104,6 +111,23 @@ _PERMANENT_QUOTA_MARKERS = (
     "credit balance is too low",
     "billing hard limit",
 )
+
+
+def attach_tool_node(agent: Any, tool_node: Any) -> int:
+    """Wire a resolved named ToolNode onto ``agent``; returns the queued tools it registered.
+
+    Used at compile time (``StateGraph``) and at run time (``_resolve_tools``, for an Agent the
+    compile step did not see, such as one called inside a plain function node). Clears
+    ``tool_node_name`` so the lookup never runs twice and drains ``_extra_tools`` (skill and
+    memory tools queued before the ToolNode was known).
+    """
+    agent._tool_node = tool_node
+    agent.tool_node_name = None
+    extra = list(getattr(agent, "_extra_tools", None) or [])
+    for fn in extra:
+        tool_node.add_tool(fn)
+    agent._extra_tools = []
+    return len(extra)
 
 
 def _is_permanent_quota_error(exc: BaseException) -> bool:
@@ -677,11 +701,7 @@ class AgentExecutionMixin:
                 kwargs = self.llm_kwargs
                 base_url = self.base_url
             else:
-                kwargs = {
-                    k: v
-                    for k, v in self.llm_kwargs.items()
-                    if k not in ("api_key", "base_url", "anthropic_backend")
-                }
+                kwargs = {k: v for k, v in self.llm_kwargs.items() if k not in ENDPOINT_KWARGS}
                 base_url = None
             helper = self._bind_attempt(self.model, provider, None, base_url, llm_kwargs=kwargs)
             client = self._without_sdk_retries(
@@ -958,14 +978,9 @@ class AgentExecutionMixin:
         _api_style_var.set(style)
 
     def _apply_chat_reasoning(self, kwargs: dict[str, Any]) -> None:
-        """Add reasoning parameters to a Chat Completions request, in place.
-
-        Only an explicit ``reasoning_config`` is sent. The implicit default
-        (the provider's lowest effort) is skipped because many models reject
-        ``reasoning_effort`` on chat, notably together with function tools.
-        """
-        config = self._openai_reasoning_config()
-        if not config or not getattr(self, "_reasoning_explicit", True):
+        """Add reasoning parameters to a Chat Completions request, in place."""
+        config = reasoning_for(self, "openai_chat")
+        if not config:
             return
         if config.get("effort"):
             kwargs.setdefault("reasoning_effort", config["effort"])
@@ -996,12 +1011,12 @@ class AgentExecutionMixin:
                 self._set_api_style("responses")
                 return await self._openai_with_reasoning_retry(
                     lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
-                    sent=bool(self._openai_reasoning_config()),
+                    sent=bool(reasoning_for(self, "openai_responses")),
                 )
             try:
                 result = await self._openai_with_reasoning_retry(
                     lambda: self._call_openai_responses(messages, tools, stream, **kwargs),
-                    sent=bool(self._openai_reasoning_config()),
+                    sent=bool(reasoning_for(self, "openai_responses")),
                 )
             except Exception as exc:
                 # Only "endpoint not found / not implemented" means the server lacks the
@@ -1009,8 +1024,6 @@ class AgentExecutionMixin:
                 if not is_endpoint_unsupported(exc):
                     raise
                 if self.base_url not in unsupported:
-                    from tenxgraph.storage.media.url_policy import redact_url
-
                     unsupported.add(self.base_url)
                     logger.warning(
                         "Responses API not supported at %s (%s). "
@@ -1029,7 +1042,7 @@ class AgentExecutionMixin:
             self._apply_chat_reasoning(chat_kwargs)
             return await self._call_openai(messages, tools, stream, **chat_kwargs)
 
-        sent = bool(self._openai_reasoning_config()) and getattr(self, "_reasoning_explicit", True)
+        sent = bool(reasoning_for(self, "openai_chat"))
         return await self._openai_with_reasoning_retry(call_chat, sent=sent)
 
     async def _openai_with_reasoning_retry(self, call: Any, sent: bool) -> Any:
@@ -1042,11 +1055,9 @@ class AgentExecutionMixin:
         try:
             return await call()
         except Exception as exc:
-            if not (
-                sent and getattr(self, "_reasoning_default", False) and is_reasoning_rejected(exc)
-            ):
+            if not (sent and is_default_reasoning(self) and is_reasoning_rejected(exc)):
                 raise
-            _REASONING_REJECTED_MODELS.add(self.model)
+            REASONING_REJECTED_MODELS.add(self.model)
             logger.warning(
                 "Model %s rejected the default reasoning parameter (%s). "
                 "Retrying without reasoning; later calls skip it for this model.",
@@ -1375,7 +1386,7 @@ class AgentExecutionMixin:
                 part_type = part.get("type", "")
                 if part_type == "image_url":
                     url = part.get("image_url", {}).get("url", "")
-                    if url.startswith(("graph://media/", "agentflow://media/")):
+                    if is_internal_media_url(url):
                         ref_media = type(
                             "MediaRef",
                             (),
@@ -1429,7 +1440,7 @@ class AgentExecutionMixin:
                 elif part_type in ("document", "video"):
                     media_info = part.get(part_type, {})
                     url = media_info.get("url", "")
-                    if url and url.startswith(("graph://media/", "agentflow://media/")):
+                    if is_internal_media_url(url):
                         ref_media = type(
                             "MediaRef",
                             (),
@@ -1498,12 +1509,8 @@ class AgentExecutionMixin:
         if self.tool_node_name:
             try:
                 node = container.call_factory("get_node", self.tool_node_name)
-            except (KeyError, DependencyNotFoundError) as exc:
-                raise RuntimeError(
-                    f"ToolNode named '{self.tool_node_name}' was not found in the compiled graph. "
-                    "Register the named ToolNode in the graph before executing the Agent."
-                ) from exc
-
+            except (KeyError, DependencyNotFoundError):
+                node = None
             if node is None:
                 raise RuntimeError(
                     f"ToolNode named '{self.tool_node_name}' was not found in the compiled graph. "
@@ -1516,13 +1523,7 @@ class AgentExecutionMixin:
                     "Pass a ToolNode instance or register the proper graph node."
                 )
 
-            self._tool_node = node.func
-            self.tool_node_name = None  # prevent duplicate resolution on future calls
-
-            # Drain any tools that were queued before the graph was compiled
-            for fn in getattr(self, "_extra_tools", []):
-                self._tool_node.add_tool(fn)
-            self._extra_tools = []
+            attach_tool_node(self, node.func)
 
         if not self._tool_node:
             return []

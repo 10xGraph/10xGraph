@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from collections.abc import AsyncIterator
 from typing import Any
@@ -182,44 +181,22 @@ class GeminiLiveClient:
         return self._client
 
     def _build_client(self) -> Any:
-        """Construct a google-genai client, supporting both auth modes (mirrors the
-        turn-based factory in ``tenxgraph.core.llm.client_factory``).
+        """Construct a google-genai client with the turn-based Google client builder.
 
-        - Vertex AI / service account: ``use_vertex_ai=True`` with ``GOOGLE_CLOUD_PROJECT``
-          (and optional ``GOOGLE_CLOUD_LOCATION``); credentials come from Application
-          Default Credentials (e.g. a service-account key via ``GOOGLE_APPLICATION_CREDENTIALS``).
+        - Vertex AI / service account: ``use_vertex_ai=True`` with ``project`` or
+          ``GOOGLE_CLOUD_PROJECT`` (and optional ``location`` / ``GOOGLE_CLOUD_LOCATION``);
+          credentials come from Application Default Credentials.
         - Developer API key: explicit ``api_key`` or ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY``.
-
-        ``vertexai`` is always passed explicitly so the ``GOOGLE_GENAI_USE_VERTEXAI`` env var
-        can't silently flip the mode out from under the caller.
         """
-        genai, _ = self._genai()
+        self._genai()  # clear ImportError naming the realtime extra
+        from tenxgraph.core.llm.client_factory import build_google_client
 
-        if self._use_vertex_ai:
-            project = self._project or os.getenv("GOOGLE_CLOUD_PROJECT")
-            location = self._location or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-            if not project:
-                raise ValueError(
-                    "Vertex AI realtime requires a project: pass project=... or set "
-                    "GOOGLE_CLOUD_PROJECT (credentials via Application Default Credentials / "
-                    "GOOGLE_APPLICATION_CREDENTIALS)."
-                )
-            logger.info(
-                "Creating Gemini Live client (Vertex AI, project=%s, location=%s)",
-                project,
-                location,
-            )
-            return genai.Client(vertexai=True, project=project, location=location)
-
-        api_key = self._api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "Gemini realtime requires credentials: set GEMINI_API_KEY or GOOGLE_API_KEY "
-                "(or pass api_key=...), or use Vertex AI with use_vertex_ai=True and "
-                "GOOGLE_CLOUD_PROJECT."
-            )
-        logger.info("Creating Gemini Live client (API key)")
-        return genai.Client(vertexai=False, api_key=api_key)
+        return build_google_client(
+            use_vertex_ai=self._use_vertex_ai,
+            api_key=self._api_key,
+            project=self._project,
+            location=self._location,
+        )
 
     def _get_connector(self) -> Any:
         if self._connector is not None:

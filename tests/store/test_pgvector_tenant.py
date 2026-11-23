@@ -177,17 +177,30 @@ class TestWrites:
             await store.aupdate(_cfg(), "m1", "x")
         assert conn.calls == []
 
-    async def test_optional_tenant_value_may_be_missing_on_store(self):
+    async def test_optional_tenant_value_is_stored_as_null(self):
         store, conn = _store(
             tenant_columns={"org_id": "text", "team": {"type": "text", "required": False}}
         )
         conn.fetchrow_results = [{"id": "m1"}]
+        # An empty tenant value means "no value": the row holds NULL and the upsert guard
+        # matches only rows without a team (IS NOT DISTINCT FROM).
         await store.astore(
-            {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "A"}}},
+            {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "A", "team": ""}}},
             "x",
             memory_id="m1",
         )
         assert conn.calls[0][2][-2:] == ("A", None)
+        assert 'm."team" IS NOT DISTINCT FROM EXCLUDED."team"' in conn.sql("fetchrow")[0]
+
+    async def test_identity_without_optional_tenant_claim_raises_like_the_checkpointer(self):
+        # One rule with PgCheckpointer: reach own needs every tenant column in Identity.tenant.
+        store, conn = _store(
+            tenant_columns={"org_id": "text", "team": {"type": "text", "required": False}}
+        )
+        cfg = {"user_id": "u1", "user": {"user_id": "u1", "tenant": {"org_id": "A"}}}
+        with pytest.raises(ValueError, match="team"):
+            await store.astore(cfg, "x", memory_id="m1")
+        assert conn.calls == []
 
     @pytest.mark.parametrize("reach", ["tenant", "all"])
     async def test_wide_reach_cannot_overwrite_another_users_memory(self, reach):

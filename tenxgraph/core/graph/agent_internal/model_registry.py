@@ -18,9 +18,9 @@ from tenxgraph.core.llm.client_factory import resolve_provider_and_model
 
 from .constants import (
     DEFAULT_RETRY_CONFIG,
-    REASONING_DEFAULT,
     RetryConfig,
     default_reasoning_config,
+    reasoning_mode,
 )
 
 
@@ -61,8 +61,7 @@ class ModelEntry:
     use_vertex_ai: bool
     llm_kwargs: dict[str, Any]
     reasoning_config: dict[str, Any] | None
-    reasoning_explicit: bool
-    reasoning_default: bool
+    reasoning_mode: str
     retry_config: RetryConfig | None
 
 
@@ -102,12 +101,10 @@ def resolve_entry(
         # prefixes resolve to ``openai`` and keep the full model name.
         provider, model = resolve_provider_and_model(model, use_vertex_ai=use_vertex_ai)
 
-    # True or sentinel = reasoning on at the provider's lowest effort; False or None = off;
-    # a dict is sent as given. The chat path only sends an explicit choice.
+    # See reasoning_mode and reasoning_for (constants.py) for what each value sends.
     reasoning = spec.get("reasoning_config", reasoning_config)
-    reasoning_explicit = reasoning is not REASONING_DEFAULT
-    reasoning_default = reasoning is REASONING_DEFAULT or reasoning is True
-    if reasoning_default:
+    mode = reasoning_mode(reasoning)
+    if mode in ("default", "on"):
         reasoning = default_reasoning_config(provider)
 
     return ModelEntry(
@@ -122,8 +119,7 @@ def resolve_entry(
             **{k: v for k, v in spec.items() if k not in _ENTRY_SETTINGS},
         },
         reasoning_config=None if reasoning is False or reasoning is None else reasoning,
-        reasoning_explicit=reasoning_explicit,
-        reasoning_default=reasoning_default,
+        reasoning_mode=mode,
         retry_config=_retry(spec.get("retry_config", retry_config)),
     )
 
@@ -194,8 +190,7 @@ def bind_entry(agent: Any, entry: ModelEntry, client: Any) -> Any:
     bound.api_style = entry.api_style
     bound.use_vertex_ai = entry.use_vertex_ai
     bound.reasoning_config = entry.reasoning_config
-    bound._reasoning_explicit = entry.reasoning_explicit
-    bound._reasoning_default = entry.reasoning_default
+    bound._reasoning_mode = entry.reasoning_mode
     bound.retry_config = entry.retry_config
     # The default model's last API style must not leak into another entry's converter key.
     bound.__dict__.pop("_effective_api_style", None)

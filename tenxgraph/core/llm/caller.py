@@ -1,7 +1,6 @@
 """Shared single-turn LLM call utility.
 
-Centralises the Google / OpenAI dispatch that was duplicated across
-SummaryContextManager, LLMCallerMixin (eval judge), and UserSimulator.
+Used by SummaryContextManager, the eval judge (LLMCallerMixin) and UserSimulator.
 
 Returns a plain 4-tuple so callers can choose how much they consume:
 
@@ -14,19 +13,24 @@ OpenAI supports two API styles:
 - ``"chat"`` — ``client.chat.completions.create()``, the legacy style
   required by older or third-party-hosted models (e.g. some Chinese models).
 
-The Agent class keeps its own execution path (streaming, tools, retry, etc.)
-and is unaffected by this module.
+The request is built by the same provider code the Agent uses (client creation, request
+assembly, SDK keyword filtering, Claude capability rules) and the reply is read by the same
+response converters, so a provider fix reaches both. Reasoning is not sent, and Anthropic
+prompt caching is off unless ``anthropic_cache`` is passed.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, Literal
 
-from tenxgraph.core.llm.client_factory import create_llm_client, resolve_provider_and_model
+from tenxgraph.core.llm.client_factory import resolve_provider_and_model
 
 
 logger = logging.getLogger("tenxgraph.llm.caller")
+
+_JSON_INSTRUCTION = "\n\nRespond with valid JSON only, no prose and no code fences."
 
 
 async def call_llm(
@@ -56,8 +60,8 @@ async def call_llm(
             Responses API (``client.responses.create``). Use ``"chat"`` for
             models that only support the legacy Chat Completions endpoint
             (e.g. older or self-hosted Chinese models).
-        **llm_kwargs: Provider-specific parameters forwarded directly to the
-            underlying API call. Examples:
+        **llm_kwargs: Provider-specific parameters, handled as the Agent handles its
+            ``llm_kwargs``. Examples:
 
             - Google: ``cached_content="cachedContents/abc123"`` — attaches an
               explicit Gemini context cache created via the Google SDK.
@@ -74,52 +78,21 @@ async def call_llm(
     # ``provider/`` prefix is stripped before the name reaches the SDK. Sending
     # "gemini/gemini-2.5-flash" or "anthropic/claude-opus-5" verbatim fails.
     provider, model = resolve_provider_and_model(model, use_vertex_ai=use_vertex_ai)
-    anthropic_backend = llm_kwargs.pop("anthropic_backend", None)
-    if provider == "anthropic" and anthropic_backend is None and use_vertex_ai:
-        # Same rule as the Agent: for Claude, use_vertex_ai selects the Vertex backend.
-        anthropic_backend = "vertex"
-    client = create_llm_client(
-        provider,
-        use_vertex_ai=use_vertex_ai,
-        anthropic_backend=anthropic_backend,
+    # The Agent's client rules: use_vertex_ai selects the Vertex backend for Claude, client
+    # constructor keys (timeout, max_retries, ...) go to the client.
+    client = _request(provider, model, None, llm_kwargs)._create_client(
+        provider, llm_kwargs.get("base_url"), use_vertex_ai
     )
 
     if provider == "anthropic":
-        return await _call_anthropic(
-            client,
-            model,
-            prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            json_mode=json_mode,
-            **llm_kwargs,
-        )
-
-    if provider == "google":
-        return await _call_google(
-            client,
-            model,
-            prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            json_mode=json_mode,
-            **llm_kwargs,
-        )
-
-    if api_style == "chat":
-        return await _call_openai_chat(
-            client,
-            model,
-            prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            json_mode=json_mode,
-            **llm_kwargs,
-        )
-    return await _call_openai_responses(
+        call = _call_anthropic
+    elif provider == "google":
+        call = _call_google
+    elif api_style == "chat":
+        call = _call_openai_chat
+    else:
+        call = _call_openai_responses
+    return await call(
         client,
         model,
         prompt,
@@ -131,9 +104,57 @@ async def call_llm(
     )
 
 
-# ---------------------------------------------------------------------------
-# Anthropic
-# ---------------------------------------------------------------------------
+@functools.cache
+def _request_class() -> type:
+    # Imported lazily: the agent package imports this package's client factory.
+    from tenxgraph.core.graph.agent_internal.anthropic import AgentAnthropicMixin
+    from tenxgraph.core.graph.agent_internal.google import AgentGoogleMixin
+    from tenxgraph.core.graph.agent_internal.openai import AgentOpenAIMixin
+    from tenxgraph.core.graph.agent_internal.providers import AgentProviderMixin
+
+    class SingleTurnRequest(
+        AgentAnthropicMixin, AgentGoogleMixin, AgentOpenAIMixin, AgentProviderMixin
+    ):
+        """The attributes the Agent's provider mixins read, for one text request."""
+
+        output_type = "text"
+        output_schema = None
+        reasoning_config = None
+        base_url = None
+        media_policy = None
+
+        def __init__(self, provider: str, model: str, client: Any, llm_kwargs: dict) -> None:
+            self.provider = provider
+            self.model = model
+            self.client = client
+            self.llm_kwargs = llm_kwargs
+
+    return SingleTurnRequest
+
+
+def _request(provider: str, model: str, client: Any, llm_kwargs: dict[str, Any]) -> Any:
+    return _request_class()(provider, model, client, llm_kwargs)
+
+
+def _messages(prompt: str, system_prompt: str | None) -> list[dict[str, Any]]:
+    messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    return [*messages, {"role": "user", "content": prompt}]
+
+
+async def _reply(converter_key: str, response: Any) -> tuple[str, int, int, int]:
+    """Text and token counts read by the Agent's response converter for ``converter_key``."""
+    from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
+
+    message = await ModelResponseConverter(response, converter_key).converter.convert_response(
+        response
+    )
+    usage = message.usages
+    if usage is None:
+        return message.text().strip(), 0, 0, 0
+    cache = usage.cache_read_input_tokens or 0
+    if cache:
+        logger.debug("Cache hit: %d cached tokens (%s)", cache, converter_key)
+    return message.text().strip(), usage.prompt_tokens, usage.completion_tokens, cache
 
 
 async def _call_anthropic(
@@ -147,31 +168,20 @@ async def _call_anthropic(
     json_mode: bool,
     **llm_kwargs: Any,
 ) -> tuple[str, int, int, int]:
-    from tenxgraph.core.graph.agent_internal.anthropic_request import bare_model_id
-    from tenxgraph.core.graph.agent_internal.constants import ANTHROPIC_NO_SAMPLING_MODELS
+    from tenxgraph.core.graph.agent_internal.anthropic import rejects_sampling
 
-    call_kwargs: dict[str, Any] = dict(llm_kwargs)
-    call_kwargs["max_tokens"] = max_tokens
-
-    # Current Claude models reject temperature with a 400. call_llm defaults it
-    # to 0.3 for every caller, so it has to be dropped rather than forwarded.
-    if bare_model_id(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
-        call_kwargs["temperature"] = temperature
-
-    if system_prompt:
-        call_kwargs["system"] = system_prompt
-
+    kwargs: dict[str, Any] = {"max_tokens": max_tokens}
+    # call_llm defaults temperature for every caller; leave it out for the Claude models that
+    # reject it instead of logging a dropped parameter on each call.
+    if not rejects_sampling(model):
+        kwargs["temperature"] = temperature
     if json_mode:
         # Anthropic has no response_mime_type; steer with an instruction, which
         # is what the Messages API supports without a full JSON schema.
-        suffix = "\n\nRespond with valid JSON only, no prose and no code fences."
-        call_kwargs["system"] = (call_kwargs.get("system") or "") + suffix
+        system_prompt = (system_prompt or "") + _JSON_INSTRUCTION
 
-    response = await client.messages.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        **call_kwargs,
-    )
+    request = _request("anthropic", model, client, {"anthropic_cache": False, **llm_kwargs})
+    response = await request._call_anthropic(_messages(prompt, system_prompt), **kwargs)
 
     if getattr(response, "stop_reason", None) == "refusal":
         details = getattr(response, "stop_details", None)
@@ -179,44 +189,7 @@ async def _call_anthropic(
             "Anthropic refused the request (category=%s)",
             getattr(details, "category", None),
         )
-
-    text = ""
-    for block in getattr(response, "content", None) or []:
-        if getattr(block, "type", None) == "text":
-            text += getattr(block, "text", "") or ""
-
-    usage = getattr(response, "usage", None)
-    inp = getattr(usage, "input_tokens", 0) or 0
-    out = getattr(usage, "output_tokens", 0) or 0
-    cache = getattr(usage, "cache_read_input_tokens", 0) or 0
-
-    if cache:
-        logger.debug("Cache hit: %d cached tokens (Anthropic)", cache)
-
-    return text.strip(), inp, out, cache
-
-
-# ---------------------------------------------------------------------------
-# Google
-# ---------------------------------------------------------------------------
-
-
-def _google_text(response: Any) -> str:
-    """Join the text parts of a google-genai response.
-
-    ``response.text`` prints a warning whenever the reply also holds non-text parts such as a
-    function call, so the text parts are read directly.
-    """
-    parts: list[Any] = []
-    for candidate in getattr(response, "candidates", None) or []:
-        content = getattr(candidate, "content", None)
-        parts.extend(getattr(content, "parts", None) or [])
-        break
-    return "".join(
-        p.text
-        for p in parts
-        if isinstance(getattr(p, "text", None), str) and not getattr(p, "thought", False)
-    )
+    return await _reply("anthropic", response)
 
 
 async def _call_google(
@@ -230,45 +203,16 @@ async def _call_google(
     json_mode: bool,
     **llm_kwargs: Any,
 ) -> tuple[str, int, int, int]:
-    from google.genai import types
-
-    config_kwargs: dict[str, Any] = {
-        "max_output_tokens": max_tokens,
-        "temperature": temperature,
-    }
+    kwargs: dict[str, Any] = {"max_output_tokens": max_tokens, "temperature": temperature}
     if json_mode:
-        config_kwargs["response_mime_type"] = "application/json"
+        kwargs["response_mime_type"] = "application/json"
+    if llm_kwargs.get("cached_content"):
+        # The system prompt is inside the cache; do not resend it.
+        system_prompt = None
 
-    cached_content = llm_kwargs.pop("cached_content", None)
-    if cached_content:
-        # system_prompt is already inside the cache — don't resend it
-        config_kwargs["cached_content"] = cached_content
-    elif system_prompt:
-        config_kwargs["system_instruction"] = system_prompt
-
-    response = await client.aio.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(**config_kwargs),
-    )
-
-    text = _google_text(response).strip()
-    inp = out = cache = 0
-    meta = getattr(response, "usage_metadata", None)
-    if meta is not None:
-        inp = getattr(meta, "prompt_token_count", 0) or 0
-        out = getattr(meta, "candidates_token_count", 0) or 0
-        cache = getattr(meta, "cached_content_token_count", 0) or 0
-
-    if cache:
-        logger.debug("Cache hit: %d cached tokens (Google)", cache)
-
-    return text, inp, out, cache
-
-
-# ---------------------------------------------------------------------------
-# OpenAI — Responses API (default)
-# ---------------------------------------------------------------------------
+    request = _request("google", model, client, llm_kwargs)
+    response = await request._call_google(_messages(prompt, system_prompt), **kwargs)
+    return await _reply("google", response)
 
 
 async def _call_openai_responses(
@@ -283,57 +227,13 @@ async def _call_openai_responses(
     **llm_kwargs: Any,
 ) -> tuple[str, int, int, int]:
     """Call the OpenAI Responses API (client.responses.create)."""
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "input": prompt,
-        "max_output_tokens": max_tokens,
-        "temperature": temperature,
-    }
-    if system_prompt:
-        kwargs["instructions"] = system_prompt
+    kwargs: dict[str, Any] = {"max_output_tokens": max_tokens, "temperature": temperature}
     if json_mode:
         kwargs["text"] = {"format": {"type": "json_object"}}
-    kwargs.update(llm_kwargs)
 
-    response = await client.responses.create(**kwargs)
-
-    text = _extract_responses_text(response)
-    inp = out = cache = 0
-    usage = getattr(response, "usage", None)
-    if usage is not None:
-        inp = getattr(usage, "input_tokens", 0) or 0
-        out = getattr(usage, "output_tokens", 0) or 0
-        details = getattr(usage, "input_tokens_details", None)
-        if details is not None:
-            cache = getattr(details, "cached_tokens", 0) or 0
-
-    if cache:
-        logger.debug("Cache hit: %d cached tokens (OpenAI responses API)", cache)
-
-    return text, inp, out, cache
-
-
-def _extract_responses_text(response: Any) -> str:
-    """Extract the assistant text from an OpenAI Responses API response object."""
-    # SDK convenience property available in openai >= 1.61
-    output_text = getattr(response, "output_text", None)
-    if output_text is not None:
-        return str(output_text).strip()
-
-    # Manual fallback: iterate output items
-    for item in getattr(response, "output", []):
-        item_type = getattr(item, "type", None)
-        if item_type == "message":
-            for part in getattr(item, "content", []):
-                if getattr(part, "type", None) == "output_text":
-                    return (getattr(part, "text", "") or "").strip()
-
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# OpenAI — Chat Completions (legacy / compat)
-# ---------------------------------------------------------------------------
+    request = _request("openai", model, client, llm_kwargs)
+    response = await request._call_openai_responses(_messages(prompt, system_prompt), **kwargs)
+    return await _reply("openai_responses", response)
 
 
 async def _call_openai_chat(
@@ -348,34 +248,10 @@ async def _call_openai_chat(
     **llm_kwargs: Any,
 ) -> tuple[str, int, int, int]:
     """Call the OpenAI Chat Completions API (client.chat.completions.create)."""
-    messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
+    kwargs: dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    kwargs.update(llm_kwargs)
 
-    response = await client.chat.completions.create(**kwargs)
-
-    text = (response.choices[0].message.content or "").strip()
-    inp = out = cache = 0
-    usage = getattr(response, "usage", None)
-    if usage is not None:
-        inp = getattr(usage, "prompt_tokens", 0) or 0
-        out = getattr(usage, "completion_tokens", 0) or 0
-        details = getattr(usage, "prompt_tokens_details", None)
-        if details is not None:
-            cache = getattr(details, "cached_tokens", 0) or 0
-
-    if cache:
-        logger.debug("Cache hit: %d cached tokens (OpenAI chat completions)", cache)
-
-    return text, inp, out, cache
+    request = _request("openai", model, client, llm_kwargs)
+    response = await request._call_openai(_messages(prompt, system_prompt), **kwargs)
+    return await _reply("openai", response)

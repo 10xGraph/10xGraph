@@ -5,10 +5,11 @@ from datetime import datetime
 from typing import Any
 
 from injectq import Inject
+from pydantic import BaseModel
 
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher, PublisherKind
 from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
-from tenxgraph.runtime.publisher.events import EventModel
+from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager, resolve_task_manager
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
@@ -134,6 +135,48 @@ def _split_inline(publisher: BasePublisher) -> tuple[list[BasePublisher], BasePu
     return ([publisher], None) if getattr(publisher, "inline", False) is True else ([], publisher)
 
 
+def listening(publisher: BasePublisher | None = Inject[BasePublisher]) -> bool:
+    """True when a publisher is bound, so an event built now reaches someone."""
+    return fresh(publisher) is not None
+
+
+def _plain(value: Any) -> Any:
+    """A pydantic model, or a list holding them, as plain dicts. Callers put live objects
+    (state, messages) in an event, and they are dumped here, only when someone listens."""
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, list) and any(isinstance(v, BaseModel) for v in value):
+        return [v.model_dump() if isinstance(v, BaseModel) else v for v in value]
+    return value
+
+
+def publish_lifecycle(
+    config: dict[str, Any],
+    lifecycle: str,
+    data: dict[str, Any],
+    extra: dict[str, Any] | None = None,
+    *,
+    event: Event = Event.GRAPH_EXECUTION,
+    event_type: EventType = EventType.UPDATE,
+    content_type: ContentType = ContentType.STATE,
+    node_name: str = "",
+) -> None:
+    """Publish one lifecycle event (``metadata["lifecycle"]``), whether or not hooks exist."""
+    if not listening():
+        return
+    publish_event(
+        EventModel.default(
+            config,
+            data=data,
+            event=event,
+            event_type=event_type,
+            node_name=node_name,
+            content_type=[content_type],
+            extra={"lifecycle": lifecycle, **(extra or {})},
+        )
+    )
+
+
 def publish_event(
     event: EventModel,
     publisher: BasePublisher | None = Inject[BasePublisher],
@@ -148,6 +191,8 @@ def publish_event(
     Publishers with ``inline = True`` (OTEL tracing) get the event right here instead, in
     order, through ``publish_inline``. ``error_message`` and ``error_traceback`` reach
     ``"observability"`` publishers only.
+    Pydantic models (or lists of them) in ``data`` and ``metadata`` are dumped here, so a
+    caller passes live objects and pays for the dump only when a publisher is bound.
     ``data["state"]`` larger than the publisher's ``state_snapshot_limit`` config (JSON
     characters, default 65536; 0 or None disables) is replaced by a bounded summary.
 
@@ -173,7 +218,7 @@ def publish_event(
     # Snapshot the event first: the run loop reuses one event object and edits its
     # data, metadata and phase between publishes, so the queued task would otherwise
     # send the last values for every event.
-    data = dict(event.data)
+    data = {k: _plain(v) for k, v in event.data.items()}
     # A queued event must not pin a whole run state while the sink is slow, so a large
     # ``state`` is cut to a bounded summary (see ``bound_state_snapshot``).
     if "state" in data:
@@ -189,7 +234,7 @@ def publish_event(
     snapshot = event.model_copy(
         update={
             "data": data,
-            "metadata": dict(event.metadata),
+            "metadata": {k: _plain(v) for k, v in event.metadata.items()},
             "timestamp": datetime.now().timestamp(),
         }
     )

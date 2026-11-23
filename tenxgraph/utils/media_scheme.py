@@ -20,3 +20,16 @@ def strip_media_scheme(url: str) -> str:
         if url.startswith(scheme):
             return url[len(scheme) :]
     return url
+
+
+def parse_data_uri(url: str, default_mime: str) -> tuple[str, str | None]:
+    """Split a ``data:<mime>;base64,<payload>`` URI into ``(mime, payload)``.
+
+    ``mime`` falls back to ``default_mime`` when the URI omits it. ``payload`` is None when
+    the URI has no comma, so the caller can drop or replace the part.
+    """
+    header, sep, payload = url.partition(",")
+    if not sep:
+        return default_mime, None
+    mime = header.removeprefix("data:").split(";", 1)[0]
+    return mime or default_mime, payload

@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from tenxgraph.core.authz import Identity, get_identity
+from tenxgraph.core.authz import Identity, Reach, filter_columns, get_identity
 
 
 __all__ = [
@@ -181,8 +181,9 @@ _ALWAYS_RESERVED = frozenset({"user_id"})
 #: Fields of ``Identity`` (``config["user"]``) that carry authorization data, not tenant or extra
 #: values. A column with one of these names would shadow that data, so they cannot be declared.
 RESERVED_USER_KEYS = frozenset({"kind", "tenant", "roles", "permissions", "reach", "claims"})
-# Index names follow the table-name rule (uppercase allowed), unlike column names.
-_INDEX_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# Schema, table and index names: letters (either case), digits and underscores, at most 63
+# bytes. Column names follow the stricter lowercase ``_NAME_RE``.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 # A server-rendered ``regclass::text`` of an index: optionally schema-qualified, each part a
 # plain lowercase identifier or a double-quoted one without embedded quotes.
 _REGCLASS_PART = r'(?:"[^"\x00]{1,63}"|[a-z_][a-z0-9_$]{0,62})'
@@ -225,6 +226,18 @@ def quote_ident(name: str) -> str:
     return f'"{name}"'
 
 
+def quote_identifier(name: Any, kind: str = "SQL identifier") -> str:
+    """Return a schema, table or index name as a double-quoted identifier.
+
+    The name must be letters (either case), digits and underscores, start with a letter or
+    underscore, and fit Postgres' 63-byte limit (a longer name would be truncated and could
+    collide). ``kind`` names the identifier in the ``ValueError``.
+    """
+    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"Invalid {kind}: {name!r}")
+    return f'"{name}"'
+
+
 def quote_index_name(name: str) -> str:
     """Return an index name as a double-quoted identifier.
 
@@ -232,9 +245,7 @@ def quote_index_name(name: str) -> str:
     tables' own rule), so they are checked against that rule rather than the lowercase-only
     column-name rule of :func:`quote_ident`.
     """
-    if not isinstance(name, str) or not _INDEX_NAME_RE.match(name):
-        raise ValueError(f"Invalid index name: {name!r}")
-    return f'"{name}"'
+    return quote_identifier(name, "index name")
 
 
 def index_name(prefix: str, column: str) -> str:
@@ -624,6 +635,52 @@ def write_conditions(
     were already enforced by ``ColumnSet.resolve(write=True)``.
     """
     return [(spec, values.get(spec.name)) for spec in specs]
+
+
+@dataclass
+class Isolation:
+    """Tenant and extra column values for one call, and the tenant isolation they imply.
+
+    ``values``: every declared column's value from ``config["user"]`` (``None`` when missing).
+    ``conditions``: the tenant columns the scope picks, with the caller's values.
+    ``settings``: the RLS ``set_config`` pairs, or ``None`` when RLS is off.
+    ``picked``: the scope columns of the caller's reach, ``None`` when there is no identity.
+    """
+
+    values: dict[str, Any] = field(default_factory=dict)
+    conditions: list[tuple[ColumnSpec, Any]] = field(default_factory=list)
+    settings: list[tuple[str, str]] | None = None
+    picked: tuple[str, ...] | None = None
+
+    @property
+    def owner_scoped(self) -> bool:
+        """Whether the scope filters by ``user_id`` (no identity, or reach ``own``)."""
+        return self.picked is None or "user_id" in self.picked
+
+
+def resolve_isolation(
+    columns: ColumnSet, config: Any, *, write: bool, row_level_security: bool
+) -> Isolation:
+    """Resolve the declared columns' values and the tenant isolation for one call.
+
+    One rule for every Postgres backend. Values come only from ``config["user"]``. The picked
+    tenant columns follow the caller's reach (:func:`tenxgraph.core.authz.filter_columns`), and
+    a write always picks reach ``own`` (every tenant column); with no identity every tenant
+    column applies. With an identity, every picked tenant column needs a value in
+    ``Identity.tenant``, or ``ValueError`` is raised (also with no columns declared, which
+    still validates the reach). ``write=True`` raises when a required column has no value; a
+    read raises when a picked column has no value. On a write a missing optional value pairs
+    with ``None`` (:func:`write_conditions`), so a writer without it owns only rows that have
+    none either.
+    """
+    picked = filter_columns(config, columns.tenant_names, reach=Reach.OWN if write else None)
+    if not columns:
+        return Isolation(picked=picked)
+    values = columns.resolve(config, write=write)
+    specs = columns.scope_specs(picked)
+    conditions = write_conditions(specs, values) if write else isolation_conditions(specs, values)
+    settings = rls_settings(columns.tenant, specs, values) if row_level_security else None
+    return Isolation(values=values, conditions=conditions, settings=settings, picked=picked)
 
 
 def build_isolation_where(

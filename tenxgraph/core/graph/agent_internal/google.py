@@ -9,16 +9,14 @@ from typing import Any
 
 from tenxgraph.runtime.adapters.llm.google_genai_converter import function_declaration
 from tenxgraph.runtime.adapters.llm.tool_arguments import parse_tool_arguments
-from tenxgraph.storage.media.url_policy import (
-    MediaURLError,
-    redact_url,
-    resolve_media_policy,
-)
+from tenxgraph.storage.media.url_policy import MediaURLError, resolve_media_policy
+from tenxgraph.utils.log_safety import redact_url
+from tenxgraph.utils.media_scheme import parse_data_uri
 
 from .constants import (
     CALL_EXCLUDED_KWARGS,
     GOOGLE_THINKING_BUDGET_BY_EFFORT,
-    resolve_reasoning_config,
+    reasoning_for,
 )
 from .sdk_kwargs import filter_kwargs
 
@@ -296,9 +294,8 @@ class AgentGoogleMixin:
             return []
 
         if url.startswith("data:"):
-            header, _, b64_data = url.partition(",")
-            mime = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
-            raw = _safe_b64decode(b64_data)
+            mime, b64_data = parse_data_uri(url, "image/png")
+            raw = None if b64_data is None else _safe_b64decode(b64_data)
             if raw is None:
                 return [types.Part(text="[Failed to load image]")]
             return [types.Part.from_bytes(data=raw, mime_type=mime)]
@@ -437,7 +434,7 @@ class AgentGoogleMixin:
             if function_declarations:
                 config_kwargs["tools"] = [types.Tool(function_declarations=function_declarations)]
 
-        reasoning = resolve_reasoning_config(self)
+        reasoning = reasoning_for(self, "google")
         if reasoning and isinstance(reasoning, dict) and text_like_output and not structured_output:
             thinking_kwargs: dict[str, Any] = {"include_thoughts": True}
             budget = reasoning.get("thinking_budget")

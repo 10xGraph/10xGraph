@@ -121,10 +121,6 @@ class TestOpenAIResponses:
         assert block.args == _expected(raw)[0]
         assert tool_call["function"]["arguments"] == (raw or "{}")
 
-    @pytest.mark.parametrize("raw", [*INVALID, "", VALID_OBJ])
-    def test_parse_json_args(self, raw):
-        assert OpenAIResponsesConverter._parse_json_args(raw) == _expected(raw)[0]
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize("raw", [*INVALID, VALID_OBJ])
     async def test_stream(self, raw):

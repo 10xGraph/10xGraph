@@ -104,7 +104,7 @@ async def test_get_and_delete_message_filter_by_thread(checkpointer):
 @pytest.mark.asyncio
 async def test_upgrade_from_v3_runs_the_message_key_migration(checkpointer):
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"version": 3})
+    conn.fetchval = AsyncMock(return_value=3)
     await checkpointer._check_and_apply_schema_version(conn)
     executed = [call.args[0] for call in conn.execute.await_args_list]
     assert any("ADD PRIMARY KEY (thread_id, message_id)" in sql for sql in executed)
@@ -134,7 +134,7 @@ def test_new_schema_has_no_reasoning_column(checkpointer):
 @pytest.mark.asyncio
 async def test_upgrade_from_v4_runs_the_reasoning_drop(checkpointer):
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"version": 4})
+    conn.fetchval = AsyncMock(return_value=4)
     await checkpointer._check_and_apply_schema_version(conn)
     executed = [call.args[0] for call in conn.execute.await_args_list]
     assert any("DROP COLUMN IF EXISTS reasoning" in sql for sql in executed)

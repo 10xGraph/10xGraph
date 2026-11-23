@@ -12,6 +12,7 @@ from tenxgraph.core.llm.client_factory import (
 from .constants import (
     ANTHROPIC_OUTPUT_TYPES,
     CLIENT_CONSTRUCTOR_KWARGS,
+    ENDPOINT_KWARGS,
     GOOGLE_OUTPUT_TYPES,
     OPENAI_OUTPUT_TYPES,
     VALID_OUTPUT_TYPES,
@@ -85,11 +86,7 @@ class AgentProviderMixin:
                 base_url=base_url,
                 api_key=api_key,
                 anthropic_backend=backend,
-                **{
-                    k: v
-                    for k, v in self.llm_kwargs.items()
-                    if k not in ("api_key", "anthropic_backend", "base_url")
-                },
+                **{k: v for k, v in self.llm_kwargs.items() if k not in ENDPOINT_KWARGS},
             )
 
         extra = {k: v for k, v in self.llm_kwargs.items() if k in CLIENT_CONSTRUCTOR_KWARGS}

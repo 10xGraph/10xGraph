@@ -308,7 +308,7 @@ async def test_get_pg_pool_lazy(monkeypatch):
 async def test_check_and_apply_schema_version_upgrade(cp):
     # Recorded at v1, target v2 -> runs the v2 migration steps, then records v2.
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"version": 1})
+    conn.fetchval = AsyncMock(return_value=1)  # SELECT max(version)
 
     await cp._check_and_apply_schema_version(conn)
 
@@ -326,7 +326,7 @@ async def test_check_and_apply_schema_version_exception(cp):
     from tenxgraph.core.exceptions.storage_exceptions import SchemaVersionError
 
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(side_effect=RuntimeError("db error"))
+    conn.fetchval = AsyncMock(side_effect=RuntimeError("db error"))
 
     with pytest.raises(SchemaVersionError):
         await cp._check_and_apply_schema_version(conn)

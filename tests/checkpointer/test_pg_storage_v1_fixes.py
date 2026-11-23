@@ -68,8 +68,7 @@ async def test_schema_version_is_zero_when_table_missing(monkeypatch):
     cp, conn = _make(monkeypatch)
     conn.fetchval = AsyncMock(return_value=False)
     assert await cp.aget_schema_version() == 0
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetchrow = AsyncMock(return_value={"version": CURRENT_SCHEMA_VERSION})
+    conn.fetchval = AsyncMock(side_effect=[True, CURRENT_SCHEMA_VERSION])
     assert await cp.aget_schema_version() == CURRENT_SCHEMA_VERSION
 
 
