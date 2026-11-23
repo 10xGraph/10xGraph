@@ -44,6 +44,30 @@ async def test_google_model_dispatches_to_google():
     assert result == _DUMMY
 
 
+_CALL_ANTHROPIC = "tenxgraph.core.llm.caller._call_anthropic"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kwargs", "expected_backend"),
+    [
+        ({"use_vertex_ai": True}, "vertex"),
+        ({"use_vertex_ai": True, "anthropic_backend": "bedrock"}, "bedrock"),
+        ({"anthropic_backend": "bedrock"}, "bedrock"),
+        ({}, None),
+    ],
+)
+async def test_claude_backend_follows_agent_rule(kwargs, expected_backend):
+    with (
+        patch(_CREATE, return_value=MagicMock()) as create,
+        patch(_CALL_ANTHROPIC, new=AsyncMock(return_value=_DUMMY)),
+    ):
+        await call_llm("claude-opus-4-7", "hello", **kwargs)
+
+    assert create.call_args.args[0] == "anthropic"
+    assert create.call_args.kwargs["anthropic_backend"] == expected_backend
+
+
 @pytest.mark.anyio
 async def test_openai_default_dispatches_to_responses():
     with (

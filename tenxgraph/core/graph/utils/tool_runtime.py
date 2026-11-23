@@ -3,7 +3,8 @@
 Both paths run the same tool calls the same way: a durable ledger of finished calls (so a
 replayed node does not fire a tool twice), isolated state per parallel branch, and a
 deterministic merge of the branches back into the shared state. One copy, used by
-``InvokeNodeHandler`` and ``StreamNodeHandler``.
+``InvokeNodeHandler`` and ``StreamNodeHandler``; ``LiveAgent`` uses the ledger helpers and
+:meth:`ToolRuntimeMixin._invoke_tool_metered` for realtime tool calls.
 """
 
 import logging
@@ -12,6 +13,7 @@ from typing import Any
 
 from tenxgraph.core.exceptions import NodeTimeoutError
 from tenxgraph.core.graph.tool_node._helpers import generic_tool_failure
+from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
 from tenxgraph.core.graph.utils.tool_dispatch import (
     allowed_tool_names,
     handoff_target,
@@ -20,6 +22,8 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.storage.checkpointer import BaseCheckpointer
+from tenxgraph.utils import metrics
+from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
 
 
 logger = logging.getLogger("tenxgraph.graph")
@@ -117,6 +121,60 @@ class ToolRuntimeMixin:
         if not tool_call_id or not origin_message_id:
             return None
         return f"{origin_message_id}:{tool_call_id}"
+
+    async def _invoke_tool_metered(
+        self,
+        function_name: str,
+        function_args: dict,
+        tool_call_id: str,
+        state: AgentState,
+        config: dict[str, Any],
+        **invoke_kwargs: Any,
+    ) -> Any:
+        """Run one tool call under ``tool_timeout``, recording the tool metrics.
+
+        Raises ``NodeTimeoutError`` when the deadline passes (the call is cancelled), or
+        whatever the tool raised; :meth:`_failure_message` turns either into the result
+        the model sees.
+        """
+        timeout = resolve_timeout(config, "tool_timeout", DEFAULT_TOOL_TIMEOUT_SECONDS)
+        # The name comes from the model. Only a tool this node can run is a safe metric
+        # label; anything else would create a new series per made-up name.
+        known = self.func.knows_tool(function_name, config)
+        tool_attrs = {"node": self.name, "tool": function_name if known else "unknown"}
+        metrics.counter("tenxgraph.tool.calls").inc(attributes=tool_attrs)
+
+        with metrics.timer("tenxgraph.tool.duration", attributes=tool_attrs):
+            try:
+                return await execute_with_guards(
+                    self.func.invoke(
+                        function_name,
+                        function_args,
+                        tool_call_id=tool_call_id,
+                        state=state,
+                        config=config,
+                        **invoke_kwargs,
+                    ),
+                    timeout=timeout,
+                    on_timeout=lambda: NodeTimeoutError(
+                        message=(
+                            f"Tool '{function_name}' exceeded its timeout of {timeout}s "
+                            f"and was cancelled"
+                        ),
+                        error_code="NODE_TIMEOUT_002",
+                        context={
+                            "node_name": self.name,
+                            "tool_name": function_name,
+                            "timeout": timeout,
+                        },
+                    ),
+                )
+            except NodeTimeoutError:
+                metrics.counter("tenxgraph.tool.timeouts").inc(attributes=tool_attrs)
+                raise
+            except Exception:
+                metrics.counter("tenxgraph.tool.errors").inc(attributes=tool_attrs)
+                raise
 
     async def _get_recorded_tool_result(
         self,

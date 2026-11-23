@@ -267,14 +267,18 @@ def _make_stream_end_hook(llm_event: Any, started: float | None = None) -> Any:
 def _extract_input_tokens(response: Any) -> int:
     usage = getattr(response, "usage", None)
     if usage is None:
-        return 0
+        # Google: usage_metadata.prompt_token_count
+        meta = getattr(response, "usage_metadata", None)
+        return int(getattr(meta, "prompt_token_count", None) or 0)
     return getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None) or 0
 
 
 def _extract_output_tokens(response: Any) -> int:
     usage = getattr(response, "usage", None)
     if usage is None:
-        return 0
+        # Google: usage_metadata.candidates_token_count
+        meta = getattr(response, "usage_metadata", None)
+        return int(getattr(meta, "candidates_token_count", None) or 0)
     return getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None) or 0
 
 
@@ -282,7 +286,7 @@ def _extract_cache_read_tokens(response: Any) -> int:
     """Tokens served from provider cache (OpenAI cached prompt tokens, Anthropic cache read)."""
     usage = getattr(response, "usage", None)
     if usage is None:
-        return 0
+        usage = object()  # no OpenAI or Anthropic usage; Google reads usage_metadata below
     # Anthropic: usage.cache_read_input_tokens
     v = getattr(usage, "cache_read_input_tokens", None)
     if v:
@@ -322,7 +326,7 @@ def _extract_reasoning_tokens(response: Any) -> int:
     """Reasoning/thinking tokens (OpenAI o-series completion_tokens_details, Google thoughts)."""
     usage = getattr(response, "usage", None)
     if usage is None:
-        return 0
+        usage = object()  # no OpenAI or Anthropic usage; Google reads usage_metadata below
     # OpenAI: usage.completion_tokens_details.reasoning_tokens
     details = getattr(usage, "completion_tokens_details", None)
     if details:
@@ -372,13 +376,15 @@ def _extract_finish_reason(response: Any) -> str:
 
 def _extract_response_id(response: Any) -> str:
     """Return the unique completion ID from the provider response."""
-    v = getattr(response, "id", None)
+    # Google responses carry response_id instead of id
+    v = getattr(response, "id", None) or getattr(response, "response_id", None)
     return str(v) if v else ""
 
 
 def _extract_response_model(response: Any) -> str:
     """Return the model name the provider actually used (may differ from requested)."""
-    v = getattr(response, "model", None)
+    # Google responses carry model_version instead of model
+    v = getattr(response, "model", None) or getattr(response, "model_version", None)
     return str(v) if v else ""
 
 

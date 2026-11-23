@@ -1269,6 +1269,13 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
                 ) from None
         return thread_id
 
+    def _message_thread_id(self, config: dict[str, Any]) -> str | int:
+        """``thread_id`` of the config in the column's type; message methods need no user."""
+        thread_id = config.get("thread_id")
+        if not thread_id:
+            raise ValueError("thread_id must be provided in config")
+        return self._db_thread_id(thread_id)
+
     def _get_thread_key(
         self,
         thread_id: str | int,
@@ -3096,12 +3103,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             Exception: If retrieval fails.
         """
-        thread_id = config.get("thread_id")
+        thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
 
         # Message ids are unique per thread only, so the thread is part of the key.
-        if not thread_id:
-            raise ValueError("thread_id must be provided in config")
 
         logger.debug("Retrieving message_id=%s for thread_id=%s", message_id, thread_id)
 
@@ -3154,11 +3159,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             Exception: If listing fails.
         """
         offset, limit = validate_page(offset, limit)
-        thread_id = config.get("thread_id")
+        thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
-
-        if not thread_id:
-            raise ValueError("thread_id must be provided in config")
 
         logger.debug("Listing messages for thread_id=%s", thread_id)
 
@@ -3231,12 +3233,10 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
         Raises:
             Exception: If deletion fails.
         """
-        thread_id = config.get("thread_id")
+        thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
 
         # Message ids are unique per thread only, so the thread is part of the key.
-        if not thread_id:
-            raise ValueError("thread_id must be provided in config")
 
         logger.debug("Deleting message_id=%s for thread_id=%s", message_id, thread_id)
 
@@ -3334,11 +3334,8 @@ class PgCheckpointer(BaseCheckpointer[StateT]):
             thread (or the caller does not own the thread: a write stays own whatever the
             reach).
         """
-        thread_id = config.get("thread_id")
+        thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
-
-        if not thread_id:
-            raise ValueError("thread_id must be provided in config")
 
         logger.debug("Updating metadata of message_id=%s for thread_id=%s", message_id, thread_id)
 

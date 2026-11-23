@@ -254,6 +254,33 @@ class TestSamplingParamStripping:
         assert "temperature" not in kwargs
 
 
+class TestSamplingStripIdForms:
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-opus-4-7",
+            "anthropic.claude-opus-4-7",
+            "us.anthropic.claude-opus-4-7",
+            "eu.anthropic.claude-opus-4-7",
+            "global.anthropic.claude-opus-4-7",
+            "claude-opus-4-7@20260101",
+            "Claude-Opus-4-7",
+        ],
+    )
+    def test_every_id_form_is_stripped(self, model):
+        kwargs = {"temperature": 0.5, "top_p": 0.9}
+        strip_rejected_sampling_params(model, kwargs)
+        assert kwargs == {}
+
+    @pytest.mark.parametrize(
+        "model", ["us.anthropic.claude-haiku-4-5", "claude-haiku-4-5@20251001"]
+    )
+    def test_older_id_forms_keep_sampling(self, model):
+        kwargs = {"temperature": 0.5}
+        strip_rejected_sampling_params(model, kwargs)
+        assert kwargs == {"temperature": 0.5}
+
+
 class TestReasoningConfig:
     def test_effort_maps_to_output_config(self):
         kwargs: dict = {}

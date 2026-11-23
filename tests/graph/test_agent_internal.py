@@ -525,10 +525,12 @@ class TestExtractCacheReadTokens:
         assert _extract_cache_read_tokens(resp) == 75
 
     def test_google_cached_content_token_count(self):
-        # Google responses have both usage (no cache fields) and usage_metadata
-        resp = SimpleNamespace(
-            usage=SimpleNamespace(prompt_tokens=5, completion_tokens=10),
-            usage_metadata=SimpleNamespace(cached_content_token_count=200),
+        from google.genai import types
+
+        resp = types.GenerateContentResponse(
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                cached_content_token_count=200
+            )
         )
         assert _extract_cache_read_tokens(resp) == 200
 
@@ -575,16 +577,42 @@ class TestExtractReasoningTokens:
         assert _extract_reasoning_tokens(resp) == 77
 
     def test_google_thoughts_token_count(self):
-        # Google responses have both usage and usage_metadata
-        resp = SimpleNamespace(
-            usage=SimpleNamespace(completion_tokens=10),
-            usage_metadata=SimpleNamespace(thoughts_token_count=120),
+        from google.genai import types
+
+        resp = types.GenerateContentResponse(
+            usage_metadata=types.GenerateContentResponseUsageMetadata(thoughts_token_count=120)
         )
         assert _extract_reasoning_tokens(resp) == 120
 
     def test_no_reasoning_tokens_returns_zero(self):
         resp = SimpleNamespace(usage=SimpleNamespace(completion_tokens=10))
         assert _extract_reasoning_tokens(resp) == 0
+
+
+class TestExtractGoogleResponseFields:
+    """A real google-genai response has usage_metadata, response_id and model_version only."""
+
+    def _resp(self):
+        from google.genai import types
+
+        return types.GenerateContentResponse(
+            response_id="resp-1",
+            model_version="gemini-2.5-flash",
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=10, candidates_token_count=5, thoughts_token_count=3
+            ),
+        )
+
+    def test_tokens(self):
+        resp = self._resp()
+        assert _extract_input_tokens(resp) == 10
+        assert _extract_output_tokens(resp) == 5
+        assert _extract_reasoning_tokens(resp) == 3
+
+    def test_id_and_model(self):
+        resp = self._resp()
+        assert _extract_response_id(resp) == "resp-1"
+        assert _extract_response_model(resp) == "gemini-2.5-flash"
 
 
 class TestExtractFinishReason:

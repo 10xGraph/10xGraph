@@ -7,11 +7,11 @@ from typing import Any
 
 from .anthropic_request import (
     apply_cache_control,
+    bare_model_id,
     convert_tools,
     drop_trailing_assistant,
     merge_tool_results,
     split_system,
-    strip_bedrock_prefix,
 )
 from .constants import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
@@ -41,7 +41,7 @@ _ANTHROPIC_EXCLUDED_KWARGS = CALL_EXCLUDED_KWARGS | frozenset(
 
 def strip_rejected_sampling_params(model: str, call_kwargs: dict[str, Any]) -> None:
     """Drop temperature/top_p/top_k for models that 400 on them, in place."""
-    if strip_bedrock_prefix(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
+    if bare_model_id(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
         return
 
     dropped = [key for key in _SAMPLING_KEYS if key in call_kwargs]
@@ -58,18 +58,9 @@ def strip_rejected_sampling_params(model: str, call_kwargs: dict[str, Any]) -> N
     )
 
 
-def _bare_model(model: str) -> str:
-    """Model id without Bedrock prefix (also ``us.anthropic.``), provider prefix or Vertex
-    ``@`` date, lowercased."""
-    bare = model.split("/")[-1].split("@")[0]
-    if "anthropic." in bare:
-        bare = bare.split("anthropic.", 1)[1]
-    return strip_bedrock_prefix(bare).lower()
-
-
 def is_legacy_thinking_model(model: str) -> bool:
     """True for Claude models before 4.6, which need budget-based thinking."""
-    return _bare_model(model).startswith(ANTHROPIC_LEGACY_THINKING_PREFIXES)
+    return bare_model_id(model).startswith(ANTHROPIC_LEGACY_THINKING_PREFIXES)
 
 
 def _apply_legacy_reasoning(
@@ -79,7 +70,7 @@ def _apply_legacy_reasoning(
 ) -> None:
     """Budget-based thinking for pre-4.6 models, in place."""
     effort = reasoning_config.get("effort")
-    if effort and _bare_model(model).startswith(ANTHROPIC_LEGACY_EFFORT_PREFIXES):
+    if effort and bare_model_id(model).startswith(ANTHROPIC_LEGACY_EFFORT_PREFIXES):
         # Opus 4.5 accepts low/medium/high only.
         output_config = dict(call_kwargs.get("output_config") or {})
         output_config.setdefault("effort", "high" if effort in ("xhigh", "max") else effort)

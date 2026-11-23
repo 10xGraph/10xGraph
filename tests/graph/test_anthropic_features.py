@@ -33,6 +33,15 @@ class TestStripBedrockPrefix:
         assert strip_bedrock_prefix("claude-opus-5") == "claude-opus-5"
 
 
+class TestDynamicFilterIdForms:
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-opus-4-7", "us.anthropic.claude-opus-4-7", "claude-opus-4-7@20260101"],
+    )
+    def test_id_forms_get_dynamic_tools(self, model):
+        assert web_search_tool(model)["type"] == WEB_SEARCH_DYNAMIC
+
+
 class TestCacheControl:
     E = {"type": "ephemeral"}
 

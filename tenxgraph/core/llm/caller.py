@@ -74,10 +74,14 @@ async def call_llm(
     # ``provider/`` prefix is stripped before the name reaches the SDK. Sending
     # "gemini/gemini-2.5-flash" or "anthropic/claude-opus-5" verbatim fails.
     provider, model = resolve_provider_and_model(model, use_vertex_ai=use_vertex_ai)
+    anthropic_backend = llm_kwargs.pop("anthropic_backend", None)
+    if provider == "anthropic" and anthropic_backend is None and use_vertex_ai:
+        # Same rule as the Agent: for Claude, use_vertex_ai selects the Vertex backend.
+        anthropic_backend = "vertex"
     client = create_llm_client(
         provider,
         use_vertex_ai=use_vertex_ai,
-        anthropic_backend=llm_kwargs.pop("anthropic_backend", None),
+        anthropic_backend=anthropic_backend,
     )
 
     if provider == "anthropic":
@@ -143,7 +147,7 @@ async def _call_anthropic(
     json_mode: bool,
     **llm_kwargs: Any,
 ) -> tuple[str, int, int, int]:
-    from tenxgraph.core.graph.agent_internal.anthropic_request import strip_bedrock_prefix
+    from tenxgraph.core.graph.agent_internal.anthropic_request import bare_model_id
     from tenxgraph.core.graph.agent_internal.constants import ANTHROPIC_NO_SAMPLING_MODELS
 
     call_kwargs: dict[str, Any] = dict(llm_kwargs)
@@ -151,7 +155,7 @@ async def _call_anthropic(
 
     # Current Claude models reject temperature with a 400. call_llm defaults it
     # to 0.3 for every caller, so it has to be dropped rather than forwarded.
-    if strip_bedrock_prefix(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
+    if bare_model_id(model) not in ANTHROPIC_NO_SAMPLING_MODELS:
         call_kwargs["temperature"] = temperature
 
     if system_prompt:

@@ -441,7 +441,7 @@ class MCPMixin:
             event.event_type = EventType.END
             event.data["error"] = error_text
             event.data.update(error_details(e, config))
-            event.metadata["status"] = "MCP tool execution complete, with recovery"
+            event.metadata["status"] = "MCP tool execution complete, with error"
             event.content_type = [ContentType.TOOL_RESULT, ContentType.ERROR]
             publish_event(event)
 

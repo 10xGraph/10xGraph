@@ -73,6 +73,18 @@ def strip_bedrock_prefix(model: str) -> str:
     return model[len(_BEDROCK_PREFIX) :] if model.startswith(_BEDROCK_PREFIX) else model
 
 
+def bare_model_id(model: str) -> str:
+    """Bare lowercase Claude id for capability lookups only, never for the request.
+
+    Strips a provider prefix, a Bedrock ``anthropic.`` or cross-region ``us.anthropic.``
+    prefix, and a Vertex ``@date`` suffix.
+    """
+    bare = model.split("/")[-1].split("@")[0]
+    if "anthropic." in bare:
+        bare = bare.split("anthropic.", 1)[1]
+    return strip_bedrock_prefix(bare).lower()
+
+
 def split_system(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
