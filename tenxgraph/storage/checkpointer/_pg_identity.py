@@ -4,8 +4,10 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
+from injectq import InjectQ
+
 from tenxgraph.core.authz import owner_id
-from tenxgraph.utils.id_generator import IDType
+from tenxgraph.utils.id_generator import BaseIDGenerator, IDType
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
@@ -15,6 +17,12 @@ from ._pg_support import (
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
+
+
+def _plain_id_type(value: Any) -> str:
+    """``"string"``, ``"int"`` or ``"bigint"`` for a setup name or an ``IDType``."""
+    plain = str(getattr(value, "value", value))
+    return "int" if plain == "integer" else plain
 
 
 class _PgIdentityMixin(PgHostBase):
@@ -48,14 +56,33 @@ class _PgIdentityMixin(PgHostBase):
         return self._db_thread_id(thread_id), user_id
 
     @property
+    def id_type(self) -> str:
+        """The id column type: ``"string"``, ``"int"`` or ``"bigint"``.
+
+        It follows the ``BaseIDGenerator`` bound in InjectQ (no generator: ``"string"``, the
+        default generator makes uuid strings). It is read again on every call until the schema
+        is initialized, because the API binds its generator after the checkpointer is built;
+        then it is fixed. A deprecated ``id_type=`` argument wins over the generator.
+        """
+        if self._pinned_id_type is not None:
+            return self._pinned_id_type
+        return self._generator_id_type()
+
+    @staticmethod
+    def _generator_id_type() -> str:
+        """The id type of the bound id generator (``"string"`` when none is bound)."""
+        generator = InjectQ.get_instance().try_get(BaseIDGenerator, None)
+        return _plain_id_type(generator.id_type) if generator is not None else "string"
+
+    @property
     def declared_id_type(self) -> IDType:
-        """The id type the setup's ``id_type`` holds (``int``, ``bigint``, else text)."""
+        """The id type of the id columns (``int``, ``bigint``, else text)."""
         return {"int": IDType.INTEGER, "bigint": IDType.BIGINT}.get(self.id_type, IDType.STRING)
 
     def _check_id(self, value: Any, what: str) -> Any:
-        """``value`` unchanged when it has the type the setup's ``id_type`` expects.
+        """``value`` unchanged when it has the type the id type expects.
 
-        ``id_type`` text takes strings, ``int`` and ``bigint`` take integers. Anything else
+        The ``string`` type takes strings, ``int`` and ``bigint`` take integers. Anything else
         raises ``ValueError`` before any SQL, so no driver error reaches the caller.
         """
         wants_int = self.id_type in ("int", "bigint")
@@ -67,21 +94,21 @@ class _PgIdentityMixin(PgHostBase):
         if not ok:
             expected = "an integer" if wants_int else "a string"
             raise ValueError(
-                f"{what} must be {expected} for id_type={self.id_type!r}, "
+                f"{what} must be {expected} for the {self.id_type!r} id type, "
                 f"got {type(value).__name__}: {value!r}"
             )
         return value
 
     def _db_thread_id(self, thread_id: str | int) -> str | int:
-        """``thread_id`` checked against the setup's ``id_type`` (see ``_check_id``)."""
+        """``thread_id`` checked against the id type (see ``_check_id``)."""
         return self._check_id(thread_id, "thread_id")
 
     def _db_message_id(self, message_id: str | int) -> str | int:
-        """``message_id`` checked against the setup's ``id_type`` (see ``_check_id``)."""
+        """``message_id`` checked against the id type (see ``_check_id``)."""
         return self._check_id(message_id, "message_id")
 
     def _check_message_ids(self, messages: list[Any] | None) -> None:
-        """Every message id must have the type ``id_type`` expects, before any SQL."""
+        """Every message id must have the type id type expects, before any SQL."""
         for message in messages or []:
             self._db_message_id(message.message_id)
 

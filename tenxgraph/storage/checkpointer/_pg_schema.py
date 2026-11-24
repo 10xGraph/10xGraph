@@ -346,17 +346,21 @@ class _PgSchemaMixin(PgHostBase):
         if self._schema_initialized:
             return
 
-        logger.debug(
-            "Initializing database schema with types: id_type=%s, user_id_type=%s",
-            self.id_type,
-            self.user_id_type,
-        )
-
         async with self._schema_init_lock:
             # Re-check under the in-process lock (another coroutine may have run
             # initialization while we waited).
             if self._schema_initialized:
                 return
+
+            # The id generator is final by now (the API binds its own after compile): fix the
+            # id type for the life of this checkpointer.
+            if self._pinned_id_type is None:
+                self._pinned_id_type = self._generator_id_type()
+            logger.debug(
+                "Initializing database schema with types: id_type=%s, user_id_type=%s",
+                self.id_type,
+                self.user_id_type,
+            )
 
             async def _setup(conn) -> None:
                 # Serialize schema creation ACROSS processes (multiple gunicorn workers / k8s
@@ -372,6 +376,7 @@ class _PgSchemaMixin(PgHostBase):
                     timeout=self.ddl_lock_timeout,
                     owner="PgCheckpointer",
                 ):
+                    await self._check_existing_id_types(conn)
                     async with conn.transaction():
                         # Catalog first: a restart runs no DDL for what is in place.
                         new_tables = await self._create_missing_tables(conn)
@@ -394,10 +399,39 @@ class _PgSchemaMixin(PgHostBase):
             try:
                 await self._retry_on_connection_error(_operation)
             except Exception as e:
+                if not self._id_type_given:
+                    self._pinned_id_type = None  # resolved again on the next try
                 logger.error("Failed to initialize database schema: %s", describe_error(e))
                 raise
             self._schema_initialized = True
             logger.debug("Database schema initialized successfully")
+
+    async def _check_existing_id_types(self, conn) -> None:
+        """Refuse tables whose id columns do not have the type the id generator makes.
+
+        Compares ``threads.thread_id`` and ``messages.message_id`` (when the tables exist)
+        with the id type, so a changed generator fails here and not on a SQL type error later.
+        """
+        found = {"integer": "int", "bigint": "bigint"}
+        for table, column in (("threads", "thread_id"), ("messages", "message_id")):
+            data_type = await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+                self.schema,
+                table,
+                column,
+            )
+            if data_type is None:
+                continue
+            actual = found.get(data_type, "string")
+            if actual != self.id_type:
+                raise ValueError(
+                    f"The table {self._get_table_name(table)} has {column} of type "
+                    f"{data_type.upper()}, but the id generator makes {self.id_type} ids. "
+                    "Keep the id generator the tables were created with, or migrate the "
+                    f"{column} columns (and the thread_id columns of the other tables) to "
+                    "the new type."
+                )
 
     async def _create_missing_tables(self, conn) -> set[str]:
         """Create the tables (and the role enum) that do not exist yet; return their names.

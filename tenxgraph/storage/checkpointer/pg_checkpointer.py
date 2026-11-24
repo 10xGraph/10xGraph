@@ -9,9 +9,8 @@ re-exported for callers that import it from this path.
 import asyncio
 import logging
 import time
+import warnings
 from typing import Any
-
-from injectq import InjectQ
 
 from tenxgraph.storage._pg_common import (
     DEFAULT_ACQUIRE_TIMEOUT,
@@ -28,7 +27,7 @@ from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_access import _PgAccessMixin
 from ._pg_cache import _PgCacheMixin
-from ._pg_identity import _PgIdentityMixin
+from ._pg_identity import _PgIdentityMixin, _plain_id_type
 from ._pg_ledger import _PgLedgerMixin
 from ._pg_messages import _PgMessagesMixin
 from ._pg_schema import _PgSchemaMixin
@@ -268,14 +267,9 @@ class PgCheckpointer(
             )
 
         self.user_id_type = kwargs.get("user_id_type", "string")
-        # allow explicit override via kwargs, fallback to InjectQ, then default
-        id_type = kwargs.get(
-            "id_type", InjectQ.get_instance().try_get("generated_id_type", "string")
-        )
-        # Plain setup names ("string", "int", "bigint"); an IDType from the bound generator
-        # is mapped too, so IDType.INTEGER makes INTEGER columns, not text ones.
-        id_type = str(getattr(id_type, "value", id_type))
-        self.id_type = "int" if id_type == "integer" else id_type
+        # The id type follows the id generator bound in InjectQ (see ``id_type``). A passed
+        # ``id_type`` is still honoured but deprecated.
+        self._set_declared_id_type(kwargs.get("id_type"))
         self.cache_ttl = kwargs.get("cache_ttl", DEFAULT_CACHE_TTL)
         self.release_resources = kwargs.get("release_resources", False)
         # Prefix for every Redis key this checkpointer writes, so two deployments that share
@@ -420,6 +414,20 @@ class PgCheckpointer(
                 **{**DEFAULT_REDIS_POOL_CONFIG, **redis_pool_config},
             )
         )
+
+    def _set_declared_id_type(self, given: Any) -> None:
+        """Keep a passed (deprecated) ``id_type``; without one the id type follows the generator."""
+        self._id_type_given = given is not None
+        self._pinned_id_type: str | None = None
+        if given is None:
+            return
+        warnings.warn(
+            "id_type is deprecated and removed in 2.0; the id type now follows the bound "
+            "id generator",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        self._pinned_id_type = _plain_id_type(given)
 
     def _get_table_name(self, table: str) -> str:
         """

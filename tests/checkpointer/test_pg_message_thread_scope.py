@@ -8,9 +8,19 @@ that thread's checkpoint fail.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from injectq import InjectQ
 
 from tenxgraph.core.state import Message
 from tenxgraph.storage.checkpointer.pg_checkpointer import CURRENT_SCHEMA_VERSION, PgCheckpointer
+from tenxgraph.utils.id_generator import (
+    BaseIDGenerator,
+    BigIntIDGenerator,
+    IntIDGenerator,
+    UUIDGenerator,
+)
+
+
+GENERATORS = {"string": UUIDGenerator(), "int": IntIDGenerator(), "bigint": BigIntIDGenerator()}
 
 
 @pytest.fixture
@@ -20,7 +30,6 @@ def checkpointer():
             postgres_dsn="postgresql://test:test@localhost/test",
             redis_url="redis://localhost:6379/0",
             user_id_type="string",
-            id_type="string",
         )
 
 
@@ -45,11 +54,11 @@ async def test_rewriting_a_message_in_the_same_thread_still_works(checkpointer):
 
 @pytest.mark.parametrize("id_type", ["string", "int", "bigint"])
 def test_new_schema_keys_messages_per_thread(id_type):
+    InjectQ.get_instance().bind_instance(BaseIDGenerator, GENERATORS[id_type], allow_concrete=True)
     with patch("asyncpg.create_pool"):
         cp = PgCheckpointer(
             postgres_dsn="postgresql://test:test@localhost/test",
             redis_url="redis://localhost:6379/0",
-            id_type=id_type,
         )
     messages_sql = next(
         sql
