@@ -266,9 +266,19 @@ async def test_pg_admin_stop_is_keyed_by_the_thread_owner():
     assert res == {"ok": True, "running": True}
     assert await cp.ais_stop_requested({"thread_id": "t1", "user_id": "A"}) is True
     assert await cp.ais_stop_requested({"thread_id": "t1", "user_id": "admin"}) is False
-    # The state-cache mirror is written under the owner's identity too.
-    written_cfg = cp.aput_state_cache.await_args.args[0]
-    assert written_cfg["user"].user_id == "A"
+    # astop does not rewrite the cached state: a stale copy could overwrite a newer one.
+    cp.aput_state_cache.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_astop_on_running_thread_does_not_write_state_cache():
+    app, cp = _pg_app("A")
+
+    res = await app.astop(_cfg("t1", "A", "own"))
+
+    assert res == {"ok": True, "running": True}
+    assert await cp.ais_stop_requested({"thread_id": "t1", "user_id": "A"}) is True
+    cp.aput_state_cache.assert_not_awaited()
 
 
 @pytest.mark.asyncio

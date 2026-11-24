@@ -19,7 +19,6 @@ from tenxgraph.core.exceptions.model_error import ModelNotFoundError
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.tool_node.base import ToolNode
 from tenxgraph.core.state import AgentState
-from tenxgraph.core.state.execution_state import StopRequestStatus
 from tenxgraph.core.state.message import generate_id
 from tenxgraph.core.state.stream_chunks import StreamChunk
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
@@ -642,12 +641,6 @@ class CompiledGraph[StateT: AgentState]:
             # into the state blob. Nothing in the run loop writes this key, so a
             # stop recorded here always survives to the next stop check.
             await self._checkpointer.arequest_stop(cfg)
-            # Also mirror it into the cached state, so a reader of the cached
-            # state sees the request. The run loop does not read this copy: it
-            # checks the stop key only (a custom checkpointer without the
-            # generic cache gets no cross-process stop).
-            state.execution_meta.stop_current_execution = StopRequestStatus.STOP_REQUESTED
-            await self._checkpointer.aput_state_cache(cfg, state)
             logger.info("Set stop_current_execution flag for thread_id: %s", cfg.get("thread_id"))
             return {"ok": True, "running": running}
         logger.info(
