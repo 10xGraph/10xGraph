@@ -14,8 +14,6 @@ Usage:
     result = await handler.invoke(config, state)
 """
 
-import asyncio
-import copy
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Union
@@ -24,27 +22,20 @@ from injectq import Inject
 
 from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph.tool_node import ToolNode
-from tenxgraph.core.graph.utils.tool_dispatch import (
-    allowed_tool_names,
-    hidden_tool_message,
-    invalid_arguments_message,
-    resolve_max_parallel_tool_calls,
-)
 from tenxgraph.core.graph.utils.utils import process_node_result
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.runtime.publisher.events import EventType
 from tenxgraph.runtime.publisher.publish import publish_event
-from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
     CallbackManager,
     call_sync_or_async,
 )
 from tenxgraph.utils.command import Command
 from tenxgraph.utils.injection import fresh
-from tenxgraph.utils.interrupt import GraphInterrupt
 from tenxgraph.utils.interrupt import activate as activate_interrupts
 
 from .handler_mixins import BaseLoggingMixin, mirror_last_message
+from .tool_runner import ToolRunner, ToolRunResult
 from .tool_runtime import ToolRuntimeMixin
 
 
@@ -53,19 +44,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("tenxgraph.graph")
-
-
-def _tool_messages(result: Any) -> list[Message]:
-    """The messages of a normalized ToolNode result (state updates are already merged)."""
-    if isinstance(result, dict):
-        items = result.get("messages", [])
-    elif isinstance(result, Command):
-        items = result.update if isinstance(result.update, list) else [result.update]
-    elif isinstance(result, list):
-        items = result
-    else:
-        items = [result]
-    return [item for item in items if isinstance(item, Message)]
 
 
 class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
@@ -87,252 +65,20 @@ class InvokeNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         self.name = name
         self.func = func
 
-    async def _handle_single_tool(
-        self,
-        tool_call: dict[str, Any],
-        state: AgentState,
-        config: dict[str, Any],
-        origin_message_id: str | None = None,
-        checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
-    ) -> dict[str, Any] | Message:
-        """
-        Execute a single tool call using the ToolNode.
-
-        Idempotent across replays: the execution loop persists ``current_node``
-        before running a node and only advances it after the node completes, so a
-        process killed mid-node resumes by re-running that node from scratch. Any
-        tool that already fired would fire again -- charging the card twice. Before
-        calling a tool we therefore consult the checkpointer's tool ledger, and we
-        record each completed call as soon as it returns.
-
-        Args:
-            tool_call (dict): Tool call specification.
-            state (AgentState): Current agent state.
-            config (dict): Node configuration.
-            checkpointer: Provides the durable tool-execution ledger.
-
-        Returns:
-            dict[str, Any]: Resulting data from tool execution.
-        """
-        checkpointer = fresh(checkpointer)
-        function_name = tool_call.get("function", {}).get("name", "")
-        tool_call_id = tool_call.get("id", "")
-
-        # Replay guard: if this exact tool call already completed, reuse its
-        # recorded result instead of invoking the tool a second time.
-        ledger_key, recorded = await self._ledger_lookup(
-            checkpointer, config, origin_message_id, tool_call_id, function_name
-        )
-        if recorded is not None:
-            return recorded
-
-        function_args, args_error = self._checked_tool_args(tool_call, function_name)
-        if args_error:
-            return invalid_arguments_message(tool_call)
-
-        # Bound the call: a tool that hangs (half-open socket, unresponsive MCP
-        # server) would otherwise block the node -- and therefore the whole run --
-        # forever, since the LLM SDK timeout does not cover tool execution.
-        tool_result = await self._invoke_tool_metered(
-            function_name, function_args, tool_call_id, state, config
-        )
-
-        logger.debug("Node '%s' tool execution completed successfully", self.name)
-
-        # Record the completed call immediately. The side effect has already
-        # happened; persisting that fact now is what stops a crash later in this
-        # same node from re-firing it on replay.
-        if checkpointer and ledger_key:
-            await self._record_tool_result(checkpointer, config, ledger_key, tool_result)
-
-        return tool_result
-
-    async def _call_tools(
-        self,
-        last_message: Message,
-        state: "AgentState",
-        config: dict[str, Any],
-    ) -> list[Message | dict[str, Any]] | Command:
-        """
-        Execute all tool calls present in the last message.
-
-        Args:
-            last_message (Message): The last message containing tool calls.
-            state (AgentState): Current agent state.
-            config (dict): Node configuration.
-
-        Returns:
-            dict[str, Any] | list[Message] | Command: Resulting data from tool executions.
-
-        Raises:
-            NodeError: If no tool calls are present.
-        """
-        result: list[Message | dict[str, Any]] = []
-        calls = self._tool_calls_or_raise(last_message)
-        # Only tools the model was actually offered may run (Agent.tools_tags).
-        allowed = allowed_tool_names(last_message)
-
-        # A handoff is honoured only for a registered handoff tool. A name that
-        # merely starts with "transfer_to_" is an ordinary (unknown) tool call.
-        # Every tool call of the message is answered before control moves on.
-        handoff = self._find_handoff(last_message)
-        if handoff:
-            target_agent, winner, regular = handoff
-            ran: list[Message] = []
-            if regular:
-                # The message's other tool calls run first, so the target sees their
-                # results (state changes from them are merged into ``state`` here).
-                result = await self._call_tools(
-                    self._regular_calls_message(last_message, regular), state, config
-                )
-                ran = _tool_messages(self._merge_tool_results(result, state))
-            answers = self._handoff_answers(last_message, winner, target_agent, regular)
-            return Command(  # type: ignore
-                update=[*ran, *answers],
-                goto=target_agent,
-            )
-
-        # Continue with normal tool execution if no handoff detected
-        # Execute tool calls in parallel (preserve order of the input list)
-        logger.info(
-            "Node '%s' executing %d tool calls in parallel",
-            self.name,
-            len(calls),
-        )
-
-        # The assistant message that issued these calls is what makes each
-        # invocation uniquely identifiable for the idempotency ledger.
-        origin_message_id = getattr(last_message, "message_id", None)
-
-        # Branch isolation. Tools mutate the injected state in place, so
-        # handing every parallel tool the SAME object let them race: two tools
-        # writing different fields still clobbered each other. Each branch now
-        # gets its own copy, and we merge them afterwards against a baseline so
-        # only fields a branch actually changed are written back.
-        #
-        # A single tool call cannot race with anything, so it keeps operating
-        # directly on the shared state -- no copying cost in the common case.
-        is_parallel = len(calls) > 1
-        baseline = copy.deepcopy(state) if is_parallel else None
-        branch_states: list[AgentState | None] = [None] * len(calls)
-
-        # At most this many tools run at once. The branch copy is taken only once
-        # a tool holds a slot, so peak copies are bounded by the limit rather than
-        # by however many calls the model emitted.
-        semaphore = asyncio.Semaphore(resolve_max_parallel_tool_calls(config))
-
-        async def _run_branch(index: int, tool_call: dict[str, Any]) -> Any:
-            name = tool_call.get("function", {}).get("name", "")
-            if allowed is not None and name not in allowed:
-                logger.warning(
-                    "Node '%s': tool '%s' was not offered to the model; not executing",
-                    self.name,
-                    name,
-                )
-                branch_states[index] = None
-                return hidden_tool_message(tool_call)
-
-            async with semaphore:
-                branch = copy.deepcopy(state) if is_parallel else state
-                branch_states[index] = branch
-                outcome = await self._handle_single_tool(
-                    tool_call,
-                    branch,
-                    config,
-                    origin_message_id=origin_message_id,
-                )
-                if is_parallel and self._branch_untouched(branch, baseline, outcome):
-                    # Merging it would be a no-op, so free the copy now instead of
-                    # holding it until the merge.
-                    branch_states[index] = None
-                return outcome
-
-        tasks = [
-            asyncio.ensure_future(_run_branch(index, tool_call))
-            for index, tool_call in enumerate(calls)
-        ]
-
-        # gather(...) without return_exceptions let one failing tool propagate
-        # immediately while its siblings were left running -- never cancelled,
-        # never awaited. Collect every outcome instead, so a single tool error
-        # cannot orphan the others, then convert failures into tool-error
-        # messages the model can actually see and react to.
-        # gather preserves the order corresponding to the tasks list.
-        settled = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # A tool that called interrupt() paused the run; that is not a tool failure.
-        # Siblings that finished are in the tool-result ledger, so resuming does not
-        # run them again.
-        for outcome in settled:
-            if isinstance(outcome, GraphInterrupt):
-                raise outcome
-
-        result = []
-        for tool_call, outcome in zip(calls, settled, strict=True):
-            if isinstance(outcome, BaseException):
-                result.append(self._failure_message(tool_call, outcome))
-            else:
-                result.append(outcome)
-
-        if is_parallel:
-            self._fold_parallel_branches(state, baseline, branch_states, result)
-
-        return result
-
-    def _merge_tool_results(
-        self,
-        result: list[Message | dict[str, Any]] | Command,
-        state: AgentState,
-    ) -> list[Message | dict[str, Any]] | Command | dict[str, Any]:
-        """Normalize mixed ToolNode results into a single processable payload."""
-        if isinstance(result, Command) or not isinstance(result, list):
-            return result
-
-        if not any(isinstance(item, dict) for item in result):
-            return result
-
-        merged_result: dict[str, Any] = {
-            "state": state,
-            "messages": [],
-            "next_node": None,
-        }
-
-        for item in result:
-            if isinstance(item, dict):
-                tool_state = item.get("state")
-                if isinstance(tool_state, AgentState):
-                    self._merge_tool_state(merged_result["state"], tool_state)
-                merged_result["messages"].extend(self._extract_tool_messages(item))
-            elif isinstance(item, Message):
-                merged_result["messages"].append(item)
-
-        return merged_result
-
     async def _invoke_tool_node(
         self,
         state: AgentState,
         config: dict[str, Any],
-    ) -> list[Message | dict[str, Any]] | dict[str, Any] | Command:
-        """Execute a ToolNode and normalize its result to the standard node payload."""
-        logger.debug("Node '%s' is a ToolNode, executing tool calls", self.name)
-        last_message = self._get_last_tool_message(state)
-        logger.debug("Node '%s' processing tool calls from last message", self.name)
-
-        tool_result = await self._call_tools(
-            last_message,
-            state,
-            config,
-        )
-        normalized_result = self._merge_tool_results(tool_result, state)
-        if isinstance(normalized_result, Command):
-            self._stamp_node_name(normalized_result.update)
-        else:
-            self._stamp_node_name(normalized_result)
-
-        if isinstance(normalized_result, Command):
-            return normalized_result
-
-        return normalized_result
+    ) -> list[Message] | dict[str, Any] | Command:
+        """Run a ToolNode step through the tool runner, in the invoke result shapes."""
+        result = ToolRunResult()
+        async for item in ToolRunner(self.name, self.func).run(state, config, streaming=False):
+            result = item  # type: ignore[assignment]  # only the result when not streaming
+        if result.next_node is not None:
+            return Command(update=result.messages, goto=result.next_node)  # type: ignore[arg-type]
+        if result.state_updated:
+            return {"state": state, "messages": result.messages, "next_node": None}
+        return result.messages
 
     async def _invoke_by_node_type(
         self,

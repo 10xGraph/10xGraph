@@ -1,15 +1,15 @@
-"""Tool-call machinery shared by the invoke and stream node handlers.
+"""Tool-call machinery: the ledger, branch merge and node-call helpers.
 
-Both paths run the same tool calls the same way: a durable ledger of finished calls (so a
-replayed node does not fire a tool twice), isolated state per parallel branch, and a
-deterministic merge of the branches back into the shared state. One copy, used by
-``InvokeNodeHandler`` and ``StreamNodeHandler``; ``LiveAgent`` uses the ledger helpers and
+A durable ledger of finished calls (so a replayed node does not fire a tool twice), isolated
+state per parallel branch, and a deterministic merge of the branches back into the shared
+state. ``ToolRunner`` runs a ToolNode step with it; the node handlers use the node-call
+helpers; ``LiveAgent`` uses the ledger helpers and
 :meth:`ToolRuntimeMixin._invoke_tool_metered` for realtime tool calls.
 """
 
 import inspect
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -25,6 +25,7 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
 )
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
+from tenxgraph.core.state.stream_emitter import StreamEmitter
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.storage.checkpointer import BaseCheckpointer
@@ -34,6 +35,14 @@ from tenxgraph.utils.log_safety import error_details, log_safe
 
 
 logger = logging.getLogger("tenxgraph.graph")
+
+
+async def _last_item(items: AsyncIterator[Any]) -> Any:
+    """The last item of an async iterator (``ToolNode.stream`` yields its result once)."""
+    last = None
+    async for last in items:  # noqa: B007
+        pass
+    return last
 
 
 class ToolRuntimeMixin:
@@ -136,25 +145,27 @@ class ToolRuntimeMixin:
         tool_call_id: str,
         state: AgentState,
         config: dict[str, Any],
+        emit: StreamEmitter | None = None,
         **invoke_kwargs: Any,
     ) -> Any:
         """Run one tool call under ``tool_timeout``, recording the tool metrics.
+
+        With an ``emit`` (streaming) the call goes through ``ToolNode.stream`` so the tool
+        can report progress; without one through ``ToolNode.invoke``.
 
         Raises ``NodeTimeoutError`` when the deadline passes (the call is cancelled), or
         whatever the tool raised; :meth:`_failure_message` turns either into the result
         the model sees.
         """
+        kwargs = {"tool_call_id": tool_call_id, "state": state, "config": config}
+        if emit is None:
+            call = self.func.invoke(function_name, function_args, **kwargs, **invoke_kwargs)
+        else:
+            call = _last_item(self.func.stream(function_name, function_args, **kwargs, emit=emit))
         timeout, tool_attrs = self._start_tool_metrics(function_name, config)
         with self._tool_metrics(tool_attrs):
             return await execute_with_guards(
-                self.func.invoke(
-                    function_name,
-                    function_args,
-                    tool_call_id=tool_call_id,
-                    state=state,
-                    config=config,
-                    **invoke_kwargs,
-                ),
+                call,
                 timeout=timeout,
                 on_timeout=lambda: self._tool_timeout_error(function_name, timeout),
             )

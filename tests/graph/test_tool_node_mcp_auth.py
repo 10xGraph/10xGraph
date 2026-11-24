@@ -31,13 +31,21 @@ from tenxgraph.core.graph.tool_node import (
     MCPCallAuth,
     ToolNode,
     forward_credential,
+    mcp_exec,
 )
 from tenxgraph.core.state import AgentState
 
 from .test_tool_node_mcp_exec import _callback_manager
 
 
-TOKEN = "tok-mcp-secret-987654321"  # noqa: S105 - test value
+TOKEN = "tok-mcp-secret-987654321"
+
+
+@pytest.fixture(autouse=True)
+def _no_tool_events(monkeypatch):
+    """Once per test, not per call: a ``patch`` per call inside ``asyncio.gather`` overlaps
+    and leaves its mock installed after the test."""
+    monkeypatch.setattr(mcp_exec, "publish_event", lambda *args, **kwargs: None)
 
 
 def _server() -> FastMCP:
@@ -113,8 +121,7 @@ def _config(user: str, token: str | None) -> dict:
 
 
 async def _call(node: ToolNode, config: dict, name: str = "echo_auth", args=None) -> str:
-    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
-        result = await node._mcp_execute(name, args or {}, "tc", config, _callback_manager())
+    result = await node._mcp_execute(name, args or {}, "tc", config, _callback_manager())
     assert not result.content[0].is_error, result.text()
     return result.text()
 
@@ -215,10 +222,9 @@ async def test_mcp_auth_failure_is_a_tool_error(server):
 
     node = ToolNode([], client=fastmcp.Client(StreamableHttpTransport(url)), mcp_auth=broken)
     node.mcp_tools = ["echo_auth"]
-    with patch("tenxgraph.core.graph.tool_node.mcp_exec.publish_event"):
-        result = await node.invoke(
-            "echo_auth", {}, "tc", _config("a", TOKEN), AgentState(), _callback_manager()
-        )
+    result = await node.invoke(
+        "echo_auth", {}, "tc", _config("a", TOKEN), AgentState(), _callback_manager()
+    )
     assert result.content[0].is_error is True
 
 

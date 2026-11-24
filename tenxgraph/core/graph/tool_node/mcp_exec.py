@@ -58,6 +58,16 @@ def _mcp_user_info(config: dict[str, t.Any]) -> dict[str, t.Any] | None:
     return {"user_id": user_id} if user_id else None
 
 
+def _fastmcp_tags(meta: dict[str, t.Any] | None) -> set[str]:
+    """The fastmcp tags of a listed tool: ``meta["fastmcp"]`` (current fastmcp), else the
+    ``meta["_fastmcp"]`` of older servers."""
+    for key in ("fastmcp", "_fastmcp"):
+        found = (meta or {}).get(key)
+        if isinstance(found, dict):
+            return set(found.get("tags") or [])
+    return set()
+
+
 class MCPMixin:
     _client: t.Any | None
     # The concrete ToolNode defines these
@@ -284,11 +294,8 @@ class MCPMixin:
             exposed = self._mcp_exposed_name(i.name)
             if exposed in advertised:
                 continue
-            if tags:
-                meta = i.meta or {}
-                tool_tags = set(meta.get("_fastmcp", {}).get("tags", []))
-                if not tool_tags.intersection(tags):
-                    continue
+            if tags and not _fastmcp_tags(i.meta).intersection(tags):
+                continue
             advertised.add(exposed)
             description = i.description
             if (
@@ -303,7 +310,10 @@ class MCPMixin:
                     "function": {
                         "name": exposed,
                         "description": description,
-                        "parameters": i.inputSchema,
+                        # mcp 2 names the field ``input_schema``; ``inputSchema`` is
+                        # fastmcp's deprecated shim, absent without fastmcp or with
+                        # its camelCase compat turned off.
+                        "parameters": i.input_schema,
                     },
                 }
             )
@@ -320,7 +330,7 @@ class MCPMixin:
     ) -> Message:
         context = CallbackContext(
             invocation_type=InvocationType.MCP,
-            node_name="ToolNode",
+            node_name=config.get("_node_name", ""),
             function_name=name,
             metadata={
                 "tool_call_id": tool_call_id,

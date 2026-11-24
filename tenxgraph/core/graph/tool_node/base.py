@@ -467,6 +467,19 @@ class ToolNode(
             monitoring and debugging purposes. Tool execution is routed based
             on tool provider precedence: MCP → Local.
         """
+        return await self._execute(name, args, tool_call_id, config, state, callback_manager)
+
+    async def _execute(
+        self,
+        name: str,
+        args: dict,
+        tool_call_id: str,
+        config: dict[str, t.Any],
+        state: AgentState,
+        callback_manager: CallbackManager,
+        emit: StreamEmitter | None = None,
+    ) -> dict[str, t.Any] | Message:
+        """Route one tool call (remote, MCP, local, unknown); ``invoke`` and ``stream`` share it."""
         callback_manager = fresh(callback_manager)
         logger.info("Executing tool '%s' with %d arguments", log_safe(name), len(args))
         logger.debug("Tool arguments: %s", args)
@@ -479,9 +492,7 @@ class ToolNode(
             return Message(
                 content=[RemoteToolCallBlock(id=tool_call_id, name=name, args=args)],
                 role="tool",
-                metadata={
-                    "is_remote": True,
-                },
+                metadata={"is_remote": True},
             )
 
         if name in self.mcp_tools:
@@ -492,7 +503,7 @@ class ToolNode(
         if name in self._funcs:
             return clean_unstorable(
                 await self._internal_execute(
-                    name, args, tool_call_id, config, state, callback_manager
+                    name, args, tool_call_id, config, state, callback_manager, emit=emit
                 )
             )
 
@@ -566,34 +577,6 @@ class ToolNode(
             may provide true streaming responses. Currently, it provides a
             consistent async iterator interface over tool results.
         """
-        callback_manager = fresh(callback_manager)
-        logger.info("Executing tool '%s' with %d arguments", log_safe(name), len(args))
-        logger.debug("Tool arguments: %s", args)
-
-        if self._is_remote_call(name, config):
-            publish_event(tool_start_event(config, name, args, tool_call_id, is_remote=True))
-            # The client runs this tool, so the graph is interrupted here.
-            yield Message(
-                content=[RemoteToolCallBlock(id=tool_call_id, name=name, args=args)],
-                role="tool",
-                metadata={
-                    "is_remote": True,
-                },
-            )
-            return
-
-        if name in self.mcp_tools:
-            yield clean_unstorable(
-                await self._mcp_execute(name, args, tool_call_id, config, callback_manager)
-            )
-            return
-
-        if name in self._funcs:
-            yield clean_unstorable(
-                await self._internal_execute(
-                    name, args, tool_call_id, config, state, callback_manager, emit=emit
-                )
-            )
-            return
-
-        yield self._unknown_tool(name, args, tool_call_id, config)
+        yield await self._execute(
+            name, args, tool_call_id, config, state, callback_manager, emit=emit
+        )

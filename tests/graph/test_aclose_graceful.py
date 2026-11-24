@@ -126,12 +126,14 @@ async def test_cancel_phase_works_on_a_stuck_tool():
     swallowed = []
 
     async def stuck_tool() -> str:
+        # Swallows every cancel until released, so only the cancel phase can end the run
+        # (a stop delivers a cancel per guard, and their order is not fixed).
         started.set()
-        try:
-            await release.wait()
-        except asyncio.CancelledError:
-            swallowed.append(True)
-            await release.wait()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                swallowed.append(True)
         return "never"
 
     async def model(state: AgentState):

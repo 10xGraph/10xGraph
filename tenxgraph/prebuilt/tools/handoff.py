@@ -93,7 +93,7 @@ def create_handoff_tool(
         logger.info(
             "Handoff tool '%s' executed (should have been intercepted). "
             "Check that handoff detection is properly configured in "
-            "invoke_node_handler and stream_node_handler.",
+            "the ToolNode tool runner.",
             tool_name,
         )
 

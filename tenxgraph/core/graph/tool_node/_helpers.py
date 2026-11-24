@@ -176,17 +176,19 @@ def tool_start_event(
     """The TOOL_EXECUTION START event of one tool call; the caller publishes it.
 
     One tool call sends one START and one END (or ERROR), from the code that runs it.
-    ``node_name`` is the tool name; ``metadata["graph_node"]`` is the graph node running it.
+    ``node_name`` (and ``metadata["graph_node"]``) is the graph node running the tool; the
+    tool name, as the model called it, is ``data["function_name"]``.
     """
+    graph_node = config.get("_node_name", "")
     event = EventModel.default(
         config,
         data={"args": args, "tool_call_id": tool_call_id, "function_name": name},
         content_type=[ContentType.TOOL_CALL],
         event=Event.TOOL_EXECUTION,
         event_type=EventType.START,
-        node_name=name,
-        # The graph node running this tool, so tracing can parent the tool span to it.
-        extra={"graph_node": config.get("_node_name", "")},
+        node_name=graph_node,
+        # Kept for tracing, which parents the tool span to this graph node.
+        extra={"graph_node": graph_node},
     )
     event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
     if is_remote:

@@ -6,8 +6,6 @@ import pytest
 
 from tenxgraph.core.exceptions import GraphError
 from tenxgraph.core.graph import StateGraph, ToolNode
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
 from tenxgraph.core.graph.utils.tool_dispatch import (
     resolve_max_parallel_tool_calls,
     validate_goto,
@@ -16,12 +14,12 @@ from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.core.state.stream_chunks import StreamEvent
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
-from tenxgraph.utils.command import Command
 from tenxgraph.utils.constants import (
     DEFAULT_MAX_PARALLEL_TOOL_CALLS,
     END,
     MAX_PARALLEL_TOOL_CALLS_ENV,
 )
+from tests.graph.tool_guard_helpers import run_calls
 
 
 def _calls(*names: str) -> list[dict]:
@@ -137,15 +135,14 @@ class TestHandoffRegistration:
             validate_goto("b", ["a"], "a")
 
     @pytest.mark.asyncio
-    async def test_handler_returns_command_only_for_registered_tool(self):
+    async def test_runner_hands_off_only_for_registered_tool(self):
         state = AgentState(context=[_assistant("transfer_to_x")])
-        plain = InvokeNodeHandler("tools", ToolNode([]))
-        result = await plain._call_tools(state.context[-1], state, {})
-        assert not isinstance(result, Command)
+        _, result = await run_calls(ToolNode([]), state.context[-1], state, {})
+        assert result.next_node is None
 
-        wired = InvokeNodeHandler("tools", ToolNode([create_handoff_tool("x")]))
-        result = await wired._call_tools(state.context[-1], state, {})
-        assert isinstance(result, Command) and result.goto == "x"
+        wired = ToolNode([create_handoff_tool("x")])
+        _, result = await run_calls(wired, state.context[-1], state, {})
+        assert result.next_node == "x"
 
 
 class TestHiddenTools:
@@ -165,9 +162,8 @@ class TestHiddenTools:
         ran: list[str] = []
         msg = _assistant("safe_tool", "admin_reset", metadata={"allowed_tools": ["safe_tool"]})
         state = AgentState(context=[msg])
-        handler = InvokeNodeHandler("tools", self._tool_node(ran))
-
-        result = await handler._call_tools(msg, state, {})
+        _, ran_result = await run_calls(self._tool_node(ran), msg, state, {})
+        result = ran_result.messages
 
         assert ran == ["safe_tool"]
         assert len(result) == 2
@@ -182,18 +178,17 @@ class TestHiddenTools:
         ran: list[str] = []
         msg = _assistant("safe_tool", "admin_reset", metadata={"allowed_tools": ["safe_tool"]})
         state = AgentState(context=[msg])
-        handler = StreamNodeHandler("tools", self._tool_node(ran))
-
-        items = [i async for i in handler._call_tools(msg, state, {"thread_id": "t"})]
+        chunks, result = await run_calls(
+            self._tool_node(ran), msg, state, {"thread_id": "t"}, streaming=True
+        )
+        items = [*chunks, *result.messages]
 
         assert ran == ["safe_tool"]
         errors = [i for i in items if getattr(i, "event", None) == StreamEvent.ERROR]
         assert len(errors) == 1
         assert errors[0].data["tool_call_id"] == "call_1"
         hidden = [
-            i
-            for i in items
-            if isinstance(i, Message) and "admin_reset" in _tool_result_text(i)
+            i for i in items if isinstance(i, Message) and "admin_reset" in _tool_result_text(i)
         ]
         assert hidden and "not found" in _tool_result_text(hidden[0])
 
@@ -201,8 +196,7 @@ class TestHiddenTools:
     async def test_no_allowed_tools_means_no_filtering(self):
         ran: list[str] = []
         msg = _assistant("safe_tool", "admin_reset")
-        handler = InvokeNodeHandler("tools", self._tool_node(ran))
-        await handler._call_tools(msg, AgentState(context=[msg]), {})
+        await run_calls(self._tool_node(ran), msg, AgentState(context=[msg]), {})
         assert sorted(ran) == ["admin_reset", "safe_tool"]
 
     @pytest.mark.asyncio
@@ -271,9 +265,8 @@ class TestParallelLimit:
         tool_node, stats = self._slow_node()
         msg = _assistant(*["slow"] * 6)
         state = AgentState(context=[msg])
-        handler = InvokeNodeHandler("tools", tool_node)
-
-        result = await handler._call_tools(msg, state, {"max_parallel_tool_calls": 2})
+        _, ran = await run_calls(tool_node, msg, state, {"max_parallel_tool_calls": 2})
+        result = ran.messages
 
         assert stats["peak"] == 2
         assert len(result) == 6
@@ -284,14 +277,12 @@ class TestParallelLimit:
         tool_node, stats = self._slow_node()
         msg = _assistant(*["slow"] * 6)
         state = AgentState(context=[msg])
-        handler = StreamNodeHandler("tools", tool_node)
-
-        items = [
-            i async for i in handler._call_tools(msg, state, {"max_parallel_tool_calls": 2})
-        ]
+        _, result = await run_calls(
+            tool_node, msg, state, {"max_parallel_tool_calls": 2}, streaming=True
+        )
 
         assert stats["peak"] == 2
-        assert len([i for i in items if isinstance(i, Message)]) == 6
+        assert len(result.messages) == 6
 
     @pytest.mark.asyncio
     async def test_branch_copies_are_lazy(self, monkeypatch):
@@ -301,8 +292,6 @@ class TestParallelLimit:
         tool_node, _ = self._slow_node()
         msg = _assistant(*["slow"] * 6)
         state = AgentState(context=[msg])
-        handler = InvokeNodeHandler("tools", tool_node)
-
         started = {"copies": 0, "at_first_tool": None}
         real_deepcopy = copy_mod.deepcopy
 
@@ -311,9 +300,7 @@ class TestParallelLimit:
                 started["copies"] += 1
             return real_deepcopy(obj, *a, **k)
 
-        monkeypatch.setattr(
-            "tenxgraph.core.graph.utils.invoke_node_handler.copy.deepcopy", counting
-        )
+        monkeypatch.setattr("tenxgraph.core.graph.utils.tool_runner.copy.deepcopy", counting)
         original = tool_node.invoke
 
         async def spying(*a, **k):
@@ -323,7 +310,7 @@ class TestParallelLimit:
 
         monkeypatch.setattr(tool_node, "invoke", spying)
 
-        await handler._call_tools(msg, state, {"max_parallel_tool_calls": 2})
+        await run_calls(tool_node, msg, state, {"max_parallel_tool_calls": 2})
 
         # baseline + at most 2 branch copies exist when the first tool starts
         assert started["at_first_tool"] <= 3

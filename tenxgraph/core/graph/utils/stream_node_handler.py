@@ -9,45 +9,31 @@ StreamNodeHandler is a key component for enabling real-time, chunked, or increme
 in agent workflows, supporting both synchronous and asynchronous execution patterns.
 """
 
-import asyncio
-import copy
 import logging
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
 from tenxgraph.core.exceptions import NodeError
 from tenxgraph.core.graph.tool_node import ToolNode
-from tenxgraph.core.graph.tool_node.denial import TOOL_DENIED_CODE
-from tenxgraph.core.graph.utils.guards import execute_with_guards
 from tenxgraph.core.graph.utils.stream_utils import check_non_streaming
-from tenxgraph.core.graph.utils.tool_dispatch import (
-    allowed_tool_names,
-    hidden_tool_message,
-    invalid_arguments_message,
-    resolve_max_parallel_tool_calls,
-)
 from tenxgraph.core.graph.utils.utils import process_node_result
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.core.state.message_block import ErrorBlock
 from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
-from tenxgraph.core.state.stream_emitter import StreamEmitter
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.runtime.publisher.events import ContentType, EventType
 from tenxgraph.runtime.publisher.publish import publish_event
-from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
     CallbackManager,
     call_sync_or_async,
 )
 from tenxgraph.utils.command import Command
 from tenxgraph.utils.injection import fresh
-from tenxgraph.utils.interrupt import GraphInterrupt
 from tenxgraph.utils.interrupt import activate as activate_interrupts
 
 from .handler_mixins import BaseLoggingMixin, mirror_last_message
+from .tool_runner import ToolRunner
 from .tool_runtime import ToolRuntimeMixin
 
 
@@ -56,13 +42,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("tenxgraph.graph")
-
-
-@dataclass
-class _ToolDone:
-    """The last item a tool's stream produces: its final result (None if it gave none)."""
-
-    result: Any
 
 
 class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
@@ -98,429 +77,27 @@ class StreamNodeHandler(BaseLoggingMixin, ToolRuntimeMixin):
         self.name = name
         self.func = func
 
-    async def _handle_single_tool(
-        self,
-        tool_call: dict[str, Any],
-        state: AgentState,
-        config: dict[str, Any],
-        origin_message_id: str | None = None,
-        checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
-    ) -> AsyncIterable[StreamChunk | _ToolDone]:
-        """Run one tool call, yielding live progress chunks and, last, a ``_ToolDone``.
-
-        Same rules as ``InvokeNodeHandler._handle_single_tool``: a call already in the
-        checkpointer's tool ledger is replayed instead of run, a finished call is recorded
-        at once, and a ``tool_timeout`` the developer set cuts the call off.
-        """
-        checkpointer = fresh(checkpointer)
-        function_name = tool_call.get("function", {}).get("name", "")
-        tool_call_id = tool_call.get("id", "")
-
-        ledger_key, recorded = await self._ledger_lookup(
-            checkpointer, config, origin_message_id, tool_call_id, function_name
-        )
-        if recorded is not None:
-            for chunk in self._result_chunks(recorded, function_name, {}, tool_call_id, config):
-                yield chunk
-            yield _ToolDone(recorded)
-            return
-
-        function_args, args_error = self._checked_tool_args(tool_call, function_name)
-        if args_error:
-            yield StreamChunk(
-                event=StreamEvent.ERROR,
-                data={
-                    "status": "tool_failed",
-                    "tool_name": function_name,
-                    "tool_call_id": tool_call_id,
-                    "node": self.name,
-                    "reason": "Tool call arguments were not a valid JSON object",
-                    "error": args_error,
-                },
-                thread_id=config.get("thread_id"),
-                run_id=config.get("run_id"),
-            )
-            yield _ToolDone(invalid_arguments_message(tool_call))
-            return
-
-        yield StreamChunk(
-            event=StreamEvent.UPDATES,
-            data={
-                "status": "invoking_tool",
-                "tool_name": function_name,
-                "args": function_args,
-                "tool_call_id": tool_call_id,
-                "node": self.name,
-            },
-            thread_id=config.get("thread_id"),
-            run_id=config.get("run_id"),
-        )
-
-        timeout, tool_attrs = self._start_tool_metrics(function_name, config)
-
-        # Create a per-tool queue.  The StreamEmitter pushes chunks into this
-        # queue from the tool (including from sync-tool threads); the background
-        # task pushes the final tool result; we drain the queue and yield
-        # items live so the frontend sees progress before the tool finishes.
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-        _DONE = object()  # sentinel
-
-        emitter = StreamEmitter(
-            tool_name=function_name,
-            tool_call_id=tool_call_id,
-            node_name=self.name,
-            thread_id=config.get("thread_id"),
-            run_id=config.get("run_id"),
-            queue=queue,
-            loop=loop,
-        )
-
-        async def _drive() -> None:
-            async for result in self.func.stream(  # type: ignore[union-attr]
-                function_name,
-                function_args,
-                tool_call_id=tool_call_id,
-                state=state,
-                config=config,
-                emit=emitter,
-            ):
-                await queue.put(result)
-
-        async def _run_tool() -> None:
-            try:
-                await execute_with_guards(
-                    _drive(),
-                    timeout=timeout,
-                    on_timeout=lambda: self._tool_timeout_error(function_name, timeout),
-                )
-            finally:
-                await queue.put(_DONE)
-
-        task = asyncio.create_task(_run_tool())
-        final: Any = None
-        try:
-            with self._tool_metrics(tool_attrs):
-                while True:
-                    item = await queue.get()
-                    if item is _DONE:
-                        break
-                    if isinstance(item, StreamChunk):
-                        # Emitted by the tool through its StreamEmitter.
-                        yield item
-                        continue
-                    final = item
-                    for chunk in self._result_chunks(
-                        item, function_name, function_args, tool_call_id, config
-                    ):
-                        yield chunk
-                # Re-raise any exception that occurred inside the background task.
-                await task
-        finally:
-            # Also runs when the run is cancelled or the consumer stops reading: the tool
-            # must not keep running on its own.
-            if not task.done():
-                task.cancel()
-                await asyncio.wait({task})
-
-        if checkpointer and ledger_key and final is not None:
-            await self._record_tool_result(checkpointer, config, ledger_key, final)
-        yield _ToolDone(final)
-
-    def _result_chunks(
-        self,
-        item: Any,
-        function_name: str,
-        function_args: dict[str, Any],
-        tool_call_id: str,
-        config: dict[str, Any],
-    ) -> list[StreamChunk]:
-        """The chunks a client sees for one tool result (a Message or a state-update dict)."""
-        meta = {
-            "tool_name": function_name,
-            "args": function_args,
-            "tool_call_id": tool_call_id,
-            "node": self.name,
-        }
-        ids = {"thread_id": config.get("thread_id"), "run_id": config.get("run_id")}
-        if isinstance(item, dict):
-            msg = item.get("messages")
-            if isinstance(msg, Message):
-                return [
-                    StreamChunk(
-                        event=StreamEvent.MESSAGE,
-                        message=msg,
-                        data={"status": "tool_result", **meta},
-                        **ids,
-                    )
-                ]
-            return []
-        if isinstance(item, Message):
-            error = next(
-                (b for b in item.content or [] if isinstance(b, ErrorBlock)),
-                None,
-            )
-            if error is not None:
-                denied = error.code == TOOL_DENIED_CODE
-                return [
-                    StreamChunk(
-                        event=StreamEvent.ERROR,
-                        data={
-                            "status": "tool_denied" if denied else "tool_failed",
-                            **meta,
-                            "reason": (
-                                "Denied by policy" if denied else "Tool execution resulted in error"
-                            ),
-                            "error": error.message,
-                        },
-                        **ids,
-                    )
-                ]
-            return [
-                StreamChunk(
-                    event=StreamEvent.MESSAGE,
-                    message=item,
-                    data={"status": "tool_result", **meta},
-                    **ids,
-                )
-            ]
-        return []
-
-    def _hidden_tool_chunks(
-        self,
-        tool_call: dict[str, Any],
-        config: dict[str, Any],
-    ) -> list[StreamChunk]:
-        """The error chunk for a call to a tool the model was not offered."""
-        return [
-            StreamChunk(
-                event=StreamEvent.ERROR,
-                data={
-                    "status": "tool_failed",
-                    "tool_name": tool_call.get("function", {}).get("name", ""),
-                    "tool_call_id": tool_call.get("id", ""),
-                    "node": self.name,
-                    "reason": "Tool was not offered to the model",
-                    "error": f"Tool '{tool_call.get('function', {}).get('name', '')}' not found.",
-                },
-                thread_id=config.get("thread_id"),
-                run_id=config.get("run_id"),
-            )
-        ]
-
-    async def _call_tools(  # noqa: PLR0912, PLR0915
-        self,
-        last_message: Message,
-        state: "AgentState",
-        config: dict[str, Any],
-    ) -> AsyncIterable[Message | dict[str, Any] | StreamChunk | Command]:
-        calls = self._tool_calls_or_raise(last_message)
-        # Only tools the model was actually offered may run (Agent.tools_tags).
-        allowed = allowed_tool_names(last_message)
-
-        # A handoff is honoured only for a registered handoff tool. A name that
-        # merely starts with "transfer_to_" is an ordinary (unknown) tool call.
-        # Every tool call of the message is answered before control moves on.
-        handoff = self._find_handoff(last_message)
-        if handoff:
-            target_agent, winner, regular = handoff
-            if regular:
-                # The message's other tool calls run first, so the target sees their
-                # results.
-                async for item in self._call_tools(
-                    self._regular_calls_message(last_message, regular), state, config
-                ):
-                    yield item
-            for answer in self._handoff_answers(last_message, winner, target_agent, regular):
-                yield answer
-            yield Command(  # type: ignore
-                update=None,
-                goto=target_agent,
-            )
-            return
-
-        logger.info("Node '%s' executing %d tool calls in parallel", self.name, len(calls))
-
-        # The assistant message that issued these calls makes each invocation uniquely
-        # identifiable for the idempotency ledger.
-        origin_message_id = getattr(last_message, "message_id", None)
-
-        # Branch isolation, as on the invoke path: parallel tools each get a copy of the
-        # state and are merged back afterwards against a baseline. A single call keeps
-        # operating on the shared state.
-        is_parallel = len(calls) > 1
-        baseline = copy.deepcopy(state) if is_parallel else None
-        branch_states: list[AgentState | None] = [None] * len(calls)
-        results: list[Any] = [None] * len(calls)
-        interrupts: list[GraphInterrupt] = []
-
-        # Shared output queue: progress chunks are yielded as soon as they are available.
-        # Results are NOT yielded live: they are collected and handed on in call order.
-        shared_queue: asyncio.Queue = asyncio.Queue()
-        _WORKER_DONE = object()  # per-worker sentinel
-
-        # At most this many tools run at once; the rest wait for a slot.
-        semaphore = asyncio.Semaphore(resolve_max_parallel_tool_calls(config))
-
-        async def _worker(index: int, tool_call: dict[str, Any]) -> None:
-            name = tool_call.get("function", {}).get("name", "")
-            try:
-                if allowed is not None and name not in allowed:
-                    logger.warning(
-                        "Node '%s': tool '%s' was not offered to the model; not executing",
-                        self.name,
-                        name,
-                    )
-                    for chunk in self._hidden_tool_chunks(tool_call, config):
-                        await shared_queue.put(chunk)
-                    results[index] = hidden_tool_message(tool_call)
-                    return
-
-                async with semaphore:
-                    branch = copy.deepcopy(state) if is_parallel else state
-                    branch_states[index] = branch
-                    async for item in self._handle_single_tool(
-                        tool_call, branch, config, origin_message_id=origin_message_id
-                    ):
-                        if isinstance(item, _ToolDone):
-                            results[index] = item.result
-                        else:
-                            await shared_queue.put(item)
-                    if is_parallel and self._branch_untouched(branch, baseline, results[index]):
-                        branch_states[index] = None
-            except GraphInterrupt as paused:
-                # A tool that called interrupt() paused the run; not a tool failure.
-                interrupts.append(paused)
-            except Exception as e:
-                results[index] = self._failure_message(tool_call, e)
-                await shared_queue.put(
-                    StreamChunk(
-                        event=StreamEvent.ERROR,
-                        data={
-                            "status": "tool_failed",
-                            "tool_name": name,
-                            "tool_call_id": tool_call.get("id", ""),
-                            "node": self.name,
-                            "reason": "Tool execution failed",
-                        },
-                        thread_id=config.get("thread_id"),
-                        run_id=config.get("run_id"),
-                    )
-                )
-            finally:
-                await shared_queue.put(_WORKER_DONE)
-
-        tasks = [asyncio.create_task(_worker(i, tc)) for i, tc in enumerate(calls)]
-        try:
-            remaining = len(tasks)
-            while remaining > 0:
-                item = await shared_queue.get()
-                if item is _WORKER_DONE:
-                    remaining -= 1
-                else:
-                    yield item
-        finally:
-            # Cancel and the consumer going away both end here: no tool outlives the run.
-            pending = [t for t in tasks if not t.done()]
-            for t in pending:
-                t.cancel()
-            if pending:
-                await asyncio.wait(pending)
-
-        if interrupts:
-            raise interrupts[0]
-
-        outcomes = [r for r in results if r is not None]
-        if is_parallel:
-            with_state = [
-                r for r in results if isinstance(r, dict) and isinstance(r.get("state"), AgentState)
-            ]
-            self._fold_parallel_branches(state, baseline, branch_states, results)
-            for r in with_state:
-                # Merged already: point it at the shared state so it is not merged twice,
-                # and the node still reports a state update.
-                r["state"] = state
-
-        # Results go on in call order, whichever tool finished first.
-        for outcome in outcomes:
-            if isinstance(outcome, dict) and isinstance(outcome.get("messages"), Message):
-                # The tool's message also goes on by itself, as before.
-                yield outcome["messages"]
-            yield outcome
-
-    def _collect_tool_stream_dict(
-        self,
-        item: dict[str, Any],
-        merged_state: AgentState,
-        collected_messages: list[Message],
-    ) -> tuple[AgentState, bool]:
-        """Merge streamed tool state updates and accumulate associated messages."""
-        has_state_update = False
-        tool_state = item.get("state")
-
-        if isinstance(tool_state, AgentState):
-            self._merge_tool_state(merged_state, tool_state)
-            has_state_update = True
-
-        for message in self._extract_tool_messages(item):
-            if message not in collected_messages:
-                collected_messages.append(message)
-
-        return merged_state, has_state_update
-
     async def _stream_tool_node(
         self,
         state: AgentState,
         config: dict[str, Any],
     ) -> AsyncGenerator[dict[str, Any] | Message | StreamChunk | Command]:
-        """Execute a ToolNode and emit normalized streaming payloads."""
-        logger.debug("Node '%s' is a ToolNode, executing tool calls", self.name)
-        last_message = self._get_last_tool_message(state)
-        logger.debug("Node '%s' processing tool calls from last message", self.name)
-
-        result = self._call_tools(
-            last_message,
-            state,
-            config,
-        )
-
-        collected_messages: list[Message] = []
-        merged_state = state
-        has_state_update = False
-        command_goto: str | None = None
-
-        async for item in result:
-            self._stamp_node_name(item)
-            if isinstance(item, Command):
-                command_goto = item.goto
-                yield item
-                continue
-
-            if isinstance(item, dict):
-                merged_state, did_update = self._collect_tool_stream_dict(
-                    item,
-                    merged_state,
-                    collected_messages,
-                )
-                has_state_update = has_state_update or did_update
-                continue
-
+        """Run a ToolNode step through the tool runner, in the stream item shapes."""
+        async for item in ToolRunner(self.name, self.func).run(state, config, streaming=True):
             if isinstance(item, StreamChunk):
                 yield item
                 continue
-
-            if isinstance(item, Message):
-                if item not in collected_messages:
-                    collected_messages.append(item)
-                yield item
-
-        if command_goto is not None or has_state_update:
-            yield {
-                "is_non_streaming": True,
-                "state": merged_state,
-                "messages": collected_messages,
-                "next_node": command_goto,
-            }
+            for message in item.messages:
+                yield message
+            if item.next_node is not None:
+                yield Command(update=None, goto=item.next_node)  # type: ignore[arg-type]
+            if item.next_node is not None or item.state_updated:
+                yield {
+                    "is_non_streaming": True,
+                    "state": state,
+                    "messages": item.messages,
+                    "next_node": item.next_node,
+                }
 
     async def _stream_by_node_type(
         self,

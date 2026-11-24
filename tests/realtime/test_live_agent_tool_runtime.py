@@ -11,13 +11,13 @@ import warnings
 import pytest
 
 from tenxgraph.core.graph.tool_node import ToolNode
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
 from tenxgraph.core.realtime.base import AudioDeltaEvent, ToolCallEvent, ToolResultEvent
 from tenxgraph.core.realtime.live_agent import LiveAgent
 from tenxgraph.core.realtime.queue import LiveInputQueue
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.utils import metrics
+from tests.graph.tool_guard_helpers import run_calls
 from tests.realtime.test_live_agent import MODEL, FakeRealtimeClient
 
 
@@ -93,8 +93,10 @@ async def test_tool_timeout_cuts_the_call_off_with_the_invoke_path_result():
     msg.tools_calls = [
         {"id": "c1", "type": "function", "function": {"name": "slow_tool", "arguments": "{}"}}
     ]
-    handler = InvokeNodeHandler("LIVE", ToolNode([slow_tool]))
-    [invoked] = await handler._call_tools(msg, AgentState(context=[msg]), {"tool_timeout": 0.05})
+    _, ran = await run_calls(
+        ToolNode([slow_tool]), msg, AgentState(context=[msg]), {"tool_timeout": 0.05}, name="LIVE"
+    )
+    [invoked] = ran.messages
     expected = " ".join(b.output for b in invoked.content if isinstance(b, ToolResultBlock))
 
     assert result == {"result": expected}

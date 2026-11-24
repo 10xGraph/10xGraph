@@ -219,7 +219,7 @@ class LocalExecMixin:
         )
         context = CallbackContext(
             invocation_type=invocation_type,
-            node_name="ToolNode",
+            node_name=config.get("_node_name", ""),
             function_name=name,
             metadata={
                 "tool_call_id": tool_call_id,
