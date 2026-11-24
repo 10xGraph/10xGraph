@@ -181,7 +181,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         # Tool calls still running; each yields its ToolResultEvent when it finishes.
         self._tool_tasks: set[asyncio.Task[ToolResultEvent]] = set()
         # Ledger key -> the call running under it, so a re-sent call id waits for it.
-        self._inflight_tools: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._inflight_tools: dict[str, asyncio.Task[tuple[dict[str, Any], bool]]] = {}
 
         # Error-driven reconnect backoff (go_away reconnects are immediate; only transient
         # drops back off). Seeded from RealtimeConfig.reconnect; kept as instance attributes

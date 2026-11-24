@@ -75,4 +75,12 @@ def __getattr__(name: str) -> Any:
     return value
 
 
-__all__ = ["HAS_FASTMCP", "HAS_MCP", "CallToolResult", "Client", "ContentBlock", "Tool"]
+# The four lazy names come from ``__getattr__`` above, which ruff cannot see.
+__all__ = [  # noqa: F822
+    "HAS_FASTMCP",
+    "HAS_MCP",
+    "CallToolResult",
+    "Client",
+    "ContentBlock",
+    "Tool",
+]

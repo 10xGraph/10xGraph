@@ -93,7 +93,7 @@ def has_unstorable_text(value: Any) -> bool:
         try:
             if "\\u0000" not in value.model_dump_json():
                 return False
-        except Exception:  # noqa: S110 - any dump failure falls back to the walk
+        except Exception:  # noqa: S110  # nosec B110 - any dump failure falls back to the walk
             pass
         return has_unstorable_text(value.model_dump())
     return False
