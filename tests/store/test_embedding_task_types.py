@@ -8,6 +8,10 @@ from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding
 from tenxgraph.storage.store.embedding.google_embedding import GoogleEmbedding
 
 
+# Imports the SDK so patch("google.genai", ...) finds the attribute.
+pytest.importorskip("google.genai")
+
+
 MOD = "tenxgraph.storage.store.embedding.google_embedding"
 
 

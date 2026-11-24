@@ -8,6 +8,7 @@ from tenxgraph.core.state import AgentState, Message
 from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
+from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleHook
 from tenxgraph.utils.constants import END
 from tenxgraph.utils.validators import ValidationError, has_unstorable_text
 
@@ -91,3 +92,29 @@ async def test_tool_result_is_clean(bad):
 def test_client_input_is_still_refused(bad):
     with pytest.raises(ValidationError):
         reject_nul_messages([Message.text_message(bad)])
+
+
+@pytest.mark.asyncio
+async def test_hook_added_unstorable_text_is_cleaned_at_save():
+    """Text a lifecycle hook puts in the context skips the per-message clean; the save
+    cleans the copy it writes and retries once, instead of failing every step."""
+
+    class AddNul(GraphLifecycleHook):
+        async def on_state_update(self, context, node_name, old_state, new_state, step):
+            new_state.context.append(Message.text_message("note a\x00b", role="assistant"))
+            return new_state
+
+    manager = CallbackManager()
+    manager.register_lifecycle_hook(AddNul())
+    cp = InMemoryCheckpointer()
+    g = StateGraph()
+    g.add_node("a", lambda s: Message.text_message("done", role="assistant"))
+    g.set_entry_point("a")
+    g.add_edge("a", END)
+    app = g.compile(checkpointer=cp, callback_manager=manager)
+    config = {"thread_id": "t-hook-nul"}
+    await app.ainvoke({"messages": [Message.text_message("ok")]}, config)
+
+    saved = await cp.aget_state(config)
+    assert all(not has_unstorable_text(m) for m in saved.context)
+    assert any(m.text() == "note ab" for m in saved.context)

@@ -87,6 +87,18 @@ def test_serialize_result_falls_back_to_string_representation():
     assert blocks[0].output[0]["type"] == "fallback"
 
 
+def test_serialize_result_keeps_the_mcp_error_flag():
+    node = _Node()
+    res = SimpleNamespace(content=[{"type": "text", "text": "no such city"}], is_error=True)
+    block = node._serialize_result("tc-3", res)[0]
+    assert block.is_error is True
+    assert block.status == "failed"
+
+    ok = node._serialize_result("tc-4", SimpleNamespace(content=[{"type": "text", "text": "hi"}]))
+    assert ok[0].is_error is False
+    assert ok[0].status == "completed"
+
+
 @pytest.mark.asyncio
 async def test_get_mcp_tool_returns_empty_without_client():
     node = _Node(client=None)

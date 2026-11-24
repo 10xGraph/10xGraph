@@ -28,6 +28,7 @@ from tenxgraph.utils.interrupt import activate as activate_interrupts
 from ._helpers import (
     _normalize_resource_uri,
     generic_tool_failure,
+    publish_tool_cancelled,
     publish_tool_end,
     tool_start_event,
 )
@@ -157,6 +158,8 @@ class MCPMixin:
                     return _normalize_resource_uri(dumped)
                 return {"content": str(obj), "type": "fallback"}
 
+        # A tool that reported a failure (MCP ``isError``) stays an error result.
+        is_error = getattr(res, "is_error", False) is True
         for source in [
             getattr(res, "content", None),
             getattr(res, "structured_content", None),
@@ -175,8 +178,8 @@ class MCPMixin:
                         call_id=tool_call_id,
                         name=name,
                         output=result,
-                        is_error=False,
-                        status="completed",
+                        is_error=is_error,
+                        status="failed" if is_error else "completed",
                     )
                 ]
             except Exception as e:
@@ -193,8 +196,8 @@ class MCPMixin:
                         "type": "fallback",
                     }
                 ],
-                is_error=False,
-                status="completed",
+                is_error=is_error,
+                status="failed" if is_error else "completed",
             )
         ]
 
@@ -423,6 +426,12 @@ class MCPMixin:
         except ToolDenied as denied:
             # A policy block is final: on_error recovery must not turn it into a success.
             return denied_tool_message(denied, name, tool_call_id, config, event, meta)
+
+        except asyncio.CancelledError:
+            # tool_timeout, a stop or a shutdown cancelled the call: the START still gets its
+            # end, and the cancellation goes on unchanged.
+            publish_tool_cancelled(event, config)
+            raise
 
         except Exception as e:
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)

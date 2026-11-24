@@ -796,7 +796,16 @@ async def sync_data(
         # Both writes run as one shielded unit: a cancel that arrives during the save cannot
         # leave the durable store new and the cache old.
         async def _persist() -> None:
-            await checkpointer.aput_checkpoint(config, new_state, messages)
+            try:
+                await checkpointer.aput_checkpoint(config, new_state, messages)
+            except ValueError:
+                # Unstorable text that came in another way (a node replacing a message under
+                # its id, a lifecycle hook, old data) would fail every later save. Clean the
+                # copy being saved and retry once; any other ValueError goes on as is.
+                cleaned = clean_unstorable_messages(new_state.context, config)
+                if not (clean_unstorable_messages(messages, config) or cleaned):
+                    raise
+                await checkpointer.aput_checkpoint(config, new_state, messages)
             # Then refresh the realtime cache with the SAME trimmed state we just
             # persisted, so cache and durable store never diverge in shape (audit M6).
             await checkpointer.aput_state_cache(config, new_state)

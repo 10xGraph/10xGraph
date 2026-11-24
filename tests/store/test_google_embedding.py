@@ -8,6 +8,10 @@ import pytest
 from tenxgraph.storage.store.embedding.google_embedding import GoogleEmbedding
 
 
+# Imports the SDK so patch("google.genai", ...) finds the attribute.
+pytest.importorskip("google.genai")
+
+
 class TestGoogleEmbeddingAvailability:
     """Test GoogleEmbedding availability based on imports."""
 

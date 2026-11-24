@@ -252,3 +252,22 @@ def publish_tool_end(
     if exc is not None:
         event.data.update(error_details(exc, config))
     publish_event(event)
+
+
+def publish_tool_cancelled(event: EventModel, config: dict[str, t.Any]) -> None:
+    """Publish the ERROR end of a tool call that was cancelled (``tool_timeout``, stop, shutdown).
+
+    Called from an ``except CancelledError`` block before it re-raises, so it never raises:
+    a failing publisher must not replace the cancellation. ``publish_tool_end`` is sync and
+    only queues the event, so nothing here awaits.
+    """
+    try:
+        publish_tool_end(
+            event,
+            "Tool execution cancelled",
+            error="Tool execution cancelled",
+            config=config,
+            event_type=EventType.ERROR,
+        )
+    except Exception:
+        logger.warning("Could not publish the end of a cancelled tool call", exc_info=True)

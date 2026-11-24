@@ -9,6 +9,7 @@ Set ``UPDATE_EVENT_SNAPSHOT=1`` to rewrite the file after an intended change.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 
 from tenxgraph.core.exceptions import ToolDenied
 from tenxgraph.core.graph import StateGraph, ToolNode
+from tenxgraph.core.graph.tool_node import _helpers
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.runtime.publisher.events import Event, EventType
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
@@ -246,8 +248,6 @@ async def test_tool_end_events_carry_status_and_duration(scenario, expected, mod
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", MODES)
 async def test_raising_tool_ends_in_error_with_duration(mode):
-    import asyncio
-
     async def slow_ok() -> str:
         await asyncio.sleep(0.05)
         return "ok"
@@ -269,3 +269,104 @@ async def test_raising_tool_ends_in_error_with_duration(mode):
     assert ends["slow_ok"].data["duration_ms"] >= 40.0
     assert ends["explode"].data["status"] == "error"
     assert ends["explode"].data["duration_ms"] >= 0.0
+
+
+class SlowMCPClient(FakeMCPClient):
+    async def call_tool(self, name, args, *, meta=None):
+        await asyncio.sleep(5)
+        return await super().call_tool(name, args, meta=meta)
+
+
+def _tool_types(events, name):
+    return [
+        e.event_type
+        for e in events
+        if e.event == Event.TOOL_EXECUTION and e.data["function_name"] == name
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("kind", ["local", "mcp"])
+async def test_timed_out_tool_ends_in_error_with_duration(kind, mode):
+    """A call cut off by ``tool_timeout`` still sends its end: START then ERROR."""
+
+    async def sleepy() -> str:
+        await asyncio.sleep(5)
+        return "late"
+
+    if kind == "local":
+        tool_node, name = ToolNode([sleepy]), "sleepy"
+    else:
+        tool_node, name = (
+            ToolNode([], client=SlowMCPClient("lookup"), mcp_prefix="srv_"),
+            "srv_lookup",
+        )
+        await tool_node.all_tools()
+    publisher = InlineRecorder()
+    app = build(tool_node, [("c1", name)], checkpointer=InMemoryCheckpointer(), publisher=publisher)
+    await run(app, mode, {"thread_id": f"events-timeout-{kind}-{mode}", "tool_timeout": 0.1})
+
+    assert _tool_types(publisher.events, name) == [EventType.START, EventType.ERROR]
+    end = _ends(publisher.events)[name]
+    assert end.data["status"] == "error"
+    assert end.data["duration_ms"] >= 100.0
+    assert end.metadata["status"] == "Tool execution cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_tool_cancelled_by_stop_ends_in_error(mode):
+    """A stop during a slow tool cancels it; the tool still sends its ERROR end."""
+    holder: dict = {}
+
+    async def slow(config: dict) -> str:
+        await holder["app"].astop({"thread_id": config["thread_id"]})
+        await asyncio.sleep(5)
+        return "late"
+
+    publisher = InlineRecorder()
+    holder["app"] = build(
+        ToolNode([slow]), [("c1", "slow")], checkpointer=InMemoryCheckpointer(), publisher=publisher
+    )
+    await asyncio.wait_for(run(holder["app"], mode, {"thread_id": f"events-stop-{mode}"}), 3)
+
+    assert _tool_types(publisher.events, "slow") == [EventType.START, EventType.ERROR]
+    assert _ends(publisher.events)["slow"].data["status"] == "error"
+
+
+class ErrorMCPClient(FakeMCPClient):
+    async def call_tool(self, name, args, *, meta=None):
+        class _Res:
+            content = [{"type": "text", "text": "no such city"}]
+            is_error = True
+
+        return _Res()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_mcp_error_result_ends_with_error_status(mode):
+    """An MCP result with ``isError`` set is an error result, so its END says status error."""
+    tool_node = ToolNode([], client=ErrorMCPClient("lookup"), mcp_prefix="srv_")
+    await tool_node.all_tools()
+    publisher = InlineRecorder()
+    app = build(
+        tool_node, [("c1", "srv_lookup")], checkpointer=InMemoryCheckpointer(), publisher=publisher
+    )
+    state, _ = await run(app, mode, {"thread_id": f"events-mcp-error-{mode}"})
+
+    assert _ends(publisher.events)["srv_lookup"].data["status"] == "error"
+    result = next(b for m in state.context if m.role == "tool" for b in m.content)
+    assert result.is_error is True
+
+
+def test_publish_tool_cancelled_never_raises(monkeypatch):
+    """A failing publisher must not replace the CancelledError being re-raised."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("sink down")
+
+    monkeypatch.setattr(_helpers, "publish_tool_end", boom)
+    event = _helpers.tool_start_event({}, "t", {}, "c1")
+    _helpers.publish_tool_cancelled(event, {})  # no raise
