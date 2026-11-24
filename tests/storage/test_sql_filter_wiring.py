@@ -38,6 +38,8 @@ class TestStoreFilters:
             "category",
             "thread_id",
             "memory_key",
+            "origin",
+            "expires_at",
             "created_at",
             "updated_at",
             "plan",
@@ -72,7 +74,10 @@ class TestStoreFilters:
         store, conn, _ = _tstore()
         await store.aget_all(TCFG, limit=5, filters={"created_at": {"is_null": False}})
         _, sql, args = conn.calls[-1]
-        assert '"org_id" = $3 AND "created_at" IS NOT NULL ORDER BY' in sql
+        assert (
+            '"org_id" = $3 AND "created_at" IS NOT NULL AND '
+            '("expires_at" IS NULL OR "expires_at" > now()) ORDER BY'
+        ) in sql
         assert args == ("agentflow_memories", "u1", "A", 5)
 
     @pytest.mark.asyncio

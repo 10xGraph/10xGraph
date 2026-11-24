@@ -239,7 +239,7 @@ class QdrantHelpersMixin(BaseStore):
         # A point without expires_at never matches the range, so it is never excluded.
         excluded: list[Any] = []
         if live:
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(UTC)
             excluded.append(FieldCondition(key=_EXPIRES_FIELD, range=DatetimeRange(lte=now)))
         wanted = check_origins(origins)
         if wanted is not None:

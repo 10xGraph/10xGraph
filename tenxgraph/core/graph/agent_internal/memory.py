@@ -35,7 +35,7 @@ def _warn_unsupported_strategies(memory: MemoryConfig) -> None:
 def _refuse_unsupported_provenance(memory: MemoryConfig) -> None:
     """Raise when an enabled scope sets ``origins`` or ``ttl`` on a known store that would
     ignore them. A store injected at run time is checked on each memory call instead."""
-    from tenxgraph.storage.store.memory_config import _check_provenance_support  # noqa: PLC0415
+    from tenxgraph.storage.store.memory_config import _check_provenance_support
 
     for scope in (memory.user_memory, memory.agent_memory):
         if scope is None or not scope.enabled:
