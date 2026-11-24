@@ -8,7 +8,9 @@ from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import StateFormatVersionError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils import run_coroutine
+from tenxgraph.utils.id_generator import IDType
 from tenxgraph.utils.thread_info import ThreadInfo
+from tenxgraph.utils.validators import has_unstorable_text
 
 
 logger = logging.getLogger("tenxgraph.checkpointer")
@@ -38,6 +40,23 @@ STOP_REQUEST_NAMESPACE = "stop_request"
 # ``ValueError``. ``limit=None`` or ``0`` keeps meaning "no limit given" for in-process callers
 # that read a whole thread; the API always sends a bounded page.
 MAX_LIST_LIMIT = 1000
+
+
+def reject_unstorable(*values: Any) -> None:
+    """Raise ``ValueError`` when a string in ``values`` holds NUL or a lone surrogate.
+
+    Postgres can store neither, so every checkpointer refuses them alike, before it writes.
+    One scan of the payload, no copy.
+    """
+    if any(has_unstorable_text(v) for v in values):
+        raise ValueError(
+            "Cannot store text containing the NUL character (\\x00) or a lone surrogate."
+        )
+
+
+def like_escape(text: str) -> str:
+    """Escape ``\\``, ``%`` and ``_`` so ``text`` matches literally inside a LIKE pattern."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def validate_page(offset: int | None, limit: int | None) -> tuple[int, int | None]:
@@ -176,6 +195,19 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         self._state_type = state_type
         self._state_type_bound = True
 
+    @property
+    def declared_id_type(self) -> IDType | None:
+        """The id type the backend's id columns hold, or ``None`` when it stores any id.
+
+        ``StateGraph.compile()`` checks it against the bound id generator.
+        """
+        return None
+
+    @staticmethod
+    def _get_config_key(config: dict[str, Any]) -> str:
+        """The thread id of ``config`` as a string; empty when there is none."""
+        return str(config.get("thread_id", ""))
+
     def _encode_state(self, state: AgentState) -> dict[str, Any]:
         """Build the JSON-safe row persisted for a state: its data plus a header."""
         data = state.model_dump(mode="json")
@@ -248,12 +280,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     #### SETUP ################
     ###########################
     def setup(self) -> Any:
-        """
-        Synchronous setup method for checkpointer.
-
-        Returns:
-            Any: Implementation-defined setup result.
-        """
+        """Sync version of `asetup`."""
         return run_coroutine(self.asetup())
 
     @abstractmethod
@@ -273,6 +300,12 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     async def aput_state(self, config: dict[str, Any], state: StateT) -> StateT:
         """
         Store agent state asynchronously.
+
+        The first write of a new thread (state, messages or a tool result) also creates its
+        thread record, owned by the caller, named ``config["thread_name"]`` (else
+        ``"Thread <id>"``) with ``config["thread_meta"]`` as metadata, so a run makes the thread
+        visible to :meth:`aget_thread` and :meth:`alist_threads`. An existing record is never
+        overwritten.
 
         Args:
             config (dict): Configuration dictionary.
@@ -386,77 +419,27 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     # State methods Sync
     # -------------------------
     def put_state(self, config: dict[str, Any], state: StateT) -> StateT:
-        """
-        Store agent state synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-            state (StateT): State object to store.
-
-        Returns:
-            StateT: The stored state object.
-        """
+        """Sync version of `aput_state`."""
         return run_coroutine(self.aput_state(config, state))
 
     def get_state(self, config: dict[str, Any]) -> StateT | None:
-        """
-        Retrieve agent state synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            StateT | None: Retrieved state or None.
-        """
+        """Sync version of `aget_state`."""
         return run_coroutine(self.aget_state(config))
 
     def clear_state(self, config: dict[str, Any]) -> int:
-        """
-        Clear agent state synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            int: The number of state rows removed (see :meth:`aclear_state`).
-        """
+        """Sync version of `aclear_state`."""
         return run_coroutine(self.aclear_state(config))
 
     def put_state_cache(self, config: dict[str, Any], state: StateT) -> Any | None:
-        """
-        Store agent state in cache synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-            state (StateT): State object to cache.
-
-        Returns:
-            Any | None: Implementation-defined result.
-        """
+        """Sync version of `aput_state_cache`."""
         return run_coroutine(self.aput_state_cache(config, state))
 
     def get_state_cache(self, config: dict[str, Any]) -> StateT | None:
-        """
-        Retrieve agent state from cache synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            StateT | None: Cached state or None.
-        """
+        """Sync version of `aget_state_cache`."""
         return run_coroutine(self.aget_state_cache(config))
 
     def clear_state_cache(self, config: dict[str, Any]) -> bool:
-        """
-        Drop the cached state for a thread synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            bool: True once the cache entry is gone.
-        """
+        """Sync version of `aclear_state_cache`."""
         return run_coroutine(self.aclear_state_cache(config))
 
     # -------------------------
@@ -480,9 +463,9 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """Retrieve a cached value previously stored via ``aput_cache_value``."""
         return None
 
-    async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Delete a previously cached value."""
-        return None
+    async def aclear_cache_value(self, namespace: str, key: str) -> bool:
+        """Delete a previously cached value; True when a value was removed."""
+        return False
 
     async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Delete a cached value only if it still equals ``expected``; True when deleted.
@@ -538,15 +521,15 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         value: Any,
         ttl_seconds: int | None = None,
     ) -> Any | None:
-        """Synchronously store a small cache value."""
+        """Sync version of `aput_cache_value`."""
         return run_coroutine(self.aput_cache_value(namespace, key, value, ttl_seconds))
 
     def get_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Synchronously retrieve a small cache value."""
+        """Sync version of `aget_cache_value`."""
         return run_coroutine(self.aget_cache_value(namespace, key))
 
-    def clear_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Synchronously delete a small cache value."""
+    def clear_cache_value(self, namespace: str, key: str) -> bool:
+        """Sync version of `aclear_cache_value`."""
         return run_coroutine(self.aclear_cache_value(namespace, key))
 
     # -------------------------
@@ -560,6 +543,12 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         :func:`~tenxgraph.core.authz.owner_id` (the identity wins over ``config["user_id"]``).
         """
         return f"{config.get('thread_id')}:{owner_id(config)}"
+
+    async def _clear_run_keys(self, config: dict[str, Any]) -> None:
+        """Drop the thread's stop request and active-run marker (called when it is deleted)."""
+        key = self._stop_request_key(config)
+        await self.aclear_cache_value(STOP_REQUEST_NAMESPACE, key)
+        await self.aclear_cache_value(ACTIVE_RUN_NAMESPACE, key)
 
     async def aget_active_run(self, config: dict[str, Any]) -> str | None:
         """Return the id of the run currently marked active on this thread, if any."""
@@ -676,15 +665,15 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         )
 
     def request_stop(self, config: dict[str, Any]) -> Any | None:
-        """Synchronously record a stop request."""
+        """Sync version of `arequest_stop`."""
         return run_coroutine(self.arequest_stop(config))
 
     def is_stop_requested(self, config: dict[str, Any]) -> bool:
-        """Synchronously check for a pending stop request."""
+        """Sync version of `ais_stop_requested`."""
         return run_coroutine(self.ais_stop_requested(config))
 
     def clear_stop_request(self, config: dict[str, Any]) -> Any | None:
-        """Synchronously drop a pending stop request."""
+        """Sync version of `aclear_stop_request`."""
         return run_coroutine(self.aclear_stop_request(config))
 
     # -------------------------
@@ -725,6 +714,10 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         not implement the ledger inherit this default, which simply disables
         idempotency rather than breaking (behaviour matches the old at-least-once
         semantics), and a warning is logged once per checkpointer class.
+
+        A backend failure on read: ``PgCheckpointer`` logs it and returns None, so the tool
+        runs again (at-least-once, a run is never failed by the ledger); the in-memory and
+        SQLite checkpointers raise.
         """
         self._warn_ledger_unsupported()
         return None
@@ -777,11 +770,11 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         config: dict[str, Any],
         origin_message_ids: Sequence[str] | None = None,
     ) -> int:
-        """Synchronously delete tool ledger rows (see :meth:`aclear_tool_results`)."""
+        """Sync version of `aclear_tool_results`."""
         return run_coroutine(self.aclear_tool_results(config, origin_message_ids))
 
     def prune_tool_results(self, older_than: timedelta) -> int:
-        """Synchronously prune old tool ledger rows (see :meth:`aprune_tool_results`)."""
+        """Sync version of `aprune_tool_results`."""
         return run_coroutine(self.aprune_tool_results(older_than))
 
     # -------------------------
@@ -800,7 +793,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         Args:
             config (dict): Configuration dictionary.
             messages (list[Message]): List of messages to store.
-            metadata (dict, optional): Additional metadata.
+            metadata (dict, optional): Merged into each message's metadata (the message's
+                own keys win); read back on the message.
 
         Returns:
             Any: Implementation-defined result.
@@ -818,6 +812,10 @@ class BaseCheckpointer[StateT: AgentState](ABC):
 
         Returns:
             Message: Retrieved message object.
+
+        Raises:
+            MessageNotFoundError: The thread has no such message (an ``IndexError`` and a
+                ``ValueError``).
         """
         raise NotImplementedError
 
@@ -834,7 +832,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
 
         Args:
             config (dict): Configuration dictionary.
-            search (str, optional): Search string.
+            search (str, optional): Case-insensitive text matched against the message text
+                only, never against field names.
             offset (int, optional): Offset for pagination.
             limit (int, optional): Limit for pagination.
 
@@ -892,29 +891,11 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         messages: list[Message],
         metadata: dict[str, Any] | None = None,
     ) -> Any:
-        """
-        Store messages synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-            messages (list[Message]): List of messages to store.
-            metadata (dict, optional): Additional metadata.
-
-        Returns:
-            Any: Implementation-defined result.
-        """
+        """Sync version of `aput_messages`."""
         return run_coroutine(self.aput_messages(config, messages, metadata))
 
     def get_message(self, config: dict[str, Any], message_id: str | int) -> Message:
-        """
-        Retrieve a specific message synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            Message: Retrieved message object.
-        """
+        """Sync version of `aget_message`."""
         return run_coroutine(self.aget_message(config, message_id))
 
     def update_message_metadata(
@@ -923,17 +904,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         message_id: str | int,
         metadata: dict[str, Any],
     ) -> Message | None:
-        """
-        Shallow-merge ``metadata`` into a stored message's metadata synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-            message_id (str|int): Message identifier.
-            metadata (dict): Keys to set on the message metadata.
-
-        Returns:
-            Message | None: The updated message, or None if it does not exist.
-        """
+        """Sync version of `aupdate_message_metadata`."""
         return run_coroutine(self.aupdate_message_metadata(config, message_id, metadata))
 
     def list_messages(
@@ -943,31 +914,11 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         offset: int | None = None,
         limit: int | None = None,
     ) -> list[Message]:
-        """
-        List messages synchronously with optional filtering.
-
-        Args:
-            config (dict): Configuration dictionary.
-            search (str, optional): Search string.
-            offset (int, optional): Offset for pagination.
-            limit (int, optional): Limit for pagination.
-
-        Returns:
-            list[Message]: List of message objects.
-        """
+        """Sync version of `alist_messages`."""
         return run_coroutine(self.alist_messages(config, search, offset, limit))
 
     def delete_message(self, config: dict[str, Any], message_id: str | int) -> int:
-        """
-        Delete a specific message synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-            message_id (str|int): Message identifier.
-
-        Returns:
-            int: The number of messages removed (see :meth:`adelete_message`).
-        """
+        """Sync version of `adelete_message`."""
         return run_coroutine(self.adelete_message(config, message_id))
 
     # -------------------------
@@ -983,7 +934,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         Store thread info asynchronously.
 
         The caller (``config``) becomes the owner of a new thread; ``thread_info.user_id``
-        never assigns one.
+        never assigns one. Replaces the record a first state write created, if any.
 
         Args:
             config (dict): Configuration dictionary.
@@ -1052,6 +1003,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             int: 1 when anything of the thread was removed (its record or any of its data,
             also for a thread that never got a record); 0 when nothing of it exists or the
             caller's scope does not reach it. A deleted id can be created again by anyone.
+            The thread's stop request and active-run marker go with it.
         """
         raise NotImplementedError
 
@@ -1138,28 +1090,11 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     # Thread methods sync
     # -------------------------
     def put_thread(self, config: dict[str, Any], thread_info: ThreadInfo) -> Any | None:
-        """
-        Store thread info synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-            thread_info (ThreadInfo): Thread information object.
-
-        Returns:
-            Any | None: Implementation-defined result.
-        """
+        """Sync version of `aput_thread`."""
         return run_coroutine(self.aput_thread(config, thread_info))
 
     def get_thread(self, config: dict[str, Any]) -> ThreadInfo | None:
-        """
-        Retrieve thread info synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            ThreadInfo | None: Thread information object or None.
-        """
+        """Sync version of `aget_thread`."""
         return run_coroutine(self.aget_thread(config))
 
     def list_threads(
@@ -1189,27 +1124,14 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         return run_coroutine(self.alist_threads(config, search, offset, limit, filters=filters))
 
     def clean_thread(self, config: dict[str, Any]) -> int:
-        """
-        Delete a thread and all of its data synchronously.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            int: The number of threads removed (see :meth:`aclean_thread`).
-        """
+        """Sync version of `aclean_thread`."""
         return run_coroutine(self.aclean_thread(config))
 
     # -------------------------
     # Clean Resources
     # -------------------------
     def release(self) -> Any | None:
-        """
-        Release resources synchronously.
-
-        Returns:
-            Any | None: Implementation-defined result.
-        """
+        """Sync version of `arelease`."""
         return run_coroutine(self.arelease())
 
     @abstractmethod

@@ -40,7 +40,7 @@ async def test_generic_cache_methods(cp):
     assert await cp.aput_cache_value("ns", "k", {"x": 1}, ttl_seconds=12) is True
     cp.redis.get.return_value = json.dumps({"x": 1})
     assert await cp.aget_cache_value("ns", "k") == {"x": 1}
-    assert await cp.aclear_cache_value("ns", "k") == 1
+    assert await cp.aclear_cache_value("ns", "k") is True
     keys = await cp.alist_cache_keys("ns")
     assert keys == ["a", "b"]
 
@@ -54,7 +54,7 @@ async def test_generic_cache_failures_return_safe_values(cp):
 
     assert await cp.aput_cache_value("ns", "k", {"x": 1}) is None
     assert await cp.aget_cache_value("ns", "k") is None
-    assert await cp.aclear_cache_value("ns", "k") is None
+    assert await cp.aclear_cache_value("ns", "k") is False
     assert await cp.alist_cache_keys("ns") == []
 
 
@@ -492,7 +492,7 @@ async def test_aput_state_prunes_old_versions(cp):
 @pytest.mark.asyncio
 async def test_aget_state_orders_by_version_and_scopes_user(cp):
     conn = _mock_conn()
-    payload = cp._serialize_state_payload(AgentState())
+    payload = cp._encode_state(AgentState())
     conn.fetchrow = AsyncMock(return_value={"version": 9, "state_data": json.dumps(payload)})
     _bind_conn(cp, conn)
 
@@ -524,7 +524,7 @@ def test_deserialize_payload_ignores_legacy_class_path(cp):
 
 def test_payload_roundtrip_uses_bound_class(cp):
     cp.bind_state_type(_CustomState)
-    payload = cp._serialize_state_payload(_CustomState(label="x"))
+    payload = cp._encode_state(_CustomState(label="x"))
     payload["__checkpoint_version__"] = 3  # cache rows carry the version too
     state = cp._deserialize_state_payload(payload)
     assert type(state) is _CustomState
@@ -533,7 +533,7 @@ def test_payload_roundtrip_uses_bound_class(cp):
 
 def test_serialize_payload_uses_json_mode(cp):
     # mode="json" must be used so datetime/UUID/enum fields don't crash json.dumps.
-    payload = cp._serialize_state_payload(AgentState())
+    payload = cp._encode_state(AgentState())
     assert payload[STATE_META_KEY] == {"format": 1, "class": "AgentState"}
     assert "__class_path__" not in payload
     # Round-trips through json without a custom default handler.
@@ -830,3 +830,13 @@ def test_redis_pool_is_bounded_by_default_and_overridable(monkeypatch):
         redis_pool_config={"max_connections": 7},
     ).connection_pool
     assert pool.max_connections == 7
+
+
+@pytest.mark.asyncio
+async def test_aget_tool_result_returns_none_when_the_backend_fails(cp):
+    """A failing pool reads as "no record": the tool reruns (at-least-once), the run lives."""
+    conn = _mock_conn()
+    conn.fetchrow = AsyncMock(side_effect=ConnectionError("pool down"))
+    _bind_conn(cp, conn)
+
+    assert await cp.aget_tool_result({"thread_id": "t1", "user_id": "u1"}, "msg_1:call_1") is None

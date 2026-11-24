@@ -65,7 +65,7 @@ async def test_qdrant_metadata_cannot_override_system_fields(qdrant, client):
 @pytest.mark.asyncio
 async def test_qdrant_memory_id_of_another_user_is_rejected(qdrant, client):
     client.retrieve.return_value = [_existing_point("victim")]
-    with pytest.raises(PermissionError):
+    with pytest.raises(ValueError, match="not found"):
         await qdrant.astore({"user_id": "attacker"}, "x", memory_id="victim-memory")
     client.upsert.assert_not_called()
 
@@ -89,9 +89,10 @@ async def test_qdrant_reach_all_cannot_overwrite_another_users_memory(qdrant, cl
     # AR-CORE-01: reach "all" widens reads and deletes, never writes.
     client.retrieve.return_value = [_existing_point("victim")]
     config = {"user": {"user_id": "admin", "reach": "all"}}
-    with pytest.raises(PermissionError):
+    with pytest.raises(ValueError, match="not found"):
         await qdrant.astore(config, "x", memory_id="victim-memory")
-    with pytest.raises(PermissionError):
+    # A foreign update is "not found" (ValueError), so it does not reveal the memory exists.
+    with pytest.raises(ValueError, match="not found"):
         await qdrant.aupdate(config, "victim-memory", "x")
     client.upsert.assert_not_called()
 
@@ -103,6 +104,6 @@ async def test_qdrant_reach_tenant_cannot_write_without_tenant_columns(qdrant, c
     config = {"user": {"user_id": "admin", "tenant": {"org_id": "A"}, "reach": "tenant"}}
     with pytest.raises((PermissionError, ValueError)):
         await qdrant.aupdate(config, "victim-memory", "x")
-    with pytest.raises(PermissionError):
+    with pytest.raises(ValueError, match="not found"):
         await qdrant.astore(config, "x", memory_id="victim-memory")
     client.upsert.assert_not_called()

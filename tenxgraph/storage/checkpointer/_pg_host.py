@@ -13,12 +13,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from typing import Any
 
-    from tenxgraph.core.state import AgentState
-    from tenxgraph.storage.columns import ColumnSet
+    from tenxgraph.storage.columns import ColumnSet, Isolation
     from tenxgraph.storage.sql_filter import FilterSchema
     from tenxgraph.utils import ThreadInfo
 
-    from ._pg_support import _Isolation
     from .base_checkpointer import BaseCheckpointer
     from .pg_checkpointer import _RedisBreaker
 
@@ -47,8 +45,6 @@ if TYPE_CHECKING:
         async def _get_pg_pool(self) -> Any: ...
 
         # _PgAccessMixin
-        @staticmethod
-        def _loads_jsonb(value: Any) -> Any: ...
         async def _retry_on_connection_error(
             self, operation: Any, *args: Any, max_retries: int = 3, **kwargs: Any
         ) -> Any: ...
@@ -59,16 +55,9 @@ if TYPE_CHECKING:
             in_transaction: bool = False,
             settings: Sequence[tuple[str, str]] | None = None,
         ) -> Any: ...
-        def _run_scoped(
-            self,
-            fn: Any,
-            *,
-            settings: Sequence[tuple[str, str]] | None,
-            in_transaction: bool = False,
-        ) -> Any: ...
         def _isolation(
             self, config: dict[str, Any] | None, *, write: bool = False
-        ) -> _Isolation: ...
+        ) -> Isolation: ...
         def _rls(
             self, config: dict[str, Any] | None, *, write: bool = False
         ) -> list[tuple[str, str]] | None: ...
@@ -77,7 +66,7 @@ if TYPE_CHECKING:
             user_id: str | int | None,
             config: dict[str, Any] | None,
             params: list[Any],
-            isolation: _Isolation | None = None,
+            isolation: Isolation | None = None,
             *,
             write: bool = False,
         ) -> str: ...
@@ -99,14 +88,13 @@ if TYPE_CHECKING:
             thread_name: Any,
             user_id: str | int,
             meta_json: str,
-            isolation: _Isolation,
+            isolation: Isolation,
             tail: str,
         ) -> tuple[str, list[Any]]: ...
         def _row_to_thread_info(self, row: Any) -> ThreadInfo: ...
         async def _ensure_thread_exists(
             self, thread_id: str | int, user_id: str | int, config: dict[str, Any]
         ) -> None: ...
-        def _serialize_state_payload(self, state: AgentState) -> dict[str, Any]: ...
         def _deserialize_state_payload(
             self, data: dict[str, Any], thread_id: Any = None
         ) -> Any: ...
@@ -132,6 +120,8 @@ if TYPE_CHECKING:
         # _PgIdentityMixin
         def _validate_config(self, config: dict[str, Any]) -> tuple[str | int, str | int]: ...
         def _db_thread_id(self, thread_id: str | int) -> str | int: ...
+        def _db_message_id(self, message_id: str | int) -> str | int: ...
+        def _check_message_ids(self, messages: list[Any] | None) -> None: ...
         def _message_thread_id(self, config: dict[str, Any]) -> str | int: ...
         def _get_thread_key(
             self, thread_id: str | int, user_id: str | int, config: dict[str, Any] | None = None

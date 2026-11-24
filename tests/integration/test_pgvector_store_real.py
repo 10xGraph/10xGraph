@@ -162,7 +162,7 @@ class TestCrudAndOwnership:
             await store.aupdate(_cfg("bob"), mid, "hijack")
         with pytest.raises(ValueError, match="not found"):
             await store.adelete(_cfg("bob"), mid)
-        with pytest.raises(PermissionError):
+        with pytest.raises(ValueError, match="not found"):
             await store.astore(_cfg("bob"), "hijack", memory_id="shared-id")
         assert (await store.aget(_cfg("alice"), mid)).content == "alice secret"
         assert await store.asearch(_cfg("bob"), "alice secret") == []

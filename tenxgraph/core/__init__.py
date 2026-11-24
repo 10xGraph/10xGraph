@@ -18,6 +18,7 @@ from . import exceptions, skills, state
 from .exceptions import (
     GraphError,
     GraphRecursionError,
+    MessageNotFoundError,
     MetricsError,
     NodeError,
     ResourceNotFoundError,
@@ -147,6 +148,7 @@ __all__ = [
     "MediaRef",
     "Message",
     "MessageContextManager",
+    "MessageNotFoundError",
     "MetricsError",
     "Node",
     "NodeError",

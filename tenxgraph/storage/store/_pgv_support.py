@@ -10,10 +10,7 @@ from typing import Any
 from tenxgraph.storage._pg_common import (
     loads_jsonb,
 )
-from tenxgraph.storage.columns import (
-    Isolation,
-    quote_identifier,
-)
+from tenxgraph.storage.columns import quote_identifier
 
 from .store_schema import (
     DistanceMetric,
@@ -87,7 +84,6 @@ HNSW_MAX_DIMENSIONS = 2000
 # Table names leave room for the index and version-table suffixes inside Postgres' 63-byte
 # identifier limit (longer names would be truncated and could collide).
 _TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,47}$")
-_TS_CONFIG_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 _SUPPORTED_STRATEGIES = (
     RetrievalStrategy.SIMILARITY,
@@ -128,10 +124,6 @@ _SELECT_COLUMNS = (
 )
 
 
-# Quoted SQL identifier after the shared name check (``storage/columns.py``).
-_quote_ident = quote_identifier
-
-
 def _parse_version(text: str) -> tuple[int, ...]:
     """Turn an extension version such as ``"0.8.0"`` into ``(0, 8, 0)``."""
     parts = re.findall(r"\d+", str(text))[:3]
@@ -170,7 +162,7 @@ class _Where:
         self.clauses: list[str] = []
 
     def column(self, name: str) -> str:
-        quoted = _quote_ident(name)
+        quoted = quote_identifier(name)
         return f"{self.alias}.{quoted}" if self.alias else quoted
 
     def param(self, value: Any) -> str:
@@ -185,7 +177,3 @@ class _Where:
 
     def sql(self) -> str:
         return " AND ".join(self.clauses) if self.clauses else "TRUE"
-
-
-# Tenant and extra column values for one call and the isolation they imply (storage/columns.py).
-_TenantContext = Isolation

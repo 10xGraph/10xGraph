@@ -48,8 +48,9 @@ class _PgvWritesMixin(PgvHostBase):
         reach ``all``. Use ``system_user_id(name)`` for shared data.
 
         Without a ``memory_key`` it is an upsert on ``(collection, id)``: a ``memory_id`` you
-        pass that belongs to another user raises ``PermissionError`` (the update's ``WHERE``
-        matches no row), on every reach: writes stay reach ``own``. With a ``memory_key``
+        pass that belongs to another user or tenant raises ``ValueError`` (not found, as
+        ``aupdate`` and ``adelete``; the update's ``WHERE`` matches no row) and leaves the row
+        as it is, on every reach: writes stay reach ``own``. With a ``memory_key``
         (keyword argument or ``metadata["memory_key"]``) it is an atomic upsert on
         ``(collection, user_id, memory_type, memory_key)``: the existing memory with that key is
         updated (metadata merged) and its id returned.
@@ -58,6 +59,12 @@ class _PgvWritesMixin(PgvHostBase):
             memory_id: Id for a new memory (generated when absent).
             memory_key: Stable topic key for the memory (see above).
         """
+        self._refuse_unstorable(
+            content=content,
+            metadata=metadata,
+            category=category,
+            memory_key=kwargs.get("memory_key"),
+        )
         user_id, thread_id, collection = self._extract_config_values(config)
         owner = str(self._require_owner_id(config, user_id))
         text, memory_type, clean_metadata = self._prepare(content, memory_type, metadata)
@@ -155,12 +162,12 @@ class _PgvWritesMixin(PgvHostBase):
                 # Under RLS an upsert that hits another tenant's row fails the policy instead
                 # of matching no row; report it the same way.
                 if self.row_level_security and "row-level security" in str(e):
-                    raise PermissionError(f"memory_id '{memory_id}' belongs to another user") from e
+                    raise ValueError(f"Memory {memory_id} not found") from e
                 raise
 
         row = await self._run(_write, settings=ctx.settings)
         if row is None:
-            raise PermissionError(f"memory_id '{memory_id}' belongs to another user")
+            raise ValueError(f"Memory {memory_id} not found")
         stored_id = str(row["id"])
         logger.debug("Stored memory %s in collection %s", stored_id, collection)
         return stored_id
@@ -197,6 +204,7 @@ class _PgvWritesMixin(PgvHostBase):
         A memory that does not exist or belongs to another user raises ``ValueError`` (not
         found), as on ``QdrantStore``.
         """
+        self._refuse_unstorable(content=content, metadata=metadata)
         user_id, _thread_id, collection = self._extract_config_values(config)
         scoped_user_id = self._require_owner_id(config, user_id)  # writes stay reach own
         text = content.text() if isinstance(content, Message) else content

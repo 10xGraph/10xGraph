@@ -47,8 +47,6 @@ async def test_qdrant_search_scopes_integer_user_zero(qdrant, client):
     assert flt is not None and flt.must[0].match.value == 0
 
 
-
-
 def test_openai_embedding_custom_dimensions_are_sent():
     from tenxgraph.storage.store.embedding.openai_embedding import OpenAIEmbedding
 
@@ -88,9 +86,8 @@ async def test_qdrant_payload_timestamps_are_timezone_aware(qdrant, client):
     payload = client.upsert.call_args.kwargs["points"][0].payload
     assert datetime.fromisoformat(payload["timestamp"]).tzinfo is not None
 
-    existing = MemorySearchResult(id="m1", content="old", user_id="u")
-    with patch.object(qdrant, "aget", AsyncMock(return_value=existing)):
-        await qdrant.aupdate({"user_id": "u"}, "m1", "new")
+    client.retrieve.return_value = [MagicMock(id="m1", payload={"user_id": "u", "content": "old"})]
+    await qdrant.aupdate({"user_id": "u"}, "m1", "new")
     payload = client.upsert.call_args.kwargs["points"][0].payload
     assert datetime.fromisoformat(payload["timestamp"]).tzinfo is not None
 

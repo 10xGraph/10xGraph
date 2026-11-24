@@ -72,6 +72,7 @@ __all__ = [
     "FilterSchema",
     "build_filter_where",
     "compile_filters",
+    "isolation_filter_error",
     "validate_filters",
 ]
 
@@ -305,6 +306,14 @@ def _convert(column: FilterColumn, op: str, value: Any) -> Any:
     return _convert_scalar(column, op, value)
 
 
+def isolation_filter_error(name: Any) -> FilterError:
+    """The refusal for a filter that names ``user_id`` or a tenant column, on every store."""
+    return FilterError(
+        f"Column {_label(name)} is an isolation column set from the caller's identity; "
+        "it cannot be used in filters"
+    )
+
+
 def _too_many() -> FilterError:
     return FilterError(f"Too many filter conditions: at most {MAX_CONDITIONS}")
 
@@ -324,10 +333,7 @@ def validate_filters(filters: Any, schema: FilterSchema) -> list[FilterCondition
     conditions: list[FilterCondition] = []
     for name, spec in filters.items():
         if schema.is_isolation(name):
-            raise FilterError(
-                f"Column {_label(name)} is an isolation column set from the caller's identity; "
-                "it cannot be used in filters"
-            )
+            raise isolation_filter_error(name)
         column = schema.get(name)
         if column is None:
             allowed = ", ".join(schema.names) or "none"

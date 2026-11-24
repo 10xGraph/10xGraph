@@ -103,18 +103,19 @@ class TestQdrantStore:
 
         await qdrant_store._ensure_collection_exists("test_collection")
 
-        expected_fields = ["user_id", "memory_type", "category", "memory_key"]
-        assert mock_qdrant_client.create_payload_index.call_count == len(expected_fields)
-
-        called_fields = [
-            call.kwargs["field_name"]
-            for call in mock_qdrant_client.create_payload_index.call_args_list
-        ]
-        assert called_fields == expected_fields
-
-        for call in mock_qdrant_client.create_payload_index.call_args_list:
+        expected = {
+            "user_id": PayloadSchemaType.KEYWORD,
+            "memory_type": PayloadSchemaType.KEYWORD,
+            "category": PayloadSchemaType.KEYWORD,
+            "memory_key": PayloadSchemaType.KEYWORD,
+            # aget_all orders by the timestamp (newest first), which needs a range index.
+            "timestamp": PayloadSchemaType.DATETIME,
+        }
+        calls = mock_qdrant_client.create_payload_index.call_args_list
+        assert {c.kwargs["field_name"]: c.kwargs["field_schema"] for c in calls} == expected
+        assert len(calls) == len(expected)
+        for call in calls:
             assert call.kwargs["collection_name"] == "test_collection"
-            assert call.kwargs["field_schema"] == PayloadSchemaType.KEYWORD
 
     @pytest.mark.asyncio
     async def test_payload_index_failure_is_best_effort(self, qdrant_store, mock_qdrant_client):
@@ -127,8 +128,8 @@ class TestQdrantStore:
 
         # Collection should still be cached.
         assert "test_collection" in qdrant_store._collection_cache
-        # All 4 fields should have been attempted.
-        assert mock_qdrant_client.create_payload_index.call_count == 4
+        # All 5 fields should have been attempted.
+        assert mock_qdrant_client.create_payload_index.call_count == 5
 
     @pytest.mark.asyncio
     async def test_existing_collection_ensures_payload_indexes(self, qdrant_store, mock_qdrant_client):
@@ -142,7 +143,7 @@ class TestQdrantStore:
 
         mock_qdrant_client.create_collection.assert_not_called()
         # Indexes should still be created (idempotent) for existing collections.
-        expected_fields = ["user_id", "memory_type", "category", "memory_key"]
+        expected_fields = ["user_id", "memory_type", "category", "memory_key", "timestamp"]
         assert mock_qdrant_client.create_payload_index.call_count == len(expected_fields)
 
         called_fields = [
@@ -231,7 +232,7 @@ class TestQdrantStore:
     async def test_aforget_memory_rejects_unmatchable_filter_without_deleting(
         self, qdrant_store, mock_qdrant_client
     ):
-        with pytest.raises(ValueError, match="Unsupported forget filter"):
+        with pytest.raises(ValueError, match="Unsupported filter"):
             await qdrant_store.aforget_memory(
                 config={"user_id": "u1"}, filters={"tags": ["a", "b"]}
             )

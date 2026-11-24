@@ -221,6 +221,18 @@ class ThreadNotFoundError(ResourceNotFoundError):
         Exception.__init__(self, self.message)
 
 
+class MessageNotFoundError(IndexError, ValueError):
+    """Raised by ``aget_message`` when the thread has no message with that id.
+
+    It is both an ``IndexError`` and a ``ValueError``, so code that caught either one keeps
+    working. The message does not say whether the thread exists or belongs to someone else.
+    """
+
+    def __init__(self) -> None:
+        """Initialize a MessageNotFoundError."""
+        super().__init__("Message not found")
+
+
 class MetricsError(_StructuredError, Exception):
     """Raised when metrics emission fails (should normally be swallowed/logged).
 

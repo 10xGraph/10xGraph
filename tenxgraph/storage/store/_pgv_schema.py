@@ -54,8 +54,8 @@ class _PgvSchemaMixin(PgvHostBase):
         embedding_column = (
             f"embedding vector({self._dimension()}),\n" if self.embedding is not None else ""
         )
-        # The text search configuration is checked against _TS_CONFIG_RE, so it cannot close
-        # the string literal. A generated column needs a constant configuration.
+        # The text search configuration is checked against the column-name regex, so it cannot
+        # close the string literal. A generated column needs a constant configuration.
         ts_config = f"'{self.text_search_config}'::regconfig"
         return [
             f"""

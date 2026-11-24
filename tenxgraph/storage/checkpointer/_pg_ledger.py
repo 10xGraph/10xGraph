@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
+from tenxgraph.storage._pg_common import loads_jsonb
 from tenxgraph.storage.columns import (
     role_bypasses_rls,
 )
@@ -14,6 +15,7 @@ from tenxgraph.storage.columns import (
 )
 
 from ._pg_host import PgHostBase
+from .base_checkpointer import reject_unstorable
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -56,13 +58,13 @@ class _PgLedgerMixin(PgHostBase):
         )
         settings = self._rls(config)
         try:
-            row = await self._run_scoped(
+            row = await self._run_query(
                 lambda conn: conn.fetchrow(query, *params), settings=settings
             )
             if not row:
                 return None
 
-            return self._loads_jsonb(row["result"])
+            return loads_jsonb(row["result"])
 
         except Exception as e:
             # A ledger read failure must not take the run down. Falling back to
@@ -92,6 +94,7 @@ class _PgLedgerMixin(PgHostBase):
         record a completed side effect is exactly what leads to a double charge on
         the next replay, so the caller must know.
         """
+        reject_unstorable(result)
         thread_id, user_id = self._validate_config(config)
 
         await self._ensure_thread_exists(thread_id, user_id, config)
@@ -102,7 +105,7 @@ class _PgLedgerMixin(PgHostBase):
             VALUES ($1, $2, $3)
             ON CONFLICT (thread_id, tool_call_id) DO NOTHING
             """  # noqa: S608
-        await self._run_scoped(
+        await self._run_query(
             lambda conn: conn.execute(query, thread_id, str(tool_call_id), json.dumps(result)),
             settings=self._rls(config, write=True),
         )
@@ -144,7 +147,7 @@ class _PgLedgerMixin(PgHostBase):
             config,
             write=True,
         )
-        status = await self._run_scoped(
+        status = await self._run_query(
             lambda conn: conn.execute(query, *params),
             settings=self._rls(config, write=True),
         )

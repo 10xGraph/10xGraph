@@ -127,5 +127,5 @@ async def test_base_checkpointer_default_cache_methods():
     cp = MinimalCheckpointer()
     assert await cp.aput_cache_value("ns", "k", "v") is None
     assert await cp.aget_cache_value("ns", "k") is None
-    assert await cp.aclear_cache_value("ns", "k") is None
+    assert await cp.aclear_cache_value("ns", "k") is False
     assert await cp.alist_cache_keys("ns") == []

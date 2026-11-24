@@ -96,7 +96,7 @@ class TestOpenAIEmbedding:
         assert embedding.api_key == "test-key"
         assert embedding.model == "text-embedding-3-small"  # default
         assert embedding.client == mock_client
-        mock_openai_class.assert_called_once_with(api_key="test-key")
+        mock_openai_class.assert_called_once_with(api_key="test-key", base_url=None)
     
     @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     @patch('openai.AsyncOpenAI')
@@ -323,3 +323,15 @@ class TestEmbeddingEdgeCases:
     
     
     
+
+
+class TestOpenAIEmbeddingBaseUrl:
+    """base_url reaches AsyncOpenAI, with no network."""
+
+    def test_base_url_is_passed_to_client(self):
+        emb = OpenAIEmbedding(api_key="k", base_url="http://proxy.local/v1")
+        assert str(emb.client.base_url).startswith("http://proxy.local/v1")
+
+    def test_default_uses_openai(self):
+        emb = OpenAIEmbedding(api_key="k")
+        assert "api.openai.com" in str(emb.client.base_url)

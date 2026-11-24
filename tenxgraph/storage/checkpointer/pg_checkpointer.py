@@ -14,7 +14,9 @@ from typing import Any
 from injectq import InjectQ
 
 from tenxgraph.storage._pg_common import (
+    DEFAULT_ACQUIRE_TIMEOUT,
     DEFAULT_DDL_LOCK_TIMEOUT,
+    DEFAULT_POOL_CONFIG,
 )
 from tenxgraph.storage.columns import (
     ddl_lock_timeout_setting,
@@ -34,8 +36,6 @@ from ._pg_state import _PgStateMixin
 from ._pg_support import (
     CURRENT_SCHEMA_VERSION,  # noqa: F401  (re-export: callers import it from this module path)
     DEFAULT_CACHE_TTL,
-    DEFAULT_PG_ACQUIRE_TIMEOUT,
-    DEFAULT_PG_POOL_CONFIG,
     DEFAULT_REDIS_BREAKER_COOLDOWN,
     DEFAULT_REDIS_POOL_CONFIG,
     DEFAULT_STATE_HISTORY_LIMIT,
@@ -269,16 +269,20 @@ class PgCheckpointer(
 
         self.user_id_type = kwargs.get("user_id_type", "string")
         # allow explicit override via kwargs, fallback to InjectQ, then default
-        self.id_type = kwargs.get(
+        id_type = kwargs.get(
             "id_type", InjectQ.get_instance().try_get("generated_id_type", "string")
         )
+        # Plain setup names ("string", "int", "bigint"); an IDType from the bound generator
+        # is mapped too, so IDType.INTEGER makes INTEGER columns, not text ones.
+        id_type = str(getattr(id_type, "value", id_type))
+        self.id_type = "int" if id_type == "integer" else id_type
         self.cache_ttl = kwargs.get("cache_ttl", DEFAULT_CACHE_TTL)
         self.release_resources = kwargs.get("release_resources", False)
         # Prefix for every Redis key this checkpointer writes, so two deployments that share
         # one Redis do not read each other's cached state (default: no prefix).
         self.redis_key_prefix = str(kwargs.get("redis_key_prefix", "") or "")
         # Seconds to wait for a free Postgres connection before failing (None waits forever).
-        self.pg_acquire_timeout = kwargs.get("pg_acquire_timeout", DEFAULT_PG_ACQUIRE_TIMEOUT)
+        self.pg_acquire_timeout = kwargs.get("pg_acquire_timeout", DEFAULT_ACQUIRE_TIMEOUT)
         # Redis circuit breaker (see DEFAULT_REDIS_BREAKER_COOLDOWN); None when disabled.
         cooldown = float(kwargs.get("redis_breaker_cooldown", DEFAULT_REDIS_BREAKER_COOLDOWN) or 0)
         self._redis_breaker = _RedisBreaker(cooldown) if cooldown > 0 else None
@@ -449,7 +453,7 @@ class PgCheckpointer(
         # Built from a DSN, so we own it. Ownership was already recorded in
         # __init__ (this runs lazily on first use, which may be never).
         return asyncpg.create_pool(  # type: ignore
-            dsn=postgres_dsn, **{**DEFAULT_PG_POOL_CONFIG, **pool_config}
+            dsn=postgres_dsn, **{**DEFAULT_POOL_CONFIG, **pool_config}
         )
 
     async def _get_pg_pool(self) -> Any:

@@ -9,6 +9,8 @@ from typing import Any
 from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import (
     ColumnSpec,
+    Isolation,
+    quote_identifier,
     resolve_isolation,
 )
 from tenxgraph.storage.sql_filter import (
@@ -24,8 +26,6 @@ from ._pgv_support import (
     _SELECT_COLUMNS,
     _SYSTEM_METADATA_KEYS,
     _loads_jsonb,
-    _quote_ident,
-    _TenantContext,
     _Where,
 )
 from .store_schema import (
@@ -46,7 +46,7 @@ class _PgvQueryMixin(PgvHostBase):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _tenant_context(self, config: dict[str, Any], *, write: bool = False) -> _TenantContext:
+    def _tenant_context(self, config: dict[str, Any], *, write: bool = False) -> Isolation:
         """Resolve the declared columns' values and the tenant isolation for one call.
 
         The rule is shared with PgCheckpointer: ``tenxgraph.storage.columns.resolve_isolation``.
@@ -57,7 +57,7 @@ class _PgvQueryMixin(PgvHostBase):
             self.columns, config, write=write, row_level_security=self.row_level_security
         )
 
-    def _search_settings(self, ctx: _TenantContext, vector_search: bool) -> list[tuple[str, str]]:
+    def _search_settings(self, ctx: Isolation, vector_search: bool) -> list[tuple[str, str]]:
         """Settings for a search: RLS values plus ``hnsw.iterative_scan`` for vector scans."""
         settings = list(ctx.settings or [])
         if vector_search and self._iterative_scan and self._index_metric is not None:
@@ -73,13 +73,21 @@ class _PgvQueryMixin(PgvHostBase):
         tenant: Sequence[tuple[ColumnSpec, Any]] = (),
     ) -> _Where:
         """The isolation part of every WHERE clause: collection, owner (when scoped), then the
-        tenant columns the scope picks."""
+        tenant columns the scope picks.
+
+        A ``None`` tenant value (a write's condition for an optional column the caller has no
+        value for, see ``columns.write_conditions``) matches only rows without a value, as
+        ``IS NOT DISTINCT FROM`` does in the ``astore`` guard.
+        """
         where = _Where(params, alias)
         where.eq("collection", collection)
         if user_id is not None:
             where.eq("user_id", str(user_id))
         for spec, value in tenant:
-            where.eq(spec.name, value)
+            if value is None:
+                where.add(f"{where.column(spec.name)} IS NULL")
+            else:
+                where.eq(spec.name, value)
         return where
 
     def _add_filters(  # noqa: PLR0912
@@ -256,7 +264,7 @@ class _PgvQueryMixin(PgvHostBase):
 
     def _columns(self, alias: str | None = None) -> str:
         prefix = f"{alias}." if alias else ""
-        return ", ".join(f"{prefix}{_quote_ident(c)}" for c in _SELECT_COLUMNS)
+        return ", ".join(f"{prefix}{quote_identifier(c)}" for c in _SELECT_COLUMNS)
 
     def _warn_metric(self, metric: DistanceMetric) -> None:
         if metric == self._index_metric or metric in self._warned_metrics:

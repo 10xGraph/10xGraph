@@ -28,6 +28,7 @@ from tenxgraph.storage._pg_common import (
     run_on_connection,
 )
 from tenxgraph.storage.columns import (
+    _NAME_RE,
     ddl_lock_timeout_setting,
     parse_columns,
     quote_identifier,
@@ -43,12 +44,10 @@ from ._pgv_schema import _PgvSchemaMixin
 from ._pgv_support import (
     _SUPPORTED_STRATEGIES,
     _TABLE_RE,
-    _TS_CONFIG_RE,
     CURRENT_SCHEMA_VERSION,  # noqa: F401  (re-export: callers import it from this module path)
     DEFAULT_TABLE,
     HAS_ASYNCPG,
     STORE_BUILTIN_COLUMNS,
-    _quote_ident,
     asyncpg,
 )
 from ._pgv_writes import _PgvWritesMixin
@@ -268,7 +267,7 @@ class PgVectorStore(
                 f"Invalid table name {table!r}: use letters, digits and underscores, starting "
                 "with a letter or underscore, at most 48 characters."
             )
-        if not isinstance(text_search_config, str) or not _TS_CONFIG_RE.match(text_search_config):
+        if not isinstance(text_search_config, str) or not _NAME_RE.match(text_search_config):
             raise ValueError(
                 f"Invalid text_search_config {text_search_config!r}: use a configuration name "
                 "such as 'english' or 'simple'."
@@ -368,11 +367,11 @@ class PgVectorStore(
 
     @property
     def _qualified_table(self) -> str:
-        return f"{_quote_ident(self.schema)}.{_quote_ident(self.table)}"
+        return f"{quote_identifier(self.schema)}.{quote_identifier(self.table)}"
 
     @property
     def _version_table(self) -> str:
-        return f"{_quote_ident(self.schema)}.{_quote_ident(self.table + '_schema_version')}"
+        return f"{quote_identifier(self.schema)}.{quote_identifier(self.table + '_schema_version')}"
 
     def _key_columns(self) -> list[str]:
         """Columns of the unique ``memory_key`` index, quoted where they are declared columns.

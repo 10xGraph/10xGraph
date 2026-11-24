@@ -32,9 +32,11 @@ from tenxgraph.utils import (
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.callable_utils import ensure_no_running_loop, resolve_awaitable_id
 from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
+from tenxgraph.utils.id_generator import BaseIDGenerator
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
+from .utils.id_type_check import check_id_type
 from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
 from .utils.stream_handler import StreamHandler
@@ -174,6 +176,7 @@ class CompiledGraph[StateT: AgentState]:
         )
 
         self._checkpointer: BaseCheckpointer[StateT] | None = checkpointer
+        self._id_type_checked = False
         self._publisher: BasePublisher | None = publisher
         self._store: BaseStore | None = store
         self._state_graph: StateGraph[StateT] = state_graph
@@ -208,6 +211,12 @@ class CompiledGraph[StateT: AgentState]:
         self, cfg: dict[str, Any], kind: str, heartbeat: bool = True
     ) -> tuple[RunHandle, contextvars.Token]:
         """Register this run and bind its handle to the current context."""
+        if not self._id_type_checked:
+            # First run: the id generator is final now (the API binds its own after compile).
+            generator = self._container.try_get(BaseIDGenerator, None)
+            if generator is not None and self._checkpointer is not None:
+                check_id_type(self._checkpointer, generator)
+            self._id_type_checked = True
         identity = get_identity(cfg)
         owner, tenant = (
             (identity.user_id, identity.tenant) if identity else (cfg.get("user_id"), {})

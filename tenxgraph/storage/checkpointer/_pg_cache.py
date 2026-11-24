@@ -23,6 +23,7 @@ from ._pg_support import (
     StateT,
     _RedisUnavailable,
 )
+from .base_checkpointer import reject_unstorable
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -95,7 +96,7 @@ class _PgCacheMixin(PgHostBase):
 
         try:
             cache_key = self._get_thread_key(thread_id, user_id, config)
-            data = self._serialize_state_payload(state)
+            data = self._encode_state(state)
             version = config.get(STATE_VERSION_CONFIG_KEY)
             if version is not None:
                 data[_CACHE_VERSION_KEY] = version
@@ -211,7 +212,7 @@ class _PgCacheMixin(PgHostBase):
                 f"SELECT COALESCE(MAX(version), 0) FROM {self._get_table_name('states')} "  # noqa: S608
                 f"WHERE {scope_sql}"
             )
-            durable = await self._run_scoped(
+            durable = await self._run_query(
                 lambda conn: conn.fetchval(query, *scope_params),
                 settings=self._rls(config),
             )
@@ -348,6 +349,7 @@ class _PgCacheMixin(PgHostBase):
         ttl_seconds: int | None = None,
     ) -> Any | None:
         """Cache a generic JSON-serializable value in Redis."""
+        reject_unstorable(value)
         try:
             cache_key = self._get_generic_cache_key(namespace, key)
             ttl = ttl_seconds or self.cache_ttl
@@ -384,13 +386,13 @@ class _PgCacheMixin(PgHostBase):
             )
             return None
 
-    async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Delete a generic cache value from Redis."""
+    async def aclear_cache_value(self, namespace: str, key: str) -> bool:
+        """Delete a generic cache value from Redis; True when a value was removed."""
         try:
             cache_key = self._get_generic_cache_key(namespace, key)
-            return await self._redis_call(lambda: self.redis.delete(cache_key))
+            return bool(await self._redis_call(lambda: self.redis.delete(cache_key)))
         except _RedisUnavailable:
-            return None
+            return False
         except Exception as e:
             logger.error(
                 "Failed to clear cached value for namespace=%s key=%s: %s",
@@ -398,7 +400,7 @@ class _PgCacheMixin(PgHostBase):
                 key,
                 e,
             )
-            return None
+            return False
 
     async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Delete a generic cache value only if it still equals ``expected`` (one Lua call)."""
@@ -428,6 +430,7 @@ class _PgCacheMixin(PgHostBase):
         ttl_seconds: int | None = None,
     ) -> bool:
         """Cache a generic value only if the key is not set (one ``SET NX``); True when set."""
+        reject_unstorable(value)
         try:
             cache_key = self._get_generic_cache_key(namespace, key)
             ttl = ttl_seconds or self.cache_ttl

@@ -319,13 +319,6 @@ class _PgSchemaMixin(PgHostBase):
         if enabled:
             await warn_if_rls_bypassed(conn, logger, "PgCheckpointer")
 
-    async def _get_recorded_schema_version(self, conn) -> int:
-        """Return the highest schema version recorded in the tracking table.
-
-        Returns 0 when no version has been recorded yet (first run).
-        """
-        return await recorded_schema_version(conn, self._get_table_name("schema_version"))
-
     async def _check_and_apply_schema_version(self, conn) -> None:
         """Apply any pending migrations and record the new schema version.
 
@@ -472,7 +465,7 @@ class _PgSchemaMixin(PgHostBase):
             table = self._get_table_name("schema_version")
             if not await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", table):
                 return 0
-            return await self._get_recorded_schema_version(conn)
+            return await recorded_schema_version(conn, self._get_table_name("schema_version"))
 
         async def _operation() -> int:
             pool = await self._get_pg_pool()

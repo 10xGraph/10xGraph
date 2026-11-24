@@ -8,7 +8,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from tenxgraph.core.authz import Reach, owner_filter, owner_id
-from tenxgraph.core.exceptions import ThreadNotFoundError
+from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.thread_info import ThreadInfo
 
@@ -16,6 +16,7 @@ from .base_checkpointer import (
     BaseCheckpointer,
     _reject_filters,
     _reject_tenant_options,
+    reject_unstorable,
     validate_page,
 )
 
@@ -43,7 +44,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         _states (dict): Stores agent states by thread key.
         _state_cache (dict): Stores cached agent states by thread key.
         _messages (dict): Stores messages by thread key.
-        _message_metadata (dict): Stores message metadata by thread key.
         _threads (dict): Stores thread info by thread key.
     """
 
@@ -76,7 +76,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
         # Message storage - organized by config key
         self._messages: dict[str, list[Message]] = defaultdict(list)
-        self._message_metadata: dict[str, dict[str, Any]] = {}
 
         # Thread storage
         self._threads: dict[str, dict[str, Any]] = {}
@@ -105,20 +104,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         """
         logger.debug("InMemoryCheckpointer async setup not required")
 
-    def _get_config_key(self, config: dict[str, Any]) -> str:
-        """
-        Generate a string key from config dict for storage indexing.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            str: Key for indexing storage.
-        """
-        # Sort keys for consistent hashing
-        thread_id = config.get("thread_id", "")
-        return str(thread_id)
-
     def _claim(self, config: dict[str, Any]) -> str | None:
         """Make the caller the owner of a new thread, or refuse a write to someone else's.
 
@@ -145,6 +130,21 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             raise ThreadNotFoundError(config.get("thread_id"))
         return owner
 
+    def _ensure_thread(self, config: dict[str, Any], owner: str | None) -> None:
+        """Create the thread record on the first write of a thread; never overwrite one.
+
+        Same fields as ``PgCheckpointer`` writes: id, owner, name and metadata from the config.
+        """
+        key = self._get_config_key(config)
+        if key not in self._threads:
+            info = ThreadInfo(
+                thread_id=key,
+                thread_name=config.get("thread_name", f"Thread {key}"),
+                user_id=owner,
+                metadata=config.get("thread_meta", {}),
+            )
+            self._threads[key] = info.model_dump()
+
     def _owner_denied(self, config: dict[str, Any], *, write: bool = False) -> bool:
         """True when isolation is active and the caller may not see this thread.
 
@@ -169,12 +169,13 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Returns:
             StateT: The stored state object.
         """
+        reject_unstorable(state)
         key = self._get_config_key(config)
         # Store copies: loaders merge new input into the state they get back, so sharing one
         # object would let a request that is later rejected (a paused thread) change what is
         # stored. Copied before the claim, so a state that cannot be copied claims nothing.
         stored, cached = copy.deepcopy(state), copy.deepcopy(state)
-        self._claim(config)
+        self._ensure_thread(config, self._claim(config))
         self._states[key] = stored
         # Write-through: a run reads the cache first, so leaving it behind would
         # start the next run from the state this write replaced.
@@ -274,6 +275,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         value: Any,
         ttl_seconds: int | None = None,
     ) -> Any | None:
+        reject_unstorable(value)
         cache_key = f"{namespace}:{key}"
         expires_at = time.time() + ttl_seconds if ttl_seconds else None
         self._generic_cache[cache_key] = (value, expires_at)
@@ -316,7 +318,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         result: dict[str, Any],
     ) -> Any | None:
         """Record that a tool call completed, with its result."""
-        self._claim(config)
+        reject_unstorable(result)
+        self._ensure_thread(config, self._claim(config))
         self._tool_results.setdefault(self._tool_key(config, tool_call_id), (result, time.time()))
         return True
 
@@ -351,9 +354,9 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             del self._tool_results[ledger_key]
         return len(stale)
 
-    async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
+    async def aclear_cache_value(self, namespace: str, key: str) -> bool:
         cache_key = f"{namespace}:{key}"
-        return self._generic_cache.pop(cache_key, None)
+        return self._generic_cache.pop(cache_key, None) is not None
 
     async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Compare and delete under the cache lock, in one step."""
@@ -372,6 +375,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         ttl_seconds: int | None = None,
     ) -> bool:
         """Check and store under the cache lock, in one step; an expired value counts as absent."""
+        reject_unstorable(value)
         cache_key = f"{namespace}:{key}"
         now = time.time()
         cached = self._generic_cache.get(cache_key)
@@ -410,27 +414,32 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         Args:
             config (dict): Configuration dictionary.
             messages (list[Message]): List of messages to store.
-            metadata (dict, optional): Additional metadata.
+            metadata (dict, optional): Merged into each message's metadata (the message's own
+                keys win).
 
         Returns:
             bool: True if stored.
         """
+        reject_unstorable(messages, metadata)
         key = self._get_config_key(config)
-        self._claim(config)
+        self._ensure_thread(config, self._claim(config))
         # Upsert by message id, as the SQL backends do: a run that re-sends messages it
         # already stored (a resume, the final save after a step checkpoint) must not
         # duplicate them.
         stored = self._messages[key]
         index = {str(m.message_id): i for i, m in enumerate(stored)}
-        for msg in messages:
+        for given in messages:
+            msg = given
+            if metadata:
+                # Merged into a copy (the caller's message is not changed); the message's own
+                # keys win.
+                msg = given.model_copy(update={"metadata": {**metadata, **(given.metadata or {})}})
             at = index.get(str(msg.message_id))
             if at is None:
                 index[str(msg.message_id)] = len(stored)
                 stored.append(msg)
             else:
                 stored[at] = msg
-        if metadata:
-            self._message_metadata[key] = metadata
         logger.debug(f"Stored {len(messages)} messages for key: {key}")
         return True
 
@@ -446,16 +455,16 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             Message: Retrieved message object.
 
         Raises:
-            IndexError: If message not found.
+            MessageNotFoundError: If the message is not found.
         """
         key = self._get_config_key(config)
         if self._owner_denied(config):
-            raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+            raise MessageNotFoundError
         messages = self._messages.get(key, [])
         for msg in messages:
             if str(msg.message_id) == str(message_id):
                 return msg
-        raise IndexError(f"Message with ID {message_id} not found for config key: {key}")
+        raise MessageNotFoundError
 
     async def aupdate_message_metadata(
         self,
@@ -475,6 +484,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             Message | None: The updated message, or None if not found or not the caller's
             (a write: it stays own whatever the reach).
         """
+        reject_unstorable(metadata)
         if self._owner_denied(config, write=True):
             return None
         key = self._get_config_key(config)
@@ -512,13 +522,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
 
         # Apply search filter if provided
         if search:
-            # Simple string search in message content
             needle = search.lower()
-            messages = [
-                msg
-                for msg in messages
-                if hasattr(msg, "content") and needle in str(msg.content).lower()
-            ]
+            messages = [msg for msg in messages if needle in msg.text().lower()]
 
         # Apply offset and limit
         return messages[start:end]
@@ -571,9 +576,16 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             bool: True if the thread was created, False if it already existed and was updated.
 
         Raises:
+            ValueError: ``thread_info.thread_id`` differs from ``config["thread_id"]``.
             ThreadNotFoundError: Another user owns the thread.
         """
-        key = self._get_config_key(config)
+        reject_unstorable(thread_info)
+        key = self._get_config_key(config) or str(thread_info.thread_id)
+        if str(thread_info.thread_id) != key:
+            raise ValueError(
+                "ThreadInfo.thread_id must match config['thread_id']: "
+                f"{thread_info.thread_id!r} != {key!r}"
+            )
         record = thread_info.model_dump()
         owner = self._claim(config)
         if owner is not None and str(record.get("user_id")) != owner:
@@ -668,11 +680,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # Apply search filter if provided
         if search:
             needle = search.lower()
-            threads = [
-                thread
-                for thread in threads
-                if any(needle in str(value).lower() for value in thread.values())
-            ]
+            threads = [t for t in threads if needle in str(t.get("thread_name") or "").lower()]
 
         # Apply offset and limit
         return [ThreadInfo.model_validate(t) for t in islice(threads, start, end)]
@@ -703,10 +711,10 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
             del self._tool_results[ledger_key]
             found = True
         found = self._messages.pop(key, None) is not None or found
-        found = self._message_metadata.pop(key, None) is not None or found
         found = self._threads.pop(key, None) is not None or found
         found = self._thread_owner.pop(key, None) is not None or found
         self._thread_tenant.pop(key, None)
+        await self._clear_run_keys(config)
         logger.debug(f"Cleaned thread for key: {key}")
         return 1 if found else 0
 
@@ -728,7 +736,6 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         self._state_cache.clear()
         self._generic_cache.clear()
         self._messages.clear()
-        self._message_metadata.clear()
         self._threads.clear()
         self._thread_owner.clear()
         self._thread_tenant.clear()

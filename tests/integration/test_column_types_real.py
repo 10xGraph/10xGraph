@@ -94,9 +94,9 @@ def _extra(schema):
 
 
 def _user(**over):
-    user = {
-        "user_id": "alice",
-        "org_id": "A",
+    """An identity: the tenant value under ``tenant``, the extra column values under
+    ``claims`` (``Identity`` refuses other keys)."""
+    claims = {
         "settings": {"theme": "dark", "flags": [1, 2]},
         "tags": ["x", "y"],
         "price": Decimal("12.50"),
@@ -104,8 +104,8 @@ def _user(**over):
         "mood": "calm",
         "seats": 3,
     }
-    user.update(over)
-    return user
+    claims.update(over)
+    return {"user_id": "alice", "tenant": {"org_id": "A"}, "claims": claims}
 
 
 EXPECTED_TYPES = {

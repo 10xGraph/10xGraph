@@ -274,7 +274,7 @@ class TestS3ColumnNames:
             extra_columns=dict.fromkeys(names, "text"),
         )
         cfg = _cfg()
-        cfg["user"].update({name: f"v_{name}" for name in names})
+        cfg["user"]["claims"] = {name: f"v_{name}" for name in names}
         await store.astore(cfg, "hello world apples")
         results = await store.asearch(
             _cfg(), "apples", retrieval_strategy=strategy, filters={"tsq": "v_tsq", "q": "v_q"}

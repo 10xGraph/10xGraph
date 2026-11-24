@@ -7,14 +7,7 @@ import uuid
 from typing import Any, TypeVar
 
 from tenxgraph.core.state import AgentState
-from tenxgraph.storage._pg_common import (
-    DEFAULT_ACQUIRE_TIMEOUT,
-    DEFAULT_POOL_CONFIG,
-)
-from tenxgraph.storage.columns import (
-    ColumnSpec,
-    Isolation,
-)
+from tenxgraph.storage.columns import ColumnSpec
 
 
 try:
@@ -135,8 +128,6 @@ return 0
 # is bounded too: a caller past ``max_connections`` waits up to ``timeout`` seconds for a free
 # connection, then fails, instead of opening connections without limit.
 # ``DEFAULT_DDL_LOCK_TIMEOUT`` (setup DDL lock wait) is shared with PgVectorStore.
-DEFAULT_PG_ACQUIRE_TIMEOUT = DEFAULT_ACQUIRE_TIMEOUT  # seconds to wait for a free connection
-DEFAULT_PG_POOL_CONFIG = DEFAULT_POOL_CONFIG  # per query 60 s, per new connection 30 s
 DEFAULT_REDIS_POOL_CONFIG: dict[str, Any] = {
     "socket_connect_timeout": 5.0,
     "socket_timeout": 10.0,
@@ -171,10 +162,6 @@ ID_TYPE_MAP = {
     "int": "SERIAL",
     "bigint": "BIGSERIAL",
 }
-
-
-# Tenant and extra column values for one call and the isolation they imply (storage/columns.py).
-_Isolation = Isolation
 
 
 def _same_value(spec: ColumnSpec, stored: Any, wanted: Any) -> bool:

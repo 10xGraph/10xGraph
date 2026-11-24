@@ -16,6 +16,7 @@ from tenxgraph.storage._pg_common import (
     run_on_connection,
 )
 from tenxgraph.storage.columns import (
+    Isolation,
     build_isolation_where,
     column_value_errors,
     resolve_isolation,
@@ -26,8 +27,6 @@ from tenxgraph.utils.log_safety import describe_error
 from ._pg_host import PgHostBase
 from ._pg_support import (
     _CACHE_VERSION_KEY,
-    StateT,
-    _Isolation,
     _same_value,
 )
 
@@ -99,24 +98,8 @@ class _PgAccessMixin(PgHostBase):
 
         return await self._retry_on_connection_error(_operation, max_retries=3)
 
-    def _run_scoped(
-        self,
-        fn,
-        *,
-        settings: Sequence[tuple[str, str]] | None,
-        in_transaction: bool = False,
-    ):
-        """``_run_query`` with RLS settings; without them it is the plain call it always was."""
-        if settings:
-            return self._run_query(fn, in_transaction=in_transaction, settings=settings)
-        if in_transaction:
-            return self._run_query(fn, in_transaction=True)
-        return self._run_query(fn)
-
     # JSONB columns may come back decoded or as text/bytes; NULL stays None.
-    _loads_jsonb = staticmethod(loads_jsonb)
-
-    def _isolation(self, config: dict[str, Any] | None, *, write: bool = False) -> _Isolation:
+    def _isolation(self, config: dict[str, Any] | None, *, write: bool = False) -> Isolation:
         """Resolve the declared columns' values and the tenant isolation for one call.
 
         The rule is shared with PgVectorStore: ``tenxgraph.storage.columns.resolve_isolation``.
@@ -139,7 +122,7 @@ class _PgAccessMixin(PgHostBase):
         user_id: str | int | None,
         config: dict[str, Any] | None,
         params: list[Any],
-        isolation: _Isolation | None = None,
+        isolation: Isolation | None = None,
         *,
         write: bool = False,
     ) -> str:
@@ -207,7 +190,7 @@ class _PgAccessMixin(PgHostBase):
         thread_name: Any,
         user_id: str | int,
         meta_json: str,
-        isolation: _Isolation,
+        isolation: Isolation,
         tail: str,
     ) -> tuple[str, list[Any]]:
         """``INSERT INTO threads`` with the declared column values, plus ``tail`` (conflict)."""
@@ -237,7 +220,7 @@ class _PgAccessMixin(PgHostBase):
         thread_id: str | int,
         user_id: str | int,
         config: dict[str, Any],
-        isolation: _Isolation,
+        isolation: Isolation,
         *,
         lock: bool,
     ) -> None:
@@ -293,13 +276,15 @@ class _PgAccessMixin(PgHostBase):
 
     def _row_to_thread_info(self, row) -> ThreadInfo:
         """Build a :class:`ThreadInfo` from a ``threads`` row."""
-        meta_dict = self._loads_jsonb(row["meta"]) if row["meta"] else {}
+        meta_dict = dict(loads_jsonb(row["meta"]) if row["meta"] else {})
+        # run_id is stored inside meta; it is a ThreadInfo field, not caller metadata.
+        run_id = meta_dict.pop("run_id", None)
         return ThreadInfo(
             thread_id=row["thread_id"],
             thread_name=row["thread_name"],
             user_id=row["user_id"],
             metadata=meta_dict,
-            run_id=meta_dict.get("run_id"),
+            run_id=run_id,
             updated_at=row["updated_at"],
         )
 
@@ -349,20 +334,11 @@ class _PgAccessMixin(PgHostBase):
                     conn, thread_id, user_id, config, isolation, lock=False
                 )
 
-            await self._run_scoped(_check_and_create_thread, settings=isolation.settings)
+            await self._run_query(_check_and_create_thread, settings=isolation.settings)
 
         except Exception as e:
             logger.error("Failed to ensure thread exists: %s", describe_error(e))
             raise
-
-    def _serialize_state_payload(self, state: StateT) -> dict[str, Any]:
-        """Build the JSON-safe payload persisted for a state.
-
-        Holds the state data plus a small header (see
-        :meth:`BaseCheckpointer._encode_state`). No class path is stored: rows are
-        rebuilt into the state class bound by ``StateGraph.compile()``.
-        """
-        return self._encode_state(state)
 
     def _deserialize_state_payload(self, data: dict[str, Any], thread_id: Any = None) -> Any:
         """Reconstruct a state from a persisted payload using the bound state class.

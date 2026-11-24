@@ -20,6 +20,7 @@ class OpenAIEmbedding(BaseEmbedding):
         model: str = "text-embedding-3-small",
         api_key: str | None = None,
         dimensions: int | None = None,
+        base_url: str | None = None,
     ) -> None:
         """Create the embedder.
 
@@ -28,6 +29,8 @@ class OpenAIEmbedding(BaseEmbedding):
             api_key: API key; falls back to ``OPENAI_API_KEY``.
             dimensions: Optional output size. Sent to the API, which only accepts it for the
                 ``text-embedding-3-*`` models, and used as :attr:`dimension`.
+            base_url: Custom endpoint instead of OpenAI's own, for an OpenAI-compatible
+                service. ``None`` (default) uses OpenAI. Passed to ``AsyncOpenAI(base_url=...)``.
         """
         if not HAS_OPENAI:
             raise ImportError(
@@ -47,9 +50,7 @@ class OpenAIEmbedding(BaseEmbedding):
 
         from openai import AsyncOpenAI
 
-        self.client = AsyncOpenAI(
-            api_key=self.api_key,
-        )  # type: ignore
+        self.client = AsyncOpenAI(api_key=self.api_key, base_url=base_url)  # type: ignore
 
     async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
         from openai import OpenAIError

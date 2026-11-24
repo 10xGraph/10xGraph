@@ -207,7 +207,7 @@ class TestTenantIsolation:
         with pytest.raises(ValueError, match="not found"):
             await store.adelete(b, mem)
         # overwrite by id
-        with pytest.raises(PermissionError):
+        with pytest.raises(ValueError, match="not found"):
             await store.astore(b, "hijacked", memory_id=mem)
         # forget
         await store.aforget_memory(b)
@@ -468,11 +468,11 @@ class TestRowLevelSecurity:
         # The superuser test role bypasses RLS and sees both rows.
         assert await pool.fetchval(f"SELECT count(*) FROM {qualified}") == 2
 
-    async def test_cross_tenant_overwrite_by_id_is_permission_error(self, pool, table, rls_role):
+    async def test_cross_tenant_overwrite_by_id_is_not_found(self, pool, table, rls_role):
         _role, role_pool = rls_role
         store = _store(role_pool, table, row_level_security=True)
         mem = await store.astore(_cfg(org="A"), "mine")
-        with pytest.raises(PermissionError):
+        with pytest.raises(ValueError, match="not found"):
             await store.astore(_cfg(org="B"), "hijack", memory_id=mem)
         assert (await store.aget(_cfg(org="A"), mem)).content == "mine"
 
