@@ -173,7 +173,7 @@ async def _find_duplicate_by_similarity(
         return None
 
 
-async def _do_write(  # noqa: PLR0911
+async def _do_write(  # noqa: PLR0911, PLR0913
     store: BaseStore,
     config: dict[str, Any],
     action: str,
@@ -235,9 +235,7 @@ async def _do_write(  # noqa: PLR0911
                     memory_key,
                     existing.id,
                 )
-                await store.aupdate(
-                    cfg, str(existing.id), content, metadata=metadata, **provenance
-                )
+                await store.aupdate(cfg, str(existing.id), content, metadata=metadata, **provenance)
                 return {
                     "status": "updated_existing",
                     "memory_id": str(existing.id),

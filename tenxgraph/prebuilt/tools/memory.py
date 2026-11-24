@@ -154,7 +154,7 @@ def make_user_memory_tool(
         ),
         tags=["memory", "long_term_memory", "user_memory"],
     )
-    async def user_memory_tool(  # noqa: PLR0911
+    async def user_memory_tool(  # noqa: PLR0911, PLR0912
         action: UserMemoryAction = default_action,
         text: str = "",
         memory_key: str | None = None,
@@ -275,7 +275,7 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
         ),
         tags=["memory", "long_term_memory", "agent_memory"],
     )
-    async def agent_memory_tool(
+    async def agent_memory_tool(  # noqa: PLR0911
         query: str,
         memory_type: MemoryTypeName | None = None,
         category: str | None = None,

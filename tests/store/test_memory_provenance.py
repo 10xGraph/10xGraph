@@ -52,9 +52,9 @@ class TestSchema:
 
     def test_naive_expires_at_refused_on_models(self):
         with pytest.raises(ValueError, match="timezone-aware"):
-            MemoryRecord(content="x", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
+            MemoryRecord(content="x", expires_at=datetime(2030, 1, 1))
         with pytest.raises(ValueError, match="timezone-aware"):
-            MemorySearchResult(expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
+            MemorySearchResult(expires_at=datetime(2030, 1, 1))
 
     def test_aware_expires_at_kept_in_utc(self):
         tz = timezone(timedelta(hours=2))
@@ -90,7 +90,7 @@ class TestInMemoryStore:
     async def test_naive_and_bad_origin_refused(self):
         store = InMemoryStore()
         with pytest.raises(ValueError, match="timezone-aware"):
-            await store.astore(CFG, "x", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
+            await store.astore(CFG, "x", expires_at=datetime(2030, 1, 1))
         with pytest.raises(ValueError, match="unknown origin"):
             await store.astore(CFG, "x", origin="web")
 
@@ -212,9 +212,7 @@ class TestMemoryLayer:
         store = InMemoryStore()
         await store.astore(CFG, "Editor vim user", origin=MemoryOrigin.USER)
         await store.astore(CFG, "Editor vim agent", origin=MemoryOrigin.AGENT)
-        memory = MemoryConfig(
-            retrieval_mode="preload", store=store, origins=list(TRUSTED_ORIGINS)
-        )
+        memory = MemoryConfig(retrieval_mode="preload", store=store, origins=list(TRUSTED_ORIGINS))
         block = await _agent(memory)._build_memory_block(
             AgentState(context=[Message.text_message("vim", role="user")]), CFG
         )

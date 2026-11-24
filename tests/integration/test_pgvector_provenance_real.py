@@ -36,8 +36,8 @@ async def _downgrade_to_v2(pool, table):  # noqa: F811
     await pool.execute(f'DROP INDEX IF EXISTS "public"."{table}_exp_idx"')
     await pool.execute(f"ALTER TABLE {qualified} DROP COLUMN origin, DROP COLUMN expires_at")
     version_table = f'"public"."{table}_schema_version"'
-    await pool.execute(f"DELETE FROM {version_table}")
-    await pool.execute(f"INSERT INTO {version_table} (version) VALUES (2)")
+    await pool.execute(f"DELETE FROM {version_table}")  # noqa: S608
+    await pool.execute(f"INSERT INTO {version_table} (version) VALUES (2)")  # noqa: S608
 
 
 V2_INSERT = (
@@ -129,7 +129,7 @@ class TestWrites:
 
     async def test_naive_expires_at_refused(self, pool, table):  # noqa: F811
         with pytest.raises(ValueError, match="timezone-aware"):
-            await _store(pool, table).astore(CFG, "x", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
+            await _store(pool, table).astore(CFG, "x", expires_at=datetime(2030, 1, 1))
 
 
 class TestCleanup:
@@ -153,11 +153,13 @@ class TestCleanup:
     ):
         _role, role_pool = rls_role
         store = _store(
-            role_pool, table, tenant_columns={"org_id": "text", "project_id": "text"},
+            role_pool,
+            table,
+            tenant_columns={"org_id": "text", "project_id": "text"},
             row_level_security=True,
         )
         for org in ("A", "B"):
             await store.astore(_tenant_cfg(org=org), f"org {org}", expires_at=PAST)
         await store.astore(_tenant_cfg(org="A"), "live")
         assert await store.adelete_expired() == 2
-        assert await pool.fetchval(f'SELECT count(*) FROM "public"."{table}"') == 1
+        assert await pool.fetchval(f'SELECT count(*) FROM "public"."{table}"') == 1  # noqa: S608

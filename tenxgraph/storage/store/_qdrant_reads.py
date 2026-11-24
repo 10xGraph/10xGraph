@@ -246,7 +246,7 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         key or value that cannot be matched exactly raises ``FilterError`` instead of being
         skipped, because skipping it would delete more than the caller asked for.
         """
-        from qdrant_client.http import models
+        from qdrant_client.http import models  # noqa: PLC0415
 
         user_id, thread_id, collection = self._extract_config_values(config)
         user_id = self._require_owner_id(config, user_id)

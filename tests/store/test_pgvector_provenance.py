@@ -15,7 +15,7 @@ from tests.store.test_pgvector_store import FakeConn, FakePool, _Embedding, _row
 
 
 CFG = {"user_id": "u1"}
-LIVE = "(m.\"expires_at\" IS NULL OR m.\"expires_at\" > now())"
+LIVE = '(m."expires_at" IS NULL OR m."expires_at" > now())'
 FUTURE = datetime.now(UTC) + timedelta(days=1)
 
 
@@ -54,7 +54,7 @@ class TestReads:
         await store.asearch(CFG, "q", origins=list(TRUSTED_ORIGINS))
         _, sql, args = conn.calls[0]
         assert 'm."origin" = ANY($3::text[])' in sql
-        assert "IS NULL OR m.\"origin\"" not in sql
+        assert 'IS NULL OR m."origin"' not in sql
         assert args[2] == ["system", "user"]
 
     async def test_origins_with_none_keeps_unknown(self):
@@ -103,7 +103,7 @@ class TestWrites:
     async def test_store_refuses_naive_expires_at(self):
         store, conn = _store()
         with pytest.raises(ValueError, match="timezone-aware"):
-            await store.astore(CFG, "x", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
+            await store.astore(CFG, "x", expires_at=datetime(2030, 1, 1))
         assert conn.calls == []
 
     async def test_update_keeps_when_absent(self):
@@ -122,8 +122,9 @@ class TestWrites:
         assert await store.adelete_expired(batch_size=2) == 5
         sqls = conn.sql("execute")
         assert len(sqls) == 3
-        assert "WHERE expires_at <= now() ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED" in (
-            sqls[0]
+        assert (
+            "WHERE expires_at <= now() ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED"
+            in (sqls[0])
         )
         assert conn.calls[0][2] == (2,)
 

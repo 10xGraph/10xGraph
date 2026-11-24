@@ -33,7 +33,7 @@ class _PgvWritesMixin(PgvHostBase):
     # Writes
     # ------------------------------------------------------------------
 
-    async def astore(
+    async def astore(  # noqa: PLR0915
         self,
         config: dict[str, Any],
         content: str | Message,

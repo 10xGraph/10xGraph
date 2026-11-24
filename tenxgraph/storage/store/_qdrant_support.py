@@ -202,7 +202,7 @@ class QdrantHelpersMixin(BaseStore):
             expires_at=read_datetime(payload.get(_EXPIRES_FIELD)),
         )
 
-    def _build_qdrant_filter(
+    def _build_qdrant_filter(  # noqa: PLR0912
         self,
         user_id: str | int | None = None,
         thread_id: str | None = None,

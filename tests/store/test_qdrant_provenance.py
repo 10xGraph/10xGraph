@@ -49,7 +49,7 @@ class TestQdrantProvenance:
 
     async def test_naive_expires_at_refused(self, store):
         with pytest.raises(ValueError, match="timezone-aware"):
-            await store.astore(CFG, "x", expires_at=datetime(2030, 1, 1))  # noqa: DTZ001
+            await store.astore(CFG, "x", expires_at=datetime(2030, 1, 1))
 
     async def test_expired_hidden_and_top_k_not_shrunk(self, store):
         # The nearest points are expired; limit=2 must still return the two live ones.
