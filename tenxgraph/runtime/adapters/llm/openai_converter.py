@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
@@ -27,17 +28,15 @@ from .reasoning_utils import order_blocks, parse_think_tags, parse_thought_tags
 from .tool_arguments import parse_tool_arguments
 
 
+if TYPE_CHECKING:
+    from openai.types.chat import ChatCompletion, ChatCompletionChunk
+
+
 logger = logging.getLogger("tenxgraph.adapters.openai")
 
 
-try:
-    from openai.types.chat import ChatCompletion, ChatCompletionChunk
-
-    HAS_OPENAI = True
-except ImportError:
-    HAS_OPENAI = False
-    ChatCompletion = None  # type: ignore
-    ChatCompletionChunk = None  # type: ignore
+# The SDK is imported where it is used: importing it here costs about 0.2 s at startup.
+HAS_OPENAI = importlib.util.find_spec("openai") is not None
 
 
 class OpenAIConverter(BaseConverter):
@@ -662,8 +661,10 @@ class OpenAIConverter(BaseConverter):
 
         # A whole ChatCompletion (for example from chat.completions.parse) is a pydantic
         # model, which defines __iter__, so it must be tested before the stream check.
-        if isinstance(response, ChatCompletion):  # type: ignore
-            yield await self.convert_response(cast(ChatCompletion, response))  # type: ignore
+        from openai.types.chat import ChatCompletion
+
+        if isinstance(response, ChatCompletion):
+            yield await self.convert_response(response)
         # Check if it's a streaming response (async generator or iterator)
         elif hasattr(response, "__aiter__") or hasattr(response, "__iter__"):
             async for event in self._handle_stream(

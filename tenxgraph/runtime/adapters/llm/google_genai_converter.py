@@ -8,12 +8,13 @@ supporting both standard and streaming responses.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import inspect
 import json
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from tenxgraph.core.llm.stream_idle import iter_with_idle_timeout
 from tenxgraph.core.state.message import (
@@ -36,16 +37,24 @@ from .reasoning_utils import order_blocks
 from .tool_arguments import parse_tool_arguments
 
 
+if TYPE_CHECKING:
+    from google.genai.types import GenerateContentResponse
+
+
 logger = logging.getLogger("tenxgraph.adapters.google_genai")
 
 
+# The SDK is imported where it is used: importing it here costs about a second at startup.
 try:
+    HAS_GOOGLE_GENAI = importlib.util.find_spec("google.genai") is not None
+except ImportError:  # no ``google`` package at all
+    HAS_GOOGLE_GENAI = False
+
+
+def _generate_content_response() -> type:
     from google.genai.types import GenerateContentResponse
 
-    HAS_GOOGLE_GENAI = True
-except ImportError:
-    HAS_GOOGLE_GENAI = False
-    GenerateContentResponse = None
+    return GenerateContentResponse
 
 
 def function_declaration(types: Any, function: dict[str, Any]) -> Any:
@@ -67,7 +76,7 @@ class GoogleGenAIConverter(BaseConverter):
     tool calls, and token usage details from Google's GenerateContentResponse.
     """
 
-    async def convert_response(self, response: GenerateContentResponse) -> Message:  # type: ignore[reportInvalidTypeForm]
+    async def convert_response(self, response: GenerateContentResponse) -> Message:
         """
         Convert a Google GenAI GenerateContentResponse to a Message.
 
@@ -545,8 +554,8 @@ class GoogleGenAIConverter(BaseConverter):
         """
         # Note: Import check removed to allow for mocking in tests
         # Check if it's a standard response
-        if HAS_GOOGLE_GENAI and isinstance(response, GenerateContentResponse):  # type: ignore
-            message = await self.convert_response(cast(GenerateContentResponse, response))  # type: ignore
+        if HAS_GOOGLE_GENAI and isinstance(response, _generate_content_response()):
+            message = await self.convert_response(cast("GenerateContentResponse", response))
             yield message
         else:
             # Assume it's a stream

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import types
@@ -26,6 +27,7 @@ from ._helpers import (
     _extract_block_meta,
     _safe_serialize,
     generic_tool_failure,
+    publish_tool_cancelled,
     publish_tool_end,
     tool_start_event,
 )
@@ -288,6 +290,12 @@ class LocalExecMixin:
         except ToolDenied as denied:
             # A policy block is final: on_error recovery must not turn it into a success.
             return denied_tool_message(denied, name, tool_call_id, config, event, meta)
+
+        except asyncio.CancelledError:
+            # tool_timeout, a stop or a shutdown cancelled the call: the START still gets its
+            # end, and the cancellation goes on unchanged.
+            publish_tool_cancelled(event, config)
+            raise
 
         except Exception as e:
             recovery_result = await callback_mgr.execute_on_error(context, input_data, e)

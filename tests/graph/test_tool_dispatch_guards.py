@@ -11,6 +11,7 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
     validate_goto,
 )
 from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.agent_state import copy_state
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.core.state.stream_chunks import StreamEvent
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
@@ -287,20 +288,16 @@ class TestParallelLimit:
     @pytest.mark.asyncio
     async def test_branch_copies_are_lazy(self, monkeypatch):
         """Copies are taken inside the semaphore, so live copies never exceed the limit."""
-        import copy as copy_mod
-
         tool_node, _ = self._slow_node()
         msg = _assistant(*["slow"] * 6)
         state = AgentState(context=[msg])
         started = {"copies": 0, "at_first_tool": None}
-        real_deepcopy = copy_mod.deepcopy
 
-        def counting(obj, *a, **k):
-            if isinstance(obj, AgentState):
-                started["copies"] += 1
-            return real_deepcopy(obj, *a, **k)
+        def counting(obj):
+            started["copies"] += 1
+            return copy_state(obj)
 
-        monkeypatch.setattr("tenxgraph.core.graph.utils.tool_runner.copy.deepcopy", counting)
+        monkeypatch.setattr("tenxgraph.core.graph.utils.tool_runner.copy_state", counting)
         original = tool_node.invoke
 
         async def spying(*a, **k):

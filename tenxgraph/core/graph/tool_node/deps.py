@@ -40,27 +40,47 @@ CallToolResult: Result type for MCP tool executions.
 
 from __future__ import annotations
 
-
-try:  # Optional fastmcp
-    from fastmcp import Client  # type: ignore
-    from fastmcp.client.client import CallToolResult  # type: ignore
-
-    HAS_FASTMCP = True
-except Exception:  # pragma: no cover - optional
-    HAS_FASTMCP = False
-    Client = None  # type: ignore
-    CallToolResult = None  # type: ignore
+import importlib
+import importlib.util
+from typing import Any
 
 
-try:  # Optional MCP protocol
-    from mcp import Tool  # type: ignore
-    from mcp.types import ContentBlock  # type: ignore
-
-    HAS_MCP = True
-except Exception:  # pragma: no cover - optional
-    HAS_MCP = False
-    Tool = None  # type: ignore
-    ContentBlock = None  # type: ignore
+def _installed(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
 
 
-__all__ = ["HAS_FASTMCP", "HAS_MCP", "CallToolResult", "Client", "ContentBlock", "Tool"]
+# Only the flags are computed here. ``Client``, ``CallToolResult``, ``Tool`` and
+# ``ContentBlock`` are imported on first access (``__getattr__`` below): importing
+# fastmcp at module load costs about half a second at startup.
+HAS_FASTMCP = _installed("fastmcp")
+HAS_MCP = _installed("mcp")
+
+_LAZY = {
+    "Client": ("fastmcp", "Client"),
+    "CallToolResult": ("fastmcp.client.client", "CallToolResult"),
+    "Tool": ("mcp", "Tool"),
+    "ContentBlock": ("mcp.types", "ContentBlock"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _LAZY:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module, attr = _LAZY[name]
+    try:
+        value = getattr(importlib.import_module(module), attr)
+    except Exception:  # optional dependency missing or broken
+        value = None
+    globals()[name] = value
+    return value
+
+
+# The four lazy names come from ``__getattr__`` above, which ruff cannot see.
+__all__ = [  # noqa: F822
+    "HAS_FASTMCP",
+    "HAS_MCP",
+    "CallToolResult",
+    "Client",
+    "ContentBlock",
+    "Tool",
+]

@@ -1,4 +1,3 @@
-import copy
 import logging
 import time
 from collections import defaultdict
@@ -10,6 +9,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from tenxgraph.core.authz import Reach, owner_filter, owner_id
 from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.agent_state import copy_state
 from tenxgraph.utils.thread_info import ThreadInfo
 
 from .base_checkpointer import (
@@ -174,7 +174,8 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # Store copies: loaders merge new input into the state they get back, so sharing one
         # object would let a request that is later rejected (a paused thread) change what is
         # stored. Copied before the claim, so a state that cannot be copied claims nothing.
-        stored, cached = copy.deepcopy(state), copy.deepcopy(state)
+        # The copies share the message objects, which are never changed once written.
+        stored, cached = copy_state(state), copy_state(state)
         self._ensure_thread(config, self._claim(config))
         self._states[key] = stored
         # Write-through: a run reads the cache first, so leaving it behind would
@@ -198,7 +199,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         state = self._states.get(key)
         logger.debug(f"Retrieved state for key: {key}, found: {state is not None}")
-        return copy.deepcopy(state)
+        return None if state is None else copy_state(state)
 
     async def aclear_state(self, config: dict[str, Any]) -> int:
         """
@@ -234,7 +235,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         # Same rule as aput_state, but a non-owner's write is dropped instead of raising: the
         # first writer of a thread becomes its owner, so only its owner can read it back.
         key = self._get_config_key(config)
-        cached = copy.deepcopy(state)
+        cached = copy_state(state)
         try:
             self._claim(config)
         except ThreadNotFoundError:
@@ -258,7 +259,7 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         key = self._get_config_key(config)
         cache = self._state_cache.get(key)
         logger.debug(f"Retrieved state cache for key: {key}, found: {cache is not None}")
-        return copy.deepcopy(cache)
+        return None if cache is None else copy_state(cache)
 
     async def aclear_state_cache(self, config: dict[str, Any]) -> bool:
         """Drop the cached state for a thread; the durable state is untouched."""
@@ -488,10 +489,14 @@ class InMemoryCheckpointer[StateT: AgentState](BaseCheckpointer[StateT]):
         if self._owner_denied(config, write=True):
             return None
         key = self._get_config_key(config)
-        for msg in self._messages.get(key, []):
+        stored = self._messages.get(key, [])
+        for i, msg in enumerate(stored):
             if str(msg.message_id) == str(message_id):
-                msg.metadata = {**(msg.metadata or {}), **metadata}
-                return msg
+                # A new message: the stored one may be shared with a saved state or a run.
+                updated = stored[i] = msg.model_copy(
+                    update={"metadata": {**(msg.metadata or {}), **metadata}}
+                )
+                return updated
         return None
 
     async def alist_messages(

@@ -106,3 +106,10 @@ class TestRealtimeConfig:
         assert config.voice == "Puck"
         assert config.input_audio_transcription is True
         assert config.tools_tags == ["weather"]
+
+
+def test_tool_result_event_status_defaults_to_success():
+    event = ToolResultEvent(id="c1", result={"temp": 20})
+    assert event.status == "success"
+    assert event.duration_ms == 0.0
+    assert ToolResultEvent(id="c1", status="error", duration_ms=1.5).status == "error"

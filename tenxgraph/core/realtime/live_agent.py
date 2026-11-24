@@ -26,6 +26,7 @@ import copy
 import hashlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -35,6 +36,7 @@ from tenxgraph.core.graph.agent_internal.memory import AgentMemoryMixin
 from tenxgraph.core.graph.agent_internal.skills import AgentSkillsMixin
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.tool_node import ToolNode
+from tenxgraph.core.graph.tool_node._helpers import tool_message_failed
 from tenxgraph.core.graph.utils.tool_runtime import ToolRuntimeMixin
 from tenxgraph.core.llm import detect_provider
 from tenxgraph.core.realtime.base import (
@@ -179,7 +181,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         # Tool calls still running; each yields its ToolResultEvent when it finishes.
         self._tool_tasks: set[asyncio.Task[ToolResultEvent]] = set()
         # Ledger key -> the call running under it, so a re-sent call id waits for it.
-        self._inflight_tools: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._inflight_tools: dict[str, asyncio.Task[tuple[dict[str, Any], bool]]] = {}
 
         # Error-driven reconnect backoff (go_away reconnects are immediate; only transient
         # drops back off). Seeded from RealtimeConfig.reconnect; kept as instance attributes
@@ -667,6 +669,8 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         callback_manager: CallbackManager,
     ) -> ToolResultEvent:
         tool_node = self._resolve_tool_node()
+        started = time.perf_counter()
+        failed = True
         if tool_node is None:
             result: Any = {"error": f"no tools registered for '{event.name}'"}
         elif event.name not in self._session_tool_names:
@@ -677,9 +681,10 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             logger.warning("realtime tool call '%s' has non-object arguments", event.name)
             result = {"error": f"invalid arguments for tool '{event.name}': expected an object"}
         else:
-            result = await self._invoke_with_ledger(
+            result, failed = await self._invoke_with_ledger(
                 tool_node, event, config, state, callback_manager
             )
+        duration_ms = (time.perf_counter() - started) * 1000.0
 
         # Socket stays open; feed the result back to the model. Hold _send_lock (and re-read
         # the live client inside it) so this send is serialized against the pump and any
@@ -693,7 +698,12 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                     logger.warning(
                         "realtime tool response send failed for '%s'", event.name, exc_info=True
                     )
-        return ToolResultEvent(id=event.id, result=result)
+        return ToolResultEvent(
+            id=event.id,
+            result=result,
+            status="error" if failed else "success",
+            duration_ms=duration_ms,
+        )
 
     async def _invoke_with_ledger(
         self,
@@ -702,7 +712,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         config: dict[str, Any],
         state: AgentState,
         callback_manager: CallbackManager,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
         """Run a tool call once per thread, using the same tool ledger as the text path.
 
         The key is the thread id, a hash of the tool name and arguments, and the provider
@@ -719,6 +729,8 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
 
         A call re-sent while the first one still runs (same key) waits for that call and
         gets its result, failure included, instead of running the tool a second time.
+
+        Returns the result and whether it is a failure.
         """
         checkpointer = self._session_checkpointer
         thread_id = str((config or {}).get("thread_id") or "")
@@ -757,7 +769,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         state: AgentState,
         callback_manager: CallbackManager,
         key: str | None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
         checkpointer = self._session_checkpointer
         ledger = _LedgerAccess(self._node_name_or_default(), tool_node)
         if checkpointer is not None and key:
@@ -766,17 +778,21 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
                 logger.info(
                     "realtime tool '%s' (call %s) replayed from ledger", event.name, event.id
                 )
-                return self._extract_tool_result(recorded)
+                return self._extract_tool_result(recorded), self._failed(recorded)
         try:
             invoked = await ledger._invoke_tool_metered(
                 event.name, event.args, event.id, state, config, callback_manager=callback_manager
             )
         except Exception as exc:
             call = {"id": event.id, "function": {"name": event.name}}
-            return self._extract_tool_result(ledger._failure_message(call, exc))
+            return self._extract_tool_result(ledger._failure_message(call, exc)), True
         if checkpointer is not None and key:
             await ledger._record_tool_result(checkpointer, config, key, invoked)
-        return self._extract_tool_result(invoked)
+        return self._extract_tool_result(invoked), self._failed(invoked)
+
+    @staticmethod
+    def _failed(invoked: Any) -> bool:
+        return isinstance(invoked, Message) and tool_message_failed(invoked)
 
     def _node_name_or_default(self) -> str:
         return getattr(self, "_node_name", "LIVE")

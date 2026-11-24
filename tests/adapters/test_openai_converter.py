@@ -592,7 +592,7 @@ async def test_convert_streaming_response_chat_completion(converter):
     }
     response = MockModelResponse(response_data)
     messages = []
-    with patch("tenxgraph.runtime.adapters.llm.openai_converter.ChatCompletion", MockModelResponse):
+    with patch("openai.types.chat.ChatCompletion", MockModelResponse):
         async for msg in converter.convert_streaming_response({}, "node", response):
             messages.append(msg)
     
