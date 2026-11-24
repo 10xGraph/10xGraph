@@ -207,7 +207,7 @@ class TestWrites:
         # AR-CORE-01: reach tenant / all widen reads and deletes, never writes.
         store, conn = _store(tenant_columns=TENANTS)
         conn.fetchrow_results = [None, None]  # the guarded WHERE matches no foreign row
-        with pytest.raises(PermissionError, match="belongs to another user"):
+        with pytest.raises(ValueError, match="not found"):
             await store.astore(_cfg(user="admin", reach=reach), "x", memory_id="theirs")
         with pytest.raises(ValueError, match="not found"):
             await store.aupdate(_cfg(user="admin", reach=reach), "theirs", "x")
@@ -274,12 +274,12 @@ class TestRlsAndIterativeScan:
         await store.asearch({"user_id": "u1"}, "q", retrieval_strategy="text")
         assert not any("set_config" in s for s in conn.sql())
 
-    async def test_rls_policy_error_on_upsert_is_permission_error(self):
+    async def test_rls_policy_error_on_upsert_is_not_found(self):
         store, conn = _store(tenant_columns=TENANTS, row_level_security=True)
         conn.fetchrow_results = [
             asyncpg.InsufficientPrivilegeError("new row violates row-level security policy")
         ]
-        with pytest.raises(PermissionError):
+        with pytest.raises(ValueError, match="not found"):
             await store.astore(_cfg(), "x", memory_id="m1")
 
 

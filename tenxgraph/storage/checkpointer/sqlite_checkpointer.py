@@ -35,7 +35,6 @@ from typing import Any, TypeVar
 from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.private_fs import mkdir_private, touch_private
 from tenxgraph.utils.thread_info import ThreadInfo
 
@@ -43,6 +42,7 @@ from .base_checkpointer import (
     BaseCheckpointer,
     _reject_filters,
     _reject_tenant_options,
+    reject_unstorable,
     validate_page,
 )
 
@@ -229,9 +229,6 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_config_key(self, config: dict[str, Any]) -> str:
-        return str(config.get("thread_id", ""))
-
     async def _claim(self, conn: "aiosqlite.Connection", config: dict[str, Any]) -> str | None:
         """Make the caller the owner of a new thread, or refuse a write to someone else's.
 
@@ -257,6 +254,26 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         if self._foreign_owner(config, owner, write=True):
             raise ThreadNotFoundError(config.get("thread_id"))
         return owner
+
+    async def _ensure_thread(
+        self, conn: "aiosqlite.Connection", config: dict[str, Any], owner: str | None
+    ) -> None:
+        """Create the thread record on the first write of a thread; never overwrite one.
+
+        Same fields as ``PgCheckpointer`` writes: id, owner, name and metadata from the config.
+        """
+        key = self._get_config_key(config)
+        info = ThreadInfo(
+            thread_id=key,
+            thread_name=config.get("thread_name", f"Thread {key}"),
+            user_id=owner,
+            metadata=config.get("thread_meta", {}),
+        )
+        await conn.execute(
+            "INSERT OR IGNORE INTO af_threads (thread_id, thread_data, updated_at) "
+            "VALUES (?, ?, ?)",
+            (key, _dumps(info.model_dump(mode="json")), time.time()),
+        )
 
     async def _owner_denied(self, config: dict[str, Any], *, write: bool = False) -> bool:
         """True when isolation is active and the caller may not see this thread.
@@ -326,9 +343,6 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     # Setup
     # ------------------------------------------------------------------
 
-    def setup(self) -> None:
-        return run_coroutine(self.asetup())
-
     async def asetup(self) -> None:
         """Create the database directory (if any) and all required tables."""
         conn = await self._get_conn()
@@ -362,11 +376,12 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     # ------------------------------------------------------------------
 
     async def aput_state(self, config: dict[str, Any], state: StateT) -> StateT:
+        reject_unstorable(state)
         await self._ensure_setup()
         key = self._get_config_key(config)
         data = self._serialize_state(state)
         async with self._write() as conn:
-            await self._claim(conn, config)
+            await self._ensure_thread(conn, config, await self._claim(conn, config))
             await conn.execute(
                 """
                 INSERT INTO af_states (thread_id, state_data, updated_at)
@@ -507,6 +522,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         value: Any,
         ttl_seconds: int | None = None,
     ) -> Any | None:
+        reject_unstorable(value)
         await self._upsert_cache(namespace, key, value, ttl_seconds, replace_only_expired=False)
         return value
 
@@ -557,6 +573,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         ttl_seconds: int | None = None,
     ) -> bool:
         """Insert unless a live value exists, in one statement; an expired row is replaced."""
+        reject_unstorable(value)
         return await self._upsert_cache(
             namespace, key, value, ttl_seconds, replace_only_expired=True
         )
@@ -593,11 +610,12 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         messages: list[Message],
         metadata: dict[str, Any] | None = None,
     ) -> bool:
+        reject_unstorable(messages, metadata)
         await self._ensure_setup()
         key = self._get_config_key(config)
         now = time.time()
         async with self._write() as conn:
-            await self._claim(conn, config)
+            await self._ensure_thread(conn, config, await self._claim(conn, config))
             for given in messages:
                 msg = given
                 if metadata:
@@ -638,6 +656,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         message_id: str | int,
         metadata: dict[str, Any],
     ) -> Message | None:
+        reject_unstorable(metadata)
         await self._ensure_setup()
         if await self._owner_denied(config, write=True):
             return None  # a write: it stays own whatever the reach
@@ -732,6 +751,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
     # ------------------------------------------------------------------
 
     async def aput_thread(self, config: dict[str, Any], thread_info: ThreadInfo) -> bool:
+        reject_unstorable(thread_info)
         await self._ensure_setup()
         key = self._get_config_key(config) or str(thread_info.thread_id)
         if str(thread_info.thread_id) != key:
@@ -888,9 +908,10 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         result: dict[str, Any],
     ) -> Any | None:
         """Durably record that a tool call completed; the first recorded result wins."""
+        reject_unstorable(result)
         await self._ensure_setup()
         async with self._write() as conn:
-            await self._claim(conn, config)
+            await self._ensure_thread(conn, config, await self._claim(conn, config))
             await conn.execute(
                 "INSERT OR IGNORE INTO af_tool_executions "
                 "(thread_id, tool_call_id, result, created_at) VALUES (?, ?, ?, ?)",
@@ -964,6 +985,3 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             self._setup_done = False
         logger.info("SqliteCheckpointer released: %s", self.db_path)
         return True
-
-    def release(self) -> bool:
-        return run_coroutine(self.arelease())

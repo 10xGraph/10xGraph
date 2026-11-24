@@ -14,10 +14,10 @@ if TYPE_CHECKING:
     from typing import Any, Literal
 
     from tenxgraph.core.state import Message
-    from tenxgraph.storage.columns import ColumnSet
+    from tenxgraph.storage.columns import ColumnSet, Isolation
     from tenxgraph.storage.sql_filter import FilterSchema
 
-    from ._pgv_support import _TenantContext, _Where
+    from ._pgv_support import _Where
     from .base_store import BaseStore
     from .embedding.base_embedding import BaseEmbedding
     from .store_schema import (
@@ -78,11 +78,9 @@ if TYPE_CHECKING:
         async def _ensure_setup(self) -> None: ...
 
         # _PgvQueryMixin
-        def _tenant_context(
-            self, config: dict[str, Any], *, write: bool = False
-        ) -> _TenantContext: ...
+        def _tenant_context(self, config: dict[str, Any], *, write: bool = False) -> Isolation: ...
         def _search_settings(
-            self, ctx: _TenantContext, vector_search: bool
+            self, ctx: Isolation, vector_search: bool
         ) -> list[tuple[str, str]]: ...
         def _scope_where(
             self,

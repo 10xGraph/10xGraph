@@ -93,7 +93,7 @@ def _run_with(row):
     conn = MagicMock()
     conn.fetchrow = AsyncMock(return_value=row)
 
-    async def run(fn):
+    async def run(fn, **_kwargs):
         return await fn(conn)
 
     return run, conn

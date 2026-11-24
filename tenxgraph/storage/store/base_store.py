@@ -18,6 +18,7 @@ from injectq import InjectQ
 from tenxgraph.core.authz import filter_columns, owner_id
 from tenxgraph.core.state import Message
 from tenxgraph.utils import run_coroutine
+from tenxgraph.utils.validators import has_unstorable_text
 
 from .store_schema import DistanceMetric, MemorySearchResult, MemoryType, RetrievalStrategy
 
@@ -221,6 +222,21 @@ class BaseStore(ABC):
         if not self._valid_user_id(user_id):
             raise ValueError(_USER_ID_REQUIRED)
         return user_id  # type: ignore[return-value]
+
+    @staticmethod
+    def _refuse_unstorable(**values: Any) -> None:
+        """Raise ``ValueError`` when a write value holds NUL or a lone surrogate.
+
+        Called by every write before it touches the backend, so all stores refuse the same
+        text (Postgres cannot store it, and other backends would keep a corrupted copy).
+        Each keyword names the value in the message (``content``, ``metadata``, ...).
+        """
+        for name, value in values.items():
+            if has_unstorable_text(value):
+                raise ValueError(
+                    f"memory {name} contains a NUL character (\\x00) or a lone surrogate, "
+                    "which cannot be stored; remove it before writing"
+                )
 
     async def generate_framework_id(self) -> str:
         """Generate a unique ID using the framework's DI-registered ID generator.

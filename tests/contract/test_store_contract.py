@@ -7,6 +7,7 @@ Known disagreements (gap ids S1 to S7 in ``cleanup-review/CORE_B.md``) live in
 """
 
 import asyncio
+import contextlib
 import hashlib
 import uuid
 
@@ -14,10 +15,10 @@ import pytest
 import pytest_asyncio
 
 from tenxgraph.core.state import Message
+from tenxgraph.storage.sql_filter import FilterError
 from tenxgraph.storage.store.base_store import system_user_id
 from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding
 from tenxgraph.storage.store.store_schema import MemoryType
-from tenxgraph.utils.validators import ValidationError
 
 from .conftest import POSTGRES_DSN, TENANTS
 from .conftest import cfg as tenant_cfg
@@ -55,42 +56,52 @@ async def backend(request):
     return request.param
 
 
-@pytest_asyncio.fixture
-async def store(backend, tmp_path):
-    if backend == "inmem":
+@contextlib.asynccontextmanager
+async def _open_store(kind, tmp_path, **kw):
+    """A fresh store of ``kind``; ``kw`` (such as ``tenant_columns``) goes to the real stores."""
+    if kind == "inmem":
         from tenxgraph.qa.testing.in_memory_store import InMemoryStore
 
         s = InMemoryStore()
         yield s
         await s.arelease()
-    elif backend == "qdrant":
+        return
+    if kind == "qdrant":
         from tenxgraph.storage.store.qdrant_store import QdrantStore
 
-        s = QdrantStore(embedding=FakeEmbedding(), path=str(tmp_path / "qdrant"))
+        s = QdrantStore(embedding=FakeEmbedding(), path=str(tmp_path / "qdrant"), **kw)
         await s.asetup()
         yield s
         await s.arelease()
-    else:
-        asyncpg = pytest.importorskip("asyncpg")
-        from tenxgraph.storage.store.pgvector_store import PgVectorStore
+        return
+    asyncpg = pytest.importorskip("asyncpg")
+    from tenxgraph.storage.store.pgvector_store import PgVectorStore
 
-        try:
-            pool = await asyncio.wait_for(asyncpg.create_pool(POSTGRES_DSN, max_size=4), timeout=5)
-        except Exception as e:
-            pytest.skip(f"Postgres not reachable at POSTGRES_DSN: {e}")
-        schema = f"tg_{uuid.uuid4().hex[:10]}"
-        await pool.execute(f'CREATE SCHEMA "{schema}"')
-        s = PgVectorStore(embedding=FakeEmbedding(), pool=pool, schema=schema)
+    try:
+        pool = await asyncio.wait_for(
+            asyncpg.create_pool(POSTGRES_DSN, min_size=1, max_size=4), timeout=5
+        )
+    except Exception as e:
+        pytest.skip(f"Postgres not reachable at POSTGRES_DSN: {e}")
+    schema = f"tg_{uuid.uuid4().hex[:10]}"
+    await pool.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        s = PgVectorStore(embedding=FakeEmbedding(), pool=pool, schema=schema, **kw)
         try:
             await s.asetup()
         except Exception as e:
-            await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-            await pool.close()
             pytest.skip(f"pgvector not available: {e}")
         yield s
         await s.arelease()
+    finally:
         await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await pool.close()
+
+
+@pytest_asyncio.fixture
+async def store(backend, tmp_path):
+    async with _open_store(backend, tmp_path) as s:
+        yield s
 
 
 def cfg(user="alice", reach="own", thread="t1", **extra):
@@ -252,14 +263,11 @@ async def test_reach_tenant_without_tenant_columns_raises(store):
 
 
 async def test_update_foreign_memory_is_refused(store):
-    """S4: Q raises PermissionError under reach all, V raises ValueError; own reach: ValueError
-    or a falsy result, never a change."""
+    """A foreign update is "not found" on every reach, never a change."""
     mid = await store.astore(cfg("alice"), "alice text")
     for caller in (cfg("bob"), cfg("root", reach="all")):
-        try:
+        with pytest.raises(ValueError, match="not found"):
             await store.aupdate(caller, mid, "hijacked")
-        except (ValueError, PermissionError):
-            pass
         assert (await store.aget(cfg("alice"), mid)).content == "alice text"
 
 
@@ -357,15 +365,28 @@ async def test_get_when_backend_fails_raises(store, backend, monkeypatch):
         await store.aget(cfg(), mid)
 
 
-@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone-surrogate"])
-async def test_text_with_nul_or_surrogate(store, bad):
-    """Round trip exactly, or refuse with ValidationError. Never corrupt, never a raw driver
-    error."""
-    try:
-        mid = await store.astore(cfg(), bad)
-    except ValidationError:
-        return
-    assert (await store.aget(cfg(), mid)).content == bad
+_WRITES_WITH_BAD_TEXT = {
+    "astore-content": lambda s, mid, bad: s.astore(cfg(), f"x{bad}"),
+    "astore-message": lambda s, mid, bad: s.astore(cfg(), Message.text_message(f"x{bad}")),
+    "astore-metadata-value": lambda s, mid, bad: s.astore(cfg(), "x", metadata={"k": bad}),
+    "astore-metadata-key": lambda s, mid, bad: s.astore(cfg(), "x", metadata={bad: 1}),
+    "astore-nested-metadata": lambda s, mid, bad: s.astore(cfg(), "x", metadata={"k": [bad]}),
+    "astore-category": lambda s, mid, bad: s.astore(cfg(), "x", category=bad),
+    "aupdate-content": lambda s, mid, bad: s.aupdate(cfg(), mid, f"x{bad}"),
+    "aupdate-metadata": lambda s, mid, bad: s.aupdate(cfg(), mid, "x", metadata={"k": bad}),
+}
+
+
+@pytest.mark.parametrize("write", list(_WRITES_WITH_BAD_TEXT))
+@pytest.mark.parametrize("bad", ["\x00", "\ud800"], ids=["nul", "lone-surrogate"])
+async def test_write_with_nul_or_surrogate_is_refused(store, write, bad):
+    """Every store refuses NUL and lone surrogates with ValueError before the write, and
+    nothing changes."""
+    mid = await store.astore(cfg(), "original", metadata={"k": "v"})
+    with pytest.raises(ValueError, match="NUL character"):
+        await _WRITES_WITH_BAD_TEXT[write](store, mid, bad)
+    rows = await store.aget_all(cfg())
+    assert [(r.id, r.content, r.metadata.get("k")) for r in rows] == [(mid, "original", "v")]
 
 
 # ------------------------------------------------------------------ tenant isolation
@@ -377,36 +398,8 @@ TENANT_BACKENDS = ["qdrant", pytest.param("pgvector", marks=pytest.mark.integrat
 
 @pytest_asyncio.fixture(params=TENANT_BACKENDS)
 async def tenant_store(request, tmp_path):
-    if request.param == "qdrant":
-        from tenxgraph.storage.store.qdrant_store import QdrantStore
-
-        s = QdrantStore(
-            embedding=FakeEmbedding(), path=str(tmp_path / "qdrant"), tenant_columns=TENANTS
-        )
-        await s.asetup()
+    async with _open_store(request.param, tmp_path, tenant_columns=TENANTS) as s:
         yield s
-        await s.arelease()
-        return
-    asyncpg = pytest.importorskip("asyncpg")
-    from tenxgraph.storage.store.pgvector_store import PgVectorStore
-
-    try:
-        pool = await asyncio.wait_for(asyncpg.create_pool(POSTGRES_DSN, max_size=4), timeout=5)
-    except Exception as e:
-        pytest.skip(f"Postgres not reachable at POSTGRES_DSN: {e}")
-    schema = f"tg_{uuid.uuid4().hex[:10]}"
-    await pool.execute(f'CREATE SCHEMA "{schema}"')
-    s = PgVectorStore(embedding=FakeEmbedding(), pool=pool, schema=schema, tenant_columns=TENANTS)
-    try:
-        await s.asetup()
-    except Exception as e:
-        await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await pool.close()
-        pytest.skip(f"pgvector not available: {e}")
-    yield s
-    await s.arelease()
-    await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    await pool.close()
 
 
 async def _drop_tenant_values(store, memory_id):
@@ -416,7 +409,7 @@ async def _drop_tenant_values(store, memory_id):
             collection_name=store.collection, keys=list(TENANTS), points=[memory_id]
         )
     else:  # pgvector: the columns hold NULL
-        await store.pool.execute(
+        await store._pool.execute(
             f"UPDATE {store._qualified_table} SET org_id = NULL, project_id = NULL "  # noqa: S608
             "WHERE id = $1",
             memory_id,
@@ -545,8 +538,221 @@ async def test_tenant_legacy_memory_without_tenant_values(tenant_store):
             await s.adelete(caller, mid)
     with pytest.raises(ValueError):
         await s.aupdate(mine, mid, "changed")
-    with pytest.raises(PermissionError):
+    with pytest.raises(ValueError, match="not found"):
         await s.astore(mine, "overwrite", memory_id=mid)
     await s.aforget_memory(mine)
     root = tenant_cfg(user="root", org="A", reach="all")
     assert (await s.aget(root, mid)).content == "legacy note"
+
+
+NO_IDENTITY = {"user_id": "alice", "thread_id": "t1"}
+ROOT = {"user_id": "root", "user": {"user_id": "root", "reach": "all"}}
+
+
+async def test_tenant_store_without_identity_cannot_read(tenant_store):
+    """By design: with no identity every tenant column applies and has no value, so reads,
+    deletes and forgets raise instead of reading across tenants."""
+    s = tenant_store
+    mid = await s.astore(tenant_cfg(user="alice", org="A"), "tenant note")
+    for call in (
+        lambda: s.aget(NO_IDENTITY, mid),
+        lambda: s.aget_all(NO_IDENTITY),
+        lambda: s.asearch(NO_IDENTITY, "tenant note"),
+        lambda: s.adelete(NO_IDENTITY, mid),
+        lambda: s.aforget_memory(NO_IDENTITY),
+    ):
+        with pytest.raises(ValueError, match="org_id"):
+            await call()
+    assert (await s.aget(ROOT, mid)).content == "tenant note"
+
+
+@pytest.mark.parametrize("kind", TENANT_BACKENDS)
+async def test_update_without_identity_compares_missing_tenant_values(kind, tmp_path):
+    """An optional tenant column the caller has no value for matches only rows without one,
+    on update as on store (``IS NOT DISTINCT FROM``), never ``= NULL``."""
+    optional = {"org_id": {"type": "text", "required": False}}
+    async with _open_store(kind, tmp_path, tenant_columns=optional) as s:
+        mine = await s.astore(NO_IDENTITY, "no tenant")
+        theirs = await s.astore(tenant_cfg(user="alice", org="A"), "org a")
+        await s.aupdate(NO_IDENTITY, mine, "no tenant updated")
+        with pytest.raises(ValueError, match="not found"):
+            await s.aupdate(NO_IDENTITY, theirs, "hijacked")
+        with pytest.raises(ValueError, match="not found"):
+            await s.astore(NO_IDENTITY, "hijacked", memory_id=theirs)
+        assert (await s.aget(ROOT, mine)).content == "no tenant updated"
+        assert (await s.aget(ROOT, theirs)).content == "org a"
+
+
+# ------------------------------------------------------------------ isolation matrix
+# One data set, every caller, every call. ``_visible`` is the rule; the stores must match it.
+# InMemoryStore has no tenant columns: tenant values are ignored and reach tenant is skipped.
+
+# key, user, org, project, category, memory type, color
+ROWS = [
+    ("a1", "alice", "A", "P1", "work", MemoryType.EPISODIC, "red"),
+    ("a2", "alice", "B", "P1", "home", MemoryType.SEMANTIC, "red"),
+    ("ap2", "alice", "A", "P2", "work", MemoryType.SEMANTIC, "blue"),
+    ("b1", "bob", "A", "P1", "home", MemoryType.EPISODIC, "blue"),
+    ("c1", "carol", "B", "P1", "work", MemoryType.EPISODIC, "red"),
+]
+CALLERS = {
+    "alice-A-own": ("alice", "A", "P1", "own"),
+    "alice-B-own": ("alice", "B", "P1", "own"),
+    "alice-A-P2-own": ("alice", "A", "P2", "own"),
+    "bob-A-own": ("bob", "A", "P1", "own"),
+    "bob-A-tenant": ("bob", "A", "P1", "tenant"),
+    "dave-B-tenant": ("dave", "B", "P1", "tenant"),
+    "root-A-all": ("root", "A", "P1", "all"),
+}
+# Filters a caller could send to reach other rows: refused on every store.
+WIDENING_FILTERS = [
+    {"user_id": "alice"},
+    {"user_id": "carol"},
+    {"org_id": "B"},
+    {"project_id": "P2"},
+    {"user_id": "carol", "org_id": "B"},
+]
+
+
+def _visible(caller, row, tenants, reach=None):
+    user, org, project, own_reach = caller
+    reach = reach or own_reach
+    same_tenant = not tenants or (row[2], row[3]) == (org, project)
+    if reach == "all":
+        return True
+    if reach == "tenant":
+        return same_tenant
+    return same_tenant and row[1] == user
+
+
+@pytest_asyncio.fixture(params=STORE_BACKENDS)
+async def iso(request, tmp_path):
+    """``(store, has tenant columns, {row key: memory id})`` seeded with ``ROWS``."""
+    kind = request.param
+    kw = {} if kind == "inmem" else {"tenant_columns": TENANTS}
+    async with _open_store(kind, tmp_path, **kw) as s:
+        ids = {}
+        for key, user, org, project, category, memory_type, color in ROWS:
+            ids[key] = await s.astore(
+                tenant_cfg(user=user, org=org, project=project),
+                f"note {key}",
+                category=category,
+                memory_type=memory_type,
+                metadata={"color": color},
+            )
+        yield s, kind != "inmem", ids
+
+
+def _caller(iso, name):
+    _s, tenants, _ids = iso
+    user, org, project, reach = CALLERS[name]
+    if reach == "tenant" and not tenants:
+        pytest.skip("reach tenant needs tenant columns")
+    return CALLERS[name], tenant_cfg(user=user, org=org, project=project, reach=reach)
+
+
+def _notes(rows):
+    return {f"note {r[0]}" for r in rows}
+
+
+@pytest.mark.parametrize("name", list(CALLERS))
+async def test_isolation_reads(iso, name):
+    s, tenants, ids = iso
+    caller, config = _caller(iso, name)
+    visible = [r for r in ROWS if _visible(caller, r, tenants)]
+    for row in ROWS:
+        got = await s.aget(config, ids[row[0]])
+        assert (got is not None) == (row in visible), row[0]
+    assert await s.aget(config, str(uuid.uuid4())) is None
+    assert {r.content for r in await s.aget_all(config)} == _notes(visible)
+    narrowings = [
+        ({}, visible),
+        ({"category": "work"}, [r for r in visible if r[4] == "work"]),
+        ({"memory_type": MemoryType.SEMANTIC}, [r for r in visible if r[5] is MemoryType.SEMANTIC]),
+        ({"filters": {"color": "red"}}, [r for r in visible if r[6] == "red"]),
+        (
+            {"category": "work", "filters": {"color": "red"}},
+            [r for r in visible if r[4] == "work" and r[6] == "red"],
+        ),
+    ]
+    for kwargs, expected in narrowings:
+        got = await s.asearch(config, "note", limit=50, **kwargs)
+        assert {r.content for r in got} == _notes(expected), kwargs
+    red = [r for r in visible if r[6] == "red"]
+    got = await s.aget_all(config, filters={"color": "red"})
+    assert {r.content for r in got} == _notes(red)
+
+
+@pytest.mark.parametrize("name", list(CALLERS))
+async def test_isolation_filters_are_refused(iso, name):
+    """A filter on user_id or a tenant column is refused on every store, never ANDed, and
+    forget deletes nothing when it refuses."""
+    s, tenants, _ids = iso
+    _caller_row, config = _caller(iso, name)
+    refused = {"user_id", *(TENANTS if tenants else ())}
+    before = {r.content for r in await s.aget_all(ROOT)}
+    for filters in WIDENING_FILTERS:
+        if not refused & filters.keys():
+            continue
+        for call in (
+            lambda f: s.asearch(config, "note", limit=50, filters=f),
+            lambda f: s.aget_all(config, filters=f),
+            lambda f: s.aforget_memory(config, filters=f),
+        ):
+            with pytest.raises(FilterError, match="isolation column"):
+                await call(filters)
+        assert {r.content for r in await s.aget_all(ROOT)} == before, filters
+
+
+@pytest.mark.parametrize("name", list(CALLERS))
+async def test_isolation_update_and_delete(iso, name):
+    """Update and store-by-id stay reach own; delete follows the read scope. A foreign id
+    answers exactly like a missing one."""
+    s, tenants, ids = iso
+    caller, config = _caller(iso, name)
+    missing = str(uuid.uuid4())
+    for call in (
+        lambda i: s.aupdate(config, i, "updated"),
+        lambda i: s.adelete(config, i),
+    ):
+        assert await _outcome(call(missing), missing) == (ValueError, "Memory <id> not found")
+
+    for row in ROWS:
+        mid = ids[row[0]]
+        writable = _visible(caller, row, tenants, reach="own")
+        outcome = await _outcome(s.aupdate(config, mid, f"updated {row[0]}"), mid)
+        assert (outcome[0] == "ok") == writable, row[0]
+        if not writable:
+            assert outcome == (ValueError, "Memory <id> not found")
+        outcome = await _outcome(s.astore(config, f"stored {row[0]}", memory_id=mid), mid)
+        assert (outcome[0] == "ok") == writable, row[0]
+        if not writable:
+            assert outcome == (ValueError, "Memory <id> not found")
+    expected = {
+        f"stored {r[0]}" if _visible(caller, r, tenants, reach="own") else f"note {r[0]}"
+        for r in ROWS
+    }
+    assert {r.content for r in await s.aget_all(ROOT)} == expected
+
+    for row in ROWS:
+        mid = ids[row[0]]
+        outcome = await _outcome(s.adelete(config, mid), mid)
+        assert (outcome[0] == "ok") == _visible(caller, row, tenants), row[0]
+        if outcome[0] != "ok":
+            assert outcome == (ValueError, "Memory <id> not found")
+    left = {r.id for r in await s.aget_all(ROOT)}
+    assert left == {ids[r[0]] for r in ROWS if not _visible(caller, r, tenants)}
+
+
+@pytest.mark.parametrize("name", list(CALLERS))
+async def test_isolation_forget(iso, name):
+    """Forget deletes the caller's own memories inside the read scope's tenant values."""
+    s, tenants, _ids = iso
+    caller, config = _caller(iso, name)
+    mine = [r for r in ROWS if r[1] == caller[0] and _visible(caller, r, tenants)]
+    await s.aforget_memory(config, category="work")
+    gone = _notes(ROWS) - {r.content for r in await s.aget_all(ROOT)}
+    assert gone == _notes(r for r in mine if r[4] == "work")
+    await s.aforget_memory(config)
+    gone = _notes(ROWS) - {r.content for r in await s.aget_all(ROOT)}
+    assert gone == _notes(mine)

@@ -5,6 +5,7 @@ from typing import Any
 from urllib.parse import quote
 
 from tenxgraph.core.authz import owner_id
+from tenxgraph.utils.id_generator import IDType
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
@@ -46,20 +47,45 @@ class _PgIdentityMixin(PgHostBase):
 
         return self._db_thread_id(thread_id), user_id
 
-    def _db_thread_id(self, thread_id: str | int) -> str | int:
-        """``thread_id`` in the column's type.
+    @property
+    def declared_id_type(self) -> IDType:
+        """The id type the setup's ``id_type`` holds (``int``, ``bigint``, else text)."""
+        return {"int": IDType.INTEGER, "bigint": IDType.BIGINT}.get(
+            self.id_type, IDType.STRING
+        )
 
-        Callers (the API in particular) pass thread ids as strings. An ``int``/``bigint``
-        column needs an int, or asyncpg rejects every query for that thread.
+    def _check_id(self, value: Any, what: str) -> Any:
+        """``value`` unchanged when it has the type the setup's ``id_type`` expects.
+
+        ``id_type`` text takes strings, ``int`` and ``bigint`` take integers. Anything else
+        raises ``ValueError`` before any SQL, so no driver error reaches the caller.
         """
-        if self.id_type in ("int", "bigint") and not isinstance(thread_id, int):
-            try:
-                return int(str(thread_id).strip())
-            except ValueError:
-                raise ValueError(
-                    f"thread_id must be an integer for id_type={self.id_type!r}: {thread_id!r}"
-                ) from None
-        return thread_id
+        wants_int = self.id_type in ("int", "bigint")
+        ok = (
+            (isinstance(value, int) and not isinstance(value, bool))
+            if wants_int
+            else isinstance(value, str)
+        )
+        if not ok:
+            expected = "an integer" if wants_int else "a string"
+            raise ValueError(
+                f"{what} must be {expected} for id_type={self.id_type!r}, "
+                f"got {type(value).__name__}: {value!r}"
+            )
+        return value
+
+    def _db_thread_id(self, thread_id: str | int) -> str | int:
+        """``thread_id`` checked against the setup's ``id_type`` (see ``_check_id``)."""
+        return self._check_id(thread_id, "thread_id")
+
+    def _db_message_id(self, message_id: str | int) -> str | int:
+        """``message_id`` checked against the setup's ``id_type`` (see ``_check_id``)."""
+        return self._check_id(message_id, "message_id")
+
+    def _check_message_ids(self, messages: list[Any] | None) -> None:
+        """Every message id must have the type ``id_type`` expects, before any SQL."""
+        for message in messages or []:
+            self._db_message_id(message.message_id)
 
     def _message_thread_id(self, config: dict[str, Any]) -> str | int:
         """``thread_id`` of the config in the column's type; message methods need no user."""
@@ -178,7 +204,7 @@ class _PgIdentityMixin(PgHostBase):
             "WHERE thread_id = $1) AS durable_version "
             f"FROM {self._get_table_name('threads')} WHERE {where}"
         )
-        row = await self._run_scoped(
+        row = await self._run_query(
             lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
         )
         if row is None:

@@ -184,7 +184,7 @@ def _cp(monkeypatch, **kw):
     async def run_scoped(fn, *, settings=None, in_transaction=False):
         return await fn(conn)
 
-    monkeypatch.setattr(cp, "_run_scoped", run_scoped)
+    monkeypatch.setattr(cp, "_run_query", run_scoped)
     return cp, conn
 
 

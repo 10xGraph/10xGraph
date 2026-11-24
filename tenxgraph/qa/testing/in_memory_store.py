@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from tenxgraph.core.state import Message
+from tenxgraph.storage.sql_filter import isolation_filter_error
 from tenxgraph.storage.store.base_store import BaseStore
 from tenxgraph.storage.store.store_schema import (
     DistanceMetric,
@@ -85,12 +86,13 @@ class InMemoryStore(BaseStore):
         scoped = self._require_user_id(config)
         rows = [
             m
-            for m in reversed(self.memories.values())
+            for m in self.memories.values()
             if self._collection_of[m.id] == collection
             and (scoped is None or m.user_id == scoped)
             and (memory_type is None or m.memory_type == memory_type)
         ]
-        return sorted(rows, key=lambda m: m.timestamp, reverse=True)
+        # Ascending then reversed: equal timestamps keep newest-stored first.
+        return sorted(rows, key=lambda m: m.timestamp)[::-1]
 
     def _owned(
         self, config: dict[str, Any], memory_id: str, owner: str | int | None
@@ -130,11 +132,21 @@ class InMemoryStore(BaseStore):
     ) -> str:
         """Store a memory under the caller's own user_id (reach does not change the owner).
 
-        Raises ``ValueError`` for a missing or blank user_id or collection.
+        Raises ``ValueError`` for a missing or blank user_id or collection, for text with NUL
+        or a lone surrogate, and for a ``memory_id`` (keyword argument) of another user or
+        collection (not found, as on the real stores; that memory is left as it is).
         """
+        self._refuse_unstorable(
+            content=content,
+            metadata=metadata,
+            category=category,
+            memory_key=kwargs.get("memory_key"),
+        )
         user_id, thread_id, collection = self._extract_config_values(config)
         owner = self._require_owner_id(config, user_id)
-        mem_id = str(uuid4())
+        mem_id = str(kwargs.get("memory_id") or uuid4())
+        if mem_id in self.memories:
+            self._owned(config, mem_id, str(owner))
         content_str = content if isinstance(content, str) else content.text()
         meta = metadata or {}
         memory_key = kwargs.get("memory_key", meta.get("memory_key"))
@@ -177,8 +189,10 @@ class InMemoryStore(BaseStore):
 
         If results were pre-configured via set_search_results(), returns those. Otherwise
         a case-insensitive substring match over the memories the caller may read, filtered
-        by memory_type, category and ``filters`` (exact match on metadata keys).
+        by memory_type, category and ``filters`` (exact match on metadata keys; a ``user_id`` key
+        raises ``FilterError``).
         """
+        self._check_filters(filters)
         if self._search_results:
             logger.debug("Returning %d pre-configured search results", len(self._search_results))
             return self._search_results[:limit]
@@ -193,6 +207,12 @@ class InMemoryStore(BaseStore):
         ]
         logger.debug("Text search found %d results for query: %s", len(results), query[:30])
         return results[:limit]
+
+    @staticmethod
+    def _check_filters(filters: dict[str, Any] | None) -> None:
+        """Refuse a filter on ``user_id``: the owner comes from the identity only."""
+        if filters and "user_id" in filters:
+            raise isolation_filter_error("user_id")
 
     @staticmethod
     def _matches(mem: MemorySearchResult, filters: dict[str, Any] | None) -> bool:
@@ -217,6 +237,7 @@ class InMemoryStore(BaseStore):
     ) -> list[MemorySearchResult]:
         """Get the caller's memories, newest first, narrowed by ``filters`` (metadata keys)."""
         filters = kwargs.get("filters")
+        self._check_filters(filters)
         results = [m for m in self._visible(config) if self._matches(m, filters)][:limit]
         logger.debug("Get all memories: returning %d", len(results))
         return results
@@ -235,6 +256,7 @@ class InMemoryStore(BaseStore):
         in ``metadata`` replaces that value, otherwise it is kept. A memory that is missing or
         belongs to another user raises ``ValueError``.
         """
+        self._refuse_unstorable(content=content, metadata=metadata)
         user_id, _thread, _collection = self._extract_config_values(config)
         mem = self._owned(config, memory_id, self._require_owner_id(config, user_id))
         meta = metadata or {}
@@ -282,6 +304,7 @@ class InMemoryStore(BaseStore):
         owner = str(self._require_owner_id(config, user_id))
         memory_type = kwargs.get("memory_type")
         category = kwargs.get("category")
+        self._check_filters(kwargs.get("filters"))
 
         to_delete = [
             m.id

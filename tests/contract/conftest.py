@@ -27,11 +27,11 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/1")
 TENANTS = {"org_id": "text", "project_id": "text"}
 
 # (test function name, backend id) -> reason. Backend ids: memory, sqlite, pg for the
-# checkpointers; inmem, pgvector, qdrant for the stores. "pg" and "pgvector" entries come from
-# reading the code (no database was available when the suite was written): unverified.
+# checkpointers; inmem, pgvector, qdrant for the stores. "pg" and "pgvector" entries run
+# against the real Postgres with ``--integration``.
 # No checkpointer gaps are open.
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    # ---- stores: verified by running inmem and qdrant (local mode); pgvector not run
+    # ---- stores: verified by running inmem, qdrant (local mode) and pgvector (--integration)
 }
 
 

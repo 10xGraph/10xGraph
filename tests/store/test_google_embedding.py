@@ -249,3 +249,22 @@ class TestGoogleEmbeddingAembedBatch:
         with patch("google.genai.types"):
             with pytest.raises(RuntimeError, match="Google API error"):
                 await emb.aembed_batch(["text1", "text2"])
+
+
+class TestGoogleEmbeddingBaseUrl:
+    """base_url reaches the genai client as HttpOptions, with no network."""
+
+    def test_base_url_builds_http_options(self):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+            mock_genai = MagicMock()
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
+                GoogleEmbedding(api_key="k", base_url="http://proxy.local")
+            options = mock_genai.Client.call_args.kwargs["http_options"]
+            assert options.base_url == "http://proxy.local"
+
+    def test_no_base_url_sends_no_http_options(self):
+        with patch("tenxgraph.storage.store.embedding.google_embedding.HAS_GOOGLE", True):
+            mock_genai = MagicMock()
+            with patch("tenxgraph.storage.store.embedding.google_embedding.genai", mock_genai):
+                GoogleEmbedding(api_key="k")
+            assert "http_options" not in mock_genai.Client.call_args.kwargs

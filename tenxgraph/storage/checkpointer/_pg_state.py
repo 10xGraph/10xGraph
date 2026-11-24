@@ -11,6 +11,7 @@ from tenxgraph.core.exceptions.storage_exceptions import (
     TransientStorageError,
 )
 from tenxgraph.core.state import Message
+from tenxgraph.storage._pg_common import connection_errors, loads_jsonb
 from tenxgraph.storage.columns import (
     rows_affected as _rows_affected,
 )
@@ -21,8 +22,8 @@ from ._pg_host import PgHostBase
 from ._pg_support import (
     STATE_VERSION_CONFIG_KEY,
     StateT,
-    asyncpg,
 )
+from .base_checkpointer import reject_unstorable
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -43,7 +44,7 @@ class _PgStateMixin(PgHostBase):
         )
         if row is None:
             return False
-        return self._loads_jsonb(row["state_data"]) == json.loads(state_json)
+        return loads_jsonb(row["state_data"]) == json.loads(state_json)
 
     async def _write_state_row(
         self,
@@ -73,7 +74,7 @@ class _PgStateMixin(PgHostBase):
         """
         current_version = await self._lock_thread_for_write(conn, thread_id, user_id, config)
 
-        state_json = json.dumps(self._serialize_state_payload(state))
+        state_json = json.dumps(self._encode_state(state))
         if (
             retried
             and expected_version is not None
@@ -156,6 +157,7 @@ class _PgStateMixin(PgHostBase):
             StaleStateError: If the optimistic version check fails.
             ThreadNotFoundError: The thread belongs to another user or tenant.
         """
+        reject_unstorable(state)
         thread_id, user_id = self._validate_config(config)
         # A missing or malformed tenant value is a config error: raise it as is, before the
         # generic StorageError wrapping below.
@@ -183,7 +185,7 @@ class _PgStateMixin(PgHostBase):
                         retried=attempts > 1,
                     )
 
-                new_version = await self._run_scoped(
+                new_version = await self._run_query(
                     _store_state,
                     in_transaction=True,
                     settings=self._rls(config, write=True),
@@ -218,20 +220,15 @@ class _PgStateMixin(PgHostBase):
                 logger.error(
                     "Failed to store state for thread_id=%s: %s", thread_id, describe_error(e)
                 )
-                if asyncpg and hasattr(asyncpg, "ConnectionDoesNotExistError"):
-                    connection_errors = (
-                        asyncpg.ConnectionDoesNotExistError,
-                        asyncpg.InterfaceError,
-                    )
-                    if isinstance(e, connection_errors):
-                        raise TransientStorageError(
-                            message=f"Connection issue storing state: {describe_error(e)}",
-                            error_code="STORAGE_TRANSIENT_001",
-                            context={
-                                "thread_id": thread_id,
-                                "error_type": type(e).__name__,
-                            },
-                        ) from e
+                if isinstance(e, connection_errors()):
+                    raise TransientStorageError(
+                        message=f"Connection issue storing state: {describe_error(e)}",
+                        error_code="STORAGE_TRANSIENT_001",
+                        context={
+                            "thread_id": thread_id,
+                            "error_type": type(e).__name__,
+                        },
+                    ) from e
                 raise StorageError(
                     message=f"Failed to store state: {describe_error(e)}",
                     error_code="STORAGE_001",
@@ -270,6 +267,8 @@ class _PgStateMixin(PgHostBase):
             StaleStateError: If the optimistic version check fails.
             ThreadNotFoundError: The thread belongs to another user or tenant.
         """
+        reject_unstorable(state, messages, metadata)
+        self._check_message_ids(messages)
         thread_id, user_id = self._validate_config(config)
         self._isolation(config, write=True)  # config errors raise as is (see aput_state)
         messages = messages or []
@@ -296,7 +295,7 @@ class _PgStateMixin(PgHostBase):
                         await self._insert_messages(conn, thread_id, messages, metadata)
                     return version
 
-                new_version = await self._run_scoped(
+                new_version = await self._run_query(
                     _store_checkpoint,
                     in_transaction=True,
                     settings=self._rls(config, write=True),
@@ -362,13 +361,13 @@ class _PgStateMixin(PgHostBase):
                 LIMIT 1
                 """  # noqa: S608
 
-            row = await self._run_scoped(
+            row = await self._run_query(
                 lambda conn: conn.fetchrow(query, *scope_params),
                 settings=self._rls(config),
             )
 
             if row:
-                data = self._loads_jsonb(row["state_data"])
+                data = loads_jsonb(row["state_data"])
                 logger.debug(
                     "State found for thread_id=%s at version=%s",
                     thread_id,
@@ -413,7 +412,7 @@ class _PgStateMixin(PgHostBase):
 
             # Clear from PostgreSQL with retry logic, scoped to the owner.
             query = f"DELETE FROM {self._get_table_name('states')} WHERE {scope_sql}"  # noqa: S608
-            status = await self._run_scoped(
+            status = await self._run_query(
                 lambda conn: conn.execute(query, *scope_params),
                 settings=self._rls(config),
             )

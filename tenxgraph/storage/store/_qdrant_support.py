@@ -12,6 +12,7 @@ from typing import Any
 
 from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import ColumnSet, ColumnSpec, Isolation, resolve_isolation
+from tenxgraph.storage.sql_filter import FilterError, isolation_filter_error
 from tenxgraph.utils.log_safety import describe_error
 
 from .base_store import BaseStore
@@ -147,7 +148,7 @@ class QdrantHelpersMixin(BaseStore):
         return MemorySearchResult(
             id=str(point.id),
             content=payload.get("content", ""),
-            score=float(getattr(point, "score", 1.0) or 0.0),
+            score=max(0.0, float(getattr(point, "score", 1.0) or 0.0)),
             memory_type=memory_type,
             metadata={k: v for k, v in payload.items() if k not in hidden},
             vector=getattr(point, "vector", None),
@@ -170,7 +171,9 @@ class QdrantHelpersMixin(BaseStore):
 
         ``tenant`` is the scope's tenant conditions (``Isolation.conditions``): a value
         matches as text; a ``None`` value (a writer without an optional value) matches only
-        points without that value.
+        points without that value. ``filters`` match payload keys exactly; a key that is
+        ``user_id`` or a tenant column, or a value that is not str, int or bool, raises
+        ``FilterError`` (never silently dropped, which would widen the result).
         """
         from qdrant_client.http.models import (
             FieldCondition,
@@ -197,10 +200,15 @@ class QdrantHelpersMixin(BaseStore):
         if category:
             conditions.append(FieldCondition(key="category", match=MatchValue(value=category)))
 
-        if filters:
-            for key, value in filters.items():
-                if isinstance(value, str | int | bool):
-                    conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        for key, value in (filters or {}).items():
+            if key == "user_id" or key in self.tenant_column_names:
+                raise isolation_filter_error(key)
+            if not isinstance(value, str | int | bool):
+                raise FilterError(
+                    "Unsupported filter on a metadata key: QdrantStore matches metadata "
+                    "exactly and takes only str, int or bool values"
+                )
+            conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
 
         return Filter(must=conditions) if conditions else None
 
@@ -218,6 +226,9 @@ class QdrantHelpersMixin(BaseStore):
     ) -> None:
         """Refuse a caller-chosen ``memory_id`` that already belongs to another owner.
 
+        The refusal is ``ValueError`` (not found), the answer ``aupdate`` and ``adelete`` give
+        for the same id, so it does not say whose memory it is.
+
         ``astore`` upserts, so without this check a chosen id would silently replace another
         user's (or another tenant's) memory. Reusing one of your own ids (an intentional
         overwrite) is still allowed. Checked on every reach: writes stay reach ``own``, and
@@ -227,7 +238,7 @@ class QdrantHelpersMixin(BaseStore):
         if point is None:
             return
         if not payload_matches(getattr(point, "payload", None) or {}, user_id, conditions):
-            raise PermissionError(f"memory_id '{memory_id}' belongs to another user")
+            raise ValueError(f"Memory {memory_id} not found")
 
     async def _ensure_collection_exists(self, collection: str) -> None:
         """Ensure collection exists, create if not.
@@ -240,74 +251,62 @@ class QdrantHelpersMixin(BaseStore):
         if collection in self._collection_cache:
             return
 
-        from qdrant_client.http.models import PayloadSchemaType, VectorParams
+        from qdrant_client.http.models import KeywordIndexParams, PayloadSchemaType, VectorParams
 
         async with self._collection_lock:
             # Re-check under the lock: another coroutine may have ensured it while
             # we were waiting.
             if collection in self._collection_cache:
                 return
+            try:
+                collections = await self.client.get_collections()
+                existing_names = {col.name for col in collections.collections}
 
-            await self._ensure_collection_exists_locked(collection, PayloadSchemaType, VectorParams)
-
-    async def _ensure_collection_exists_locked(
-        self,
-        collection: str,
-        PayloadSchemaType,
-        VectorParams,
-    ) -> None:
-        """Create the collection and its payload indexes. Caller holds the lock."""
-        from qdrant_client.http.models import KeywordIndexParams
-
-        try:
-            collections = await self.client.get_collections()
-            existing_names = {col.name for col in collections.collections}
-
-            if collection not in existing_names:
-                await self.client.create_collection(
-                    collection_name=collection,
-                    vectors_config=VectorParams(
-                        size=self.embedding.dimension,
-                        distance=self._distance_metric_to_qdrant(
-                            self._default_distance_metric,
-                        ),
-                    ),
-                )
-                logger.info(f"Created collection: {collection}")
-
-            # Payload indexes for filterable fields, required for remote/cloud Qdrant where
-            # full scan is disabled. create_payload_index is idempotent, so this is safe for
-            # new and pre-existing collections. Tenant columns use Qdrant's multitenancy
-            # index (is_tenant), the timestamp a datetime index (aget_all orders by it).
-            indexes: list[tuple[str, Any]] = [
-                (name, PayloadSchemaType.KEYWORD) for name in _KEYWORD_INDEXES
-            ]
-            indexes += [
-                (name, KeywordIndexParams(type="keyword", is_tenant=True))
-                for name in self.tenant_column_names
-            ]
-            indexes.append((_ORDER_FIELD, PayloadSchemaType.DATETIME))
-            for field_name, schema in indexes:
-                try:
-                    await self.client.create_payload_index(
+                if collection not in existing_names:
+                    await self.client.create_collection(
                         collection_name=collection,
-                        field_name=field_name,
-                        field_schema=schema,
+                        vectors_config=VectorParams(
+                            size=self.embedding.dimension,
+                            distance=self._distance_metric_to_qdrant(
+                                self._default_distance_metric,
+                            ),
+                        ),
                     )
-                except Exception:
-                    # Best-effort: log and continue so one failing index
-                    # doesn't prevent the collection from being usable.
-                    logger.debug(
-                        "Payload index for '%s' on '%s' may already exist or failed",
-                        field_name,
-                        collection,
-                    )
-            logger.info(f"Ensured payload indexes for collection: {collection}")
+                    logger.info(f"Created collection: {collection}")
 
-            self._collection_cache.add(collection)
-        except Exception as e:
-            logger.error(f"Error ensuring collection {collection} exists: {describe_error(e)}")
-            raise
+                # Payload indexes for filterable fields, required for remote/cloud Qdrant where
+                # full scan is disabled. create_payload_index is idempotent, so this is safe for
+                # new and pre-existing collections. Tenant columns use Qdrant's multitenancy
+                # index (is_tenant), the timestamp a datetime index (aget_all orders by it).
+                indexes: list[tuple[str, Any]] = [
+                    (name, PayloadSchemaType.KEYWORD) for name in _KEYWORD_INDEXES
+                ]
+                indexes += [
+                    (name, KeywordIndexParams(type="keyword", is_tenant=True))
+                    for name in self.tenant_column_names
+                ]
+                indexes.append((_ORDER_FIELD, PayloadSchemaType.DATETIME))
+                for field_name, schema in indexes:
+                    try:
+                        await self.client.create_payload_index(
+                            collection_name=collection,
+                            field_name=field_name,
+                            field_schema=schema,
+                        )
+                    except Exception:
+                        # Best-effort: log and continue so one failing index
+                        # doesn't prevent the collection from being usable.
+                        logger.debug(
+                            "Payload index for '%s' on '%s' may already exist or failed",
+                            field_name,
+                            collection,
+                        )
+                logger.info(f"Ensured payload indexes for collection: {collection}")
+
+                self._collection_cache.add(collection)
+            except Exception as e:
+                logger.error(f"Error ensuring collection {collection} exists: {describe_error(e)}")
+                raise
 
     def _prepare_content(self, content: str | Message) -> str:
         """Extract text content from string or Message."""

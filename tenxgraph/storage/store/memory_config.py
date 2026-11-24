@@ -56,8 +56,8 @@ class _MemoryScopeConfig(BaseModel):
     store: BaseStore | None = None
     memory_type: str = "episodic"
     category: str = "general"
-    limit: int | None = None
-    score_threshold: float | None = None
+    limit: int | None = Field(default=None, ge=1)
+    score_threshold: float | None = Field(default=None, ge=0)
     retrieval_strategy: RetrievalStrategy | str | None = None
     collection: str | Callable[[dict[str, Any]], str] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
@@ -98,26 +98,12 @@ class _MemoryScopeConfig(BaseModel):
     def _check_memory_type(cls, value: str) -> str:
         return _validate_memory_type(value).value
 
-    @field_validator("limit")
-    @classmethod
-    def _validate_limit(cls, value: int | None) -> int | None:
-        if value is not None and value < 1:
-            raise ValueError("limit must be greater than zero")
-        return value
-
     @field_validator("retrieval_strategy")
     @classmethod
     def _validate_retrieval_strategy(
         cls, value: RetrievalStrategy | str | None
     ) -> RetrievalStrategy | None:
         return _as_strategy(value)
-
-    @field_validator("score_threshold")
-    @classmethod
-    def _validate_score_threshold(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
-            raise ValueError("score_threshold must be non-negative")
-        return value
 
 
 class UserMemoryConfig(_MemoryScopeConfig):
@@ -153,9 +139,9 @@ class MemoryConfig(BaseModel):
     """Primary public configuration object for ``Agent(..., memory=...)``."""
 
     store: BaseStore | None = None
-    retrieval_mode: ReadMode | str = ReadMode.POSTLOAD
-    limit: int = 5
-    score_threshold: float = 0.0
+    retrieval_mode: ReadMode = ReadMode.POSTLOAD
+    limit: int = Field(default=5, ge=1)
+    score_threshold: float = Field(default=0.0, ge=0)
     retrieval_strategy: RetrievalStrategy | str | None = None
     max_tokens: int | None = None
     inject_system_prompt: bool = True
@@ -165,33 +151,12 @@ class MemoryConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    @field_validator("retrieval_mode")
-    @classmethod
-    def _validate_retrieval_mode(cls, value: ReadMode | str) -> ReadMode:
-        if isinstance(value, ReadMode):
-            return value
-        return ReadMode(value)
-
     @field_validator("retrieval_strategy")
     @classmethod
     def _validate_retrieval_strategy(
         cls, value: RetrievalStrategy | str | None
     ) -> RetrievalStrategy | None:
         return _as_strategy(value)
-
-    @field_validator("limit")
-    @classmethod
-    def _validate_limit(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("limit must be greater than zero")
-        return value
-
-    @field_validator("score_threshold")
-    @classmethod
-    def _validate_score_threshold(cls, value: float) -> float:
-        if value < 0:
-            raise ValueError("score_threshold must be non-negative")
-        return value
 
     def model_facing_tools(self) -> list[Any]:
         """Return the tools this memory config should expose to an Agent.

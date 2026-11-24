@@ -59,10 +59,11 @@ def cfg():
 
 class TestSchemaAndMigrations:
     async def test_setup_creates_schema_at_current_version(self, cp):
+        from tenxgraph.storage._pg_common import recorded_schema_version
         from tenxgraph.storage.checkpointer.pg_checkpointer import CURRENT_SCHEMA_VERSION
 
         async with (await cp._get_pg_pool()).acquire() as conn:
-            version = await cp._get_recorded_schema_version(conn)
+            version = await recorded_schema_version(conn, cp._get_table_name("schema_version"))
             assert version == CURRENT_SCHEMA_VERSION
 
             # The v2/v3 migrations must have actually produced their objects.

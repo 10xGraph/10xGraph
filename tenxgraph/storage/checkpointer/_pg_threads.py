@@ -20,7 +20,7 @@ from tenxgraph.utils import ThreadInfo
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
-from .base_checkpointer import like_escape, validate_page
+from .base_checkpointer import like_escape, reject_unstorable, validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -57,6 +57,7 @@ class _PgThreadsMixin(PgHostBase):
             ThreadNotFoundError: The thread belongs to another user or tenant.
             Exception: If storing fails.
         """
+        reject_unstorable(thread_info)
         # Ensure schema is initialized before accessing tables
         thread_id, user_id = self._validate_config(config)
         if str(thread_info.thread_id) != str(config["thread_id"]):
@@ -132,7 +133,7 @@ class _PgThreadsMixin(PgHostBase):
 
                 return False
 
-            created = await self._run_scoped(_put_thread, settings=isolation.settings)
+            created = await self._run_query(_put_thread, settings=isolation.settings)
             logger.debug("Thread info stored for thread_id=%s (created=%s)", thread_id, created)
             return bool(created)
 
@@ -172,7 +173,7 @@ class _PgThreadsMixin(PgHostBase):
                 WHERE {where}
                 """  # noqa: S608
 
-            row = await self._run_scoped(
+            row = await self._run_query(
                 lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
             )
 
@@ -205,7 +206,7 @@ class _PgThreadsMixin(PgHostBase):
             FROM {self._get_table_name("threads")}
             WHERE thread_id = $1
             """  # noqa: S608
-        return await self._run_scoped(
+        return await self._run_query(
             lambda conn: conn.fetchval(query, thread_id),
             settings=self._global_settings(),
         )
@@ -233,7 +234,7 @@ class _PgThreadsMixin(PgHostBase):
             f"SELECT user_id{names} FROM {self._get_table_name('threads')} "  # noqa: S608
             "WHERE thread_id = $1"
         )
-        row = await self._run_scoped(
+        row = await self._run_query(
             lambda conn: conn.fetchrow(query, thread_id),
             settings=self._global_settings(),
         )
@@ -322,7 +323,7 @@ class _PgThreadsMixin(PgHostBase):
                 params.append(offset)
                 query += f" OFFSET ${len(params)}"
 
-            rows = await self._run_scoped(
+            rows = await self._run_query(
                 lambda conn: conn.fetch(query, *params), settings=self._rls(config)
             )
             if not rows:
@@ -364,14 +365,14 @@ class _PgThreadsMixin(PgHostBase):
             if self.columns.tenant:
                 # The deleted row's identity names the thread's shared cache entry.
                 query += f" RETURNING {self._identity_columns_sql()}"
-                row = await self._run_scoped(
+                row = await self._run_query(
                     lambda conn: conn.fetchrow(query, *params),
                     settings=self._rls(config),
                 )
                 self._remember_identity(config, thread_id, row)
                 deleted = 0 if row is None else 1
             else:
-                status = await self._run_scoped(
+                status = await self._run_query(
                     lambda conn: conn.execute(query, *params),
                     settings=self._rls(config),
                 )

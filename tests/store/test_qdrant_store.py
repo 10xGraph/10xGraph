@@ -232,7 +232,7 @@ class TestQdrantStore:
     async def test_aforget_memory_rejects_unmatchable_filter_without_deleting(
         self, qdrant_store, mock_qdrant_client
     ):
-        with pytest.raises(ValueError, match="Unsupported forget filter"):
+        with pytest.raises(ValueError, match="Unsupported filter"):
             await qdrant_store.aforget_memory(
                 config={"user_id": "u1"}, filters={"tags": ["a", "b"]}
             )

@@ -24,8 +24,8 @@ from tenxgraph.storage.store.long_term_memory import _do_write
 from tenxgraph.storage.store.pgvector_store import (
     CURRENT_SCHEMA_VERSION,
     PgVectorStore,
-    _quote_ident,
 )
+from tenxgraph.storage.columns import quote_identifier
 from tenxgraph.storage.store.store_schema import DistanceMetric, MemoryType, RetrievalStrategy
 
 
@@ -219,7 +219,7 @@ class TestQuoteIdent:
     @pytest.mark.parametrize("name", ['a"b', "a b", "1a", "", None, "a;b", "x" * 64])
     def test_rejects_invalid(self, name):
         with pytest.raises(ValueError, match="Invalid SQL identifier"):
-            _quote_ident(name)
+            quote_identifier(name)
 
 
 # ---------------------------------------------------------------------------
@@ -446,10 +446,10 @@ class TestStore:
         # No value is interpolated into the SQL.
         assert "fact" not in sql and "u1" not in sql
 
-    async def test_foreign_memory_id_raises_permission_error(self):
+    async def test_foreign_memory_id_raises_not_found(self):
         store, conn, _ = _store()
         conn.fetchrow_results = [None]  # the conflict UPDATE's WHERE matched no row
-        with pytest.raises(PermissionError, match="belongs to another user"):
+        with pytest.raises(ValueError, match="not found"):
             await store.astore(CFG, "x", memory_id="theirs")
 
     async def test_reach_all_overwrite_keeps_owner_guard(self):

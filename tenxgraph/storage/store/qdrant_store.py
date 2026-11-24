@@ -5,8 +5,7 @@ This module provides a modern, async-first implementation of BaseStore using Qdr
 as the backend vector database. Supports both local and cloud Qdrant deployments
 with configurable embedding services.
 
-Helpers live in ``_qdrant_support.py``, the read methods in ``_qdrant_reads.py`` and the
-deletes in ``_qdrant_deletes.py``.
+Helpers live in ``_qdrant_support.py``, the read and delete methods in ``_qdrant_reads.py``.
 """
 
 import asyncio
@@ -19,12 +18,8 @@ from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import parse_columns
 from tenxgraph.storage.media.url_policy import redact_url
 
-from ._qdrant_deletes import QdrantDeletesMixin
-from ._qdrant_support import (
-    _RESERVED_COLUMN_NAMES,
-    _SYSTEM_PAYLOAD_KEYS,  # noqa: F401 - kept importable from here
-    payload_matches,
-)
+from ._qdrant_reads import QdrantReadsMixin
+from ._qdrant_support import _RESERVED_COLUMN_NAMES, payload_matches
 from .embedding.base_embedding import BaseEmbedding
 from .store_schema import (
     DistanceMetric,
@@ -50,7 +45,7 @@ logger = logging.getLogger("tenxgraph.store")
 DEFAULT_COLLECTION = "agentflow_memories"
 
 
-class QdrantStore(QdrantDeletesMixin):
+class QdrantStore(QdrantReadsMixin):
     """
     Modern async-first Qdrant-based vector store implementation.
 
@@ -168,7 +163,6 @@ class QdrantStore(QdrantDeletesMixin):
         # Serializes the cold-start miss: without it, N concurrent first-requests
         # all miss the cache together and each issues its own create_collection.
         self._collection_lock = asyncio.Lock()
-        self._setup_lock = asyncio.Lock()
 
         self.collection: str | Callable[[dict[str, Any]], str] = collection or DEFAULT_COLLECTION
         self._default_distance_metric = distance_metric
@@ -187,9 +181,8 @@ class QdrantStore(QdrantDeletesMixin):
         With a function default there is no fixed name, so nothing is created here;
         collections are created lazily by the first operation that uses them.
         """
-        async with self._setup_lock:
-            if isinstance(self.collection, str):
-                await self._ensure_collection_exists(self.collection)
+        if isinstance(self.collection, str):
+            await self._ensure_collection_exists(self.collection)
         return True
 
     # --- BaseStore abstract method implementations (reads and deletes in mixins) ---
@@ -208,8 +201,15 @@ class QdrantStore(QdrantDeletesMixin):
         A record always has an owner: an empty ``user_id`` raises, even under
         reach ``all``. Use ``system_user_id(name)`` for shared data. Tenant values come from
         ``config["user"]``; a required one that is missing raises. A ``memory_id`` (keyword
-        argument) that belongs to another user or tenant raises ``PermissionError``.
+        argument) that belongs to another user or tenant raises ``ValueError`` (not found, as
+        ``aupdate`` and ``adelete``) and leaves that memory as it is.
         """
+        self._refuse_unstorable(
+            content=content,
+            metadata=metadata,
+            category=category,
+            memory_key=kwargs.get("memory_key"),
+        )
         user_id, thread_id, collection = self._extract_config_values(config)
         user_id = self._require_owner_id(config, user_id)
         ctx = self._isolation(config, write=True)
@@ -272,6 +272,7 @@ class QdrantStore(QdrantDeletesMixin):
         """
         from qdrant_client.http.models import PointStruct
 
+        self._refuse_unstorable(content=content, metadata=metadata)
         user_id, _thread_id, collection = self._extract_config_values(config)
         owner = self._require_owner_id(config, user_id)  # writes stay reach own
         ctx = self._isolation(config, write=True)

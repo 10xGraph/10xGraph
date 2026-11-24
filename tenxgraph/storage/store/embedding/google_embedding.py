@@ -24,6 +24,9 @@ class GoogleEmbedding(BaseEmbedding):
     (``aembed_query``). Pass ``None`` to send no task type. Values are the Gemini
     task type strings, e.g. ``RETRIEVAL_DOCUMENT``, ``RETRIEVAL_QUERY``,
     ``SEMANTIC_SIMILARITY``.
+
+    ``base_url`` sends requests to a custom endpoint (a proxy or gateway) instead of Google's
+    own, through ``HttpOptions(base_url=...)``. ``None`` (default) uses Google.
     """
 
     def __init__(
@@ -33,6 +36,7 @@ class GoogleEmbedding(BaseEmbedding):
         output_dimensionality: int | None = None,
         document_task_type: str | None = "RETRIEVAL_DOCUMENT",
         query_task_type: str | None = "RETRIEVAL_QUERY",
+        base_url: str | None = None,
     ) -> None:
         if not HAS_GOOGLE:
             raise ImportError(
@@ -56,7 +60,14 @@ class GoogleEmbedding(BaseEmbedding):
             )
 
         # Create client
-        self.client = genai.Client(api_key=self.api_key)
+        if base_url:
+            from google.genai.types import HttpOptions
+
+            self.client = genai.Client(
+                api_key=self.api_key, http_options=HttpOptions(base_url=base_url)
+            )
+        else:
+            self.client = genai.Client(api_key=self.api_key)
 
     def _build_config(self, task_type: str | None):
         from google.genai import types

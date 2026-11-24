@@ -1,4 +1,4 @@
-"""Read methods of ``QdrantStore``: search, get by id, list."""
+"""Read and delete methods of ``QdrantStore``: search, get by id, list, delete, forget."""
 
 import logging
 from typing import Any
@@ -17,8 +17,8 @@ logger = logging.getLogger("tenxgraph.store")
 
 
 class QdrantReadsMixin(QdrantHelpersMixin):
-    """``asearch``, ``aget`` and ``aget_all``. Every read is scoped by the caller's reach:
-    ``user_id`` (reach ``own``) and the tenant conditions it picks."""
+    """``asearch``, ``aget``, ``aget_all``, ``adelete`` and ``aforget_memory``. Every call is
+    scoped by the caller's reach: ``user_id`` (reach ``own``) and the tenant conditions it picks."""
 
     _default_retrieval_strategy: RetrievalStrategy
 
@@ -150,3 +150,74 @@ class QdrantReadsMixin(QdrantHelpersMixin):
 
         logger.debug(f"Found {len(results)} memories for query in collection {collection}")
         return results
+
+    async def adelete(
+        self,
+        config: dict[str, Any],
+        memory_id: str,
+        **kwargs,
+    ) -> None:
+        """Delete a memory by id; ``ValueError`` when it does not exist or is outside the
+        caller's scope (another user's on reach ``own``, another tenant's)."""
+        from qdrant_client.http import models
+
+        user_id, _thread_id, collection = self._extract_config_values(config)
+        self._require_user_id(config, user_id)
+
+        # ``aget`` applies the caller's scope, so a memory outside it is "not found" here.
+        existing = await self.aget(config, memory_id)
+        if not existing:
+            raise ValueError(f"Memory {memory_id} not found")
+
+        await self.client.delete(
+            collection_name=collection,
+            points_selector=models.PointIdsList(points=[memory_id]),
+        )
+
+        logger.debug(f"Deleted memory {memory_id} from collection {collection}")
+
+    async def aforget_memory(
+        self,
+        config: dict[str, Any],
+        **kwargs,
+    ) -> None:
+        """Delete the memories of one user, optionally narrowed.
+
+        ``user_id`` is required (also under reach ``all``): forgetting is always for a named
+        owner, never the whole collection. The tenant conditions of the caller's reach apply
+        too. With no narrowing every memory of that user in the
+        collection goes. ``thread_id`` (from config), ``memory_type``, ``category`` and
+        ``filters`` (keyword arguments) narrow the delete, all combined with AND. A ``filters``
+        key or value that cannot be matched exactly raises ``FilterError`` instead of being
+        skipped, because skipping it would delete more than the caller asked for.
+        """
+        from qdrant_client.http import models
+
+        user_id, thread_id, collection = self._extract_config_values(config)
+        user_id = self._require_owner_id(config, user_id)
+        ctx = self._isolation(config)
+
+        memory_type = kwargs.get("memory_type")
+        if isinstance(memory_type, str):
+            memory_type = MemoryType(memory_type)
+        category = kwargs.get("category")
+        filters = kwargs.get("filters")
+
+        delete_filter = self._build_qdrant_filter(
+            user_id=user_id,
+            thread_id=thread_id,
+            memory_type=memory_type,
+            category=category,
+            filters=filters,
+            tenant=ctx.conditions,
+        )
+        await self.client.delete(
+            collection_name=collection,
+            points_selector=models.FilterSelector(filter=delete_filter),
+        )
+
+        logger.info(
+            f"Deleted memories for user_id={user_id}, thread_id={thread_id}, "
+            f"memory_type={memory_type}, category={category}, filters={filters} "
+            f"in collection {collection}"
+        )

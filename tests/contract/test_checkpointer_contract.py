@@ -12,10 +12,10 @@ from datetime import timedelta
 import pytest
 
 from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
+from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer.base_checkpointer import MAX_LIST_LIMIT
-from tenxgraph.utils import ThreadInfo
-from tenxgraph.utils.validators import ValidationError
+from tenxgraph.utils import END, ThreadInfo
 
 from .conftest import cfg
 
@@ -49,6 +49,41 @@ async def test_thread_roundtrip(cp):
     assert got.thread_name == "first"
     assert got.user_id == "alice"
     assert (got.metadata or {}).get("k") == 1
+
+
+async def test_first_state_write_creates_the_thread_record(cp):
+    c = cfg("fresh")
+    assert await cp.aget_thread(c) is None
+    await cp.aput_state(c, _state("hello"))
+    got = await cp.aget_thread(c)
+    assert got is not None
+    assert got.thread_id == "fresh"
+    assert got.user_id == "alice"
+    assert "fresh" in {t.thread_id for t in await cp.alist_threads(c)}
+
+
+async def test_state_write_keeps_an_existing_thread_record(cp):
+    c = cfg("t1")
+    await cp.aput_thread(c, ThreadInfo(thread_id="t1", thread_name="mine", metadata={"k": 1}))
+    await cp.aput_state(c, _state("hello"))
+    got = await cp.aget_thread(c)
+    assert got.thread_name == "mine"
+    assert (got.metadata or {}).get("k") == 1
+
+
+async def test_graph_run_creates_the_thread_record(cp):
+    async def node(state: AgentState):
+        return Message.text_message("done", role="assistant")
+
+    graph = StateGraph()
+    graph.add_node("N", node)
+    graph.add_edge("N", END)
+    graph.set_entry_point("N")
+    app = graph.compile(checkpointer=cp)
+    c = cfg("run1")
+    await app.ainvoke({"messages": [Message.text_message("hi")]}, c)
+    assert await cp.aget_thread(c) is not None
+    assert "run1" in {t.thread_id for t in await cp.alist_threads(c)}
 
 
 async def test_get_missing_thread_is_none(cp):
@@ -169,6 +204,8 @@ async def test_thread_roundtrip_equals_input(cp):
     got = await cp.aget_thread(cfg("t1"))
     assert got.metadata == {"k": "v"}
     assert got.thread_name == "n"
+    listed = await cp.alist_threads(cfg("t1"))
+    assert listed[0].metadata == {"k": "v"}
 
 
 # ------------------------------------------------------------------ is_new_thread
@@ -304,9 +341,10 @@ async def test_update_message_metadata_missing_is_none(cp):
 async def test_put_messages_metadata_argument(cp):
     """``aput_messages(metadata=...)`` is merged into each message; the message's keys win."""
     c = cfg("t1")
+    first = _msg(1)
     own = _msg(2)
     own.metadata = {"source": "own"}
-    await cp.aput_messages(c, [_msg(1), own], metadata={"source": "import", "batch": 7})
+    await cp.aput_messages(c, [first, own], metadata={"source": "import", "batch": 7})
     assert (await cp.aget_message(c, "m1")).metadata == {"source": "import", "batch": 7}
     assert (await cp.aget_message(c, "m2")).metadata == {"source": "own", "batch": 7}
     listed = await cp.alist_messages(c)
@@ -344,42 +382,66 @@ async def test_same_message_id_in_two_threads(cp):
 # ------------------------------------------------------------------ ids
 
 
-async def test_int_and_str_thread_ids_are_the_same_thread_text(cp):
-    """Direct callers pass int ids; ``"7"`` and ``7`` must address the same data."""
+async def test_int_and_str_thread_ids_are_the_same_thread_text(backend, cp):
+    """Memory and SQLite: ``"7"`` and ``7`` address the same data. Postgres follows its
+    id_type: a text table takes strings and refuses an int with ValueError."""
+    if backend == "pg":
+        with pytest.raises(ValueError, match="thread_id must be a string"):
+            await cp.aput_messages(cfg(7), [_msg(1, "seven")])
+        await cp.aput_messages(cfg("7"), [_msg(1, "seven")])
+        assert _ids(await cp.alist_messages(cfg("7"))) == ["m1"]
+        return
     await cp.aput_messages(cfg(7), [_msg(1, "seven")])
     assert _ids(await cp.alist_messages(cfg("7"))) == ["m1"]
 
 
-async def test_int_thread_id_roundtrip(cp):
+async def test_int_thread_id_roundtrip(backend, cp):
+    if backend == "pg":
+        with pytest.raises(ValueError, match="thread_id must be a string"):
+            await cp.aput_thread(cfg(11), ThreadInfo(thread_id=11, thread_name="int"))
+        return
     await cp.aput_thread(cfg(11), ThreadInfo(thread_id=11, thread_name="int"))
     got = await cp.aget_thread(cfg(11))
     assert got is not None
     assert str(got.thread_id) == "11"
 
 
-async def test_int_message_id_found_by_str_and_int(cp):
-    """G5: store id 5 (int); get "5" and 5. M compares with ==, so "5" misses."""
+async def test_int_message_id_found_by_str_and_int(backend, cp):
+    """Memory and SQLite: store id 5 (int); get "5" and 5. Postgres text table: int id refused."""
     c = cfg("t1")
     m = Message.text_message("five", role="user")
     m.message_id = 5
+    if backend == "pg":
+        with pytest.raises(ValueError, match="message_id must be a string"):
+            await cp.aput_messages(c, [m])
+        return
     await cp.aput_messages(c, [m])
     assert (await cp.aget_message(c, "5")).text() == "five"
     assert (await cp.aget_message(c, 5)).text() == "five"
 
 
-async def test_str_message_id_found_by_int(cp):
-    """G5, other direction: store "5", get 5."""
+async def test_str_message_id_found_by_int(backend, cp):
+    """Memory and SQLite: store "5", get 5. Postgres text table: the int lookup is refused."""
     c = cfg("t1")
     await cp.aput_messages(c, [Message.text_message("five", message_id="5")])
+    if backend == "pg":
+        with pytest.raises(ValueError, match="message_id must be a string"):
+            await cp.aget_message(c, 5)
+        assert (await cp.aget_message(c, "5")).text() == "five"
+        return
     assert (await cp.aget_message(c, 5)).text() == "five"
 
 
-async def test_int_message_ids_dedupe_with_str(cp):
-    """G5: re-putting id 5 as "5" updates the same row, not a second one."""
+async def test_int_message_ids_dedupe_with_str(backend, cp):
+    """Memory and SQLite: re-putting id 5 as "5" updates the same row. Postgres: int refused."""
     c = cfg("t1")
     a = Message.text_message("one", role="user")
     a.message_id = 5
     b = Message.text_message("two", role="user", message_id="5")
+    if backend == "pg":
+        with pytest.raises(ValueError, match="message_id must be a string"):
+            await cp.aput_messages(c, [a])
+        return
     await cp.aput_messages(c, [a])
     await cp.aput_messages(c, [b])
     got = await cp.alist_messages(c)
@@ -387,30 +449,44 @@ async def test_int_message_ids_dedupe_with_str(cp):
     assert got[0].text() == "two"
 
 
-async def test_int_message_id_delete_and_update(cp):
+async def test_int_message_id_delete_and_update(backend, cp):
     c = cfg("t1")
     m = Message.text_message("five", role="user")
     m.message_id = 5
+    if backend == "pg":
+        await cp.aput_messages(c, [Message.text_message("five", message_id="5")])
+        for call in (cp.aupdate_message_metadata(c, 5, {"k": 1}), cp.adelete_message(c, 5)):
+            with pytest.raises(ValueError, match="message_id must be a string"):
+                await call
+        assert await cp.adelete_message(c, "5") == 1
+        return
     await cp.aput_messages(c, [m])
     assert (await cp.aupdate_message_metadata(c, "5", {"k": 1})) is not None
     assert await cp.adelete_message(c, "5") == 1
 
 
-async def test_pg_integer_id_tables_accept_string_ids(backend, make_cp):
-    """G23: id_type="bigint" tables take the string ids the API passes, in every message method."""
+async def test_pg_integer_id_tables_take_ints_and_refuse_strings(backend, make_cp):
+    """id_type="bigint": thread and message ids must be integers in every method; a string
+    raises ValueError naming the expected type."""
     if backend != "pg":
         pytest.skip("Postgres only")
     cp = await make_cp(id_type="bigint")
-    c = cfg("42")
-    await cp.aput_thread(c, ThreadInfo(thread_id="42", thread_name="n"))
+    c = cfg(42)
+    await cp.aput_thread(c, ThreadInfo(thread_id=42, thread_name="n"))
     m = Message.text_message("hi", role="user")
     m.message_id = 9
     await cp.aput_messages(c, [m])
     assert [x.text() for x in await cp.alist_messages(c)] == ["hi"]
-    assert (await cp.aget_message(c, "9")).text() == "hi"
-    assert await cp.aupdate_message_metadata(c, "9", {"k": 1}) is not None
-    assert await cp.adelete_message(c, "9") == 1
-    assert await cp.aget_thread_owner("42") == "alice"
+    assert (await cp.aget_message(c, 9)).text() == "hi"
+    with pytest.raises(ValueError, match="message_id must be an integer"):
+        await cp.aget_message(c, "9")
+    with pytest.raises(ValueError, match="thread_id must be an integer"):
+        await cp.aget_thread(cfg("42"))
+    with pytest.raises(ValueError, match="thread_id must be an integer"):
+        await cp.aput_messages(cfg("42"), [m])
+    assert await cp.aupdate_message_metadata(c, 9, {"k": 1}) is not None
+    assert await cp.adelete_message(c, 9) == 1
+    assert await cp.aget_thread_owner(42) == "alice"
     assert await cp.aclean_thread(c) == 1
 
 
@@ -603,16 +679,17 @@ async def test_reach_own_sees_only_own_threads(cp):
 
 
 async def test_tenant_filters_on_list_threads(backend, cp):
-    """``filters`` on a backend without declared columns raise FilterError."""
+    """A client filter on an isolation column is refused (FilterError); on a backend without
+    tenant columns any such filter is refused too. Tenant scoping comes from the identity."""
     from tenxgraph.storage.sql_filter import FilterError
 
     await cp.aput_thread(cfg("a", org="A"), ThreadInfo(thread_id="a"))
+    with pytest.raises(FilterError):
+        await cp.alist_threads(cfg("a", org="A"), filters={"org_id": "A"})
     if backend == "pg":
-        got = await cp.alist_threads(cfg("a", org="A"), filters={"org_id": "A"})
+        await cp.aput_thread(cfg("b", user="alice", org="B"), ThreadInfo(thread_id="b"))
+        got = await cp.alist_threads(cfg("a", org="A", reach="tenant"))
         assert [t.thread_id for t in got] == ["a"]
-    else:
-        with pytest.raises(FilterError):
-            await cp.alist_threads(cfg("a"), filters={"org_id": "A"})
 
 
 async def test_same_user_id_in_two_tenants_is_isolated(backend, cp):
@@ -641,41 +718,69 @@ async def test_anonymous_use(backend, make_cp):
 # ------------------------------------------------------------------ NUL and surrogates
 
 
-@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone-surrogate"])
+BAD_TEXT = pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone-surrogate"])
+
+
+@BAD_TEXT
 async def test_message_text_with_nul_or_surrogate(cp, bad):
-    """G20: round trip exactly, or refuse with ValidationError. Never corrupt, never a raw
-    driver error."""
+    """G20: refused with ValueError before anything is stored, on every backend."""
     c = cfg("t1")
-    try:
+    with pytest.raises(ValueError, match="NUL"):
         await cp.aput_messages(c, [_msg(1, bad)])
-    except ValidationError:
-        return
-    assert (await cp.aget_message(c, "m1")).text() == bad
+    assert await cp.alist_messages(c) == []
 
 
-@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone-surrogate"])
+@BAD_TEXT
 async def test_state_text_with_nul_or_surrogate(cp, bad):
     c = cfg("t1")
     await cp.aput_thread(c, ThreadInfo(thread_id="t1"))
-    try:
+    with pytest.raises(ValueError, match="NUL"):
         await cp.aput_state(c, _state(bad))
-    except ValidationError:
-        return
-    got = await cp.aget_state(c)
-    assert got.context[0].text() == bad
+    assert await cp.aget_state(c) is None
 
 
-@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"], ids=["nul", "lone-surrogate"])
+@BAD_TEXT
+async def test_thread_info_and_message_metadata_with_nul_or_surrogate(cp, bad):
+    c = cfg("t1")
+    with pytest.raises(ValueError, match="NUL"):
+        await cp.aput_thread(c, ThreadInfo(thread_id="t1", thread_name=bad))
+    with pytest.raises(ValueError, match="NUL"):
+        await cp.aput_thread(c, ThreadInfo(thread_id="t1", metadata={"k": bad}))
+    await cp.aput_messages(c, [_msg(1, "ok")])
+    with pytest.raises(ValueError, match="NUL"):
+        await cp.aupdate_message_metadata(c, "m1", {"k": bad})
+
+
+@BAD_TEXT
 async def test_ledger_and_cache_with_nul_or_surrogate(cp, bad):
     c = cfg("t1")
     await cp.aput_thread(c, ThreadInfo(thread_id="t1"))
-    try:
+    with pytest.raises(ValueError, match="NUL"):
         await cp.aput_tool_result(c, "m0:c", {"output": bad})
+    with pytest.raises(ValueError, match="NUL"):
         await cp.aput_cache_value("ns", "k", {"v": bad})
-    except ValidationError:
-        return
-    assert await cp.aget_tool_result(c, "m0:c") == {"output": bad}
-    assert await cp.aget_cache_value("ns", "k") == {"v": bad}
+    with pytest.raises(ValueError, match="NUL"):
+        await cp.aput_cache_value_if_absent("ns", "k2", {"v": bad})
+    assert await cp.aget_tool_result(c, "m0:c") is None
+    assert await cp.aget_cache_value("ns", "k") is None
+
+
+# ------------------------------------------------------------------ message order
+
+
+async def test_messages_of_one_put_list_in_insertion_order(cp):
+    """B4: 50 messages in one put with increasing timestamps; a re-put of the same list keeps
+    the order (messages sort by their own timestamp)."""
+    c = cfg("t1")
+    base = 1_700_000_000.0
+    msgs = []
+    for i in range(50):
+        m = _msg(i)
+        m.timestamp = base + i * 0.001
+        msgs.append(m)
+    await cp.aput_messages(c, msgs)
+    await cp.aput_messages(c, msgs)
+    assert _ids(await cp.alist_messages(c)) == [f"m{i}" for i in range(50)]
 
 
 # ------------------------------------------------------------------ cache values

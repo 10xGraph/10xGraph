@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -9,13 +10,14 @@ from pydantic import BaseModel
 from tenxgraph.core.authz import owner_id
 from tenxgraph.core.exceptions import MessageNotFoundError
 from tenxgraph.core.state import Message
+from tenxgraph.storage._pg_common import loads_jsonb
 from tenxgraph.storage.columns import (
     rows_affected as _rows_affected,
 )
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
-from .base_checkpointer import like_escape, validate_page
+from .base_checkpointer import like_escape, reject_unstorable, validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -55,15 +57,18 @@ class _PgMessagesMixin(PgHostBase):
                 meta[_PARSED_CONTENT_KEY] = (
                     parsed.model_dump(mode="json") if isinstance(parsed, BaseModel) else parsed
                 )
+            created_at = None
             if message.timestamp is not None:
                 meta[_TIMESTAMP_KEY] = message.timestamp
+                # Each message sorts by its own time (created_at is TIMESTAMPTZ, UTC).
+                created_at = datetime.fromtimestamp(message.timestamp, tz=UTC)
             await conn.execute(
                 f"""
                     INSERT INTO {messages_table} (
                         message_id, thread_id, role, content, tool_calls,
-                        tool_call_id, total_tokens, usages, meta
+                        tool_call_id, total_tokens, usages, meta, created_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, NOW()))
                     ON CONFLICT (thread_id, message_id) DO UPDATE SET
                         role = EXCLUDED.role,
                         content = EXCLUDED.content,
@@ -74,7 +79,7 @@ class _PgMessagesMixin(PgHostBase):
                         meta = EXCLUDED.meta,
                         updated_at = NOW()
                     """,  # noqa: S608
-                message.message_id,
+                self._db_message_id(message.message_id),
                 thread_id,
                 message.role,
                 json.dumps([block.model_dump(mode="json") for block in message.content]),
@@ -83,6 +88,7 @@ class _PgMessagesMixin(PgHostBase):
                 message.usages.total_tokens if message.usages else 0,
                 json.dumps(message.usages.model_dump()) if message.usages else None,
                 json.dumps(meta),
+                created_at,
             )
 
     async def aput_messages(
@@ -105,6 +111,8 @@ class _PgMessagesMixin(PgHostBase):
         Raises:
             Exception: If storing fails.
         """
+        reject_unstorable(messages, metadata)
+        self._check_message_ids(messages)
         # Ensure schema is initialized before accessing tables
         thread_id, user_id = self._validate_config(config)
 
@@ -119,7 +127,7 @@ class _PgMessagesMixin(PgHostBase):
             await self._ensure_thread_exists(thread_id, user_id, config)
 
             # Store messages in batch with retry logic
-            await self._run_scoped(
+            await self._run_query(
                 lambda conn: self._insert_messages(conn, thread_id, messages, metadata),
                 in_transaction=True,
                 settings=self._rls(config, write=True),
@@ -149,6 +157,7 @@ class _PgMessagesMixin(PgHostBase):
         """
         thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
+        message_id = self._db_message_id(message_id)
 
         # Message ids are unique per thread only, so the thread is part of the key.
 
@@ -167,7 +176,7 @@ class _PgMessagesMixin(PgHostBase):
             # even if they know the message/thread id.
             query = self._append_owner_scope(query, params, user_id, config)
 
-            row = await self._run_scoped(
+            row = await self._run_query(
                 lambda conn: conn.fetchrow(query, *params), settings=self._rls(config)
             )
 
@@ -236,6 +245,8 @@ class _PgMessagesMixin(PgHostBase):
                                AND block->>'output' ILIKE ${n})
                     ) ELSE content ILIKE ${n} END"""  # noqa: S608
 
+            # Messages sort by their own timestamp; the table has no monotonic column, so
+            # messages with equal timestamps keep an undefined order.
             query += " ORDER BY created_at ASC"
 
             if limit:
@@ -246,7 +257,7 @@ class _PgMessagesMixin(PgHostBase):
                 params.append(offset)
                 query += f" OFFSET ${len(params)}"
 
-            rows = await self._run_scoped(
+            rows = await self._run_query(
                 lambda conn: conn.fetch(query, *params), settings=self._rls(config)
             )
             if not rows:
@@ -289,6 +300,7 @@ class _PgMessagesMixin(PgHostBase):
         """
         thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
+        message_id = self._db_message_id(message_id)
 
         # Message ids are unique per thread only, so the thread is part of the key.
 
@@ -335,7 +347,7 @@ class _PgMessagesMixin(PgHostBase):
                 )
                 rewritten = False
                 for row in rows:
-                    payload = self._loads_jsonb(row["state_data"])
+                    payload = loads_jsonb(row["state_data"])
                     if self._strip_message_from_payload(payload, message_id):
                         rewritten = True
                         await conn.execute(
@@ -355,7 +367,7 @@ class _PgMessagesMixin(PgHostBase):
                     )
                 return deleted
 
-            deleted = await self._run_scoped(
+            deleted = await self._run_query(
                 _delete, in_transaction=True, settings=self._rls(config)
             )
             # The cached state carries the message too. Dropping it makes the next read
@@ -388,8 +400,10 @@ class _PgMessagesMixin(PgHostBase):
             thread (or the caller does not own the thread: a write stays own whatever the
             reach).
         """
+        reject_unstorable(metadata)
         thread_id = self._message_thread_id(config)
         user_id = owner_id(config)
+        message_id = self._db_message_id(message_id)
 
         logger.debug("Updating metadata of message_id=%s for thread_id=%s", message_id, thread_id)
 
@@ -409,7 +423,7 @@ class _PgMessagesMixin(PgHostBase):
                           usages, meta
             """
 
-            row = await self._run_scoped(
+            row = await self._run_query(
                 lambda conn: conn.fetchrow(query, *params),
                 settings=self._rls(config, write=True),
             )
@@ -437,7 +451,7 @@ class _PgMessagesMixin(PgHostBase):
         usages = None
         if row["usages"]:
             try:
-                usages = TokenUsages(**self._loads_jsonb(row["usages"]))
+                usages = TokenUsages(**loads_jsonb(row["usages"]))
             except Exception:
                 usages = None
 
@@ -445,7 +459,7 @@ class _PgMessagesMixin(PgHostBase):
         tool_calls = None
         if row["tool_calls"]:
             try:
-                tool_calls = self._loads_jsonb(row["tool_calls"])
+                tool_calls = loads_jsonb(row["tool_calls"])
             except Exception:
                 tool_calls = None
 
@@ -453,7 +467,7 @@ class _PgMessagesMixin(PgHostBase):
         metadata = {}
         if row["meta"]:
             try:
-                metadata = self._loads_jsonb(row["meta"])
+                metadata = loads_jsonb(row["meta"])
             except Exception:
                 metadata = {}
         if not isinstance(metadata, dict):
