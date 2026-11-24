@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from tenxgraph.core.state.message_block import ContentBlock
 
@@ -165,6 +165,9 @@ class EventModel(BaseModel):
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+    # perf_counter reading when a tool call began; set by the tool START event, never dumped.
+    _started_at: float | None = PrivateAttr(default=None)
 
     @classmethod
     def default(

@@ -60,6 +60,8 @@ class ToolResultEvent(BaseModel):
     type: Literal["tool_result"] = "tool_result"
     id: str
     result: Any = None
+    status: Literal["success", "error"] = "success"
+    duration_ms: float = 0.0
 
 
 class TurnCompleteEvent(BaseModel):

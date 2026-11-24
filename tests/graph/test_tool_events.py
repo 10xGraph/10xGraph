@@ -209,3 +209,63 @@ async def test_event_sequence_matches_the_snapshot(scenario, mode):
         SNAPSHOT.write_text(json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
     assert recorded == snapshot[scenario][mode]
     assert snapshot[scenario]["ainvoke"] == snapshot[scenario]["astream"]
+
+
+def _ends(events):
+    return {
+        e.data["function_name"]: e
+        for e in events
+        if e.event == Event.TOOL_EXECUTION and e.event_type != EventType.START
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("local_parallel", {"alpha": "success", "beta": "success"}),
+        ("mcp", {"srv_lookup": "success"}),
+        ("unknown", {"ghost": "error"}),
+        ("denied", {"refund": "error"}),
+    ],
+)
+async def test_tool_end_events_carry_status_and_duration(scenario, expected, mode):
+    events, _ = await _record(scenario, mode)
+    ends = _ends(events)
+
+    assert {name: e.data["status"] for name, e in ends.items()} == expected
+    for e in ends.values():
+        duration = e.data.get("duration_ms")
+        if e.data["function_name"] == "ghost":
+            continue  # never ran; the START to ERROR gap is not a tool run
+        assert isinstance(duration, float)
+        assert duration >= 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_raising_tool_ends_in_error_with_duration(mode):
+    import asyncio
+
+    async def slow_ok() -> str:
+        await asyncio.sleep(0.05)
+        return "ok"
+
+    def explode() -> str:
+        raise RuntimeError("boom")
+
+    publisher = InlineRecorder()
+    app = build(
+        ToolNode([slow_ok, explode]),
+        [("c1", "slow_ok"), ("c2", "explode")],
+        checkpointer=InMemoryCheckpointer(),
+        publisher=publisher,
+    )
+    await run(app, mode, {"thread_id": f"events-raise-{mode}"})
+    ends = _ends(publisher.events)
+
+    assert ends["slow_ok"].data["status"] == "success"
+    assert ends["slow_ok"].data["duration_ms"] >= 40.0
+    assert ends["explode"].data["status"] == "error"
+    assert ends["explode"].data["duration_ms"] >= 0.0

@@ -18,7 +18,7 @@ def _make(**kwargs):
     client.aio.models.embed_content = AsyncMock(return_value=MagicMock(embeddings=[item]))
     genai = MagicMock()
     genai.Client.return_value = client
-    with patch(f"{MOD}.HAS_GOOGLE", True), patch(f"{MOD}.genai", genai):
+    with patch(f"{MOD}.HAS_GOOGLE", True), patch("google.genai", genai):
         emb = GoogleEmbedding(api_key="k", **kwargs)
     return emb, client.aio.models.embed_content
 

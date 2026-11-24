@@ -8,7 +8,6 @@ directly through ``ToolNode.invoke``.
 """
 
 import asyncio
-import copy
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
     resolve_max_parallel_tool_calls,
 )
 from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.agent_state import copy_state
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
 from tenxgraph.core.state.stream_emitter import StreamEmitter
@@ -154,9 +154,10 @@ class ToolRunner(ToolRuntimeMixin):
         origin_message_id = getattr(last_message, "message_id", None)
 
         # Branch isolation: parallel tools each get a copy of the state, merged back
-        # afterwards against a baseline. A single call keeps the shared state.
+        # afterwards against a baseline. A single call keeps the shared state. The copies
+        # share the message objects (see copy_state); context is never merged back.
         is_parallel = len(calls) > 1
-        baseline = copy.deepcopy(state) if is_parallel else None
+        baseline = copy_state(state) if is_parallel else None
         branch_states: list[AgentState | None] = [None] * len(calls)
         results: list[Any] = [None] * len(calls)
         interrupts: list[GraphInterrupt] = []
@@ -185,7 +186,7 @@ class ToolRunner(ToolRuntimeMixin):
                     results[index] = hidden_tool_message(tool_call)
                     return
                 async with semaphore:
-                    branch = copy.deepcopy(state) if is_parallel else state
+                    branch = copy_state(state) if is_parallel else state
                     branch_states[index] = branch
                     results[index] = await self._handle_single_tool(
                         tool_call, branch, config, origin_message_id=origin_message_id, queue=queue

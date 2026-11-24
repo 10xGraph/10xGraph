@@ -9,6 +9,7 @@ Helpers live in ``_qdrant_support.py``, the read and delete methods in ``_qdrant
 """
 
 import asyncio
+import importlib.util
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -28,14 +29,8 @@ from .store_schema import (
 )
 
 
-HAS_QDRANT = False
-
-try:
-    import qdrant_client  # noqa: F401
-
-    HAS_QDRANT = True
-except ImportError:
-    pass
+# Imported where it is used: importing qdrant_client here costs about 0.4 s at startup.
+HAS_QDRANT = importlib.util.find_spec("qdrant_client") is not None
 
 logger = logging.getLogger("tenxgraph.store")
 

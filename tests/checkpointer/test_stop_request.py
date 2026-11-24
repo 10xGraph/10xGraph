@@ -74,7 +74,7 @@ class TestStopRequestConsumption:
     def stop_deps(self):
         """Supply the deps check_stop_requested would otherwise resolve via DI.
 
-        Each test monkeypatches handler_utils.sync_data/reload_state itself, so
+        Each test monkeypatches handler_utils.sync_data itself, so
         the patches are undone after the test. Assigning them on the module here
         would leak into the rest of the session.
         """
@@ -97,11 +97,6 @@ class TestStopRequestConsumption:
         state = AgentState()
         assert state.is_stopped_requested() is False
 
-        # reload_state would hand back the loop's flag-less cached state.
-        async def _reload(config, old_state):
-            return old_state
-
-        monkeypatch.setattr(handler_utils, "reload_state", _reload)
         monkeypatch.setattr(handler_utils, "sync_data", AsyncMock(return_value=False))
         monkeypatch.setattr(handler_utils, "publish_event", MagicMock())
 
@@ -131,10 +126,6 @@ class TestStopRequestConsumption:
         cp, callback_mgr = stop_deps
         state = AgentState()
 
-        async def _reload(config, old_state):
-            return old_state
-
-        monkeypatch.setattr(handler_utils, "reload_state", _reload)
         monkeypatch.setattr(handler_utils, "sync_data", AsyncMock(return_value=False))
         monkeypatch.setattr(handler_utils, "publish_event", MagicMock())
 

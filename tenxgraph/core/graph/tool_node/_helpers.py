@@ -8,10 +8,11 @@ import enum
 import json
 import logging
 import pathlib
+import time
 import typing as t
 import uuid
 
-from tenxgraph.core.state import Message, ToolCallBlock, ToolResultBlock
+from tenxgraph.core.state import ErrorBlock, Message, ToolCallBlock, ToolResultBlock
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import listening, publish_event
 from tenxgraph.utils.log_safety import error_details, log_safe
@@ -191,6 +192,7 @@ def tool_start_event(
         extra={"graph_node": graph_node},
     )
     event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
+    event._started_at = time.perf_counter()
     if is_remote:
         event.metadata["is_remote"] = True
     if is_mcp is not None:
@@ -198,6 +200,14 @@ def tool_start_event(
         event.metadata["is_mcp"] = is_mcp
         event.metadata["function_type"] = "mcp" if is_mcp else "internal"
     return event
+
+
+def tool_message_failed(message: Message | None) -> bool:
+    """Whether a tool result message reports a failure (an error block or an error result)."""
+    return message is not None and any(
+        isinstance(b, ErrorBlock) or (isinstance(b, ToolResultBlock) and b.is_error)
+        for b in message.content or []
+    )
 
 
 def publish_tool_end(
@@ -212,11 +222,17 @@ def publish_tool_end(
 ) -> None:
     """Publish the END (or ERROR) of a tool call with its result ``message`` and/or ``error``.
 
-    ``exc`` adds ``error_details`` (trace backends only). Nothing is built when no publisher
-    is bound.
+    ``data["status"]`` is ``"error"`` when the call raised, was denied, ended as an ERROR
+    event or returned an error result, else ``"success"``; ``data["duration_ms"]`` is the time
+    since the START event was built. ``exc`` adds ``error_details`` (trace backends only).
+    Nothing is built when no publisher is bound.
     """
     if not listening():
         return
+    failed = bool(error) or event_type == EventType.ERROR or tool_message_failed(message)
+    event.data["status"] = "error" if failed else "success"
+    if event._started_at is not None:
+        event.data["duration_ms"] = (time.perf_counter() - event._started_at) * 1000.0
     event.event_type = event_type
     event.metadata["status"] = status
     kind = ContentType.ERROR if error else ContentType.MESSAGE

@@ -1,19 +1,16 @@
 """Google embedding service for vector stores."""
 
+import importlib.util
 import os
 
 from .base_embedding import BaseEmbedding
 
 
-HAS_GOOGLE = False
-
-
+# The SDK is imported in ``__init__``: importing it here costs about a second at startup.
 try:
-    from google import genai
-
-    HAS_GOOGLE = True
-except ImportError:
-    pass
+    HAS_GOOGLE = importlib.util.find_spec("google.genai") is not None
+except ImportError:  # no ``google`` package at all
+    HAS_GOOGLE = False
 
 
 class GoogleEmbedding(BaseEmbedding):
@@ -58,6 +55,8 @@ class GoogleEmbedding(BaseEmbedding):
             raise ValueError(
                 "Google API key must be provided via parameter, GOOGLE_API_KEY or GEMINI_API_KEY"
             )
+
+        from google import genai
 
         # Create client
         if base_url:

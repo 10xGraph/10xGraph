@@ -642,10 +642,10 @@ class CompiledGraph[StateT: AgentState]:
             # into the state blob. Nothing in the run loop writes this key, so a
             # stop recorded here always survives to the next stop check.
             await self._checkpointer.arequest_stop(cfg)
-            # Also mirror it into the cached state. Redundant for checkpointers
-            # that back the stop key, but it keeps stop working for a custom
-            # checkpointer that has not implemented the generic cache (whose
-            # arequest_stop inherits the no-op default).
+            # Also mirror it into the cached state, so a reader of the cached
+            # state sees the request. The run loop does not read this copy: it
+            # checks the stop key only (a custom checkpointer without the
+            # generic cache gets no cross-process stop).
             state.execution_meta.stop_current_execution = StopRequestStatus.STOP_REQUESTED
             await self._checkpointer.aput_state_cache(cfg, state)
             logger.info("Set stop_current_execution flag for thread_id: %s", cfg.get("thread_id"))

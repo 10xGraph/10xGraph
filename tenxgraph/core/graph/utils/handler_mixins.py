@@ -8,6 +8,7 @@ from typing import Any
 from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import GraphRecursionError
 from tenxgraph.core.state import AgentState, Message
+from tenxgraph.core.state.agent_state import copy_state
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.utils import END, START
@@ -168,7 +169,7 @@ class GraphRunMixin:
         when ``on_state_update`` hooks need it) and the node event.
         """
         has_hooks = self._has_hooks()
-        old_state_snapshot = state.model_copy(deep=True) if has_hooks else state
+        old_state_snapshot = copy_state(state) if has_hooks else state
         node_event = EventModel.default(
             config,
             data={"step": step, "state": state},

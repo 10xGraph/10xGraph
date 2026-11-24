@@ -31,6 +31,7 @@ from pydantic import TypeAdapter
 from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import GraphError
 from tenxgraph.core.state import AgentState, ExecutionStatus, Message, ToolCallBlock
+from tenxgraph.core.state.agent_state import copy_state
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.execution_state import ExecutionState as ExecMeta
 from tenxgraph.core.state.execution_state import StopRequestStatus
@@ -502,44 +503,6 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     return state  # type: ignore[return-value]
 
 
-async def reload_state[StateT: AgentState](
-    config: dict[str, Any],
-    old_state: StateT,
-    checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],  # will be auto-injected
-) -> StateT:
-    """Load existing state from checkpointer or create new state.
-
-    Attempts to fetch a realtime-synced state first, then falls back to
-    the persistent checkpointer. If no existing state is found, creates
-    a new state from the `StateGraph`'s prototype state and merges any
-    incoming messages. Supports partial state update via 'state' in input_data.
-    """
-    checkpointer = fresh(checkpointer)
-    logger.debug("Loading or creating state with thread_id=%s", config.get("thread_id", "default"))
-
-    if not checkpointer:
-        return old_state
-
-    # first check realtime-synced state
-    existing_state: AgentState | None = await checkpointer.aget_state_cache(config)
-    if not existing_state:
-        logger.debug("No synced state found, trying persistent checkpointer")
-        # If no synced state, try to get from persistent checkpointer
-        existing_state = await checkpointer.aget_state(config)
-
-    if not existing_state:
-        logger.debug("No existing state found to reload, returning old state")
-        return old_state
-
-    logger.info(
-        "Loaded existing state with %d context messages, current_node=%s, step=%d",
-        len(existing_state.context) if existing_state.context else 0,
-        existing_state.execution_meta.current_node,
-        existing_state.execution_meta.step,
-    )
-    return existing_state
-
-
 _field_adapters: dict[tuple[type, str], TypeAdapter] = {}
 
 
@@ -798,13 +761,16 @@ async def sync_data(
     task_manager = fresh(task_manager)
     is_context_trimmed = False
 
-    # Model and tool output must be storable, or the save fails on every later call.
-    clean_unstorable_messages(state.context, config)
-    clean_unstorable_messages(messages, config)
+    # Model and tool output must be storable, or the save fails on every later call. That
+    # output is in ``messages`` (the run's unsaved messages); the history was stored, so it is
+    # clean. Only when one was cleaned is the context scanned, to replace it there too.
+    if clean_unstorable_messages(messages, config):
+        clean_unstorable_messages(state.context, config)
 
     # Ids of the run's tool-calling messages, taken before trimming drops any of them.
     origin_ids = _tool_origin_ids([*state.context, *messages])
-    new_state = copy.deepcopy(state)
+    # The save gets its own copy: hooks may change it and the save may outlive a cancel.
+    new_state = copy_state(state)
     # if context manager is available then utilize it
     if context_manager and trim:
         new_state = await context_manager.atrim_context(state)

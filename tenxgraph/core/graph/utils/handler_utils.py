@@ -65,7 +65,6 @@ from .utils import (
     clean_unstorable_messages,
     detach_task,
     get_next_node,
-    reload_state,
     sync_data,
     wait_detached,
 )
@@ -456,19 +455,11 @@ async def check_stop_requested[StateT: AgentState](
     """
     callback_mgr = fresh(callback_mgr)
     checkpointer = fresh(checkpointer)
-    # The reloaded copy is only read, for a stop flag set from outside. Everything that is
-    # saved below comes from the live ``state``: the cache copy can be older than it and
-    # would drop the node's output.
-    reloaded = await reload_state(config, state)  # type: ignore
-
-    # A stop request lives in its own checkpointer key, NOT in the cached state.
-    # This loop rewrites the state cache after every node, so a flag carried in
-    # the state blob can be overwritten by our own flag-less copy before we get
-    # here. The dedicated key is never written by the loop, so it survives.
-    # The state blob is still consulted, so a custom checkpointer that does not
-    # back the stop key keeps working the way it did before.
-    stop_requested = state.is_stopped_requested() or reloaded.is_stopped_requested()
-    # The run's in-process flag (set by astop and aclose) needs no checkpointer or cache.
+    # Cheapest first: the live state and the run's in-process flag (set by astop and aclose)
+    # cost nothing. A stop from another process is one small cache key the run loop never
+    # writes, so its own state-cache writes cannot swallow it. The full state is not
+    # reloaded here: it is read only when a run starts or resumes.
+    stop_requested = state.is_stopped_requested()
     run = current_run.get()
     if run is not None and run.stop_requested:
         stop_requested = True

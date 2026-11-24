@@ -6,6 +6,7 @@ context summaries, and internal execution metadata for agent workflows.
 Supports subclassing for custom application fields.
 """
 
+import copy
 import logging
 from typing import Annotated
 
@@ -136,3 +137,19 @@ class AgentState(BaseModel):
         stopped = self.execution_meta.is_stopped_requested()
         logger.debug("State is_stopped_requested: %s", stopped)
         return stopped
+
+
+def copy_state[StateT: AgentState](state: StateT) -> StateT:
+    """A copy of ``state`` that shares its messages.
+
+    Every field is deep-copied except ``context``, which becomes a new list holding the
+    same ``Message`` objects. Messages are not changed once written (code replaces a
+    message instead of editing it), so sharing them is safe, and the copy costs one
+    pointer per message instead of a deep copy of the whole history. Appending to, or
+    reassigning, the copy's ``context`` never reaches ``state``, and neither does a change
+    to any other field.
+    """
+    context = state.context
+    # deepcopy uses the memo entry for the context list instead of copying it.
+    memo = {id(context): list(context)} if isinstance(context, list) else {}
+    return copy.deepcopy(state, memo)

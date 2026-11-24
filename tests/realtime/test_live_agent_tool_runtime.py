@@ -204,3 +204,37 @@ async def test_session_cancel_cancels_the_running_tool():
     assert leftover == []
     unawaited = [str(w.message) for w in caught if "never awaited" in str(w.message)]
     assert not [m for m in unawaited if "_run_tool" in m or "hang'" in m]
+
+
+def boom() -> str:
+    """Always fails."""
+    raise RuntimeError("boom")
+
+
+async def short_tool() -> str:
+    """Takes a moment."""
+    await asyncio.sleep(0.05)
+    return "ok"
+
+
+@pytest.mark.asyncio
+async def test_tool_result_event_reports_status_and_duration():
+    client = FakeRealtimeClient(
+        [
+            ToolCallEvent(id="c1", name="short_tool", args={}),
+            ToolCallEvent(id="c2", name="boom", args={}),
+            ToolCallEvent(id="c3", name="slow_tool", args={}),
+            ToolCallEvent(id="c4", name="ghost", args={}),
+        ]
+    )
+    events = await _run(
+        _agent(client, short_tool, boom, slow_tool), {"thread_id": "t1", "tool_timeout": 0.2}
+    )
+    by_id = {e.id: e for e in events if isinstance(e, ToolResultEvent)}
+
+    assert by_id["c1"].status == "success"
+    assert by_id["c1"].duration_ms >= 40.0
+    assert by_id["c2"].status == "error"
+    assert by_id["c3"].status == "error"
+    assert by_id["c3"].duration_ms >= 150.0
+    assert by_id["c4"].status == "error"

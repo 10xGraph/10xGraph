@@ -87,6 +87,14 @@ def has_unstorable_text(value: Any) -> bool:
     if isinstance(value, list | tuple):
         return any(has_unstorable_text(v) for v in value)
     if hasattr(value, "model_dump"):
+        # One JSON dump in pydantic's serializer is much cheaper than walking the fields: a
+        # NUL shows up in it as \u0000 and a lone surrogate makes it raise. Only then are
+        # the fields walked, to be sure.
+        try:
+            if "\\u0000" not in value.model_dump_json():
+                return False
+        except Exception:  # noqa: S110 - any dump failure falls back to the walk
+            pass
         return has_unstorable_text(value.model_dump())
     return False
 

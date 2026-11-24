@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tenxgraph.core.graph.utils.utils import reload_state
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 from tenxgraph.utils.log_safety import describe_error
 
@@ -43,22 +42,3 @@ async def test_non_retryable_error_is_left_to_the_caller(caplog):
     with caplog.at_level(logging.ERROR), pytest.raises(TimeoutError):
         await cp._retry_on_connection_error(op)
     assert caplog.records == []
-
-
-class _EmptyCheckpointer:
-    async def aget_state_cache(self, config):
-        return None
-
-    async def aget_state(self, config):
-        return None
-
-
-@pytest.mark.asyncio
-async def test_new_thread_reload_does_not_warn(caplog):
-    old = object()
-    with caplog.at_level(logging.DEBUG, logger="tenxgraph"):
-        result = await reload_state({"thread_id": "t"}, old, checkpointer=_EmptyCheckpointer())
-    assert result is old
-    records = [r for r in caplog.records if "No existing state found" in r.getMessage()]
-    assert records
-    assert all(r.levelno == logging.DEBUG for r in records)

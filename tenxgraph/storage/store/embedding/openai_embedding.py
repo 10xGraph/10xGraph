@@ -1,17 +1,11 @@
+import importlib.util
 import os
 from typing import Any
 
 from .base_embedding import BaseEmbedding
 
 
-HAS_OPENAI = False
-
-try:
-    import openai  # noqa: F401
-
-    HAS_OPENAI = True
-except ImportError:
-    pass
+HAS_OPENAI = importlib.util.find_spec("openai") is not None
 
 
 class OpenAIEmbedding(BaseEmbedding):
