@@ -98,7 +98,9 @@ class ToolRunner(ToolRuntimeMixin):
             if streaming:
                 # The answers never ran as tools, so no worker queued their chunks.
                 for answer in answers:
-                    yield self._result_chunk(answer, *self._answer_ids(answer), config)
+                    chunk = self._result_chunk(answer, *self._answer_ids(answer), config)
+                    if chunk is not None:
+                        yield chunk
             yield ToolRunResult([*ran.messages, *answers], target, ran.state_updated)
             return
 

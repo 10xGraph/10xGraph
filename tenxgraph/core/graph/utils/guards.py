@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
@@ -182,7 +182,7 @@ async def stream_with_guards(  # noqa: PLR0912, PLR0915
     poll_interval: float = DEFAULT_STOP_POLL_INTERVAL,
     on_timeout: Callable[[], Exception] | None = None,
     on_stop: Callable[[], Exception] | None = None,
-) -> AsyncIterator[T]:
+) -> AsyncGenerator[T]:
     """Iterate ``source`` under a deadline, cancelling it if a stop is requested.
 
     The stream twin of :func:`execute_with_guards`. ``source`` is driven by a producer task

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from functools import partial
@@ -117,7 +117,7 @@ class GraphEngine(GraphRunMixin):
         default_state: AgentState,
         streaming: bool,
         response_granularity: ResponseGranularity,
-    ) -> AsyncIterator[StreamChunk | RunResult]:
+    ) -> AsyncGenerator[StreamChunk | RunResult]:
         """The outer GRAPH_EXECUTION events (START, UPDATE, PROGRESS, END or ERROR)."""
         logger.info("Starting graph run, streaming=%s", streaming)
         start_time = time.time()
@@ -199,7 +199,7 @@ class GraphEngine(GraphRunMixin):
         streaming: bool,
         checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],  # type: ignore[assignment]
         callback_mgr: CallbackManager = Inject[CallbackManager],  # type: ignore[assignment]
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncGenerator[Any]:
         """Run one node under its deadline, cancellable by a stop (in-process or remote).
 
         Under stream the node's generator is driven by a task core owns
@@ -224,7 +224,7 @@ class GraphEngine(GraphRunMixin):
         input_data: dict[str, Any],
         config: dict[str, Any],
         streaming: bool,
-    ) -> AsyncIterator[StreamChunk]:
+    ) -> AsyncGenerator[StreamChunk]:
         """The step loop. Keeps ``run.state`` and ``run.messages`` current at every exit.
 
         Chunks are built only under ``if streaming``, so invoke builds none.

@@ -72,7 +72,11 @@ class _PgIdentityMixin(PgHostBase):
     @staticmethod
     def _generator_id_type() -> IDType:
         """The id type of the bound id generator (``IDType.STRING`` when none is bound)."""
-        generator = InjectQ.get_instance().try_get(BaseIDGenerator, None)
+        # DI lookup by the abstract key is intended; mypy rejects abstract type[T].
+        generator = InjectQ.get_instance().try_get(
+            BaseIDGenerator,  # type: ignore[type-abstract]
+            None,
+        )
         return generator.id_type if generator is not None else IDType.STRING
 
     @property

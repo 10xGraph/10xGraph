@@ -64,7 +64,7 @@ def generate_id(explicit_id: str | int | None = None) -> str | int:
     """
     if explicit_id:
         return explicit_id
-    generator = InjectQ.get_instance().try_get(BaseIDGenerator, None)
+    generator = InjectQ.get_instance().try_get(BaseIDGenerator, None)  # type: ignore[type-abstract]
     if generator is None:
         return str(uuid4())
     res = resolve_awaitable_id(generator.generate())
