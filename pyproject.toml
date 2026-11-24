@@ -57,9 +57,10 @@ dependencies = [
     # under SemVer a 0.x minor bump may break the API. Without an upper bound, a
     # future minor release would be picked up automatically and break every fresh
     # install of this package. Cap at the next minor until each release is verified.
-    # 0.6.0 is required: its active container is per task (no thread-local leak between
-    # concurrent runs) and set_current() returns a token that reset_current() restores.
-    "injectq>=0.6.1,<0.7",
+    # 0.7.0 is required: it keeps 0.6's per-task active container (no thread-local leak
+    # between concurrent runs, set_current() returns a token) and fixes the async factory
+    # and override bugs listed in cleanup-review/INJECTQ_BUGS.md.
+    "injectq>=0.7.0,<0.8",
     "pydantic>=2.0,<3",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",

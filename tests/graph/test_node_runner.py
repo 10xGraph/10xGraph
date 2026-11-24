@@ -156,3 +156,99 @@ async def test_on_error_non_message_does_not_recover(mode):
     with pytest.raises(NodeError) as raised:
         await run(_app(_failing, manager=manager), mode, {"thread_id": f"norec-{mode}"})
     assert raised.value.error_code == "NODE_001"
+
+
+# ---- dict results, None results, START/END callbacks, handoff tool chunks ----
+
+
+class CountState(AgentState):
+    note: str = ""
+    count: int = 0
+
+
+def _count_app(first, *, manager: CallbackManager | None = None):
+    graph = StateGraph(CountState())
+    graph.add_node("FIRST", first)
+    graph.add_node("JUMP", lambda state: Message.text_message("jumped", role="assistant"))
+    graph.add_edge("FIRST", END)
+    graph.add_edge("JUMP", END)
+    graph.set_entry_point("FIRST")
+    return graph.compile(checkpointer=InMemoryCheckpointer(), callback_manager=manager)
+
+
+def _count_both(body):
+    def sync_node(state: CountState):
+        return body(state)
+
+    async def async_node(state: CountState):
+        return body(state)
+
+    return {"sync": sync_node, "async": async_node}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("kind", KINDS)
+async def test_dict_result_is_a_partial_state_update(mode, kind):
+    body = _count_both(
+        lambda s: {
+            "note": "hi",
+            "count": "3",
+            "messages": Message.text_message("m", role="assistant"),
+        }
+    )[kind]
+    state, _ = await run(_count_app(body), mode, {"thread_id": f"dict-{mode}-{kind}"})
+    assert state.note == "hi"
+    assert state.count == 3
+    assert _texts(state)[-1] == "m"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("kind", KINDS)
+async def test_command_update_dict_with_goto(mode, kind):
+    body = _count_both(
+        lambda s: Command(
+            update={"count": 7, "messages": [Message.text_message("a", role="assistant")]},
+            goto="JUMP",
+        )
+    )[kind]
+    state, _ = await run(_count_app(body), mode, {"thread_id": f"cmd-dict-{mode}-{kind}"})
+    assert state.count == 7
+    assert _texts(state)[-2:] == ["a", "jumped"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("bad", [{"nope": 1}, {"count": "not a number"}])
+async def test_dict_result_bad_field_fails_with_node_001(mode, kind, bad):
+    app = _count_app(_count_both(lambda s: bad)[kind])
+    with pytest.raises(NodeError) as raised:
+        await run(app, mode, {"thread_id": f"dict-bad-{mode}-{kind}"})
+    assert raised.value.error_code == "NODE_001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("kind", KINDS)
+async def test_none_result_means_no_change(mode, kind):
+    state, _ = await run(
+        _count_app(_count_both(lambda s: None)[kind]), mode, {"thread_id": f"none-{mode}-{kind}"}
+    )
+    assert _texts(state) == ["go"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", MODES)
+async def test_start_and_end_run_no_node_callbacks(mode):
+    seen: list[str] = []
+    manager = CallbackManager()
+
+    async def before(context, input_data):
+        seen.append(context.node_name)
+        return input_data
+
+    manager.register_before_invoke(InvocationType.AI, before)
+    await run(_app(lambda s: None, manager=manager), mode, {"thread_id": f"cb-{mode}"})
+    assert seen == ["FIRST", "SECOND"]

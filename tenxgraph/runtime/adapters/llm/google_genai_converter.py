@@ -108,10 +108,6 @@ class GoogleGenAIConverter(BaseConverter):
         model_version = response.model_version or ""
         finish_reason = candidate.finish_reason if candidate else "UNKNOWN"
 
-        created_date = datetime.now().timestamp()
-        if hasattr(response, "create_time") and response.create_time:
-            created_date = response.create_time.timestamp()
-
         parsed = getattr(response, "parsed", None)
 
         metadata = {
@@ -127,7 +123,7 @@ class GoogleGenAIConverter(BaseConverter):
             message_id=generate_id(getattr(response, "response_id", None)),
             role="assistant",
             content=order_blocks(blocks),
-            timestamp=created_date,
+            timestamp=datetime.now().timestamp(),
             metadata=metadata,
             usages=usages,
             raw=None,  # Google GenAI responses are Pydantic models

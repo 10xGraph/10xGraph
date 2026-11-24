@@ -24,7 +24,7 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
     resolve_max_parallel_tool_calls,
 )
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.core.state.message_block import ErrorBlock
+from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.core.state.stream_chunks import StreamChunk, StreamEvent
 from tenxgraph.core.state.stream_emitter import StreamEmitter
 from tenxgraph.storage.checkpointer import BaseCheckpointer
@@ -95,12 +95,22 @@ class ToolRunner(ToolRuntimeMixin):
                         yield item
             answers = self._handoff_answers(last_message, winner, target, regular)
             self._stamp_node_name(answers)
+            if streaming:
+                # The answers never ran as tools, so no worker queued their chunks.
+                for answer in answers:
+                    yield self._result_chunk(answer, *self._answer_ids(answer), config)
             yield ToolRunResult([*ran.messages, *answers], target, ran.state_updated)
             return
 
         logger.info("Node '%s' executing %d tool calls in parallel", self.name, len(calls))
         async for item in self._run_calls(calls, last_message, state, config, streaming):
             yield self._collect(item, state) if isinstance(item, list) else item
+
+    @staticmethod
+    def _answer_ids(answer: Message) -> tuple[Any, dict[str, Any], str]:
+        """Tool name, args and call id of a handoff answer, for its chunk."""
+        block = next((b for b in answer.content or [] if isinstance(b, ToolResultBlock)), None)
+        return (getattr(block, "name", None) or "", {}, getattr(block, "call_id", "") or "")
 
     def _collect(self, outcomes: list[Any], state: AgentState) -> ToolRunResult:
         """Merge the outcomes (call order) into one result; messages deduped by id."""
@@ -318,6 +328,19 @@ class ToolRunner(ToolRuntimeMixin):
         tool_call_id: str,
         config: dict[str, Any],
     ) -> None:
+        """Queue the chunk of one tool result, if it has one."""
+        chunk = self._result_chunk(item, function_name, function_args, tool_call_id, config)
+        if chunk is not None:
+            queue.put_nowait(chunk)
+
+    def _result_chunk(
+        self,
+        item: Any,
+        function_name: str,
+        function_args: dict[str, Any],
+        tool_call_id: str,
+        config: dict[str, Any],
+    ) -> StreamChunk | None:
         """The chunk a client sees for one tool result (a Message or a state-update dict)."""
         meta = {
             "tool_name": function_name,
@@ -328,30 +351,25 @@ class ToolRunner(ToolRuntimeMixin):
         ids: dict[str, Any] = {"thread_id": config.get("thread_id"), "run_id": config.get("run_id")}
         message = item.get("messages") if isinstance(item, dict) else item
         if not isinstance(message, Message):
-            return
+            return None
         error = next((b for b in message.content or [] if isinstance(b, ErrorBlock)), None)
         if error is None or isinstance(item, dict):
-            queue.put_nowait(
-                StreamChunk(
-                    event=StreamEvent.MESSAGE,
-                    message=message,
-                    data={"status": "tool_result", **meta},
-                    **ids,
-                )
-            )
-            return
-        denied = error.code == TOOL_DENIED_CODE
-        queue.put_nowait(
-            StreamChunk(
-                event=StreamEvent.ERROR,
-                data={
-                    "status": "tool_denied" if denied else "tool_failed",
-                    **meta,
-                    "reason": "Denied by policy" if denied else "Tool execution resulted in error",
-                    "error": error.message,
-                },
+            return StreamChunk(
+                event=StreamEvent.MESSAGE,
+                message=message,
+                data={"status": "tool_result", **meta},
                 **ids,
             )
+        denied = error.code == TOOL_DENIED_CODE
+        return StreamChunk(
+            event=StreamEvent.ERROR,
+            data={
+                "status": "tool_denied" if denied else "tool_failed",
+                **meta,
+                "reason": "Denied by policy" if denied else "Tool execution resulted in error",
+                "error": error.message,
+            },
+            **ids,
         )
 
     def _tool_error_chunk(

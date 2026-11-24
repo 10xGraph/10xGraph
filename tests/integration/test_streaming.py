@@ -8,6 +8,7 @@ from tenxgraph.storage.checkpointer import InMemoryCheckpointer
 from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.stream_chunks import StreamChunk
+from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils import END
 
 
@@ -28,6 +29,8 @@ class MockStreamingResponse:
                 "MockChunk",
                 (),
                 {
+                    "id": "chatcmpl-stream",
+                    "model": "mock-model",
                     "choices": [
                         type(
                             "Choice",
@@ -69,6 +72,8 @@ class MockAsyncStreamingResponse:
                 "MockChunk",
                 (),
                 {
+                    "id": "chatcmpl-stream",
+                    "model": "mock-model",
                     "choices": [
                         type(
                             "Choice",
@@ -103,14 +108,20 @@ def non_streaming_string_node(state: AgentState) -> str:
     return "This is a non-streaming string response"
 
 
-def streaming_node(state: AgentState) -> MockStreamingResponse:
-    """Node that returns a streaming response."""
-    return MockStreamingResponse("This is a streaming response from the node")
+STREAMED_TEXT = "This is a streaming response from the node"
 
 
-async def async_streaming_node(state: AgentState) -> MockAsyncStreamingResponse:
-    """Node that returns an async streaming response."""
-    return MockAsyncStreamingResponse("This is an async streaming response from the node")
+def streaming_node(state: AgentState) -> ModelResponseConverter:
+    """Node that returns a streamed LLM response, normalized by the OpenAI converter."""
+    return ModelResponseConverter(MockStreamingResponse(STREAMED_TEXT), "openai")
+
+
+ASYNC_STREAMED_TEXT = "This is an async streaming response from the node"
+
+
+async def async_streaming_node(state: AgentState) -> ModelResponseConverter:
+    """Node that returns an async streamed LLM response."""
+    return ModelResponseConverter(MockAsyncStreamingResponse(ASYNC_STREAMED_TEXT), "openai")
 
 
 class TestStreamingIntegration:
@@ -158,7 +169,7 @@ class TestStreamingIntegration:
         assert len(chunks) > 0  # noqa: S101
 
     def test_streaming_node_sync(self):
-        """Test graph.stream() with a node that returns a streaming response."""
+        """stream() yields the node's streamed chunks, then the final assistant message."""
         graph = StateGraph[AgentState](AgentState())
         graph.add_node("streaming_node", streaming_node)
         graph.set_entry_point("streaming_node")
@@ -170,22 +181,20 @@ class TestStreamingIntegration:
         config = {"thread_id": "test_streaming_sync"}
 
         chunks = list(compiled.stream(input_data, config))
-
-        # Verify we got chunks
-        assert len(chunks) > 0  # noqa: S101
         assert all(isinstance(chunk, StreamChunk) for chunk in chunks)  # noqa: S101
 
-        # Verify we got multiple chunks (streaming)
-        streaming_chunks = list(chunks)
-        assert len(streaming_chunks) > 0  # noqa: S101
+        deltas = [c.message for c in chunks if c.message is not None and c.message.delta]
+        assert len(deltas) > 1  # noqa: S101
+        assert "".join(m.text() for m in deltas) == STREAMED_TEXT  # noqa: S101
 
-        # Verify final chunk
-        final_chunk = chunks[-1]
-        assert final_chunk is not None  # noqa: S101
+        finals = [c.message for c in chunks if c.message is not None and not c.message.delta]
+        assistant_finals = [m for m in finals if m.role == "assistant"]
+        assert len(assistant_finals) == 1  # noqa: S101
+        assert assistant_finals[0].text() == STREAMED_TEXT  # noqa: S101
 
     @pytest.mark.asyncio
     async def test_async_streaming_node_async(self):
-        """Test graph.astream() with a node that returns an async streaming response."""
+        """astream() yields the async node's streamed chunks, then the final assistant message."""
         graph = StateGraph[AgentState](AgentState())
         graph.add_node("async_streaming_node", async_streaming_node)
         graph.set_entry_point("async_streaming_node")
@@ -199,13 +208,16 @@ class TestStreamingIntegration:
         chunks = []
         async for chunk in compiled.astream(input_data, config):
             chunks.append(chunk)
+        assert all(isinstance(chunk, StreamChunk) for chunk in chunks)  # noqa: S101
 
-        # Verify we got chunks
-        # assert all(isinstance(chunk, StreamChunk) for chunk in chunks)
+        deltas = [c.message for c in chunks if c.message is not None and c.message.delta]
+        assert len(deltas) > 1  # noqa: S101
+        assert "".join(m.text() for m in deltas) == ASYNC_STREAMED_TEXT  # noqa: S101
 
-        # Verify we got multiple chunks (streaming)
-        streaming_chunks = list(chunks)
-        assert len(streaming_chunks) > 0  # noqa: S101
+        finals = [c.message for c in chunks if c.message is not None and not c.message.delta]
+        assistant_finals = [m for m in finals if m.role == "assistant"]
+        assert len(assistant_finals) == 1  # noqa: S101
+        assert assistant_finals[0].text() == ASYNC_STREAMED_TEXT  # noqa: S101
 
     def test_stream_chunk_properties(self):
         """Test EventModel properties and methods."""

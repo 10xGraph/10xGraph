@@ -23,6 +23,7 @@ from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, E
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import CallbackContext, CallbackManager, InvocationType, call_sync_or_async
 from tenxgraph.utils.command import Command
+from tenxgraph.utils.constants import END, START
 from tenxgraph.utils.interrupt import activate as activate_interrupts
 from tenxgraph.utils.log_safety import error_details
 
@@ -73,6 +74,10 @@ class NodeRunner:
         Raises ``NodeError`` (``NODE_001``) when the node fails and no ``on_error``
         callback recovered it.
         """
+        if self.name in (START, END):
+            # Internal pseudo-nodes: no user callbacks and no node events.
+            yield NodeResult(state)
+            return
         logger.info("Executing node '%s'", self.name)
         if isinstance(self.func, ToolNode):
             steps = self._run_tools(config, state, streaming)
@@ -155,8 +160,8 @@ class NodeRunner:
                     yield self._message_chunk(item, function_name, config)
                 self._stamp_node_name(messages)
             else:
-                # Command(update=None) adds nothing; any other value must be a supported
-                # one (process_node_result raises for the rest, failing with NODE_001).
+                # Command(update=None) and a bare None add nothing; any other value must be a
+                # supported one (process_node_result raises for the rest: NODE_001).
                 if not (is_command and not result):
                     state, messages, _ = await process_node_result(
                         result, state, messages, seen_ids

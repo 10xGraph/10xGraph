@@ -107,7 +107,7 @@ class OpenAIConverter(BaseConverter):
             role=message.role,
             content=order_blocks(blocks),
             parsed_content=parsed,
-            timestamp=getattr(response, "created", datetime.now().timestamp()),
+            timestamp=datetime.now().timestamp(),
             metadata=metadata,
             usages=usages,
             raw=response.model_dump() if hasattr(response, "model_dump") else {},
@@ -145,7 +145,7 @@ class OpenAIConverter(BaseConverter):
             message_id=generate_id(response.id),
             role="assistant",
             content=[],
-            timestamp=getattr(response, "created", datetime.now().timestamp()),
+            timestamp=datetime.now().timestamp(),
             metadata={
                 "provider": "openai",
                 "model": response.model,

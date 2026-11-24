@@ -150,14 +150,13 @@ class OpenAIResponsesConverter(BaseConverter):
         resp_id = getattr(response, "id", None)
         model = getattr(response, "model", "unknown")
         status = getattr(response, "status", "completed")
-        created = getattr(response, "created_at", None) or datetime.now().timestamp()
 
         return Message(
             message_id=generate_id(resp_id),
             role="assistant",
             content=order_blocks(blocks),
             parsed_content=self._extract_parsed_output(response),
-            timestamp=created,
+            timestamp=datetime.now().timestamp(),
             metadata={
                 "provider": "openai",
                 "model": model,

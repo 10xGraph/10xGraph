@@ -121,3 +121,19 @@ async def test_resume_after_answered_handoff_does_not_rerun_it():
     assert sum(1 for m in after if m.role == "tool") == 1
     assert _unanswered(after) == []
     assert len(seen) == 1  # the worker ran once, in the first run only
+
+
+@pytest.mark.asyncio
+async def test_handoff_tool_answer_is_streamed_like_it_is_recorded():
+    """astream emits the handoff's tool result as a chunk; ainvoke records the same message."""
+    seen: list = []
+    runs: list[str] = []
+    app = _build(("transfer_to_worker",), seen, runs).compile(checkpointer=InMemoryCheckpointer())
+    data = {"messages": [Message.text_message("go")]}
+    config = {"thread_id": "handoff-chunk"}
+    chunks = [c async for c in app.astream(data, config)]
+    streamed = [c.message for c in chunks if c.message is not None and c.message.role == "tool"]
+    assert len(streamed) == 1
+    result = await app.ainvoke(data, {"thread_id": "handoff-chunk-2"})
+    recorded = [m for m in result["messages"] if m.role == "tool"]
+    assert [m.text() for m in recorded] == [m.text() for m in streamed]

@@ -267,12 +267,16 @@ def _calc(x: int) -> int:
 async def test_tool_node_publishes_one_start_per_call():
     node = ToolNode([_calc])
     events: list[EventModel] = []
+
+    def record(e: EventModel) -> None:
+        events.append(e.model_copy(deep=True))
+
+    # START is published by the local executor; END by the shared tool-result helper, which
+    # builds nothing unless a publisher is bound (``listening``), so that check is forced on.
     with (
-        patch(
-            "tenxgraph.core.graph.tool_node.base.publish_event",
-            side_effect=lambda e: events.append(e.model_copy(deep=True)),
-        ),
-        patch("tenxgraph.core.graph.tool_node.local_exec.publish_event"),
+        patch("tenxgraph.core.graph.tool_node.local_exec.publish_event", side_effect=record),
+        patch("tenxgraph.core.graph.tool_node._helpers.publish_event", side_effect=record),
+        patch("tenxgraph.core.graph.tool_node._helpers.listening", return_value=True),
     ):
         for call_id in ("c1", "c2"):
             await node.invoke(
@@ -289,14 +293,34 @@ async def test_tool_node_publishes_one_start_per_call():
     assert sum(e.event_type == EventType.END for e in events) == 2
 
 
-def test_extract_tool_calls_keeps_provider_call_id():
-    from types import SimpleNamespace as NS
+@pytest.mark.asyncio
+async def test_extract_tool_calls_keeps_provider_call_id():
+    from openai.types.chat import ChatCompletion, ChatCompletionMessageToolCall
+    from openai.types.chat.chat_completion import Choice
+    from openai.types.chat.chat_completion_message import ChatCompletionMessage
+    from openai.types.chat.chat_completion_message_tool_call import Function
 
-    from tenxgraph.core.graph.agent_internal.execution import _extract_tool_calls
+    from tenxgraph.runtime.adapters.llm.openai_converter import OpenAIConverter
 
-    call = NS(id="call_9", function=NS(name="search", arguments='{"q":"x"}'))
-    response = NS(choices=[NS(message=NS(tool_calls=[call]))])
-    calls = _extract_tool_calls(response)
-    assert calls == [{"id": "call_9", "name": "search", "arguments": '{"q":"x"}'}]
-    part = _genai.output_messages({"output_tool_calls": calls})[0]["parts"][0]
+    call = ChatCompletionMessageToolCall(
+        id="call_9",
+        type="function",
+        function=Function(name="search", arguments='{"q":"x"}'),
+    )
+    response = ChatCompletion(
+        id="resp_1",
+        object="chat.completion",
+        created=0,
+        model="gpt-test",
+        choices=[
+            Choice(
+                index=0,
+                finish_reason="tool_calls",
+                message=ChatCompletionMessage(role="assistant", content=None, tool_calls=[call]),
+            )
+        ],
+    )
+    message = await OpenAIConverter().convert_response(response)
+    assert [c["id"] for c in message.tools_calls] == ["call_9"]
+    part = _genai.output_messages({"output_tool_calls": message.tools_calls})[0]["parts"][0]
     assert part["id"] == "call_9"

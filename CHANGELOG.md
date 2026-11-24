@@ -50,6 +50,9 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ### Changed
 
+- A node may return a `dict` as a partial state update, also as `Command(update={...})`: each key sets a state field (validated against the field's type), the key `"messages"` appends a `Message` or list of messages, and an unknown field name fails the node with `NODE_001`. Same in `ainvoke` and `astream`.
+- A node that returns `None` means "no change", like `Command(update=None)`, in both modes. Other unsupported return types still fail with `NODE_001`.
+
 - `InMemoryCheckpointer` and `SqliteCheckpointer` create the thread record on the first write of a thread (state, messages or a tool result), as `PgCheckpointer` already did: the caller owns it, the name is `config["thread_name"]` (else `Thread <id>`) and the metadata `config["thread_meta"]`. A graph run now makes its thread visible to `aget_thread` and `alist_threads` without an `aput_thread` call. An existing record is never overwritten.
 - `PgCheckpointer` takes the thread and message id column type from the id generator bound in InjectQ when its schema is created on first use (default string; `BigIntIDGenerator` and Snowflake give bigint), so a generator the API binds after the checkpointer is built is used. Setup now refuses existing `threads` and `messages` tables whose `thread_id` or `message_id` type differs from the generator's id type, with a `ValueError` naming the table, the column type and the fix (keep the old generator, or migrate the column).
 - `QdrantStore` and `InMemoryStore` refuse a `filters` key that is `user_id` or a tenant column with the same `FilterError` as `PgVectorStore`, in search, list and forget. `QdrantStore` also raises `FilterError` for a filter value that is not a string, integer or boolean instead of dropping it and widening the result.
@@ -102,6 +105,11 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ### Fixed
 
+- Under `astream`, the tool result of a handoff tool (`create_handoff_tool`) in a hand-built `StateGraph` is now streamed as a `tool` message chunk, as `ainvoke` already returned it.
+- Node-level `before_invoke` / `after_invoke` callbacks no longer fire for the internal `__start__` and `__end__` pseudo-nodes.
+
+- Assistant messages from the OpenAI chat, OpenAI Responses and Google GenAI converters are stamped with the local time when they are created, not the provider's `created` time. The provider's time has whole-second precision and can be earlier than the user message that caused the reply, so `PgCheckpointer` (which orders history by the message timestamp) could list a reply before its question.
+- Requires injectq 0.7 (`injectq>=0.7.0,<0.8`, was `>=0.6.1,<0.7`).
 - Closing `astream` early (the consumer `break`s and the generator is closed) while a node or tool runs now saves the thread as interrupted, like a cancel, instead of leaving it `running`. The stream closes each inner generator on exit, so the running tool is cancelled and the thread is saved at once, not at garbage collection.
 
 - ToolNode steps run through one tool runner under `ainvoke` and `astream`. A tool that raises a `BaseException` that is not an `Exception` now gets a failed tool result under `astream` too (before, the call stayed unanswered). Under `ainvoke`, a tool message returned twice in one step (same `message_id`) is kept once, as `astream` already did. Under `astream`, a tool result dict whose `messages` is a list is now recorded even without a state update, and a tool's own progress chunk (`emit`) always comes before its result chunk.
