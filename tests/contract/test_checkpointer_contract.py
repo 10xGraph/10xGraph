@@ -10,12 +10,14 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+from injectq import InjectQ
 
 from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
 from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer.base_checkpointer import MAX_LIST_LIMIT
 from tenxgraph.utils import END, ThreadInfo
+from tenxgraph.utils.id_generator import BaseIDGenerator, BigIntIDGenerator
 
 from .conftest import cfg
 
@@ -383,8 +385,8 @@ async def test_same_message_id_in_two_threads(cp):
 
 
 async def test_int_and_str_thread_ids_are_the_same_thread_text(backend, cp):
-    """Memory and SQLite: ``"7"`` and ``7`` address the same data. Postgres follows its
-    id_type: a text table takes strings and refuses an int with ValueError."""
+    """Memory and SQLite: ``"7"`` and ``7`` address the same data. Postgres follows the
+    id generator: a text table takes strings and refuses an int with ValueError."""
     if backend == "pg":
         with pytest.raises(ValueError, match="thread_id must be a string"):
             await cp.aput_messages(cfg(7), [_msg(1, "seven")])
@@ -466,11 +468,12 @@ async def test_int_message_id_delete_and_update(backend, cp):
 
 
 async def test_pg_integer_id_tables_take_ints_and_refuse_strings(backend, make_cp):
-    """id_type="bigint": thread and message ids must be integers in every method; a string
+    """a bigint id generator: thread and message ids must be integers in every method; a string
     raises ValueError naming the expected type."""
     if backend != "pg":
         pytest.skip("Postgres only")
-    cp = await make_cp(id_type="bigint")
+    InjectQ.get_instance().bind_instance(BaseIDGenerator, BigIntIDGenerator(), allow_concrete=True)
+    cp = await make_cp()
     c = cfg(42)
     await cp.aput_thread(c, ThreadInfo(thread_id=42, thread_name="n"))
     m = Message.text_message("hi", role="user")

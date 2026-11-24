@@ -1,4 +1,4 @@
-"""The id type follows the setup: ``id_type`` text takes string ids, int and bigint take integers.
+"""The id type follows the id generator: string ids for text, integers for int and bigint.
 
 A mismatch raises ``ValueError`` before any SQL (no raw asyncpg error).
 """
@@ -6,17 +6,27 @@ A mismatch raises ``ValueError`` before any SQL (no raw asyncpg error).
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from injectq import InjectQ
 
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
+from tenxgraph.utils.id_generator import (
+    BaseIDGenerator,
+    BigIntIDGenerator,
+    IntIDGenerator,
+    UUIDGenerator,
+)
+
+
+GENERATORS = {"string": UUIDGenerator(), "int": IntIDGenerator(), "bigint": BigIntIDGenerator()}
 
 
 def _checkpointer(id_type: str) -> PgCheckpointer:
+    InjectQ.get_instance().bind_instance(BaseIDGenerator, GENERATORS[id_type], allow_concrete=True)
     with patch("asyncpg.create_pool"):
         return PgCheckpointer(
             postgres_dsn="postgresql://test:test@localhost/test",
             redis_url="redis://localhost:6379/0",
             user_id_type="string",
-            id_type=id_type,
         )
 
 

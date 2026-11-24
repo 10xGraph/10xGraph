@@ -19,7 +19,7 @@ from tenxgraph.utils.id_generator import (
 
 
 def _pg(id_type: str) -> PgCheckpointer:
-    with patch("asyncpg.create_pool"):
+    with patch("asyncpg.create_pool"), pytest.warns(DeprecationWarning, match="id_type"):
         return PgCheckpointer(
             postgres_dsn="postgresql://test:test@localhost/test",
             redis_url="redis://localhost:6379/0",

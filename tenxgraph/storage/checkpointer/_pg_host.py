@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     class _PgHost(BaseCheckpointer[Any]):
         # Set in PgCheckpointer.__init__ (mixins set the setup-state ones).
         user_id_type: str
-        id_type: str
+        _pinned_id_type: str | None
+        _id_type_given: bool
         cache_ttl: int
         redis_key_prefix: str
         pg_acquire_timeout: float | None
@@ -39,6 +40,10 @@ if TYPE_CHECKING:
         _skipped_invalidations: set[str]
         _schema_initialized: bool
         _schema_init_lock: asyncio.Lock
+
+        # _PgIdentityMixin
+        @property
+        def id_type(self) -> str: ...
 
         # PgCheckpointer
         def _get_table_name(self, table: str) -> str: ...

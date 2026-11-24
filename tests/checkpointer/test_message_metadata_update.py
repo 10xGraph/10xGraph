@@ -85,7 +85,6 @@ def pg():
             postgres_dsn="postgresql://test:test@localhost/test",
             redis_url="redis://localhost:6379/0",
             user_id_type="string",
-            id_type="string",
         )
 
 
