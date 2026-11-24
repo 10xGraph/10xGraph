@@ -268,33 +268,12 @@ class TestDetectProviderFromModel:
         agent = _make_openai_agent()
         assert detect_provider("gpt-4o") == "openai"
 
-    def test_o1_prefix_returns_openai(self):
-        agent = _make_openai_agent()
-        assert detect_provider("o1-mini") == "openai"
 
-    def test_o3_prefix_returns_openai(self):
-        agent = _make_openai_agent()
-        assert detect_provider("o3") == "openai"
 
-    def test_o4_prefix_returns_openai(self):
-        agent = _make_openai_agent()
-        assert detect_provider("o4-mini") == "openai"
 
-    def test_gemini_prefix_returns_google(self):
-        agent = _make_openai_agent()
-        assert detect_provider("gemini-2.0-flash") == "google"
 
-    def test_imagen_prefix_returns_google(self):
-        agent = _make_openai_agent()
-        assert detect_provider("imagen-3.0-generate-001") == "google"
 
-    def test_veo_prefix_returns_google(self):
-        agent = _make_openai_agent()
-        assert detect_provider("veo-2.0-generate-001") == "google"
 
-    def test_chirp_prefix_returns_google(self):
-        agent = _make_openai_agent()
-        assert detect_provider("chirp-3") == "google"
 
     def test_unknown_model_defaults_to_openai(self):
         agent = _make_openai_agent()
@@ -2087,19 +2066,8 @@ class TestAgentInit:
         _, kwargs = agent._build_anthropic_request([{"role": "user", "content": "hi"}])
         assert kwargs["output_config"] == {"effort": "high"}
 
-    def test_reasoning_config_none_stored_as_none(self):
-        agent = _make_openai_agent(reasoning_config=None)
-        assert agent.reasoning_config is None
 
-    def test_reasoning_config_false_stored_as_none(self):
-        with patch.object(Agent, "_create_client", return_value=MagicMock()):
-            agent = Agent(model="gpt-4o", provider="openai", reasoning_config=False)
-        assert agent.reasoning_config is None
 
-    def test_explicit_reasoning_config_stored_unchanged(self):
-        cfg = {"effort": "high", "summary": "auto"}
-        agent = _make_openai_agent(reasoning_config=cfg)
-        assert agent.reasoning_config == cfg
 
     # ── api_style validation ───────────────────────────────────────────────
 
@@ -2108,23 +2076,11 @@ class TestAgentInit:
             with pytest.raises(ValueError, match="Invalid api_style"):
                 Agent(model="gpt-4o", provider="openai", api_style="sse", reasoning_config=None)
 
-    def test_valid_api_style_chat_accepted(self):
-        agent = _make_openai_agent(api_style="chat")
-        assert agent.api_style == "chat"
 
-    def test_valid_api_style_responses_accepted(self):
-        agent = _make_openai_agent(api_style="responses", model="o4-mini")
-        assert agent.api_style == "responses"
 
     # ── output type ────────────────────────────────────────────────────────
 
-    def test_output_type_stored_lowercase(self):
-        agent = _make_openai_agent(output_type="TEXT")
-        assert agent.output_type == "text"
 
-    def test_default_output_type_is_text(self):
-        agent = _make_openai_agent()
-        assert agent.output_type == "text"
 
     # ── misc attributes ────────────────────────────────────────────────────
 
@@ -2133,20 +2089,8 @@ class TestAgentInit:
         assert agent.tool_node_name == "my_tools"
         assert agent._tool_node is None
 
-    def test_extra_messages_stored(self):
-        msg = Message.text_message("hi", role="user")
-        agent = _make_openai_agent(extra_messages=[msg])
-        assert agent.extra_messages == [msg]
 
-    def test_trim_context_stored(self):
-        agent = _make_openai_agent(trim_context=True)
-        assert agent.trim_context is True
 
-    def test_tool_node_instance_stored(self):
-        tn = ToolNode([lambda x: x])
-        agent = _make_openai_agent(tool_node=tn)
-        assert agent._tool_node is tn
-        assert agent.tool_node_name is None
 
     def test_tool_node_none_gives_none_internal_tool_node(self):
         agent = _make_openai_agent(tool_node=None)

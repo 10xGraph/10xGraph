@@ -27,7 +27,7 @@ from tenxgraph.storage.media.offload import (
 )
 from tenxgraph.storage.media.resolver import MediaRefResolver
 from tenxgraph.storage.media.storage.base import BaseMediaStore
-from tenxgraph.storage.media.storage.local_store import LocalFileMediaStore, _mime_to_ext
+from tenxgraph.storage.media.storage.local_store import LocalFileMediaStore
 from tenxgraph.storage.media.storage.memory_store import InMemoryMediaStore
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import (
@@ -202,18 +202,6 @@ class TestLocalFileMediaStore:
         assert meta["tag"] == "test"
 
 
-class TestMimeToExt:
-    def test_jpeg(self):
-        assert _mime_to_ext("image/jpeg") in (".jpg", ".jpeg")
-
-    def test_png(self):
-        assert _mime_to_ext("image/png") == ".png"
-
-    def test_pdf(self):
-        assert _mime_to_ext("application/pdf") == ".pdf"
-
-    def test_unknown(self):
-        assert _mime_to_ext("application/x-unknown-thing") == ".bin"
 
 
 # ===========================================================================

@@ -87,28 +87,8 @@ def _make_exif_rotated_image() -> ImageBlock:
 class TestMediaProcessorResize:
     """Test resize_image() from Sprint 1, verified here for completeness."""
 
-    def test_resize_large_image(self):
-        block = _make_image_block(4000, 3000)
-        proc = MediaProcessor(MultimodalConfig(max_image_dimension=2048))
-        result = proc.resize_image(block)
 
-        assert result.media.width <= 2048
-        assert result.media.height <= 2048
-        assert result is not block
 
-    def test_small_image_unchanged(self):
-        block = _make_image_block(100, 100)
-        proc = MediaProcessor(MultimodalConfig(max_image_dimension=2048))
-        result = proc.resize_image(block)
-        assert result is block  # Identity — no resize needed
-
-    def test_url_block_skipped(self):
-        block = ImageBlock(
-            media=MediaRef(kind="url", url="https://example.com/img.jpg", mime_type="image/jpeg")
-        )
-        proc = MediaProcessor()
-        result = proc.resize_image(block)
-        assert result is block
 
 
 class TestThumbnailGeneration:

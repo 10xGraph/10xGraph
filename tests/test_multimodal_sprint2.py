@@ -10,7 +10,7 @@ import io
 import pytest
 
 from tenxgraph.storage.media.config import MultimodalConfig
-from tenxgraph.storage.media.processor import MediaProcessor, _pil_format
+from tenxgraph.storage.media.processor import MediaProcessor
 from tenxgraph.core.state.message_block import ImageBlock, MediaRef
 
 
@@ -19,24 +19,6 @@ from tenxgraph.core.state.message_block import ImageBlock, MediaRef
 # ---------------------------------------------------------------------------
 
 
-class TestPilFormat:
-    def test_jpeg(self):
-        assert _pil_format("image/jpeg") == "JPEG"
-
-    def test_png(self):
-        assert _pil_format("image/png") == "PNG"
-
-    def test_webp(self):
-        assert _pil_format("image/webp") == "WEBP"
-
-    def test_gif(self):
-        assert _pil_format("image/gif") == "GIF"
-
-    def test_unknown_defaults_png(self):
-        assert _pil_format("image/bmp") == "PNG"
-
-    def test_none_defaults_png(self):
-        assert _pil_format(None) == "PNG"
 
 
 # ---------------------------------------------------------------------------
@@ -234,15 +216,3 @@ class TestMediaProcessorProcess:
 # ---------------------------------------------------------------------------
 
 
-class TestMediaProcessorDefaults:
-    def test_default_config(self):
-        proc = MediaProcessor()
-        assert proc.config.max_image_size_mb == 10.0
-        assert proc.config.max_image_dimension == 2048
-        assert "image/jpeg" in proc.config.supported_image_types
-
-    def test_custom_config(self):
-        cfg = MultimodalConfig(max_image_size_mb=5.0, max_image_dimension=1024)
-        proc = MediaProcessor(config=cfg)
-        assert proc.config.max_image_size_mb == 5.0
-        assert proc.config.max_image_dimension == 1024

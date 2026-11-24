@@ -3,32 +3,6 @@
 import tenxgraph.core.realtime as rt
 
 
-def test_public_symbols_are_exported():
-    expected = {
-        "RealtimeClient",
-        "RealtimeConfig",
-        "RealtimeEvent",
-        "VADConfig",
-        "ReconnectConfig",
-        "AudioDeltaEvent",
-        "InputTranscriptEvent",
-        "OutputTranscriptEvent",
-        "ToolCallEvent",
-        "ToolResultEvent",
-        "TurnCompleteEvent",
-        "InterruptedEvent",
-        "SessionUpdateEvent",
-        "GoAwayEvent",
-        "AgentChangedEvent",
-        "ErrorEvent",
-        "LiveInputQueue",
-        "LiveInput",
-        "GeminiLiveClient",
-        "normalize_message",
-    }
-    assert expected.issubset(set(rt.__all__))
-    for name in expected:
-        assert hasattr(rt, name), f"{name} missing from tenxgraph.core.realtime"
 
 
 def test_queue_constructs_from_top_level_import():

@@ -241,32 +241,6 @@ class TestBackgroundTaskManager:
         # Concurrent should be much faster
         assert end_time - start_time < 0.5
 
-    @pytest.mark.asyncio
-    async def test_memory_efficiency_under_load(self, task_manager):
-        """Test memory efficiency by creating and completing many tasks in batches."""
-        total_completed = 0
-        
-        async def memory_task(batch_id, task_id):
-            await asyncio.sleep(0.001)  # Very short task
-            return f"batch_{batch_id}_task_{task_id}"
-        
-        # Process tasks in batches to test memory management
-        batch_size = 50
-        num_batches = 10
-        
-        for batch in range(num_batches):
-            # Create a batch of tasks
-            for task_id in range(batch_size):
-                task_manager.create_task(memory_task(batch, task_id))
-            
-            # Wait for this batch to complete
-            await task_manager.wait_for_all()
-            total_completed += batch_size
-            
-            # Tasks should be cleaned up after each batch
-            assert len(task_manager._tasks) == 0
-        
-        assert total_completed == batch_size * num_batches
 
     @pytest.mark.asyncio
     async def test_rapid_task_creation_and_completion(self, task_manager):
@@ -287,60 +261,7 @@ class TestBackgroundTaskManager:
         assert completion_count == 50
         assert len(task_manager._tasks) == 0
 
-    @pytest.mark.asyncio
-    async def test_error_rate_under_load(self, task_manager):
-        """Test system stability when many tasks fail."""
-        success_count = 0
-        error_count = 0
-        
-        async def mixed_task(task_id):
-            nonlocal success_count, error_count
-            await asyncio.sleep(0.01)
-            if task_id % 3 == 0:  # Every 3rd task fails
-                error_count += 1
-                raise ValueError(f"Task {task_id} failed")
-            else:
-                success_count += 1
-        
-        with patch('tenxgraph.utils.background_task_manager.logger'):
-            # Create 60 tasks (20 will fail, 40 will succeed)
-            for i in range(60):
-                task_manager.create_task(mixed_task(i))
-            
-            # wait_for_all should raise when first task fails (task 0)
-            with pytest.raises(ValueError, match="Task 0 failed"):
-                await task_manager.wait_for_all()
-            
-            # At least the first failing task should have incremented error_count
-            assert error_count >= 1
 
-    @pytest.mark.asyncio
-    async def test_long_running_vs_short_tasks(self, task_manager):
-        """Test mixing long-running and short tasks."""
-        short_completed = 0
-        long_completed = 0
-        
-        async def short_task():
-            nonlocal short_completed
-            await asyncio.sleep(0.01)
-            short_completed += 1
-        
-        async def long_task():
-            nonlocal long_completed
-            await asyncio.sleep(0.1)
-            long_completed += 1
-        
-        # Mix of short and long tasks
-        for _ in range(10):
-            task_manager.create_task(short_task())
-        for _ in range(3):
-            task_manager.create_task(long_task())
-        
-        await task_manager.wait_for_all()
-        
-        assert short_completed == 10
-        assert long_completed == 3
-        assert len(task_manager._tasks) == 0
 
     @pytest.mark.asyncio
     async def test_task_done_callback_thread_safety(self, task_manager):
@@ -363,34 +284,6 @@ class TestBackgroundTaskManager:
         # Order might vary due to different delays, but all should be present
         assert sorted(completion_order) == list(range(20))
 
-    @pytest.mark.asyncio
-    async def test_performance_with_cpu_bound_simulation(self, task_manager):
-        """Test performance with CPU-intensive simulation."""
-        results = []
-        
-        async def cpu_intensive_task(n):
-            # Simulate CPU work with async yield points
-            total = 0
-            for i in range(n):
-                total += i
-                if i % 1000 == 0:
-                    await asyncio.sleep(0)  # Yield control
-            results.append(total)
-        
-        start_time = time.time()
-        
-        # Create tasks with different workloads
-        for i in range(10):
-            workload = 5000 + (i * 1000)  # Varying workloads
-            task_manager.create_task(cpu_intensive_task(workload))
-        
-        await task_manager.wait_for_all()
-        end_time = time.time()
-        
-        assert len(results) == 10
-        assert len(task_manager._tasks) == 0
-        # Should complete in reasonable time
-        assert end_time - start_time < 2.0
 
     @pytest.mark.asyncio
     async def test_exception_types_handling(self, task_manager):

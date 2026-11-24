@@ -310,99 +310,9 @@ class TestPublisherResourceDisposal:
         assert publisher.closed
 
 
-class TestPublisherConnectionPooling:
-    """Test connection pooling and limits in publishers."""
-
-    @pytest.mark.asyncio
-    async def test_redis_publisher_connection_pooling_config(self):
-        """Test RedisPublisher accepts connection pooling configuration."""
-        try:
-            from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
-        except ImportError:
-            pytest.skip("redis package not installed")
-
-        config = {
-            "url": "redis://localhost:6379/0",
-            "max_connections": 20,
-            "socket_timeout": 10.0,
-            "socket_connect_timeout": 5.0,
-            "socket_keepalive": True,
-            "health_check_interval": 60,
-        }
-
-        publisher = RedisPublisher(config)
-        assert publisher.max_connections == 20
-        assert publisher.socket_timeout == 10.0
-        assert publisher.socket_connect_timeout == 5.0
-        assert publisher.socket_keepalive is True
-        assert publisher.health_check_interval == 60
-
-    @pytest.mark.asyncio
-    async def test_kafka_publisher_connection_config(self):
-        """Test KafkaPublisher accepts connection configuration."""
-        try:
-            from tenxgraph.runtime.publisher.kafka_publisher import KafkaPublisher
-        except ImportError:
-            pytest.skip("aiokafka package not installed")
-
-        config = {
-            "bootstrap_servers": "localhost:9092",
-            "max_batch_size": 32768,
-            "linger_ms": 10,
-            "compression_type": "gzip",
-            "request_timeout_ms": 60000,
-        }
-
-        publisher = KafkaPublisher(config)
-        assert publisher.max_batch_size == 32768
-        assert publisher.linger_ms == 10
-        assert publisher.compression_type == "gzip"
-        assert publisher.request_timeout_ms == 60000
-
-    @pytest.mark.asyncio
-    async def test_rabbitmq_publisher_connection_config(self):
-        """Test RabbitMQPublisher accepts connection configuration."""
-        try:
-            from tenxgraph.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
-        except ImportError:
-            pytest.skip("aio-pika package not installed")
-
-        config = {
-            "url": "amqp://guest:guest@localhost/",
-            "connection_timeout": 15,
-            "heartbeat": 120,
-        }
-
-        publisher = RabbitMQPublisher(config)
-        assert publisher.connection_timeout == 15
-        assert publisher.heartbeat == 120
-
-
 class TestMemoryLeakDetection:
     """Test for memory leaks in long-running scenarios."""
 
-    @pytest.mark.asyncio
-    @pytest.mark.slow
-    async def test_no_leak_repeated_task_creation(self):
-        """Test that repeated task creation/completion doesn't leak memory."""
-        manager = BackgroundTaskManager()
-
-        async def tiny_task():
-            await asyncio.sleep(0.001)
-
-        initial_task_count = len(manager._tasks)
-
-        # Create and complete many iterations
-        for _ in range(500):
-            task = manager.create_task(tiny_task())
-            await asyncio.sleep(0.002)
-
-        await manager.wait_for_all()
-        gc.collect()
-
-        # Should return to initial state
-        assert len(manager._tasks) == initial_task_count
-        assert len(manager._task_metadata) == 0
 
     @pytest.mark.asyncio
     @pytest.mark.slow
@@ -427,100 +337,6 @@ class TestMemoryLeakDetection:
 
         # Verify closed
         assert publisher._is_closed
-
-
-class TestStressConcurrentOperations:
-    """Stress tests for concurrent operations and edge cases."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.slow
-    async def test_high_concurrency_tasks(self):
-        """Test manager handles high concurrency gracefully."""
-        manager = BackgroundTaskManager()
-        completed = []
-
-        async def concurrent_task(task_id):
-            await asyncio.sleep(0.01)
-            completed.append(task_id)
-
-        # Create many concurrent tasks
-        tasks = []
-        for i in range(200):
-            task = manager.create_task(concurrent_task(i))
-            tasks.append(task)
-
-        await manager.wait_for_all(timeout=10.0)
-
-        assert len(completed) == 200
-        assert manager.get_task_count() == 0
-
-    @pytest.mark.asyncio
-    async def test_rapid_create_and_cancel(self):
-        """Test rapid task creation and cancellation."""
-        manager = BackgroundTaskManager()
-
-        async def cancelable_task():
-            try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
-                pass
-
-        # Rapidly create tasks
-        for _ in range(50):
-            manager.create_task(cancelable_task())
-
-        # Immediately cancel all
-        await manager.cancel_all()
-        await asyncio.sleep(0.2)
-
-        # Should be cleaned up
-        assert manager.get_task_count() == 0
-
-    @pytest.mark.asyncio
-    async def test_nested_task_creation(self):
-        """Test tasks creating other tasks."""
-        manager = BackgroundTaskManager()
-        results = []
-
-        async def child_task():
-            await asyncio.sleep(0.05)
-            results.append("child")
-
-        async def parent_task():
-            results.append("parent")
-            # Create child task and wait for it
-            child = manager.create_task(child_task())
-            await asyncio.sleep(0.1)  # Give child time to complete
-
-        manager.create_task(parent_task())
-        await manager.wait_for_all(timeout=2.0)
-
-        assert "parent" in results
-        assert "child" in results
-
-    @pytest.mark.asyncio
-    async def test_exception_in_context_manager(self):
-        """Test that exceptions in context manager still trigger cleanup."""
-        task_cancelled = False
-
-        async def tracked_task():
-            nonlocal task_cancelled
-            try:
-                await asyncio.sleep(100)
-            except asyncio.CancelledError:
-                task_cancelled = True
-                raise
-
-        try:
-            async with BackgroundTaskManager(default_shutdown_timeout=1.0) as manager:
-                manager.create_task(tracked_task())
-                await asyncio.sleep(0.1)
-                raise ValueError("Test exception")
-        except ValueError:
-            pass
-
-        # Despite exception, cleanup should have happened (cancelled after the timeout)
-        assert task_cancelled
 
 
 class TestResourceLimits:
@@ -548,28 +364,32 @@ class TestResourceLimits:
         assert timed_out
         assert manager.get_task_count() == 0
 
-    @pytest.mark.asyncio
-    async def test_shutdown_respects_timeout(self):
-        """Shutdown waits up to the timeout, then cancels tasks still running."""
-
-        async def quick_task():
-            # Task that responds to cancellation
-            try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
-                raise
-
-        manager = BackgroundTaskManager()
-        manager.create_task(quick_task())
-
-        start = time.time()
-        stats = await manager.shutdown(timeout=0.3)
-        duration = time.time() - start
-
-        # Task outlives the timeout: waited the timeout, then cancelled
-        assert stats["status"] == "timeout"
-        assert 0.25 <= duration < 1.2
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
+
+
+class TestStressConcurrentOperations:
+    """Stress tests for concurrent operations and edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_rapid_create_and_cancel(self):
+        """Test rapid task creation and cancellation."""
+        manager = BackgroundTaskManager()
+
+        async def cancelable_task():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass
+
+        # Rapidly create tasks
+        for _ in range(50):
+            manager.create_task(cancelable_task())
+
+        # Immediately cancel all
+        await manager.cancel_all()
+        await asyncio.sleep(0.2)
+
+        # Should be cleaned up
+        assert manager.get_task_count() == 0

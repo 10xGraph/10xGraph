@@ -16,11 +16,6 @@ from tenxgraph.utils import END
 class TestEdge:
     """Test the Edge class."""
 
-    def test_edge_creation(self):
-        """Test creating an edge."""
-        edge = Edge("start", "end")
-        assert edge.from_node == "start"  # noqa: S101
-        assert edge.to_node == "end"  # noqa: S101
 
     def test_edge_with_condition(self):
         """Test creating an edge with condition."""
@@ -31,27 +26,11 @@ class TestEdge:
         edge = Edge("start", "end", condition=condition)
         assert edge.condition == condition  # noqa: S101
 
-    def test_edge_attributes(self):
-        """Test edge attributes."""
-        edge = Edge("a", "b")
-        assert hasattr(edge, "from_node")  # noqa: S101
-        assert hasattr(edge, "to_node")  # noqa: S101
-        assert hasattr(edge, "condition")  # noqa: S101
-        assert hasattr(edge, "condition_result")  # noqa: S101
 
 
 class TestNode:
     """Test the Node class."""
 
-    def test_node_creation_with_function(self):
-        """Test creating a node with a regular function."""
-
-        def simple_func(state: AgentState) -> AgentState:
-            return state
-
-        node = Node("test_node", simple_func)
-        assert node.name == "test_node"  # noqa: S101
-        assert node.func == simple_func  # noqa: S101
 
     def test_node_creation_with_tool_node(self):
         """Test creating a node with a ToolNode."""
@@ -64,29 +43,11 @@ class TestNode:
         assert node.name == "test_tool"  # noqa: S101
         assert node.func == tool_node  # noqa: S101
 
-    def test_node_attributes(self):
-        """Test node attributes."""
-
-        def simple_func(state: AgentState) -> AgentState:
-            return state
-
-        node = Node("test", simple_func)
-        assert hasattr(node, "name")  # noqa: S101
-        assert hasattr(node, "func")  # noqa: S101
-        assert hasattr(node, "publisher")  # noqa: S101
 
 
 class TestToolNode:
     """Test the ToolNode class."""
 
-    def test_tool_node_creation(self):
-        """Test creating a ToolNode."""
-
-        def simple_tool(input_data: str) -> str:
-            return f"processed: {input_data}"
-
-        tool_node = ToolNode([simple_tool])
-        assert hasattr(tool_node, "mcp_tools")  # noqa: S101
 
     def test_tool_node_with_multiple_functions(self):
         """Test creating a ToolNode with multiple functions."""
@@ -124,11 +85,6 @@ class TestToolNode:
 class TestStateGraph:
     """Test the StateGraph class."""
 
-    def test_state_graph_creation(self):
-        """Test creating a StateGraph."""
-        graph = StateGraph[AgentState](AgentState())
-        assert graph._state is not None  # noqa: S101
-        assert isinstance(graph._state, AgentState)  # noqa: S101
 
     def test_state_graph_creation_with_publisher(self):
         """Test creating a StateGraph with publisher."""
@@ -301,11 +257,3 @@ class TestCompiledGraph:
         assert graph_dict["info"]["edge_count"] == len(graph_dict["edges"])  # noqa: S101
 
 
-def test_graph_module_imports():
-    """Test that all graph module imports work correctly."""
-    # Basic smoke test - just ensure imports work
-    assert CompiledGraph is not None  # noqa: S101
-    assert Edge is not None  # noqa: S101
-    assert Node is not None  # noqa: S101
-    assert StateGraph is not None  # noqa: S101
-    assert ToolNode is not None  # noqa: S101

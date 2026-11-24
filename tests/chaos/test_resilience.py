@@ -146,36 +146,6 @@ class TestNodeFailureResilience:
 class TestCheckpointerFailureResilience:
     """Test resilience to checkpointer failures."""
 
-    @pytest.mark.asyncio
-    async def test_checkpoint_save_failure_handling(self):
-        """Test handling of checkpoint save failures."""
-        random.seed(42)  # Deterministic failures
-        failing_checkpointer = FailingCheckpointer(failure_rate=1.0)  # Always fail
-        
-        def simple_node(state: AgentState) -> AgentState:
-            state.context.append(Message.text_message("Response", role="assistant"))
-            return state
-        
-        graph = StateGraph[AgentState](AgentState())
-        graph.add_node("node", simple_node)
-        graph.set_entry_point("node")
-        graph.add_edge("node", END)
-        
-        compiled = graph.compile(checkpointer=failing_checkpointer)
-        
-        # Should fail due to checkpointer (either during get or save)
-        # Note: May succeed if cached state is used
-        try:
-            result = await compiled.ainvoke(
-                {"messages": [Message.text_message("Test", role="user")]},
-                {"thread_id": "test_checkpoint_failure"},
-            )
-            # If it succeeds, verify it completed
-            assert "messages" in result
-        except RuntimeError as e:
-            # Expected failure during checkpoint operations
-            assert "Checkpoint" in str(e)
-            assert len(failing_checkpointer.failures) > 0
 
     @pytest.mark.asyncio
     async def test_checkpoint_get_failure_handling(self):

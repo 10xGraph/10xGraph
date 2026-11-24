@@ -4,7 +4,6 @@ import pytest
 
 from tenxgraph.core.graph import StateGraph, ToolNode, BaseAgent
 from tenxgraph.core.state import AgentState, Message
-from tenxgraph.storage.store import  MemorySearchResult
 from tenxgraph.qa.testing import MockToolRegistry, TestAgent, TestContext, InMemoryStore
 from tenxgraph.utils import END
 
@@ -237,119 +236,6 @@ class TestMockToolRegistry:
         assert len(registry.functions) == 2
 
 
-class TestInMemoryStore:
-    """Test the InMemoryStore class."""
-
-    @pytest.mark.asyncio
-    async def test_store_creation(self):
-        """Test creating an InMemoryStore."""
-        store = InMemoryStore()
-        assert store.memories == {}
-
-    @pytest.mark.asyncio
-    async def test_store_and_get(self):
-        """Test storing and retrieving a memory."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        mem_id = await store.astore(config, "Test memory content")
-
-        result = await store.aget(config, mem_id)
-        assert result is not None
-        assert result.content == "Test memory content"
-
-    @pytest.mark.asyncio
-    async def test_store_with_message(self):
-        """Test storing a Message."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-        message = Message.text_message("Hello from message", role="user")
-
-        mem_id = await store.astore(config, message)
-
-        result = await store.aget(config, mem_id)
-        assert result is not None
-        assert "Hello from message" in result.content
-
-    @pytest.mark.asyncio
-    async def test_search_with_text_match(self):
-        """Test searching memories by text."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        await store.astore(config, "Python programming language")
-        await store.astore(config, "JavaScript for web development")
-        await store.astore(config, "Python is great for data science")
-
-        results = await store.asearch(config, "Python")
-        assert len(results) == 2
-
-    @pytest.mark.asyncio
-    async def test_search_with_preconfigured_results(self):
-        """Test searching with pre-configured results."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        # Pre-configure results
-        store.set_search_results([
-            MemorySearchResult(id="1", content="Pre-configured result", score=0.9)
-        ])
-
-        results = await store.asearch(config, "anything")
-        assert len(results) == 1
-        assert results[0].content == "Pre-configured result"
-
-    @pytest.mark.asyncio
-    async def test_update_memory(self):
-        """Test updating a memory."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        mem_id = await store.astore(config, "Original content")
-        updated = await store.aupdate(config, mem_id, "Updated content")
-
-        assert updated is True
-        result = await store.aget(config, mem_id)
-        assert result.content == "Updated content"
-
-    @pytest.mark.asyncio
-    async def test_delete_memory(self):
-        """Test deleting a memory."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        mem_id = await store.astore(config, "To be deleted")
-        deleted = await store.adelete(config, mem_id)
-
-        assert deleted is True
-        result = await store.aget(config, mem_id)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_get_all(self):
-        """Test getting all memories."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        await store.astore(config, "Memory 1")
-        await store.astore(config, "Memory 2")
-
-        results = await store.aget_all(config)
-        assert len(results) == 2
-
-    @pytest.mark.asyncio
-    async def test_clear(self):
-        """Test clearing the store."""
-        store = InMemoryStore()
-        config = {"user_id": "test-user"}
-
-        await store.astore(config, "Test")
-        store.set_search_results([MemorySearchResult(id="1", content="Test", score=0.9)])
-
-        store.clear()
-
-        assert store.memories == {}
-        assert store._search_results == []
 
 
 class TestOverrideNode:

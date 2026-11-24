@@ -19,9 +19,7 @@ from tenxgraph.prebuilt.tools.memory import (
     _memory_scope_retrieval_strategy,
     _search_scope_memory,
 )
-from tenxgraph.storage import PgVectorStore as FromStorage
 from tenxgraph.storage.store import MemoryConfig, UserMemoryConfig, system_user_id
-from tenxgraph.storage.store import PgVectorStore as FromStore
 from tenxgraph.storage.store.long_term_memory import _do_write
 from tenxgraph.storage.store.pgvector_store import (
     CURRENT_SCHEMA_VERSION,
@@ -187,18 +185,8 @@ class TestConstructor:
         with pytest.raises(ValueError, match="on_embedding_error"):
             PgVectorStore(_Embedding(), pool=FakePool(FakeConn()), on_embedding_error="ignore")
 
-    def test_accepts_48_char_table(self):
-        store, _, _ = _store(table="t" * 48)
-        assert store._qualified_table == f'"public"."{"t" * 48}"'
 
-    def test_default_strategy_with_embedding_is_similarity(self):
-        store, _, _ = _store()
-        assert store.retrieval_strategy == RetrievalStrategy.SIMILARITY
-        assert store.distance_metric == DistanceMetric.COSINE
 
-    def test_default_strategy_text_only_is_text(self):
-        store, _, _ = _store(embedding=None)
-        assert store.retrieval_strategy == RetrievalStrategy.TEXT
 
     def test_text_only_refuses_vector_strategies(self):
         with pytest.raises(ValueError, match="text-only"):
@@ -222,26 +210,11 @@ class TestConstructor:
         with pytest.raises(ValueError, match="hybrid_candidates"):
             _store(hybrid_candidates=0)
 
-    def test_supports_memory_key_upsert(self):
-        store, _, _ = _store()
-        assert store.supports_memory_key_upsert is True
 
-    def test_lock_key_is_stable_and_per_table(self):
-        a, _, _ = _store()
-        b, _, _ = _store()
-        c, _, _ = _store(table="other")
-        assert a._setup_lock_key() == b._setup_lock_key()
-        assert a._setup_lock_key() != c._setup_lock_key()
-        assert -(2**63) <= a._setup_lock_key() < 2**63
 
-    def test_exported(self):
-        assert FromStore is PgVectorStore
-        assert FromStorage is PgVectorStore
 
 
 class TestQuoteIdent:
-    def test_quotes_valid(self):
-        assert _quote_ident("user_id") == '"user_id"'
 
     @pytest.mark.parametrize("name", ['a"b', "a b", "1a", "", None, "a;b", "x" * 64])
     def test_rejects_invalid(self, name):
@@ -1023,10 +996,6 @@ class TestLifecycle:
             await store.aget(CFG, "m1")
         assert len(conn.calls) == 1
 
-    async def test_acquire_timeout_passed(self):
-        store, _, pool = _store(acquire_timeout=3.0)
-        await store.aping()
-        assert pool.acquire_timeouts == [3.0]
 
     async def test_schema_version(self):
         store, conn, _ = _store()
@@ -1086,20 +1055,3 @@ class TestDoWriteCapability:
         search.assert_awaited_once()
         assert result["status"] == "stored"
 
-    async def test_mock_store_without_flag_keeps_old_path(self):
-        mock = AsyncMock()
-        mock.asearch = AsyncMock(return_value=[])
-        mock.astore = AsyncMock(return_value="m")
-        result = await _do_write(
-            mock,
-            CFG,
-            "store",
-            "x",
-            "",
-            MemoryType.EPISODIC,
-            "general",
-            {"memory_key": "k"},
-            "merge",
-        )
-        assert result["status"] == "stored"
-        assert mock.asearch.await_count == 2

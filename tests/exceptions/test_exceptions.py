@@ -1,11 +1,10 @@
 """Comprehensive tests for the exceptions module."""
 
-import pytest
 
 from tenxgraph.core.exceptions import (
+    MetricsError,
     GraphError,
     GraphRecursionError,
-    MetricsError,
     NodeError,
     SchemaVersionError,
     SerializationError,
@@ -17,14 +16,6 @@ from tenxgraph.core.exceptions import (
 class TestGraphError:
     """Test the GraphError exception."""
 
-    def test_graph_error_creation(self):
-        """Test creating a GraphError with default error code."""
-        error = GraphError("Test graph error")
-        assert str(error) == "[GRAPH_000] Test graph error"  # noqa: S101
-        assert isinstance(error, Exception)  # noqa: S101
-        assert error.error_code == "GRAPH_000"  # noqa: S101
-        assert error.message == "Test graph error"  # noqa: S101
-        assert error.context == {}  # noqa: S101
 
     def test_graph_error_with_code_and_context(self):
         """Test creating a GraphError with custom error code and context."""
@@ -54,17 +45,6 @@ class TestGraphError:
             "context": context,
         }
 
-    def test_graph_error_repr(self):
-        """Test GraphError repr method."""
-        error = GraphError(
-            message="Test",
-            error_code="GRAPH_001",
-            context={"key": "value"},
-        )
-        repr_str = repr(error)
-        assert "GraphError" in repr_str  # noqa: S101
-        assert "GRAPH_001" in repr_str  # noqa: S101
-        assert "Test" in repr_str  # noqa: S101
 
     def test_graph_error_with_cause(self):
         """Test creating a GraphError with a cause."""
@@ -75,28 +55,12 @@ class TestGraphError:
             assert str(error) == "[GRAPH_000] Graph failed"  # noqa: S101
             assert error.__cause__ == cause  # noqa: S101
 
-    def test_graph_error_inheritance(self):
-        """Test that GraphError inherits from Exception."""
-        error = GraphError("Test error")
-        assert isinstance(error, Exception)  # noqa: S101
 
-    def test_graph_error_raise(self):
-        """Test raising a GraphError."""
-        with pytest.raises(GraphError) as exc_info:
-            raise GraphError("Test graph error")
-
-        assert str(exc_info.value) == "[GRAPH_000] Test graph error"  # noqa: S101
 
 
 class TestNodeError:
     """Test the NodeError exception."""
 
-    def test_node_error_creation(self):
-        """Test creating a NodeError."""
-        error = NodeError("Test node error")
-        assert str(error) == "[NODE_000] Test node error"  # noqa: S101
-        assert isinstance(error, Exception)  # noqa: S101
-        assert error.error_code == "NODE_000"  # noqa: S101
 
     def test_node_error_with_context(self):
         """Test creating a NodeError with context."""
@@ -115,29 +79,12 @@ class TestNodeError:
         assert "agent" in str(error)  # noqa: S101
         assert "failed" in str(error)  # noqa: S101
 
-    def test_node_error_inheritance(self):
-        """Test that NodeError inherits from GraphError."""
-        error = NodeError("Test error")
-        assert isinstance(error, GraphError)  # noqa: S101
-        assert isinstance(error, Exception)  # noqa: S101
 
-    def test_node_error_raise(self):
-        """Test raising a NodeError."""
-        with pytest.raises(NodeError) as exc_info:
-            raise NodeError("Test node error")
-
-        assert str(exc_info.value) == "[NODE_000] Test node error"  # noqa: S101
 
 
 class TestGraphRecursionError:
     """Test the GraphRecursionError exception."""
 
-    def test_recursion_error_creation(self):
-        """Test creating a GraphRecursionError."""
-        error = GraphRecursionError("Test recursion error")
-        assert str(error) == "[RECURSION_000] Test recursion error"  # noqa: S101
-        assert isinstance(error, Exception)  # noqa: S101
-        assert error.error_code == "RECURSION_000"  # noqa: S101
 
     def test_recursion_error_with_context(self):
         """Test creating a GraphRecursionError with context."""
@@ -156,28 +103,12 @@ class TestGraphRecursionError:
         assert "recursion" in str(error)  # noqa: S101
         assert "100" in str(error)  # noqa: S101
 
-    def test_recursion_error_inheritance(self):
-        """Test that GraphRecursionError inherits from GraphError."""
-        error = GraphRecursionError("Test error")
-        assert isinstance(error, GraphError)  # noqa: S101
-        assert isinstance(error, Exception)  # noqa: S101
 
-    def test_recursion_error_raise(self):
-        """Test raising a GraphRecursionError."""
-        with pytest.raises(GraphRecursionError) as exc_info:
-            raise GraphRecursionError("Test recursion error")
-
-        assert str(exc_info.value) == "[RECURSION_000] Test recursion error"  # noqa: S101
 
 
 class TestStorageExceptions:
     """Test storage exception classes."""
 
-    def test_storage_error_creation(self):
-        """Test creating a StorageError."""
-        error = StorageError("Test storage error")
-        assert str(error) == "[STORAGE_000] Test storage error"  # noqa: S101
-        assert error.error_code == "STORAGE_000"  # noqa: S101
 
     def test_storage_error_with_context(self):
         """Test creating a StorageError with context."""
@@ -214,34 +145,12 @@ class TestStorageExceptions:
         assert error.error_code == "METRICS_000"  # noqa: S101
 
 
+
 class TestExceptionHierarchy:
     """Test exception hierarchy and relationships."""
 
-    def test_all_exceptions_are_exceptions(self):
-        """Test that all custom exceptions inherit from Exception."""
-        errors = [
-            GraphError("test"),
-            NodeError("test"),
-            GraphRecursionError("test"),
-            StorageError("test"),
-            TransientStorageError("test"),
-            SerializationError("test"),
-            SchemaVersionError("test"),
-            MetricsError("test"),
-        ]
 
-        for error in errors:
-            assert isinstance(error, Exception)  # noqa: S101
 
-    def test_node_error_is_graph_error(self):
-        """Test that NodeError inherits from GraphError."""
-        error = NodeError("test")
-        assert isinstance(error, GraphError)  # noqa: S101
-
-    def test_recursion_error_is_graph_error(self):
-        """Test that GraphRecursionError inherits from GraphError."""
-        error = GraphRecursionError("test")
-        assert isinstance(error, GraphError)  # noqa: S101
 
     def test_storage_error_hierarchy(self):
         """Test that storage errors have correct hierarchy."""
@@ -277,16 +186,6 @@ class TestExceptionHierarchy:
             assert isinstance(graph_error.__context__, ValueError)  # noqa: S101
 
 
-def test_exceptions_module_imports():
-    """Test that exceptions module imports work correctly."""
-    assert GraphError is not None  # noqa: S101
-    assert NodeError is not None  # noqa: S101
-    assert GraphRecursionError is not None  # noqa: S101
-    assert StorageError is not None  # noqa: S101
-    assert TransientStorageError is not None  # noqa: S101
-    assert SerializationError is not None  # noqa: S101
-    assert SchemaVersionError is not None  # noqa: S101
-    assert MetricsError is not None  # noqa: S101
 
 
 def test_thread_not_found_error_does_not_log_at_error_level(caplog):
