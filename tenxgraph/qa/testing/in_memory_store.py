@@ -284,8 +284,10 @@ class InMemoryStore(BaseStore):
         """Update the caller's own memory (reach never lets you edit another user's).
 
         Metadata is merged unless ``replace_metadata=True``. A ``category`` or ``memory_key``
-        in ``metadata`` replaces that value, otherwise it is kept. A memory that is missing or
-        belongs to another user raises ``ValueError``.
+        in ``metadata`` replaces that value, otherwise it is kept. ``origin`` and ``expires_at``
+        (keyword arguments) replace the stored values; left out, they are kept. An expired
+        memory can be updated. A memory that is missing or belongs to another user raises
+        ``ValueError``.
         """
         self._refuse_unstorable(content=content, metadata=metadata)
         origin, expires_at = self._provenance(kwargs)
