@@ -18,7 +18,15 @@ from tenxgraph.core.state.message import generate_id
 from tenxgraph.utils import run_coroutine
 from tenxgraph.utils.validators import has_unstorable_text
 
-from .store_schema import DistanceMetric, MemorySearchResult, MemoryType, RetrievalStrategy
+from .store_schema import (
+    DistanceMetric,
+    MemoryOrigin,
+    MemorySearchResult,
+    MemoryType,
+    RetrievalStrategy,
+    check_expires_at,
+    check_origin,
+)
 
 
 logger = logging.getLogger("tenxgraph.store")
@@ -119,6 +127,12 @@ class BaseStore(ABC):
     #: The retrieval strategies ``asearch`` can run. ``None`` means the store does not declare
     #: them, so a ``MemoryConfig`` strategy is not checked against it.
     supported_retrieval_strategies: frozenset[RetrievalStrategy] | None = None
+
+    #: True when the store keeps ``origin`` and ``expires_at`` (keyword arguments of ``astore``
+    #: and ``aupdate``), hides expired records in every read, filters reads by ``origins`` and
+    #: implements ``adelete_expired``. A store without it ignores those keyword arguments, so
+    #: ``Agent`` refuses a memory config that sets ``origins`` or ``ttl`` on it.
+    supports_provenance: bool = False
 
     def setup(self) -> Any:
         """
@@ -235,6 +249,21 @@ class BaseStore(ABC):
                     f"memory {name} contains a NUL character (\\x00) or a lone surrogate, "
                     "which cannot be stored; remove it before writing"
                 )
+
+    @staticmethod
+    def _provenance(kwargs: dict[str, Any]) -> tuple[MemoryOrigin | None, Any]:
+        """``(origin, expires_at)`` from write keyword arguments, checked.
+
+        A naive ``expires_at`` or an unknown origin raises ``ValueError``. ``expires_at`` comes
+        back in UTC.
+        """
+        return check_origin(kwargs.get("origin")), check_expires_at(kwargs.get("expires_at"))
+
+    @staticmethod
+    def _check_batch_size(batch_size: Any) -> int:
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be an integer >= 1")
+        return batch_size
 
     async def generate_framework_id(self) -> str:
         """Generate a unique ID using the ``BaseIDGenerator`` bound in InjectQ (uuid4 when none)."""
@@ -452,6 +481,20 @@ class BaseStore(ABC):
     ) -> Any:
         """Delete a memory by for a user or agent."""
         return run_coroutine(self.aforget_memory(config, **kwargs))
+
+    async def adelete_expired(self, batch_size: int = 1000, collection: str | None = None) -> int:
+        """Delete every record whose ``expires_at`` has passed, over all owners; return the count.
+
+        Expired records are already hidden from every read; this removes them for good. It is
+        maintenance, so it is not scoped by owner or tenant. Nothing schedules it: run it from
+        a background job, or call it yourself. ``collection`` narrows it to one collection.
+        Stores without ``supports_provenance`` raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support memory expiry")
+
+    def delete_expired(self, batch_size: int = 1000, collection: str | None = None) -> int:
+        """Synchronous wrapper for `adelete_expired` that runs the async implementation."""
+        return run_coroutine(self.adelete_expired(batch_size=batch_size, collection=collection))
 
     # --- Cleanup and Resource Management ---
 

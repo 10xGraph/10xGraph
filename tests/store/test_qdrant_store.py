@@ -108,8 +108,11 @@ class TestQdrantStore:
             "memory_type": PayloadSchemaType.KEYWORD,
             "category": PayloadSchemaType.KEYWORD,
             "memory_key": PayloadSchemaType.KEYWORD,
+            "origin": PayloadSchemaType.KEYWORD,
             # aget_all orders by the timestamp (newest first), which needs a range index.
             "timestamp": PayloadSchemaType.DATETIME,
+            # Every read excludes expired points by a range on expires_at.
+            "expires_at": PayloadSchemaType.DATETIME,
         }
         calls = mock_qdrant_client.create_payload_index.call_args_list
         assert {c.kwargs["field_name"]: c.kwargs["field_schema"] for c in calls} == expected
@@ -128,8 +131,8 @@ class TestQdrantStore:
 
         # Collection should still be cached.
         assert "test_collection" in qdrant_store._collection_cache
-        # All 5 fields should have been attempted.
-        assert mock_qdrant_client.create_payload_index.call_count == 5
+        # All 7 fields should have been attempted.
+        assert mock_qdrant_client.create_payload_index.call_count == 7
 
     @pytest.mark.asyncio
     async def test_existing_collection_ensures_payload_indexes(self, qdrant_store, mock_qdrant_client):
@@ -143,7 +146,15 @@ class TestQdrantStore:
 
         mock_qdrant_client.create_collection.assert_not_called()
         # Indexes should still be created (idempotent) for existing collections.
-        expected_fields = ["user_id", "memory_type", "category", "memory_key", "timestamp"]
+        expected_fields = [
+            "user_id",
+            "memory_type",
+            "category",
+            "memory_key",
+            "origin",
+            "timestamp",
+            "expires_at",
+        ]
         assert mock_qdrant_client.create_payload_index.call_count == len(expected_fields)
 
         called_fields = [

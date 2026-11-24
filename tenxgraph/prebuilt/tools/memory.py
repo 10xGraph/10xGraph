@@ -37,14 +37,17 @@ from tenxgraph.storage.store.long_term_memory import (
     _validate_memory_type,
 )
 from tenxgraph.storage.store.memory_config import (
+    _check_provenance_support,
     _memory_scope_config,
+    _memory_scope_expires_at,
     _memory_scope_limit,
+    _memory_scope_origins,
     _memory_scope_retrieval_strategy,
     _memory_scope_score_threshold,
     _memory_scope_store,
     _pin_identity,  # noqa: F401
 )
-from tenxgraph.storage.store.store_schema import MemoryTypeName
+from tenxgraph.storage.store.store_schema import MemoryOrigin, MemoryTypeName
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.decorators import tool
 from tenxgraph.utils.injection import fresh
@@ -97,6 +100,7 @@ async def _search_scope_memory(
     score_threshold: float | None,
     task_manager: BackgroundTaskManager | None,
     retrieval_strategy: Any = None,
+    origins: Any = None,
 ) -> str:
     await _flush_pending_writes(task_manager)
     results = await store.asearch(
@@ -107,6 +111,7 @@ async def _search_scope_memory(
         limit=limit,
         score_threshold=score_threshold,
         retrieval_strategy=retrieval_strategy,
+        **({"origins": origins} if origins is not None else {}),
     )
     return json.dumps(_format_search_results(results))
 
@@ -130,6 +135,9 @@ def make_user_memory_tool(
     ``forget`` deletes the memories with that key. The key is unique per
     ``(collection, user_id, memory_type, memory_key)``, so the same key under two memory
     types is two memories, and ``forget`` by key removes it under every type.
+
+    ``remember`` writes origin ``agent`` and, with a ``ttl`` set, an ``expires_at``; the model
+    never chooses either. ``search`` applies the configured ``origins``.
     """
     user_config = memory_config.user_memory
     allowed = tuple(a for a in _USER_MEMORY_ACTIONS if a in actions)
@@ -170,6 +178,10 @@ def make_user_memory_tool(
             return json.dumps({"error": "no user memory store configured"})
         strategy = _memory_scope_retrieval_strategy(memory_config, user_config)
         warn_unsupported_strategy(resolved_store, strategy)
+        try:
+            _check_provenance_support(resolved_store, memory_config, user_config)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
 
         cfg = _memory_scope_config(config, memory_config, user_config, scope="user")
         try:
@@ -213,6 +225,7 @@ def make_user_memory_tool(
                     score_threshold=score_threshold,
                     task_manager=task_manager,
                     retrieval_strategy=strategy,
+                    origins=_memory_scope_origins(memory_config, user_config),
                 )
 
             metadata = _memory_tool_metadata("user")
@@ -228,6 +241,8 @@ def make_user_memory_tool(
                 resolved_category,
                 metadata,
                 "merge",
+                origin=MemoryOrigin.AGENT,
+                expires_at=_memory_scope_expires_at(memory_config, user_config),
             )
             try:
                 task_manager.create_task(
@@ -278,6 +293,10 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
             return json.dumps({"error": "no agent memory store configured"})
         strategy = _memory_scope_retrieval_strategy(memory_config, agent_config)
         warn_unsupported_strategy(resolved_store, strategy)
+        try:
+            _check_provenance_support(resolved_store, memory_config, agent_config)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
         if not query:
             return json.dumps({"error": "query is required"})
 
@@ -298,6 +317,7 @@ def make_agent_memory_tool(memory_config: Any) -> Callable:
                 score_threshold=_memory_scope_score_threshold(memory_config, agent_config),
                 task_manager=task_manager,
                 retrieval_strategy=strategy,
+                origins=_memory_scope_origins(memory_config, agent_config),
             )
         except Exception as e:
             logger.exception("agent_memory_tool error: %s", e)

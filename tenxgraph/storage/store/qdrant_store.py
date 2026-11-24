@@ -20,7 +20,12 @@ from tenxgraph.storage.columns import parse_columns
 from tenxgraph.storage.media.url_policy import redact_url
 
 from ._qdrant_reads import QdrantReadsMixin
-from ._qdrant_support import _RESERVED_COLUMN_NAMES, payload_matches
+from ._qdrant_support import (
+    _EXPIRES_FIELD,
+    _RESERVED_COLUMN_NAMES,
+    payload_matches,
+    provenance_payload,
+)
 from .embedding.base_embedding import BaseEmbedding
 from .store_schema import (
     DistanceMetric,
@@ -71,6 +76,8 @@ class QdrantStore(QdrantReadsMixin):
     """
 
     supported_retrieval_strategies = frozenset({RetrievalStrategy.SIMILARITY})
+
+    supports_provenance = True
 
     def __init__(
         self,
@@ -197,7 +204,9 @@ class QdrantStore(QdrantReadsMixin):
         reach ``all``. Use ``system_user_id(name)`` for shared data. Tenant values come from
         ``config["user"]``; a required one that is missing raises. A ``memory_id`` (keyword
         argument) that belongs to another user or tenant raises ``ValueError`` (not found, as
-        ``aupdate`` and ``adelete``) and leaves that memory as it is.
+        ``aupdate`` and ``adelete``) and leaves that memory as it is. ``origin`` and
+        ``expires_at`` (keyword arguments) are stored as reserved payload fields (a naive
+        ``expires_at`` raises); caller metadata cannot set them.
         """
         self._refuse_unstorable(
             content=content,
@@ -205,6 +214,7 @@ class QdrantStore(QdrantReadsMixin):
             category=category,
             memory_key=kwargs.get("memory_key"),
         )
+        origin, expires_at = self._provenance(kwargs)
         user_id, thread_id, collection = self._extract_config_values(config)
         user_id = self._require_owner_id(config, user_id)
         ctx = self._isolation(config, write=True)
@@ -241,6 +251,7 @@ class QdrantStore(QdrantReadsMixin):
             "memory_type": record.memory_type.value,
             "category": record.category,
             "timestamp": record.timestamp.isoformat() if record.timestamp else None,
+            **provenance_payload(origin, expires_at),
         }
 
         point = PointStruct(id=record.id, vector=vector, payload=payload)
@@ -264,10 +275,13 @@ class QdrantStore(QdrantReadsMixin):
         with ``replace_metadata=True``). Writes stay reach ``own``: a memory that does not
         exist or belongs to another user or tenant raises ``ValueError`` (not found), on
         every reach, as on ``PgVectorStore``. Tenant values never change on update.
+        ``origin`` and ``expires_at`` (keyword arguments) replace the stored values; left out,
+        the stored ones are carried over. Expired memories can be updated.
         """
         from qdrant_client.http.models import PointStruct
 
         self._refuse_unstorable(content=content, metadata=metadata)
+        origin, expires_at = self._provenance(kwargs)
         user_id, _thread_id, collection = self._extract_config_values(config)
         owner = self._require_owner_id(config, user_id)  # writes stay reach own
         ctx = self._isolation(config, write=True)
@@ -302,6 +316,11 @@ class QdrantStore(QdrantReadsMixin):
             "memory_type": payload.get("memory_type", MemoryType.EPISODIC.value),
             "category": new_metadata.get("category") or payload.get("category") or "general",
             "timestamp": datetime.now(UTC).isoformat(),
+            # The payload is rebuilt, so provenance is carried over unless this update sets it.
+            "origin": origin.value if origin is not None else payload.get("origin"),
+            _EXPIRES_FIELD: (
+                expires_at.isoformat() if expires_at is not None else payload.get(_EXPIRES_FIELD)
+            ),
         }
 
         new_point = PointStruct(id=memory_id, vector=new_vector, payload=updated_payload)

@@ -131,6 +131,8 @@ MEMORY_FILTER_COLUMNS: dict[str, str] = {
     "memory_key": "text",
     "created_at": "timestamptz",
     "updated_at": "timestamptz",
+    "origin": "text",
+    "expires_at": "timestamptz",
 }
 
 # Names shown in error messages; anything else is described, never echoed.

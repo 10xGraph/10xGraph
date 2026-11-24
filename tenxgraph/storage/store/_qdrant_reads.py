@@ -1,9 +1,16 @@
 """Read and delete methods of ``QdrantStore``: search, get by id, list, delete, forget."""
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
-from ._qdrant_support import _ORDER_FIELD, QdrantHelpersMixin, payload_matches
+from ._qdrant_support import (
+    _EXPIRES_FIELD,
+    _ORDER_FIELD,
+    QdrantHelpersMixin,
+    payload_live,
+    payload_matches,
+)
 from .base_store import limit_to_token_budget
 from .store_schema import (
     DistanceMetric,
@@ -39,7 +46,9 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         """Search memories by content similarity.
 
         Long-term memory is cross-thread — thread_id is intentionally excluded
-        from the search filter so results span all conversations for the user.
+        from the search filter so results span all conversations for the user. Expired
+        memories are never returned; ``origins`` (keyword argument) narrows by who wrote them.
+        Both are part of the query filter, so ``limit`` counts only points that pass them.
         """
         strategy = RetrievalStrategy(
             retrieval_strategy
@@ -74,6 +83,8 @@ class QdrantReadsMixin(QdrantHelpersMixin):
             category=category,
             filters=filters,
             tenant=ctx.conditions,
+            live=True,
+            origins=kwargs.get("origins"),
         )
 
         # (query_points replaced search in qdrant-client 1.10; payloads are returned by default)
@@ -98,8 +109,16 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         memory_id: str,
         **kwargs,
     ) -> MemorySearchResult | None:
-        """Get a memory by id; ``None`` when it does not exist or is outside the caller's
-        scope (another user's on reach ``own``, another tenant's). Backend errors raise."""
+        """Get a memory by id; ``None`` when it does not exist, has expired or is outside the
+        caller's scope (another user's on reach ``own``, another tenant's). Backend errors
+        raise."""
+        point = await self._scoped_point(config, memory_id)
+        if point is None or not payload_live(getattr(point, "payload", None) or {}):
+            return None
+        return self._point_to_search_result(point)
+
+    async def _scoped_point(self, config: dict[str, Any], memory_id: str) -> Any | None:
+        """The point with ``memory_id`` when it is inside the caller's scope (expired or not)."""
         user_id, _thread_id, collection = self._extract_config_values(config)
         scoped_user_id = self._require_user_id(config, user_id)
         ctx = self._isolation(config)
@@ -111,7 +130,7 @@ class QdrantReadsMixin(QdrantHelpersMixin):
             getattr(point, "payload", None) or {}, scoped_user_id, ctx.conditions
         ):
             return None
-        return self._point_to_search_result(point)
+        return point
 
     async def aget_all(
         self,
@@ -121,7 +140,8 @@ class QdrantReadsMixin(QdrantHelpersMixin):
     ) -> list[MemorySearchResult]:
         """List the caller's memories in the collection, newest first.
 
-        ``filters`` (keyword argument) narrows the list, same rules as ``asearch``. Ordered by
+        ``filters`` and ``origins`` (keyword arguments) narrow the list, same rules as
+        ``asearch``; expired memories are left out. Ordered by
         the ``timestamp`` payload field (set on every write and update), which has a datetime
         payload index for remote Qdrant.
         """
@@ -134,7 +154,11 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         await self._ensure_collection_exists(collection)
 
         search_filter = self._build_qdrant_filter(
-            user_id=scoped_user_id, filters=kwargs.get("filters"), tenant=ctx.conditions
+            user_id=scoped_user_id,
+            filters=kwargs.get("filters"),
+            tenant=ctx.conditions,
+            live=True,
+            origins=kwargs.get("origins"),
         )
 
         # Listing needs no vector, so scroll through the filtered points (payloads are
@@ -161,12 +185,12 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         caller's scope (another user's on reach ``own``, another tenant's)."""
         from qdrant_client.http import models
 
-        user_id, _thread_id, collection = self._extract_config_values(config)
-        self._require_user_id(config, user_id)
+        _user_id, _thread_id, collection = self._extract_config_values(config)
 
-        # ``aget`` applies the caller's scope, so a memory outside it is "not found" here.
-        existing = await self.aget(config, memory_id)
-        if not existing:
+        # The caller's scope applies, so a memory outside it is "not found" here. Expired
+        # memories can still be deleted.
+        existing = await self._scoped_point(config, memory_id)
+        if existing is None:
             raise ValueError(f"Memory {memory_id} not found")
 
         await self.client.delete(
@@ -175,6 +199,37 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         )
 
         logger.debug(f"Deleted memory {memory_id} from collection {collection}")
+
+    async def adelete_expired(self, batch_size: int = 1000, collection: str | None = None) -> int:
+        """Delete every expired point in a collection, over all owners; return how many.
+
+        ``collection`` defaults to the store's collection name; with a function default it must
+        be given. One server-side delete by filter (``batch_size`` is checked, not needed).
+        """
+        from qdrant_client.http import models
+
+        self._check_batch_size(batch_size)
+        name = collection if collection is not None else self.collection
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                "adelete_expired needs a collection name when the default is a function"
+            )
+        await self._ensure_collection_exists(name)
+        expired = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key=_EXPIRES_FIELD,
+                    range=models.DatetimeRange(lte=datetime.now(UTC).isoformat()),
+                )
+            ]
+        )
+        count = (await self.client.count(name, count_filter=expired, exact=True)).count
+        if count:
+            await self.client.delete(
+                collection_name=name, points_selector=models.FilterSelector(filter=expired)
+            )
+        logger.info("QdrantStore deleted %d expired memories from %s", count, name)
+        return count
 
     async def aforget_memory(
         self,

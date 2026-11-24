@@ -33,6 +33,8 @@ from .store_schema import (
     MemoryRecord,
     MemorySearchResult,
     MemoryType,
+    check_origins,
+    read_origin,
 )
 
 
@@ -147,6 +149,23 @@ class _PgvQueryMixin(PgvHostBase):
                 "::text::jsonb"
             )
 
+    @staticmethod
+    def _add_provenance(where: _Where, origins: Any = None) -> None:
+        """Hide expired rows and, when ``origins`` is given, keep only those origins.
+
+        Both go into the WHERE clause, so ``LIMIT`` counts only rows that pass them. ``None`` in
+        ``origins`` keeps rows of unknown origin (``origin IS NULL``).
+        """
+        expires = where.column("expires_at")
+        where.add(f"({expires} IS NULL OR {expires} > now())")
+        wanted = check_origins(origins)
+        if wanted is None:
+            return
+        values, unknown = wanted
+        origin = where.column("origin")
+        clause = f"{origin} = ANY({where.param(values)}::text[])"
+        where.add(f"({clause} OR {origin} IS NULL)" if unknown else clause)
+
     def _vector_literal(self, vector: Any, *, cosine: bool = False) -> str:
         """Validate an embedding and render it as a pgvector text literal ``[x,y,...]``.
 
@@ -260,6 +279,8 @@ class _PgvQueryMixin(PgvHostBase):
             user_id=row["user_id"],
             thread_id=row["thread_id"],
             timestamp=row["updated_at"],
+            origin=read_origin(row["origin"]),
+            expires_at=row["expires_at"],
         )
 
     def _columns(self, alias: str | None = None) -> str:

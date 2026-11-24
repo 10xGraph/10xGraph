@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -11,7 +12,7 @@ from tenxgraph.core.authz import Reach, get_identity
 from tenxgraph.storage.store.base_store import BaseStore, system_user_id
 
 from .long_term_memory import ReadMode, _validate_memory_type
-from .store_schema import RetrievalStrategy
+from .store_schema import MemoryOrigin, RetrievalStrategy, check_origins
 
 
 def _non_blank(value: str, message: str) -> str:
@@ -24,6 +25,17 @@ def _non_blank(value: str, message: str) -> str:
 
 def _as_strategy(value: RetrievalStrategy | str | None) -> RetrievalStrategy | None:
     return None if value is None else RetrievalStrategy(value)
+
+
+def _check_origins_field(value: Any) -> Any:
+    check_origins(value)
+    return value
+
+
+def _check_ttl(value: timedelta | None) -> timedelta | None:
+    if value is not None and value <= timedelta(0):
+        raise ValueError("ttl must be a positive timedelta")
+    return value
 
 
 class _MemoryScopeConfig(BaseModel):
@@ -50,6 +62,8 @@ class _MemoryScopeConfig(BaseModel):
     ``memory_type`` and ``category`` are the defaults for what the scope writes. They do not
     narrow a search made through the model-facing tools: a search filters by type or category
     only when the model names one.
+
+    ``origins`` and ``ttl`` override the ``MemoryConfig`` values for this scope (see there).
     """
 
     enabled: bool = True
@@ -61,8 +75,20 @@ class _MemoryScopeConfig(BaseModel):
     retrieval_strategy: RetrievalStrategy | str | None = None
     collection: str | Callable[[dict[str, Any]], str] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    origins: list[MemoryOrigin | None] | None = None
+    ttl: timedelta | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("origins")
+    @classmethod
+    def _validate_origins(cls, value: Any) -> Any:
+        return _check_origins_field(value)
+
+    @field_validator("ttl")
+    @classmethod
+    def _validate_ttl(cls, value: timedelta | None) -> timedelta | None:
+        return _check_ttl(value)
 
     @field_validator("collection")
     @classmethod
@@ -136,7 +162,19 @@ class AgentMemoryConfig(_MemoryScopeConfig):
 
 
 class MemoryConfig(BaseModel):
-    """Primary public configuration object for ``Agent(..., memory=...)``."""
+    """Primary public configuration object for ``Agent(..., memory=...)``.
+
+    ``origins`` (opt-in, off by default) limits the preload search and the memory tools'
+    searches to memories written by those origins, for example ``list(TRUSTED_ORIGINS)`` for
+    trusted-only retrieval; ``None`` in the list also keeps memories of unknown origin. With
+    it set, memories the model saved itself (origin ``agent``) are not read back unless
+    ``MemoryOrigin.AGENT`` is listed. Deduplication of writes always sees every origin.
+
+    ``ttl`` (opt-in, off by default) makes what the model remembers expire that long after it
+    is written. Expired memories are hidden from every read and removed by the store's
+    ``adelete_expired()``. Both need a store with ``supports_provenance``; ``Agent`` refuses
+    them otherwise.
+    """
 
     store: BaseStore | None = None
     retrieval_mode: ReadMode = ReadMode.POSTLOAD
@@ -148,8 +186,20 @@ class MemoryConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     user_memory: UserMemoryConfig | None = Field(default_factory=UserMemoryConfig)
     agent_memory: AgentMemoryConfig | None = Field(default_factory=AgentMemoryConfig)
+    origins: list[MemoryOrigin | None] | None = None
+    ttl: timedelta | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("origins")
+    @classmethod
+    def _validate_origins(cls, value: Any) -> Any:
+        return _check_origins_field(value)
+
+    @field_validator("ttl")
+    @classmethod
+    def _validate_ttl(cls, value: timedelta | None) -> timedelta | None:
+        return _check_ttl(value)
 
     @field_validator("retrieval_strategy")
     @classmethod
@@ -209,6 +259,34 @@ def _memory_scope_retrieval_strategy(memory_config: Any, scope_config: Any) -> A
     if scope_config.retrieval_strategy is not None:
         return scope_config.retrieval_strategy
     return memory_config.retrieval_strategy
+
+
+def _memory_scope_origins(memory_config: Any, scope_config: Any) -> Any:
+    """Scope value wins over the MemoryConfig value; ``None`` = no origin filter."""
+    if scope_config.origins is not None:
+        return scope_config.origins
+    return memory_config.origins
+
+
+def _memory_scope_expires_at(memory_config: Any, scope_config: Any) -> datetime | None:
+    """``now + ttl`` for a write (scope ttl wins); ``None`` when no ttl is set."""
+    ttl = scope_config.ttl if scope_config.ttl is not None else memory_config.ttl
+    return datetime.now(UTC) + ttl if ttl is not None else None
+
+
+def _check_provenance_support(store: Any, memory_config: Any, scope_config: Any) -> None:
+    """Raise when the scope sets ``origins`` or ``ttl`` and ``store`` would ignore them."""
+    if getattr(store, "supports_provenance", False) is True:
+        return
+    uses = _memory_scope_origins(memory_config, scope_config) is not None or (
+        scope_config.ttl is not None or memory_config.ttl is not None
+    )
+    if uses:
+        raise ValueError(
+            f"MemoryConfig sets origins or ttl, but {type(store).__name__} does not support "
+            "them (supports_provenance is False); it would ignore them. Use a store that "
+            "supports provenance or remove origins and ttl."
+        )
 
 
 def _pin_identity(cfg: dict[str, Any], owner: str | None) -> None:

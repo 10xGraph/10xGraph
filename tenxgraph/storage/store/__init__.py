@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module as _import_module
+from typing import TYPE_CHECKING
 from typing import Any as _Any
 
 from .base_store import SYSTEM_USER_PREFIX, BaseStore, is_system_user_id, system_user_id
@@ -18,7 +19,19 @@ from .qdrant_store import (
     create_local_qdrant_store,
     create_remote_qdrant_store,
 )
-from .store_schema import DistanceMetric, MemoryRecord, MemorySearchResult, MemoryType
+from .store_schema import (
+    TRUSTED_ORIGINS,
+    DistanceMetric,
+    MemoryOrigin,
+    MemoryRecord,
+    MemorySearchResult,
+    MemoryType,
+)
+
+
+if TYPE_CHECKING:
+    # Resolved lazily by __getattr__ at runtime; imported here for static analyzers only.
+    from tenxgraph.prebuilt.tools.memory import make_agent_memory_tool, make_user_memory_tool
 
 
 _MEMORY_TOOL_EXPORTS = {
@@ -45,6 +58,7 @@ __all__ = [
     "DistanceMetric",
     "GoogleEmbedding",
     "MemoryConfig",
+    "MemoryOrigin",
     "MemoryRecord",
     "MemorySearchResult",
     "MemoryType",
@@ -52,6 +66,7 @@ __all__ = [
     "PgVectorStore",
     "QdrantStore",
     "SYSTEM_USER_PREFIX",
+    "TRUSTED_ORIGINS",
     "is_system_user_id",
     "system_user_id",
     "ReadMode",

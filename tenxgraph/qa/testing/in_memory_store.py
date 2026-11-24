@@ -18,6 +18,8 @@ from tenxgraph.storage.store.store_schema import (
     MemorySearchResult,
     MemoryType,
     RetrievalStrategy,
+    check_origins,
+    is_live,
 )
 
 
@@ -25,7 +27,17 @@ logger = logging.getLogger("tenxgraph.testing")
 
 # Keys the store owns: they are never taken from caller metadata.
 _SYSTEM_KEYS = frozenset(
-    {"content", "user_id", "thread_id", "memory_type", "category", "timestamp", "memory_key"}
+    {
+        "content",
+        "user_id",
+        "thread_id",
+        "memory_type",
+        "category",
+        "timestamp",
+        "memory_key",
+        "origin",
+        "expires_at",
+    }
 )
 
 
@@ -53,6 +65,8 @@ class InMemoryStore(BaseStore):
         ```
     """
 
+    supports_provenance = True
+
     def __init__(self):
         """Initialize an in-memory store."""
         self.collection = "memories"
@@ -79,17 +93,30 @@ class InMemoryStore(BaseStore):
         logger.debug("Pre-configured %d search results", len(results))
 
     def _visible(
-        self, config: dict[str, Any], memory_type: MemoryType | None = None
+        self,
+        config: dict[str, Any],
+        memory_type: MemoryType | None = None,
+        origins: Any = None,
     ) -> list[MemorySearchResult]:
-        """Memories the caller may read, newest first (same scope rules as PgVectorStore)."""
+        """Memories the caller may read, newest first (same scope rules as PgVectorStore).
+
+        Expired memories are left out; ``origins`` (see ``check_origins``) narrows by origin.
+        """
         _user, _thread, collection = self._extract_config_values(config)
         scoped = self._require_user_id(config)
+        wanted = check_origins(origins)
+        now = datetime.now(UTC)
         rows = [
             m
             for m in self.memories.values()
             if self._collection_of[m.id] == collection
             and (scoped is None or m.user_id == scoped)
             and (memory_type is None or m.memory_type == memory_type)
+            and is_live(m.expires_at, now)
+            and (
+                wanted is None
+                or (m.origin.value in wanted[0] if m.origin is not None else wanted[1])
+            )
         ]
         # Ascending then reversed: equal timestamps keep newest-stored first.
         return sorted(rows, key=lambda m: m.timestamp or datetime.min.replace(tzinfo=UTC))[::-1]
@@ -142,6 +169,7 @@ class InMemoryStore(BaseStore):
             category=category,
             memory_key=kwargs.get("memory_key"),
         )
+        origin, expires_at = self._provenance(kwargs)
         user_id, thread_id, collection = self._extract_config_values(config)
         owner = self._require_owner_id(config, user_id)
         mem_id = str(kwargs.get("memory_id") or uuid4())
@@ -160,6 +188,8 @@ class InMemoryStore(BaseStore):
             user_id=str(owner),
             thread_id=thread_id,
             timestamp=datetime.now(UTC),
+            origin=origin,
+            expires_at=expires_at,
         )
         self._collection_of[mem_id] = collection
 
@@ -200,7 +230,7 @@ class InMemoryStore(BaseStore):
         query_lower = query.lower() if isinstance(query, str) else ""
         results = [
             m
-            for m in self._visible(config, memory_type)
+            for m in self._visible(config, memory_type, kwargs.get("origins"))
             if query_lower in m.content.lower()
             and (category is None or m.metadata.get("category") == category)
             and self._matches(m, filters)
@@ -238,7 +268,8 @@ class InMemoryStore(BaseStore):
         """Get the caller's memories, newest first, narrowed by ``filters`` (metadata keys)."""
         filters = kwargs.get("filters")
         self._check_filters(filters)
-        results = [m for m in self._visible(config) if self._matches(m, filters)][:limit]
+        visible = self._visible(config, origins=kwargs.get("origins"))
+        results = [m for m in visible if self._matches(m, filters)][:limit]
         logger.debug("Get all memories: returning %d", len(results))
         return results
 
@@ -257,6 +288,7 @@ class InMemoryStore(BaseStore):
         belongs to another user raises ``ValueError``.
         """
         self._refuse_unstorable(content=content, metadata=metadata)
+        origin, expires_at = self._provenance(kwargs)
         user_id, _thread, _collection = self._extract_config_values(config)
         mem = self._owned(config, memory_id, self._require_owner_id(config, user_id))
         meta = metadata or {}
@@ -270,6 +302,8 @@ class InMemoryStore(BaseStore):
                 "content": content if isinstance(content, str) else content.text(),
                 "metadata": self._metadata(merged, category, mem.memory_type, memory_key),
                 "timestamp": datetime.now(UTC),
+                "origin": origin or mem.origin,
+                "expires_at": expires_at or mem.expires_at,
             }
         )
         logger.debug("Updated memory %s", memory_id)
@@ -322,6 +356,21 @@ class InMemoryStore(BaseStore):
 
         logger.debug("Forgot %d memories for user=%s, thread=%s", len(to_delete), owner, thread_id)
         return len(to_delete)
+
+    async def adelete_expired(self, batch_size: int = 1000, collection: str | None = None) -> int:
+        """Delete every expired memory (in ``collection`` when given); return the count."""
+        self._check_batch_size(batch_size)
+        now = datetime.now(UTC)
+        expired = [
+            m.id
+            for m in self.memories.values()
+            if not is_live(m.expires_at, now)
+            and (collection is None or self._collection_of[m.id] == collection)
+        ]
+        for mem_id in expired:
+            del self.memories[mem_id]
+            del self._collection_of[mem_id]
+        return len(expired)
 
     async def aping(self) -> None:
         """Nothing to reach: the store lives in this process."""

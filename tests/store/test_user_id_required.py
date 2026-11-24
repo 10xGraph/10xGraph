@@ -84,9 +84,10 @@ async def test_qdrant_read_filters_by_user(qdrant, client):
 async def test_qdrant_reach_all_reads_all_users(qdrant, client):
     config = {"user": {"user_id": "admin", "reach": "all"}}
     await qdrant.asearch(config, "q")
-    assert client.query_points.call_args.kwargs["query_filter"] is None
+    # No user condition; only the expiry exclusion every read has.
+    assert client.query_points.call_args.kwargs["query_filter"].must == []
     await qdrant.aget_all(config)
-    assert client.scroll.call_args.kwargs["scroll_filter"] is None
+    assert client.scroll.call_args.kwargs["scroll_filter"].must == []
 
 
 @pytest.mark.asyncio

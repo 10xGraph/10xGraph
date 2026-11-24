@@ -126,14 +126,14 @@ class TestSetupSession:
             if "format_type" in sql
             else "vector_cosine_ops"
             if "opcname" in sql
-            else 2
+            else 3
             if "max(version)" in sql
             else None
         )
         t = "tenxgraph_memories"
         catalog = [
             {"relname": f"{t}_{s}", "indisvalid": True, "qualified": f'"{t}_{s}"'}
-            for s in ("uid_idx", "tsv_idx", "emb_idx", "key_uq")
+            for s in ("uid_idx", "tsv_idx", "exp_idx", "emb_idx", "key_uq")
         ]
         keys = [_key_row(f"{t}_key_uq", ["collection", "user_id", "memory_type", "memory_key"])]
         conn.fetch_results = [catalog, keys]

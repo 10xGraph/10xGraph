@@ -7,7 +7,7 @@ methods share.
 import asyncio
 import logging
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from tenxgraph.core.state import Message
@@ -22,6 +22,8 @@ from .store_schema import (
     MemorySearchResult,
     MemoryType,
     RetrievalStrategy,
+    check_origins,
+    read_origin,
 )
 
 
@@ -31,22 +33,61 @@ logger = logging.getLogger("tenxgraph.store")
 # replace them -- in particular ``user_id``, which every read filters on. Tenant column names
 # are added per store (``QdrantStore._reserved_keys``).
 _SYSTEM_PAYLOAD_KEYS = frozenset(
-    {"content", "user_id", "thread_id", "memory_type", "category", "timestamp"}
+    {
+        "content",
+        "user_id",
+        "thread_id",
+        "memory_type",
+        "category",
+        "timestamp",
+        "origin",
+        "expires_at",
+    }
 )
 
 # Payload fields left out of ``MemorySearchResult.metadata`` (they have their own result
 # fields). Tenant column names are added per store.
-_HIDDEN_RESULT_KEYS = frozenset({"content", "user_id", "thread_id", "timestamp"})
+_HIDDEN_RESULT_KEYS = frozenset(
+    {"content", "user_id", "thread_id", "timestamp", "origin", "expires_at"}
+)
 
 # Names a tenant column cannot take: the store's payload fields.
 _RESERVED_COLUMN_NAMES = _SYSTEM_PAYLOAD_KEYS | {"memory_key", "agent_id", "collection", "id"}
 
 # Keyword payload indexes every collection gets (remote Qdrant refuses unindexed filters).
-_KEYWORD_INDEXES = ("user_id", "memory_type", "category", "memory_key")
+_KEYWORD_INDEXES = ("user_id", "memory_type", "category", "memory_key", "origin")
+
+# Payload field of the expiry time (ISO 8601 in UTC, or null). Reads hide points past it.
+_EXPIRES_FIELD = "expires_at"
 
 # ``aget_all`` orders by this payload field (newest first). ``timestamp`` is set on every
 # write and moved on every update, so it is the store's ``updated_at``.
 _ORDER_FIELD = "timestamp"
+
+
+def read_datetime(value: Any) -> datetime | None:
+    """A payload ISO datetime as an aware datetime; missing, naive or malformed is ``None``."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+def payload_live(payload: dict[str, Any]) -> bool:
+    """True when the point has no ``expires_at`` or it has not passed yet."""
+    expires_at = read_datetime(payload.get(_EXPIRES_FIELD))
+    return expires_at is None or expires_at > datetime.now(UTC)
+
+
+def provenance_payload(origin: Any, expires_at: datetime | None) -> dict[str, Any]:
+    """The ``origin`` and ``expires_at`` payload fields of a write."""
+    return {
+        "origin": origin.value if origin is not None else None,
+        _EXPIRES_FIELD: expires_at.isoformat() if expires_at is not None else None,
+    }
 
 
 def payload_matches(
@@ -69,6 +110,7 @@ class QdrantHelpersMixin(BaseStore):
 
     client: Any
     embedding: Any
+    collection: Any
     columns: ColumnSet
     tenant_column_names: tuple[str, ...]
     _collection_cache: set[str]
@@ -156,6 +198,8 @@ class QdrantHelpersMixin(BaseStore):
             thread_id=payload.get("thread_id")
             or payload.get("agent_id"),  # Support both thread_id and agent_id
             timestamp=timestamp,
+            origin=read_origin(payload.get("origin")),
+            expires_at=read_datetime(payload.get(_EXPIRES_FIELD)),
         )
 
     def _build_qdrant_filter(
@@ -166,8 +210,14 @@ class QdrantHelpersMixin(BaseStore):
         category: str | None = None,
         filters: dict[str, Any] | None = None,
         tenant: Sequence[tuple[ColumnSpec, Any]] = (),
+        *,
+        live: bool = False,
+        origins: Any = None,
     ) -> Any | None:
         """Build a Qdrant filter (AND of every condition) from the parameters.
+
+        ``live=True`` leaves out expired points (no ``expires_at``, or one in the future).
+        ``origins`` keeps only those origins; ``None`` in it keeps points of unknown origin.
 
         ``tenant`` is the scope's tenant conditions (``Isolation.conditions``): a value
         matches as text; a ``None`` value (a writer without an optional value) matches only
@@ -176,14 +226,30 @@ class QdrantHelpersMixin(BaseStore):
         ``FilterError`` (never silently dropped, which would widen the result).
         """
         from qdrant_client.http.models import (
+            DatetimeRange,
             FieldCondition,
             Filter,
             IsEmptyCondition,
+            MatchAny,
             MatchValue,
             PayloadField,
         )
 
         conditions: list[Any] = []
+        # A point without expires_at never matches the range, so it is never excluded.
+        excluded: list[Any] = []
+        if live:
+            now = datetime.now(UTC).isoformat()
+            excluded.append(FieldCondition(key=_EXPIRES_FIELD, range=DatetimeRange(lte=now)))
+        wanted = check_origins(origins)
+        if wanted is not None:
+            values, unknown = wanted
+            options: list[Any] = []
+            if values:
+                options.append(FieldCondition(key="origin", match=MatchAny(any=values)))
+            if unknown:
+                options.append(IsEmptyCondition(is_empty=PayloadField(key="origin")))
+            conditions.append(options[0] if len(options) == 1 else Filter(should=options))
         if user_id is not None:
             conditions.append(FieldCondition(key="user_id", match=MatchValue(value=user_id)))
         for spec, value in tenant:
@@ -210,7 +276,9 @@ class QdrantHelpersMixin(BaseStore):
                 )
             conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
 
-        return Filter(must=conditions) if conditions else None
+        if not conditions and not excluded:
+            return None
+        return Filter(must=conditions, must_not=excluded or None)
 
     async def _retrieve_point(self, collection: str, memory_id: str) -> Any | None:
         """The point with ``memory_id``, or None. Backend errors propagate."""
@@ -291,6 +359,7 @@ class QdrantHelpersMixin(BaseStore):
                     for name in self.tenant_column_names
                 ]
                 indexes.append((_ORDER_FIELD, PayloadSchemaType.DATETIME))
+                indexes.append((_EXPIRES_FIELD, PayloadSchemaType.DATETIME))
                 for field_name, schema in indexes:
                     try:
                         await self.client.create_payload_index(

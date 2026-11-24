@@ -183,8 +183,15 @@ async def _do_write(  # noqa: PLR0911
     category: str,
     metadata: dict[str, Any] | None,
     write_mode: str,
+    *,
+    origin: Any = None,
+    expires_at: Any = None,
 ) -> dict[str, Any]:
     """Execute a write operation against the store.
+
+    ``origin`` and ``expires_at`` go to the store with every store and update (only when not
+    ``None``, so a store without provenance support never sees them). The dedup searches
+    read every origin, since they must find any row the write may replace.
 
     For ``action="store"`` an automatic **deduplication** check runs first:
 
@@ -199,6 +206,9 @@ async def _do_write(  # noqa: PLR0911
     # Strip thread_id once here — long-term memory is cross-thread;
     # neither dedup searches nor writes should be scoped to a single thread.
     cfg = _strip_thread_id(config)
+    provenance = {
+        k: v for k, v in (("origin", origin), ("expires_at", expires_at)) if v is not None
+    }
 
     if action == "store":
         memory_key = (metadata or {}).get("memory_key", "")
@@ -212,6 +222,7 @@ async def _do_write(  # noqa: PLR0911
                 category=category,
                 metadata=metadata,
                 memory_key=memory_key,
+                **provenance,
             )
             return {"status": "upserted_by_key", "memory_id": str(mid), "memory_key": memory_key}
 
@@ -224,7 +235,9 @@ async def _do_write(  # noqa: PLR0911
                     memory_key,
                     existing.id,
                 )
-                await store.aupdate(cfg, str(existing.id), content, metadata=metadata)
+                await store.aupdate(
+                    cfg, str(existing.id), content, metadata=metadata, **provenance
+                )
                 return {
                     "status": "updated_existing",
                     "memory_id": str(existing.id),
@@ -253,6 +266,7 @@ async def _do_write(  # noqa: PLR0911
             category=category,
             metadata=metadata,
             memory_id=generated_id,
+            **provenance,
         )
         return {"status": "stored", "memory_id": str(mid)}
 
@@ -263,9 +277,11 @@ async def _do_write(  # noqa: PLR0911
                 **(existing.metadata if existing and existing.metadata else {}),
                 **(metadata or {}),
             }
-            await store.aupdate(cfg, memory_id, content, metadata=merged)
+            await store.aupdate(cfg, memory_id, content, metadata=merged, **provenance)
         else:
-            await store.aupdate(cfg, memory_id, content, metadata=metadata, replace_metadata=True)
+            await store.aupdate(
+                cfg, memory_id, content, metadata=metadata, replace_metadata=True, **provenance
+            )
         return {"status": "updated", "memory_id": memory_id}
 
     if action == "delete":
