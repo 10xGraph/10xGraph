@@ -45,7 +45,6 @@ if TYPE_CHECKING:
         async def _get_pg_pool(self) -> Any: ...
 
         # _PgAccessMixin
-        @staticmethod
         async def _retry_on_connection_error(
             self, operation: Any, *args: Any, max_retries: int = 3, **kwargs: Any
         ) -> Any: ...

@@ -251,7 +251,12 @@ class QdrantHelpersMixin(BaseStore):
         if collection in self._collection_cache:
             return
 
-        from qdrant_client.http.models import KeywordIndexParams, PayloadSchemaType, VectorParams
+        from qdrant_client.http.models import (
+            KeywordIndexParams,
+            KeywordIndexType,
+            PayloadSchemaType,
+            VectorParams,
+        )
 
         async with self._collection_lock:
             # Re-check under the lock: another coroutine may have ensured it while
@@ -282,7 +287,7 @@ class QdrantHelpersMixin(BaseStore):
                     (name, PayloadSchemaType.KEYWORD) for name in _KEYWORD_INDEXES
                 ]
                 indexes += [
-                    (name, KeywordIndexParams(type="keyword", is_tenant=True))
+                    (name, KeywordIndexParams(type=KeywordIndexType.KEYWORD, is_tenant=True))
                     for name in self.tenant_column_names
                 ]
                 indexes.append((_ORDER_FIELD, PayloadSchemaType.DATETIME))

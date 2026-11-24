@@ -213,7 +213,7 @@ class QdrantReadsMixin(QdrantHelpersMixin):
         )
         await self.client.delete(
             collection_name=collection,
-            points_selector=models.FilterSelector(filter=delete_filter),
+            points_selector=models.FilterSelector(filter=delete_filter or models.Filter(must=[])),
         )
 
         logger.info(

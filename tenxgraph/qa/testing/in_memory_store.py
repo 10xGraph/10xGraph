@@ -92,7 +92,7 @@ class InMemoryStore(BaseStore):
             and (memory_type is None or m.memory_type == memory_type)
         ]
         # Ascending then reversed: equal timestamps keep newest-stored first.
-        return sorted(rows, key=lambda m: m.timestamp)[::-1]
+        return sorted(rows, key=lambda m: m.timestamp or datetime.min.replace(tzinfo=UTC))[::-1]
 
     def _owned(
         self, config: dict[str, Any], memory_id: str, owner: str | int | None

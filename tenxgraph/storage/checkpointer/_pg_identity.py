@@ -50,9 +50,7 @@ class _PgIdentityMixin(PgHostBase):
     @property
     def declared_id_type(self) -> IDType:
         """The id type the setup's ``id_type`` holds (``int``, ``bigint``, else text)."""
-        return {"int": IDType.INTEGER, "bigint": IDType.BIGINT}.get(
-            self.id_type, IDType.STRING
-        )
+        return {"int": IDType.INTEGER, "bigint": IDType.BIGINT}.get(self.id_type, IDType.STRING)
 
     def _check_id(self, value: Any, what: str) -> Any:
         """``value`` unchanged when it has the type the setup's ``id_type`` expects.
