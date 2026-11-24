@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import pytest
 
-from tenxgraph.core.exceptions import ThreadNotFoundError
+from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.storage.checkpointer.base_checkpointer import MAX_LIST_LIMIT
 from tenxgraph.utils import ThreadInfo
@@ -95,9 +95,32 @@ async def test_list_threads_search_matches_thread_name(cp):
 
 
 async def test_list_threads_search_ignores_other_fields(cp):
-    """G10: only the name is searched (P); M and S match any field value."""
+    """Only the name is searched, not the owner or any other field."""
     await cp.aput_thread(cfg("a"), ThreadInfo(thread_id="a", thread_name="x", user_id="alice"))
     assert await cp.alist_threads(cfg("a"), search="alice") == []
+
+
+async def test_thread_listing_and_search_are_isolated_by_user(cp):
+    await cp.aput_thread(cfg("a"), ThreadInfo(thread_id="a", thread_name="secret plan"))
+    bob = cfg("x", user="bob")
+    assert await cp.alist_threads(bob) == []
+    assert await cp.alist_threads(bob, search="secret") == []
+    assert [t.thread_id for t in await cp.alist_threads(cfg("x"), search="secret")] == ["a"]
+
+
+async def test_thread_listing_and_search_are_isolated_by_tenant(backend, cp):
+    if backend != "pg":
+        pytest.skip("tenant columns need PgCheckpointer")
+    await cp.aput_thread(cfg("a", org="A"), ThreadInfo(thread_id="a", thread_name="secret plan"))
+    # The same user id in another tenant, and another user in the other tenant.
+    for other in (cfg("x", user="alice", org="B"), cfg("x", user="bob", org="B")):
+        assert await cp.alist_threads(other) == []
+        assert await cp.alist_threads(other, search="secret") == []
+    # Reach tenant widens to the tenant's users, never to another tenant.
+    peer = cfg("x", user="bob", org="A", reach="tenant")
+    assert [t.thread_id for t in await cp.alist_threads(peer, search="secret")] == ["a"]
+    outsider = cfg("x", user="bob", org="B", reach="tenant")
+    assert await cp.alist_threads(outsider, search="secret") == []
 
 
 async def test_list_threads_pagination(cp):
@@ -127,13 +150,13 @@ async def test_limit_is_capped(cp):
 
 
 async def test_put_thread_rejects_mismatched_thread_id(cp):
-    """G13: S raises ValueError; M stores under the config id; P uses the config id."""
+    """A thread_info.thread_id that differs from the config id is refused."""
     with pytest.raises(ValueError):
         await cp.aput_thread(cfg("t1"), ThreadInfo(thread_id="other"))
 
 
 async def test_put_thread_does_not_mutate_input(cp):
-    """G14: P adds run_id to the caller's metadata in place."""
+    """The caller's metadata is stored as a copy, never changed."""
     info = ThreadInfo(thread_id="t1", metadata={"k": 1})
     await cp.aput_thread(cfg("t1"), info)
     assert info.metadata == {"k": 1}
@@ -182,9 +205,11 @@ async def test_message_put_get(cp):
 
 
 async def test_get_missing_message_raises_index_error(cp):
-    """G4: M and S raise IndexError; P raises ValueError("Message not found")."""
-    with pytest.raises(IndexError):
+    """A missing id raises MessageNotFoundError, which is an IndexError and a ValueError."""
+    with pytest.raises(MessageNotFoundError, match="Message not found") as info:
         await cp.aget_message(cfg("t1"), "missing")
+    assert isinstance(info.value, IndexError)
+    assert isinstance(info.value, ValueError)
 
 
 async def test_list_messages_insertion_order(cp):
@@ -221,11 +246,20 @@ async def test_list_messages_search_with_pagination(cp):
 
 
 async def test_message_search_matches_text_only(cp):
-    """G8: M and S match the repr of the block list, P matches the JSON text: block keys hit."""
+    """Only the message text is searched; block keys such as "text" and "type" never match."""
     c = cfg("t1")
     await cp.aput_messages(c, [_msg(1, "hello world")])
     assert await cp.alist_messages(c, search="text") == []
+    assert await cp.alist_messages(c, search="type") == []
     assert _ids(await cp.alist_messages(c, search="HELLO")) == ["m1"]
+
+
+async def test_message_search_treats_wildcards_literally(cp):
+    c = cfg("t1")
+    await cp.aput_messages(c, [_msg(1, "100% sure"), _msg(2, "a_b"), _msg(3, "axb")])
+    assert _ids(await cp.alist_messages(c, search="100%")) == ["m1"]
+    assert _ids(await cp.alist_messages(c, search="a_b")) == ["m2"]
+    assert _ids(await cp.alist_messages(c, search="%")) == ["m1"]
 
 
 async def test_delete_message(cp):
@@ -268,25 +302,32 @@ async def test_update_message_metadata_missing_is_none(cp):
 
 
 async def test_put_messages_metadata_argument(cp):
-    """G9: ``aput_messages(metadata=...)``; P merges it into each message, M and S drop it."""
+    """``aput_messages(metadata=...)`` is merged into each message; the message's keys win."""
     c = cfg("t1")
-    await cp.aput_messages(c, [_msg(1)], metadata={"source": "import"})
-    assert (await cp.aget_message(c, "m1")).metadata.get("source") == "import"
+    own = _msg(2)
+    own.metadata = {"source": "own"}
+    await cp.aput_messages(c, [_msg(1), own], metadata={"source": "import", "batch": 7})
+    assert (await cp.aget_message(c, "m1")).metadata == {"source": "import", "batch": 7}
+    assert (await cp.aget_message(c, "m2")).metadata == {"source": "own", "batch": 7}
+    listed = await cp.alist_messages(c)
+    assert listed[0].metadata == {"source": "import", "batch": 7}
+    assert own.metadata == {"source": "own"}
 
 
 async def test_message_roundtrip_keeps_full_model(cp):
-    """G6: raw, parsed_content, delta and an explicit timestamp survive a round trip."""
+    """parsed_content and an explicit timestamp survive a round trip.
+
+    ``raw`` (a large provider payload) and ``delta`` (a flag of partial messages) are not part
+    of the contract: Postgres does not keep them.
+    """
     c = cfg("t1")
     m = _msg(1, "full")
-    m.raw = {"provider": "x", "n": 1}
     m.parsed_content = {"answer": 42}
-    m.delta = True
     m.timestamp = 1_700_000_000.5
     await cp.aput_messages(c, [m])
     got = (await cp.alist_messages(c))[0]
-    assert got.raw == {"provider": "x", "n": 1}
     assert got.parsed_content == {"answer": 42}
-    assert got.delta is True
+    assert got.metadata == {}
     assert got.timestamp == pytest.approx(1_700_000_000.5)
 
 
@@ -486,7 +527,7 @@ async def test_thread_owner_with_state_but_no_record(backend, cp):
 
 
 async def test_stop_request_and_active_run_cleared_with_thread(cp):
-    """G17 (open question): the stop flag and the active run marker die with the thread."""
+    """The stop flag and the active run marker die with the thread."""
     c = cfg("t1")
     await _fill(cp, c)
     await cp.abegin_run(c)
@@ -582,9 +623,15 @@ async def test_same_user_id_in_two_tenants_is_isolated(backend, cp):
 
 
 async def test_anonymous_use(backend, make_cp):
-    """G12: no user_id. M and S work; P raises ValueError on state, thread and ledger calls."""
+    """No user_id: M and S work anonymously; P (the production backend) refuses with ValueError."""
     cp = await make_cp(tenant_columns=None)
     anon = {"thread_id": "t1"}
+    if backend == "pg":
+        with pytest.raises(ValueError):
+            await cp.aput_thread(anon, ThreadInfo(thread_id="t1"))
+        with pytest.raises(ValueError):
+            await cp.aput_tool_result(anon, "c", {"output": 1})
+        return
     await cp.aput_thread(anon, ThreadInfo(thread_id="t1"))
     assert await cp.aget_thread(anon) is not None
     await cp.aput_tool_result(anon, "c", {"output": 1})
@@ -655,18 +702,14 @@ async def test_cache_ttl_expires(cp):
 
 
 async def test_cache_clear_returns_a_plain_value(cp):
-    """G3: M returns a (value, expires_at) tuple, S the old value, P the Redis delete count.
-    Expected: the old value or True; never a tuple or a count."""
+    """True when a value was removed."""
     await cp.aput_cache_value("ns", "k", "v")
-    result = await cp.aclear_cache_value("ns", "k")
-    assert not isinstance(result, tuple)
-    assert result == "v" or result is True
+    assert await cp.aclear_cache_value("ns", "k") is True
     assert await cp.aget_cache_value("ns", "k") is None
 
 
 async def test_cache_clear_missing_key(cp):
-    result = await cp.aclear_cache_value("ns", "absent")
-    assert result in (None, False, 0)
+    assert await cp.aclear_cache_value("ns", "absent") is False
 
 
 async def test_cache_clear_if_and_put_if_absent(cp):

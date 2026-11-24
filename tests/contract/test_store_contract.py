@@ -19,7 +19,8 @@ from tenxgraph.storage.store.embedding.base_embedding import BaseEmbedding
 from tenxgraph.storage.store.store_schema import MemoryType
 from tenxgraph.utils.validators import ValidationError
 
-from .conftest import POSTGRES_DSN
+from .conftest import POSTGRES_DSN, TENANTS
+from .conftest import cfg as tenant_cfg
 
 
 pytestmark = pytest.mark.asyncio
@@ -365,3 +366,187 @@ async def test_text_with_nul_or_surrogate(store, bad):
     except ValidationError:
         return
     assert (await store.aget(cfg(), mid)).content == bad
+
+
+# ------------------------------------------------------------------ tenant isolation
+# Stores declared with ``tenant_columns=TENANTS`` (org_id, project_id). Only the backends with
+# tenant columns run here. ``tenant_cfg`` builds an identity with tenant values.
+
+TENANT_BACKENDS = ["qdrant", pytest.param("pgvector", marks=pytest.mark.integration)]
+
+
+@pytest_asyncio.fixture(params=TENANT_BACKENDS)
+async def tenant_store(request, tmp_path):
+    if request.param == "qdrant":
+        from tenxgraph.storage.store.qdrant_store import QdrantStore
+
+        s = QdrantStore(
+            embedding=FakeEmbedding(), path=str(tmp_path / "qdrant"), tenant_columns=TENANTS
+        )
+        await s.asetup()
+        yield s
+        await s.arelease()
+        return
+    asyncpg = pytest.importorskip("asyncpg")
+    from tenxgraph.storage.store.pgvector_store import PgVectorStore
+
+    try:
+        pool = await asyncio.wait_for(asyncpg.create_pool(POSTGRES_DSN, max_size=4), timeout=5)
+    except Exception as e:
+        pytest.skip(f"Postgres not reachable at POSTGRES_DSN: {e}")
+    schema = f"tg_{uuid.uuid4().hex[:10]}"
+    await pool.execute(f'CREATE SCHEMA "{schema}"')
+    s = PgVectorStore(embedding=FakeEmbedding(), pool=pool, schema=schema, tenant_columns=TENANTS)
+    try:
+        await s.asetup()
+    except Exception as e:
+        await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await pool.close()
+        pytest.skip(f"pgvector not available: {e}")
+    yield s
+    await s.arelease()
+    await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await pool.close()
+
+
+async def _drop_tenant_values(store, memory_id):
+    """Turn a stored memory into one written before the tenant columns existed."""
+    if hasattr(store, "client"):  # Qdrant: the payload has no tenant keys
+        await store.client.delete_payload(
+            collection_name=store.collection, keys=list(TENANTS), points=[memory_id]
+        )
+    else:  # pgvector: the columns hold NULL
+        await store.pool.execute(
+            f"UPDATE {store._qualified_table} SET org_id = NULL, project_id = NULL "  # noqa: S608
+            "WHERE id = $1",
+            memory_id,
+        )
+
+
+async def _outcome(pending, memory_id):
+    """``(exception type, message with the id masked)``, or ``("ok", result)``."""
+    try:
+        return "ok", await pending
+    except Exception as e:
+        return type(e), str(e).replace(memory_id, "<id>")
+
+
+async def test_tenant_own_reach_isolates_the_same_user_across_tenants(tenant_store):
+    s = tenant_store
+    mine = tenant_cfg(user="alice", org="A")
+    other = tenant_cfg(user="alice", org="B")
+    mid = await s.astore(mine, "alice in org a")
+    assert await s.aget(other, mid) is None
+    assert await s.aget_all(other) == []
+    assert await s.asearch(other, "alice in org a") == []
+    with pytest.raises(ValueError):
+        await s.aupdate(other, mid, "hijacked")
+    with pytest.raises(ValueError):
+        await s.adelete(other, mid)
+    await s.aforget_memory(other)
+    got = await s.aget(mine, mid)
+    assert got.content == "alice in org a"
+    assert [r.content for r in await s.aget_all(mine)] == ["alice in org a"]
+
+
+async def test_tenant_project_is_part_of_the_scope(tenant_store):
+    s = tenant_store
+    mid = await s.astore(tenant_cfg(user="alice", org="A", project="P1"), "project one")
+    assert await s.aget(tenant_cfg(user="alice", org="A", project="P2"), mid) is None
+
+
+async def test_tenant_reach_tenant_shares_inside_the_tenant_only(tenant_store):
+    s = tenant_store
+    a_mid = await s.astore(tenant_cfg(user="alice", org="A"), "alice note")
+    await s.astore(tenant_cfg(user="bob", org="A"), "bob note")
+    c_mid = await s.astore(tenant_cfg(user="carol", org="B"), "carol note")
+    team_a = tenant_cfg(user="bob", org="A", reach="tenant")
+    assert {r.content for r in await s.aget_all(team_a)} == {"alice note", "bob note"}
+    assert (await s.aget(team_a, a_mid)).content == "alice note"
+    assert await s.aget(team_a, c_mid) is None
+    assert "carol note" not in {r.content for r in await s.asearch(team_a, "carol note")}
+    with pytest.raises(ValueError):
+        await s.adelete(team_a, c_mid)
+    team_b = tenant_cfg(user="dave", org="B", reach="tenant")
+    assert [r.content for r in await s.aget_all(team_b)] == ["carol note"]
+
+
+async def test_tenant_reach_tenant_update_stays_own(tenant_store):
+    """Writes stay reach own: a teammate cannot update another user's memory."""
+    s = tenant_store
+    mid = await s.astore(tenant_cfg(user="alice", org="A"), "alice text")
+    with pytest.raises(ValueError):
+        await s.aupdate(tenant_cfg(user="bob", org="A", reach="tenant"), mid, "hijacked")
+    assert (await s.aget(tenant_cfg(user="alice", org="A"), mid)).content == "alice text"
+
+
+async def test_tenant_reach_tenant_forget_keeps_other_tenants(tenant_store):
+    s = tenant_store
+    await s.astore(tenant_cfg(user="alice", org="A"), "a in A")
+    await s.astore(tenant_cfg(user="alice", org="B"), "a in B")
+    await s.aforget_memory(tenant_cfg(user="alice", org="A", reach="tenant"))
+    assert await s.aget_all(tenant_cfg(user="alice", org="A")) == []
+    assert [r.content for r in await s.aget_all(tenant_cfg(user="alice", org="B"))] == ["a in B"]
+
+
+async def test_tenant_reach_all_sees_every_tenant(tenant_store):
+    s = tenant_store
+    await s.astore(tenant_cfg(user="alice", org="A"), "in A")
+    b_mid = await s.astore(tenant_cfg(user="carol", org="B"), "in B")
+    root = tenant_cfg(user="root", org="A", reach="all")
+    assert {r.content for r in await s.aget_all(root)} == {"in A", "in B"}
+    assert (await s.aget(root, b_mid)).content == "in B"
+
+
+async def test_tenant_foreign_id_is_indistinguishable_from_missing(tenant_store):
+    s = tenant_store
+    mid = await s.astore(tenant_cfg(user="alice", org="A"), "alice text")
+    missing = str(uuid.uuid4())
+    other = tenant_cfg(user="alice", org="B")
+    for call in (
+        lambda i: s.aget(other, i),
+        lambda i: s.aupdate(other, i, "x"),
+        lambda i: s.adelete(other, i),
+    ):
+        foreign = await _outcome(call(mid), mid)
+        assert foreign == await _outcome(call(missing), missing)
+
+
+async def test_tenant_values_come_from_the_identity_not_metadata(tenant_store):
+    s = tenant_store
+    mid = await s.astore(tenant_cfg(user="alice", org="A"), "spoof", metadata={"org_id": "B"})
+    assert await s.aget(tenant_cfg(user="alice", org="B"), mid) is None
+    assert (await s.aget(tenant_cfg(user="alice", org="A"), mid)).content == "spoof"
+
+
+async def test_tenant_write_without_tenant_value_raises(tenant_store):
+    no_tenant = {
+        "user_id": "alice",
+        "thread_id": "t1",
+        "user": {"user_id": "alice", "tenant": {}, "reach": "own", "claims": {}},
+    }
+    with pytest.raises(ValueError):
+        await tenant_store.astore(no_tenant, "orphan")
+
+
+async def test_tenant_legacy_memory_without_tenant_values(tenant_store):
+    """A memory written before the columns existed is invisible to scoped callers (own and
+    tenant), cannot be changed or deleted by them, and stays visible to reach all."""
+    s = tenant_store
+    mine = tenant_cfg(user="alice", org="A")
+    mid = await s.astore(mine, "legacy note")
+    await _drop_tenant_values(s, mid)
+    team = tenant_cfg(user="alice", org="A", reach="tenant")
+    for caller in (mine, team):
+        assert await s.aget(caller, mid) is None
+        assert await s.aget_all(caller) == []
+        assert await s.asearch(caller, "legacy note") == []
+        with pytest.raises(ValueError):
+            await s.adelete(caller, mid)
+    with pytest.raises(ValueError):
+        await s.aupdate(mine, mid, "changed")
+    with pytest.raises(PermissionError):
+        await s.astore(mine, "overwrite", memory_id=mid)
+    await s.aforget_memory(mine)
+    root = tenant_cfg(user="root", org="A", reach="all")
+    assert (await s.aget(root, mid)).content == "legacy note"

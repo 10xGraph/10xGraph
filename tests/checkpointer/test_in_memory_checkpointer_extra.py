@@ -44,8 +44,8 @@ def _make_state():
     return AgentState(messages=[_make_message()])
 
 
-def _make_thread(tid="t1") -> ThreadInfo:
-    return ThreadInfo(thread_id=tid, thread_name="test-thread")
+def _make_thread(tid="thread-1", name="test-thread") -> ThreadInfo:
+    return ThreadInfo(thread_id=tid, thread_name=name)
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ class TestSyncMessageMethods:
         msg = _make_message("msg-x")
         result = cp.put_messages(config_t1, [msg], metadata={"source": "test"})
         assert result is True
-        assert cp._message_metadata[config_t1["thread_id"]]["source"] == "test"
+        assert cp.get_message(config_t1, "msg-x").metadata == {"source": "test"}
 
     def test_messages_accumulated_across_puts(self, cp, config_t1):
         cp.put_messages(config_t1, [_make_message("m1", "text1")])
@@ -187,25 +187,25 @@ class TestSyncMessageMethods:
 
 class TestSyncThreadMethods:
     def test_put_get_thread(self, cp, config_t1):
-        thread = _make_thread("t1")
+        thread = _make_thread("thread-1")
         result = cp.put_thread(config_t1, thread)
         assert result is True
         retrieved = cp.get_thread(config_t1)
         assert retrieved is not None
-        assert retrieved.thread_id == "t1"
+        assert retrieved.thread_id == "thread-1"
 
     def test_get_thread_missing_returns_none(self, cp, config_t1):
         assert cp.get_thread(config_t1) is None
 
     def test_list_threads(self, cp, config_t1, config_t2):
-        cp.put_thread(config_t1, _make_thread("t1"))
-        cp.put_thread(config_t2, _make_thread("t2"))
+        cp.put_thread(config_t1, _make_thread("thread-1"))
+        cp.put_thread(config_t2, _make_thread("thread-2"))
         result = cp.list_threads({})
         assert len(result) == 2
 
     def test_list_threads_with_search(self, cp, config_t1, config_t2):
-        cp.put_thread(config_t1, _make_thread("unique-thread"))
-        cp.put_thread(config_t2, _make_thread("other-thread"))
+        cp.put_thread(config_t1, _make_thread("thread-1", "unique-thread"))
+        cp.put_thread(config_t2, _make_thread("thread-2", "other-thread"))
         result = cp.list_threads({}, search="unique")
         assert len(result) == 1
 
@@ -216,7 +216,7 @@ class TestSyncThreadMethods:
         assert len(result) == 2
 
     def test_clean_thread(self, cp, config_t1):
-        cp.put_thread(config_t1, _make_thread("t1"))
+        cp.put_thread(config_t1, _make_thread("thread-1"))
         cleaned = cp.clean_thread(config_t1)
         assert cleaned == 1
         assert cp.get_thread(config_t1) is None
@@ -335,11 +335,11 @@ class TestAsyncMessageMethods:
 class TestAsyncThreadMethods:
     @pytest.mark.asyncio
     async def test_aput_aget_thread(self, cp, config_t1):
-        thread = _make_thread("async-t1")
+        thread = _make_thread("thread-1")
         await cp.aput_thread(config_t1, thread)
         retrieved = await cp.aget_thread(config_t1)
         assert retrieved is not None
-        assert retrieved.thread_id == "async-t1"
+        assert retrieved.thread_id == "thread-1"
 
     @pytest.mark.asyncio
     async def test_aget_thread_missing(self, cp, config_t1):
@@ -347,15 +347,15 @@ class TestAsyncThreadMethods:
 
     @pytest.mark.asyncio
     async def test_alist_threads(self, cp, config_t1, config_t2):
-        await cp.aput_thread(config_t1, _make_thread("t1"))
-        await cp.aput_thread(config_t2, _make_thread("t2"))
+        await cp.aput_thread(config_t1, _make_thread("thread-1"))
+        await cp.aput_thread(config_t2, _make_thread("thread-2"))
         result = await cp.alist_threads({})
         assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_alist_threads_with_search(self, cp, config_t1, config_t2):
-        await cp.aput_thread(config_t1, _make_thread("find-me"))
-        await cp.aput_thread(config_t2, _make_thread("ignore"))
+        await cp.aput_thread(config_t1, _make_thread("thread-1", "find-me"))
+        await cp.aput_thread(config_t2, _make_thread("thread-2", "ignore"))
         result = await cp.alist_threads({}, search="find")
         assert len(result) == 1
 
@@ -368,7 +368,7 @@ class TestAsyncThreadMethods:
 
     @pytest.mark.asyncio
     async def test_aclean_thread(self, cp, config_t1):
-        await cp.aput_thread(config_t1, _make_thread("t1"))
+        await cp.aput_thread(config_t1, _make_thread("thread-1"))
         cleaned = await cp.aclean_thread(config_t1)
         assert cleaned == 1
         assert await cp.aget_thread(config_t1) is None
@@ -511,6 +511,6 @@ async def test_inmem_reach_tenant_raises(cp):
 
 @pytest.mark.asyncio
 async def test_aput_thread_reports_created_then_existing(cp, config_t1):
-    assert await cp.aput_thread(config_t1, _make_thread("t1")) is True
-    assert await cp.aput_thread(config_t1, _make_thread("t1")) is False
-    assert (await cp.aget_thread(config_t1)).thread_id == "t1"
+    assert await cp.aput_thread(config_t1, _make_thread("thread-1")) is True
+    assert await cp.aput_thread(config_t1, _make_thread("thread-1")) is False
+    assert (await cp.aget_thread(config_t1)).thread_id == "thread-1"

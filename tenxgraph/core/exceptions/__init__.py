@@ -13,6 +13,7 @@ This package provides:
         - ResumeValidationError: A resume value does not match the interrupt's response schema.
         - ToolDenied: A tool call was blocked by policy (raise it from a before_invoke callback).
         - StorageError: Base exception for storage-related errors.
+        - MessageNotFoundError: aget_message found no message with that id.
         - ThreadNotFoundError: A write named a thread of another user or tenant (404).
         - TransientStorageError: Exception for retryable storage errors.
         - SerializationError: Exception for serialization/deserialization errors.
@@ -32,6 +33,7 @@ from .model_error import ModelNotFoundError
 from .node_error import NodeError
 from .recursion_error import GraphRecursionError
 from .storage_exceptions import (
+    MessageNotFoundError,
     MetricsError,
     ResourceNotFoundError,
     SchemaVersionError,
@@ -53,6 +55,7 @@ __all__ = [
     "GraphStopRequested",
     "InterruptMismatchError",
     "InterruptPendingError",
+    "MessageNotFoundError",
     "MetricsError",
     "ModelNotFoundError",
     "NodeError",

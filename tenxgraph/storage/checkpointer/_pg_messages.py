@@ -4,7 +4,10 @@ import json
 import logging
 from typing import Any
 
+from pydantic import BaseModel
+
 from tenxgraph.core.authz import owner_id
+from tenxgraph.core.exceptions import MessageNotFoundError
 from tenxgraph.core.state import Message
 from tenxgraph.storage.columns import (
     rows_affected as _rows_affected,
@@ -12,10 +15,14 @@ from tenxgraph.storage.columns import (
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
-from .base_checkpointer import validate_page
+from .base_checkpointer import like_escape, validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
+
+# Message fields with no column of their own, kept inside the ``meta`` JSONB column.
+_PARSED_CONTENT_KEY = "_tenxgraph_parsed_content"
+_TIMESTAMP_KEY = "_tenxgraph_timestamp"
 
 
 class _PgMessagesMixin(PgHostBase):
@@ -42,6 +49,14 @@ class _PgMessagesMixin(PgHostBase):
         """
         messages_table = self._get_table_name("messages")
         for message in messages:
+            meta = {**(metadata or {}), **(message.metadata or {})}
+            if message.parsed_content is not None:
+                parsed = message.parsed_content
+                meta[_PARSED_CONTENT_KEY] = (
+                    parsed.model_dump(mode="json") if isinstance(parsed, BaseModel) else parsed
+                )
+            if message.timestamp is not None:
+                meta[_TIMESTAMP_KEY] = message.timestamp
             await conn.execute(
                 f"""
                     INSERT INTO {messages_table} (
@@ -67,7 +82,7 @@ class _PgMessagesMixin(PgHostBase):
                 getattr(message, "tool_call_id", None),
                 message.usages.total_tokens if message.usages else 0,
                 json.dumps(message.usages.model_dump()) if message.usages else None,
-                json.dumps({**(metadata or {}), **(message.metadata or {})}),
+                json.dumps(meta),
             )
 
     async def aput_messages(
@@ -129,6 +144,7 @@ class _PgMessagesMixin(PgHostBase):
             Message: Retrieved message object.
 
         Raises:
+            MessageNotFoundError: The thread has no such message.
             Exception: If retrieval fails.
         """
         thread_id = self._message_thread_id(config)
@@ -156,7 +172,7 @@ class _PgMessagesMixin(PgHostBase):
             )
 
             if not row:
-                raise ValueError(f"Message not found: {message_id}")
+                raise MessageNotFoundError
 
             return self._row_to_message(row)
 
@@ -207,8 +223,18 @@ class _PgMessagesMixin(PgHostBase):
             query = self._append_owner_scope(query, params, user_id, config)
 
             if search:
-                params.append(f"%{search}%")
-                query += f" AND content ILIKE ${len(params)}"
+                # Only the message text: text blocks and string tool results, never the keys
+                # of the stored JSON. The input is a bind parameter with its wildcards escaped.
+                params.append(f"%{like_escape(search)}%")
+                n = len(params)
+                query += f"""
+                    AND CASE WHEN left(ltrim(content), 1) = '[' THEN EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(content::jsonb) AS block
+                        WHERE (block->>'type' = 'text' AND block->>'text' ILIKE ${n})
+                           OR (block->>'type' = 'tool_result'
+                               AND jsonb_typeof(block->'output') = 'string'
+                               AND block->>'output' ILIKE ${n})
+                    ) ELSE content ILIKE ${n} END"""  # noqa: S608
 
             query += " ORDER BY created_at ASC"
 
@@ -430,6 +456,13 @@ class _PgMessagesMixin(PgHostBase):
                 metadata = self._loads_jsonb(row["meta"])
             except Exception:
                 metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        # The fields kept inside ``meta`` come back as fields, not as caller metadata.
+        parsed_content = metadata.pop(_PARSED_CONTENT_KEY, None)
+        timestamp = metadata.pop(_TIMESTAMP_KEY, None)
+        if timestamp is None and row["created_at"]:
+            timestamp = row["created_at"].timestamp()
 
         # Handle content TEXT/JSONB -> list of blocks
         content_raw = row["content"]
@@ -477,7 +510,8 @@ class _PgMessagesMixin(PgHostBase):
             role=row["role"],
             content=content_value,
             tools_calls=tool_calls,
-            timestamp=row["created_at"].timestamp() if row["created_at"] else 0,
+            timestamp=timestamp if timestamp is not None else 0,
             metadata=metadata,
             usages=usages,
+            parsed_content=parsed_content,
         )

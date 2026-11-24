@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from tenxgraph.core.authz import owner_id
-from tenxgraph.core.exceptions import ThreadNotFoundError
+from tenxgraph.core.exceptions import MessageNotFoundError, ThreadNotFoundError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.utils.callable_utils import run_coroutine
 from tenxgraph.utils.private_fs import mkdir_private, touch_private
@@ -530,20 +530,14 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             return None
         return json.loads(row["value"])
 
-    async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
+    async def aclear_cache_value(self, namespace: str, key: str) -> bool:
         await self._ensure_setup()
-        conn = await self._get_conn()
-        async with conn.execute(
-            "SELECT value FROM af_cache WHERE namespace = ? AND key = ?",
-            (namespace, key),
-        ) as cursor:
-            row = await cursor.fetchone()
         async with self._write() as conn:
-            await conn.execute(
+            cursor = await conn.execute(
                 "DELETE FROM af_cache WHERE namespace = ? AND key = ?",
                 (namespace, key),
             )
-        return json.loads(row["value"]) if row else None
+            return cursor.rowcount > 0
 
     async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Compare and delete in one statement."""
@@ -604,7 +598,13 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         now = time.time()
         async with self._write() as conn:
             await self._claim(conn, config)
-            for msg in messages:
+            for given in messages:
+                msg = given
+                if metadata:
+                    # The message's own keys win.
+                    msg = given.model_copy(
+                        update={"metadata": {**metadata, **(given.metadata or {})}}
+                    )
                 await conn.execute(
                     """
                     INSERT INTO af_messages (thread_id, message_id, message_data, created_at)
@@ -621,7 +621,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         await self._ensure_setup()
         key = self._get_config_key(config)
         if await self._owner_denied(config):
-            raise IndexError(f"Message with ID {message_id} not found for thread: {key}")
+            raise MessageNotFoundError
         conn = await self._get_conn()
         async with conn.execute(
             "SELECT message_data FROM af_messages WHERE thread_id = ? AND message_id = ?",
@@ -629,7 +629,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
-            raise IndexError(f"Message with ID {message_id} not found for thread: {key}")
+            raise MessageNotFoundError
         return Message.model_validate(json.loads(row["message_data"]))
 
     async def aupdate_message_metadata(
@@ -685,7 +685,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             async for row in cursor:
                 msg = Message.model_validate(json.loads(row["message_data"]))
                 if needle is not None:
-                    if not (hasattr(msg, "content") and needle in str(msg.content).lower()):
+                    if needle not in msg.text().lower():
                         continue
                     # The match depends on the decoded message, so skip and stop here.
                     if skipped < start:
@@ -821,7 +821,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
             async for row in cursor:
                 thread = ThreadInfo.model_validate(json.loads(row["thread_data"]))
                 if needle is not None:
-                    if not any(needle in str(v).lower() for v in thread.model_dump().values()):
+                    if needle not in (thread.thread_name or "").lower():
                         continue
                     # The match depends on the decoded thread, so skip and stop here.
                     if skipped < start:
@@ -857,6 +857,7 @@ class SqliteCheckpointer(BaseCheckpointer[StateT]):
                     (key,),
                 )
                 deleted += cursor.rowcount
+        await self._clear_run_keys(config)
         return 1 if deleted else 0
 
     # ------------------------------------------------------------------

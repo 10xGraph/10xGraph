@@ -40,6 +40,11 @@ STOP_REQUEST_NAMESPACE = "stop_request"
 MAX_LIST_LIMIT = 1000
 
 
+def like_escape(text: str) -> str:
+    """Escape ``\\``, ``%`` and ``_`` so ``text`` matches literally inside a LIKE pattern."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def validate_page(offset: int | None, limit: int | None) -> tuple[int, int | None]:
     """Check ``offset`` / ``limit`` and return ``(offset, limit)``; ``limit`` is None for "all"."""
     if offset is not None and offset < 0:
@@ -480,9 +485,9 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """Retrieve a cached value previously stored via ``aput_cache_value``."""
         return None
 
-    async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Delete a previously cached value."""
-        return None
+    async def aclear_cache_value(self, namespace: str, key: str) -> bool:
+        """Delete a previously cached value; True when a value was removed."""
+        return False
 
     async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Delete a cached value only if it still equals ``expected``; True when deleted.
@@ -545,8 +550,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         """Synchronously retrieve a small cache value."""
         return run_coroutine(self.aget_cache_value(namespace, key))
 
-    def clear_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Synchronously delete a small cache value."""
+    def clear_cache_value(self, namespace: str, key: str) -> bool:
+        """Synchronously delete a small cache value; True when a value was removed."""
         return run_coroutine(self.aclear_cache_value(namespace, key))
 
     # -------------------------
@@ -560,6 +565,12 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         :func:`~tenxgraph.core.authz.owner_id` (the identity wins over ``config["user_id"]``).
         """
         return f"{config.get('thread_id')}:{owner_id(config)}"
+
+    async def _clear_run_keys(self, config: dict[str, Any]) -> None:
+        """Drop the thread's stop request and active-run marker (called when it is deleted)."""
+        key = self._stop_request_key(config)
+        await self.aclear_cache_value(STOP_REQUEST_NAMESPACE, key)
+        await self.aclear_cache_value(ACTIVE_RUN_NAMESPACE, key)
 
     async def aget_active_run(self, config: dict[str, Any]) -> str | None:
         """Return the id of the run currently marked active on this thread, if any."""
@@ -800,7 +811,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
         Args:
             config (dict): Configuration dictionary.
             messages (list[Message]): List of messages to store.
-            metadata (dict, optional): Additional metadata.
+            metadata (dict, optional): Merged into each message's metadata (the message's
+                own keys win); read back on the message.
 
         Returns:
             Any: Implementation-defined result.
@@ -818,6 +830,10 @@ class BaseCheckpointer[StateT: AgentState](ABC):
 
         Returns:
             Message: Retrieved message object.
+
+        Raises:
+            MessageNotFoundError: The thread has no such message (an ``IndexError`` and a
+                ``ValueError``).
         """
         raise NotImplementedError
 
@@ -834,7 +850,8 @@ class BaseCheckpointer[StateT: AgentState](ABC):
 
         Args:
             config (dict): Configuration dictionary.
-            search (str, optional): Search string.
+            search (str, optional): Case-insensitive text matched against the message text
+                only, never against field names.
             offset (int, optional): Offset for pagination.
             limit (int, optional): Limit for pagination.
 
@@ -1052,6 +1069,7 @@ class BaseCheckpointer[StateT: AgentState](ABC):
             int: 1 when anything of the thread was removed (its record or any of its data,
             also for a thread that never got a record); 0 when nothing of it exists or the
             caller's scope does not reach it. A deleted id can be created again by anyone.
+            The thread's stop request and active-run marker go with it.
         """
         raise NotImplementedError
 

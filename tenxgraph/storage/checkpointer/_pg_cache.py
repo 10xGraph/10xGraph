@@ -384,13 +384,13 @@ class _PgCacheMixin(PgHostBase):
             )
             return None
 
-    async def aclear_cache_value(self, namespace: str, key: str) -> Any | None:
-        """Delete a generic cache value from Redis."""
+    async def aclear_cache_value(self, namespace: str, key: str) -> bool:
+        """Delete a generic cache value from Redis; True when a value was removed."""
         try:
             cache_key = self._get_generic_cache_key(namespace, key)
-            return await self._redis_call(lambda: self.redis.delete(cache_key))
+            return bool(await self._redis_call(lambda: self.redis.delete(cache_key)))
         except _RedisUnavailable:
-            return None
+            return False
         except Exception as e:
             logger.error(
                 "Failed to clear cached value for namespace=%s key=%s: %s",
@@ -398,7 +398,7 @@ class _PgCacheMixin(PgHostBase):
                 key,
                 e,
             )
-            return None
+            return False
 
     async def aclear_cache_value_if(self, namespace: str, key: str, expected: Any) -> bool:
         """Delete a generic cache value only if it still equals ``expected`` (one Lua call)."""

@@ -40,7 +40,7 @@ async def test_generic_cache_methods(cp):
     assert await cp.aput_cache_value("ns", "k", {"x": 1}, ttl_seconds=12) is True
     cp.redis.get.return_value = json.dumps({"x": 1})
     assert await cp.aget_cache_value("ns", "k") == {"x": 1}
-    assert await cp.aclear_cache_value("ns", "k") == 1
+    assert await cp.aclear_cache_value("ns", "k") is True
     keys = await cp.alist_cache_keys("ns")
     assert keys == ["a", "b"]
 
@@ -54,7 +54,7 @@ async def test_generic_cache_failures_return_safe_values(cp):
 
     assert await cp.aput_cache_value("ns", "k", {"x": 1}) is None
     assert await cp.aget_cache_value("ns", "k") is None
-    assert await cp.aclear_cache_value("ns", "k") is None
+    assert await cp.aclear_cache_value("ns", "k") is False
     assert await cp.alist_cache_keys("ns") == []
 
 

@@ -91,7 +91,8 @@ async def test_qdrant_reach_all_cannot_overwrite_another_users_memory(qdrant, cl
     config = {"user": {"user_id": "admin", "reach": "all"}}
     with pytest.raises(PermissionError):
         await qdrant.astore(config, "x", memory_id="victim-memory")
-    with pytest.raises(PermissionError):
+    # A foreign update is "not found" (ValueError), so it does not reveal the memory exists.
+    with pytest.raises(ValueError, match="not found"):
         await qdrant.aupdate(config, "victim-memory", "x")
     client.upsert.assert_not_called()
 

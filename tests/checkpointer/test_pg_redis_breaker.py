@@ -143,7 +143,7 @@ async def test_every_redis_method_returns_its_usual_fallback_while_open(clock):
     assert await cp.aget_state_cache(_cfg()) is durable  # falls back to Postgres
     assert await cp.aput_cache_value("ns", "k", 1) is None
     assert await cp.aget_cache_value("ns", "k") is None
-    assert await cp.aclear_cache_value("ns", "k") is None
+    assert await cp.aclear_cache_value("ns", "k") is False
     assert await cp.aclear_cache_value_if("ns", "k", 1) is False
     assert await cp.aput_cache_value_if_absent("ns", "k", 1) is False
     assert await cp.alist_cache_keys("ns") == []

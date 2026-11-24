@@ -2,8 +2,8 @@
 
 import pytest
 
-from tenxgraph.qa.testing.in_memory_store import InMemoryStore
 from tenxgraph.core.state import Message
+from tenxgraph.qa.testing.in_memory_store import InMemoryStore
 from tenxgraph.storage.store.store_schema import MemorySearchResult, MemoryType
 
 
@@ -46,8 +46,8 @@ class TestInMemoryStoreLongContent:
         """Test storing content of exactly 50 chars."""
         store = InMemoryStore()
         exact_content = "X" * 50
-        mem_id = await store.astore({}, exact_content)
-        result = await store.aget({}, mem_id)
+        mem_id = await store.astore({"user_id": "user1"}, exact_content)
+        result = await store.aget({"user_id": "user1"}, mem_id)
         assert result.content == exact_content
 
     @pytest.mark.asyncio
@@ -80,7 +80,7 @@ class TestInMemoryStoreSearchFiltering:
     async def test_search_preconfigured_with_limit(self):
         """Test pre-configured search with a limit."""
         store = InMemoryStore()
-        config = {}
+        config = {"user_id": "user1"}
         search_results = [
             MemorySearchResult(id=f"{i}", content=f"Result {i}", score=0.9 - i * 0.1)
             for i in range(5)
@@ -93,7 +93,7 @@ class TestInMemoryStoreSearchFiltering:
     async def test_search_no_matches(self):
         """Test search with no matches."""
         store = InMemoryStore()
-        config = {}
+        config = {"user_id": "user1"}
         await store.astore(config, "Python programming")
         results = await store.asearch(config, "JavaScript")
         assert len(results) == 0
@@ -102,7 +102,7 @@ class TestInMemoryStoreSearchFiltering:
     async def test_search_with_limit(self):
         """Test search with limit applied."""
         store = InMemoryStore()
-        config = {}
+        config = {"user_id": "user1"}
         for i in range(10):
             await store.astore(config, f"Python code example {i}")
         results = await store.asearch(config, "Python", limit=3)
@@ -116,14 +116,14 @@ class TestInMemoryStoreGetAll:
     async def test_aget_all_empty(self):
         """Test aget_all with no memories."""
         store = InMemoryStore()
-        results = await store.aget_all({})
+        results = await store.aget_all({"user_id": "user1"})
         assert results == []
 
     @pytest.mark.asyncio
     async def test_aget_all_with_limit(self):
         """Test aget_all with limit."""
         store = InMemoryStore()
-        config = {}
+        config = {"user_id": "user1"}
         for i in range(5):
             await store.astore(config, f"Memory {i}")
         results = await store.aget_all(config, limit=3)
@@ -133,7 +133,7 @@ class TestInMemoryStoreGetAll:
     async def test_aget_not_found(self):
         """Test aget for non-existent memory."""
         store = InMemoryStore()
-        result = await store.aget({}, "nonexistent-id")
+        result = await store.aget({"user_id": "user1"}, "nonexistent-id")
         assert result is None
 
 
@@ -142,10 +142,10 @@ class TestInMemoryStoreUpdate:
 
     @pytest.mark.asyncio
     async def test_aupdate_not_found(self):
-        """Test aupdate returns False when memory not found."""
+        """Test aupdate raises ValueError when memory not found."""
         store = InMemoryStore()
-        result = await store.aupdate({}, "nonexistent", "new content")
-        assert result is False
+        with pytest.raises(ValueError, match="not found"):
+            await store.aupdate({"user_id": "user1"}, "nonexistent", "new content")
 
     @pytest.mark.asyncio
     async def test_aupdate_with_message_content(self):
@@ -163,7 +163,7 @@ class TestInMemoryStoreUpdate:
     async def test_aupdate_with_metadata(self):
         """Test aupdate merges metadata."""
         store = InMemoryStore()
-        config = {}
+        config = {"user_id": "user1"}
         mem_id = await store.astore(config, "Content", metadata={"orig": "value"})
         await store.aupdate(config, mem_id, "New content", metadata={"new_key": "new_val"})
         updated = await store.aget(config, mem_id)
@@ -176,19 +176,19 @@ class TestInMemoryStoreDelete:
 
     @pytest.mark.asyncio
     async def test_adelete_not_found(self):
-        """Test adelete returns False when memory not found."""
+        """Test adelete raises ValueError when memory not found."""
         store = InMemoryStore()
-        result = await store.adelete({}, "nonexistent")
-        assert result is False
+        with pytest.raises(ValueError, match="not found"):
+            await store.adelete({"user_id": "user1"}, "nonexistent")
 
     @pytest.mark.asyncio
     async def test_adelete_found(self):
         """Test adelete returns True and removes memory."""
         store = InMemoryStore()
-        mem_id = await store.astore({}, "To delete")
-        result = await store.adelete({}, mem_id)
+        mem_id = await store.astore({"user_id": "user1"}, "To delete")
+        result = await store.adelete({"user_id": "user1"}, mem_id)
         assert result is True
-        assert await store.aget({}, mem_id) is None
+        assert await store.aget({"user_id": "user1"}, mem_id) is None
 
 
 class TestInMemoryStoreForget:
@@ -210,22 +210,22 @@ class TestInMemoryStoreForget:
     async def test_aforget_by_thread_id(self):
         """Test deleting memories for a specific thread."""
         store = InMemoryStore()
-        await store.astore({"thread_id": "thread1"}, "Thread 1 memory")
-        await store.astore({"thread_id": "thread2"}, "Thread 2 memory")
+        await store.astore({"user_id": "u", "thread_id": "thread1"}, "Thread 1 memory")
+        await store.astore({"user_id": "u", "thread_id": "thread2"}, "Thread 2 memory")
 
-        count = await store.aforget_memory({"thread_id": "thread1"})
+        count = await store.aforget_memory({"user_id": "u", "thread_id": "thread1"})
         assert count == 1
 
     @pytest.mark.asyncio
     async def test_aforget_no_user_id(self):
-        """Test aforget_memory with no user_id or thread_id deletes all."""
+        """Test aforget_memory without a user_id raises and deletes nothing."""
         store = InMemoryStore()
         await store.astore({"user_id": "user1"}, "Memory 1")
         await store.astore({"user_id": "user2"}, "Memory 2")
 
-        # No filter = delete all
-        count = await store.aforget_memory({})
-        assert count == 2
+        with pytest.raises(ValueError, match="user_id"):
+            await store.aforget_memory({})
+        assert len(store.memories) == 2
 
     @pytest.mark.asyncio
     async def test_aforget_narrowed_by_filters_and_type(self):
@@ -250,8 +250,8 @@ class TestInMemoryStoreRelease:
     async def test_arelease_clears_all(self):
         """Test arelease clears all memories."""
         store = InMemoryStore()
-        await store.astore({}, "Memory 1")
-        await store.astore({}, "Memory 2")
+        await store.astore({"user_id": "user1"}, "Memory 1")
+        await store.astore({"user_id": "user1"}, "Memory 2")
         store.set_search_results([MemorySearchResult(id="1", content="test", score=0.9)])
 
         await store.arelease()

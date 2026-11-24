@@ -20,7 +20,7 @@ from tenxgraph.utils import ThreadInfo
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
-from .base_checkpointer import validate_page
+from .base_checkpointer import like_escape, validate_page
 
 
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
@@ -53,22 +53,24 @@ class _PgThreadsMixin(PgHostBase):
                   False if thread already existed and was updated.
 
         Raises:
+            ValueError: ``thread_info.thread_id`` differs from ``config["thread_id"]``.
             ThreadNotFoundError: The thread belongs to another user or tenant.
             Exception: If storing fails.
         """
         # Ensure schema is initialized before accessing tables
         thread_id, user_id = self._validate_config(config)
+        if str(thread_info.thread_id) != str(config["thread_id"]):
+            raise ValueError(
+                "ThreadInfo.thread_id must match config['thread_id']: "
+                f"{thread_info.thread_id!r} != {str(config['thread_id'])!r}"
+            )
 
         logger.debug("Storing thread info for thread_id=%s, user_id=%s", thread_id, user_id)
 
         try:
             thread_name = thread_info.thread_name
-            meta = thread_info.metadata or {}
-            meta.update(
-                {
-                    "run_id": thread_info.run_id,
-                }
-            )
+            # A copy: the caller's thread_info.metadata is never changed.
+            meta = {**(thread_info.metadata or {}), "run_id": thread_info.run_id}
 
             isolation = self._isolation(config, write=True)
             insert_sql, insert_params = self._thread_insert_sql(
@@ -301,7 +303,7 @@ class _PgThreadsMixin(PgHostBase):
                 query += f" AND {owner}"
 
             if search:
-                params.append(f"%{search}%")
+                params.append(f"%{like_escape(search)}%")
                 query += f" AND thread_name ILIKE ${len(params)}"
 
             # Client filters come last and are only ever ANDed, so they cannot widen the
@@ -374,6 +376,12 @@ class _PgThreadsMixin(PgHostBase):
                     settings=self._rls(config),
                 )
                 deleted = _rows_affected(status)
+
+            # The stop request and active-run marker go with the thread. Under tenant columns
+            # their key was set from the deleted row above, so this is the thread's own key.
+            # The cache calls log and swallow Redis errors, so they cannot fail the delete.
+            if deleted:
+                await self._clear_run_keys(config)
 
             # Postgres is the source of truth and is already gone. A Redis failure here
             # must not turn a completed delete into an error; the stale cache entry is

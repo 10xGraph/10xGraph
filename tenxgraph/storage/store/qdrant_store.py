@@ -4,6 +4,9 @@ Qdrant Vector Store Implementation for TAF Framework
 This module provides a modern, async-first implementation of BaseStore using Qdrant
 as the backend vector database. Supports both local and cloud Qdrant deployments
 with configurable embedding services.
+
+Helpers live in ``_qdrant_support.py``, the read methods in ``_qdrant_reads.py`` and the
+deletes in ``_qdrant_deletes.py``.
 """
 
 import asyncio
@@ -13,15 +16,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from tenxgraph.core.state import Message
+from tenxgraph.storage.columns import parse_columns
 from tenxgraph.storage.media.url_policy import redact_url
-from tenxgraph.utils.log_safety import describe_error
 
-from .base_store import BaseStore, limit_to_token_budget
+from ._qdrant_deletes import QdrantDeletesMixin
+from ._qdrant_support import (
+    _RESERVED_COLUMN_NAMES,
+    _SYSTEM_PAYLOAD_KEYS,  # noqa: F401 - kept importable from here
+    payload_matches,
+)
 from .embedding.base_embedding import BaseEmbedding
 from .store_schema import (
     DistanceMetric,
-    MemoryRecord,
-    MemorySearchResult,
     MemoryType,
     RetrievalStrategy,
 )
@@ -38,19 +44,13 @@ except ImportError:
 
 logger = logging.getLogger("tenxgraph.store")
 
-# Payload fields the store owns. Caller metadata is stored alongside them but can never
-# replace them -- in particular ``user_id``, which every read filters on.
-_SYSTEM_PAYLOAD_KEYS = frozenset(
-    {"content", "user_id", "thread_id", "memory_type", "category", "timestamp"}
-)
-
 # Default collection name used when none is specified via config or constructor.
 # Centralised here so factory functions and the class share the same value
 # without duplicating the magic string.
 DEFAULT_COLLECTION = "agentflow_memories"
 
 
-class QdrantStore(BaseStore):
+class QdrantStore(QdrantDeletesMixin):
     """
     Modern async-first Qdrant-based vector store implementation.
 
@@ -61,7 +61,7 @@ class QdrantStore(BaseStore):
     - Efficient vector similarity search with multiple strategies
     - Collection management with automatic creation
     - Rich metadata filtering capabilities
-    - User and agent-scoped operations
+    - User, tenant and agent-scoped operations
 
     Example:
         ```python
@@ -93,6 +93,7 @@ class QdrantStore(BaseStore):
         collection: str | Callable[[dict[str, Any]], str] | None = None,
         distance_metric: DistanceMetric = DistanceMetric.COSINE,
         retrieval_strategy: RetrievalStrategy = RetrievalStrategy.SIMILARITY,
+        tenant_columns: Any = None,
         **kwargs: Any,
     ):
         """
@@ -114,7 +115,28 @@ class QdrantStore(BaseStore):
             distance_metric: Distance metric of the collection (fixed at collection creation)
             retrieval_strategy: Default search strategy when a call passes ``None``. Only
                 ``SIMILARITY`` is supported.
+            tenant_columns: Payload fields that isolate data, such as
+                ``{"org_id": "uuid", "project_id": "text"}`` (or a list of names for ``text``
+                fields), same declaration as ``PgVectorStore(tenant_columns=...)``. Each gets
+                a keyword payload index marked ``is_tenant`` (Qdrant's multitenancy index).
+                Every write stores the caller's values as text; caller metadata cannot set
+                them. Every read, update, delete, forget and search is filtered by the tenant
+                columns the caller's reach picks (all of them when there is no identity, see
+                ``tenxgraph.core.authz``). A picked column whose value is missing raises, it
+                is never dropped from the filter. Required by default;
+                ``{"type": ..., "required": False}`` makes a column optional for writes.
+                Types are ``text``, ``bigint``, ``integer`` or ``uuid`` (checked like
+                ``PgVectorStore``). Another tenant's memory behaves like a missing one.
+                Shared data (``system_user_id(name)``) is shared only inside the tenant values
+                the scope picks. Points written before a column was declared have no value
+                and are invisible to scopes that pick it until you backfill them (reach
+                ``all`` still sees them). Without tenant columns reach ``tenant`` raises.
             **kwargs: Additional client parameters
+
+        Trusted-source rule for ``tenant_columns``: values come only from ``config["user"]``
+        (an ``Identity`` or a dict that validates into one, tenant values under ``tenant``),
+        set by your auth class. Never read them from request config, metadata, state or model
+        output.
         """
         if not HAS_QDRANT:
             raise ImportError(
@@ -122,6 +144,11 @@ class QdrantStore(BaseStore):
                 "Install with `pip install '10xgraph[qdrant]'`."
             )
         self.embedding = embedding
+        self.columns = parse_columns(
+            tenant_columns, None, reserved=_RESERVED_COLUMN_NAMES, table="QdrantStore"
+        )
+        #: Names of the declared tenant columns (read by the authz helpers and compile()).
+        self.tenant_column_names: tuple[str, ...] = self.columns.tenant_names
 
         # Initialize async client
         from qdrant_client import AsyncQdrantClient
@@ -165,242 +192,7 @@ class QdrantStore(BaseStore):
                 await self._ensure_collection_exists(self.collection)
         return True
 
-    @staticmethod
-    def _check_strategy(strategy: RetrievalStrategy) -> None:
-        if strategy != RetrievalStrategy.SIMILARITY:
-            raise ValueError(
-                f"retrieval_strategy {str(strategy)!r} is not supported by QdrantStore; "
-                "only 'similarity' is available."
-            )
-
-    def _distance_metric_to_qdrant(self, metric: DistanceMetric):
-        """Convert framework distance metric to Qdrant distance."""
-        from qdrant_client.http.models import Distance
-
-        mapping = {
-            DistanceMetric.COSINE: Distance.COSINE,
-            DistanceMetric.EUCLIDEAN: Distance.EUCLID,
-            DistanceMetric.DOT_PRODUCT: Distance.DOT,
-            DistanceMetric.MANHATTAN: Distance.MANHATTAN,
-        }
-        return mapping.get(metric, Distance.COSINE)
-
-    def _point_to_search_result(self, point) -> MemorySearchResult:
-        """Convert Qdrant point to MemorySearchResult."""
-        payload = getattr(point, "payload", {}) or {}
-
-        # Extract content
-        content = payload.get("content", "")
-
-        # Convert memory_type string back to enum
-        memory_type_str = payload.get("memory_type", "episodic")
-        try:
-            memory_type = MemoryType(memory_type_str)
-        except ValueError:
-            memory_type = MemoryType.EPISODIC
-
-        # Parse timestamp
-        timestamp_str = payload.get("timestamp")
-        timestamp = None
-        if timestamp_str:
-            try:
-                timestamp = datetime.fromisoformat(timestamp_str)
-            except (ValueError, TypeError):
-                timestamp = None
-
-        return MemorySearchResult(
-            id=str(point.id),
-            content=content,
-            score=float(getattr(point, "score", 1.0) or 0.0),
-            memory_type=memory_type,
-            metadata=payload,
-            vector=getattr(point, "vector", None),
-            user_id=payload.get("user_id"),
-            thread_id=payload.get("thread_id")
-            or payload.get("agent_id"),  # Support both thread_id and agent_id
-            timestamp=timestamp,
-        )
-
-    def _build_qdrant_filter(
-        self,
-        user_id: str | None = None,
-        thread_id: str | None = None,
-        memory_type: MemoryType | None = None,
-        category: str | None = None,
-        filters: dict[str, Any] | None = None,
-    ) -> Any | None:
-        """Build Qdrant filter from parameters."""
-        conditions = []
-
-        from qdrant_client.http.models import (
-            FieldCondition,
-            Filter,
-            MatchValue,
-        )
-
-        # Add user/agent filters
-        if user_id is not None:
-            conditions.append(
-                FieldCondition(
-                    key="user_id",
-                    match=MatchValue(value=user_id),
-                ),
-            )
-        if thread_id is not None and thread_id != "":
-            conditions.append(
-                FieldCondition(
-                    key="thread_id",
-                    match=MatchValue(value=thread_id),
-                ),
-            )
-        if memory_type:
-            conditions.append(
-                FieldCondition(
-                    key="memory_type",
-                    match=MatchValue(value=memory_type.value),
-                )
-            )
-        if category:
-            conditions.append(FieldCondition(key="category", match=MatchValue(value=category)))
-
-        # Add custom filters
-        if filters:
-            for key, value in filters.items():
-                if isinstance(value, str | int | bool):
-                    conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-
-        return Filter(must=conditions) if conditions else None
-
-    async def _ensure_collection_exists(self, collection: str) -> None:
-        """Ensure collection exists, create if not.
-
-        The `_collection_cache` fast path means the network round-trip happens once
-        per collection, not on every store/search/get. The lock closes the cold-start
-        race: without it, N concurrent first-requests all missed the cache together
-        and each issued its own get_collections()/create_collection() call.
-        """
-        if collection in self._collection_cache:
-            return
-
-        from qdrant_client.http.models import PayloadSchemaType, VectorParams
-
-        async with self._collection_lock:
-            # Re-check under the lock: another coroutine may have ensured it while
-            # we were waiting.
-            if collection in self._collection_cache:
-                return
-
-            await self._ensure_collection_exists_locked(collection, PayloadSchemaType, VectorParams)
-
-    async def _ensure_collection_exists_locked(
-        self,
-        collection: str,
-        PayloadSchemaType,
-        VectorParams,
-    ) -> None:
-        """Create the collection and its payload indexes. Caller holds the lock."""
-        try:
-            # Check if collection exists
-            collections = await self.client.get_collections()
-            existing_names = {col.name for col in collections.collections}
-
-            if collection not in existing_names:
-                # Create collection with vector configuration
-                await self.client.create_collection(
-                    collection_name=collection,
-                    vectors_config=VectorParams(
-                        size=self.embedding.dimension,
-                        distance=self._distance_metric_to_qdrant(
-                            self._default_distance_metric,
-                        ),
-                    ),
-                )
-                logger.info(f"Created collection: {collection}")
-
-            # Ensure payload indexes exist for filterable fields.
-            # Required for remote/cloud Qdrant where full scan is disabled.
-            # Qdrant's create_payload_index is idempotent — calling it on an
-            # already-indexed field is a no-op, so this is safe for both new
-            # and pre-existing collections.
-            for field_name in (
-                "user_id",
-                "memory_type",
-                "category",
-                "memory_key",
-            ):
-                try:
-                    await self.client.create_payload_index(
-                        collection_name=collection,
-                        field_name=field_name,
-                        field_schema=PayloadSchemaType.KEYWORD,
-                    )
-                except Exception:
-                    # Best-effort: log and continue so one failing index
-                    # doesn't prevent the collection from being usable.
-                    logger.debug(
-                        "Payload index for '%s' on '%s' may already exist or failed",
-                        field_name,
-                        collection,
-                    )
-            logger.info(f"Ensured payload indexes for collection: {collection}")
-
-            self._collection_cache.add(collection)
-        except Exception as e:
-            logger.error(f"Error ensuring collection {collection} exists: {describe_error(e)}")
-            raise
-
-    def _prepare_content(self, content: str | Message) -> str:
-        """Extract text content from string or Message."""
-        if isinstance(content, Message):
-            return content.text()
-        return content
-
-    def _create_memory_record(
-        self,
-        content: str | Message,
-        user_id: str | None = None,
-        thread_id: str | None = None,
-        memory_type: MemoryType = MemoryType.EPISODIC,
-        category: str = "general",
-        metadata: dict[str, Any] | None = None,
-    ) -> MemoryRecord:
-        """Create a memory record from parameters."""
-        text_content = self._prepare_content(content)
-
-        if isinstance(content, Message):
-            return MemoryRecord.from_message(
-                content,
-                user_id=user_id,
-                thread_id=thread_id,
-                additional_metadata=metadata,
-            )
-
-        return MemoryRecord(
-            content=text_content,
-            user_id=user_id,
-            thread_id=thread_id,
-            memory_type=memory_type,
-            metadata=metadata or {},
-            category=category,
-        )
-
-    # --- BaseStore abstract method implementations ---
-
-    async def _ensure_can_write_id(
-        self, collection: str, user_id: str | int, memory_id: str
-    ) -> None:
-        """Refuse a caller-chosen ``memory_id`` that already belongs to another user.
-
-        ``astore`` upserts, so without this check a chosen id would silently replace another
-        user's memory. Reusing one of your own ids (an intentional overwrite) is still
-        allowed. Checked on every reach: writes stay reach ``own``.
-        """
-        points = await self.client.retrieve(collection_name=collection, ids=[memory_id])
-        if not points:
-            return
-        owner = (getattr(points[0], "payload", None) or {}).get("user_id")
-        if owner != user_id:
-            raise PermissionError(f"memory_id '{memory_id}' belongs to another user")
+    # --- BaseStore abstract method implementations (reads and deletes in mixins) ---
 
     async def astore(
         self,
@@ -414,14 +206,16 @@ class QdrantStore(BaseStore):
         """Store a new memory.
 
         A record always has an owner: an empty ``user_id`` raises, even under
-        reach ``all``. Use ``system_user_id(name)`` for shared data.
+        reach ``all``. Use ``system_user_id(name)`` for shared data. Tenant values come from
+        ``config["user"]``; a required one that is missing raises. A ``memory_id`` (keyword
+        argument) that belongs to another user or tenant raises ``PermissionError``.
         """
         user_id, thread_id, collection = self._extract_config_values(config)
         user_id = self._require_owner_id(config, user_id)
+        ctx = self._isolation(config, write=True)
 
         from qdrant_client.http.models import PointStruct
 
-        # Ensure collection exists
         await self._ensure_collection_exists(collection)
 
         record = self._create_memory_record(
@@ -434,18 +228,18 @@ class QdrantStore(BaseStore):
         )
         requested_id = kwargs.get("memory_id")
         if requested_id:
-            await self._ensure_can_write_id(collection, user_id, requested_id)
+            await self._ensure_can_write_id(collection, user_id, requested_id, ctx.conditions)
         record.id = requested_id or await self.generate_framework_id()
 
-        # Generate embedding
         text_content = self._prepare_content(content)
         vector = await self.embedding.aembed(text_content)
         if not vector or len(vector) != self.embedding.dimension:
             raise ValueError("Embedding service returned invalid vector")
 
-        # Prepare payload
+        reserved = self._reserved_keys
         payload = {
-            **{k: v for k, v in record.metadata.items() if k not in _SYSTEM_PAYLOAD_KEYS},
+            **{k: v for k, v in record.metadata.items() if k not in reserved},
+            **self._tenant_payload(ctx),
             "content": record.content,
             "user_id": record.user_id,
             "thread_id": record.thread_id,
@@ -454,160 +248,11 @@ class QdrantStore(BaseStore):
             "timestamp": record.timestamp.isoformat() if record.timestamp else None,
         }
 
-        # Create point
-        point = PointStruct(
-            id=record.id,
-            vector=vector,
-            payload=payload,
-        )
-
-        # Store in Qdrant
-        await self.client.upsert(
-            collection_name=collection,
-            points=[point],
-        )
+        point = PointStruct(id=record.id, vector=vector, payload=payload)
+        await self.client.upsert(collection_name=collection, points=[point])
 
         logger.debug(f"Stored memory {record.id} in collection {collection}")
         return record.id
-
-    async def asearch(
-        self,
-        config: dict[str, Any],
-        query: str,
-        memory_type: MemoryType | None = None,
-        category: str | None = None,
-        limit: int = 10,
-        score_threshold: float | None = None,
-        filters: dict[str, Any] | None = None,
-        retrieval_strategy: RetrievalStrategy | None = None,
-        distance_metric: DistanceMetric | None = None,
-        max_tokens: int = 4000,
-        **kwargs,
-    ) -> list[MemorySearchResult]:
-        """Search memories by content similarity.
-
-        Long-term memory is cross-thread — thread_id is intentionally excluded
-        from the search filter so results span all conversations for the user.
-        """
-        strategy = RetrievalStrategy(
-            retrieval_strategy
-            if retrieval_strategy is not None
-            else self._default_retrieval_strategy
-        )
-        self._check_strategy(strategy)
-        if distance_metric is not None and distance_metric != self._default_distance_metric:
-            raise ValueError(
-                f"distance_metric {str(distance_metric)!r} differs from the store's "
-                f"{str(self._default_distance_metric)!r}. A Qdrant collection's distance is "
-                "fixed at collection creation; set it on QdrantStore(distance_metric=...)."
-            )
-
-        user_id, _thread_id, collection = self._extract_config_values(config)
-        scoped_user_id = self._require_user_id(config, user_id)
-
-        # Ensure collection exists
-        await self._ensure_collection_exists(collection)
-
-        # Generate query embedding
-        # Duck-typed embedding services may not define aembed_query.
-        embed_query = getattr(self.embedding, "aembed_query", None) or self.embedding.aembed
-        query_vector = await embed_query(query)
-        if not query_vector or len(query_vector) != self.embedding.dimension:
-            raise ValueError("Embedding service returned invalid vector")
-
-        # Build filter — search by user only; thread_id is excluded. The user filter is
-        # dropped when the caller's reach is "all".
-        search_filter = self._build_qdrant_filter(
-            user_id=scoped_user_id,
-            memory_type=memory_type,
-            category=category,
-            filters=filters,
-        )
-
-        # Perform search
-        # (query_points replaced search in qdrant-client 1.10; payloads are returned by default)
-        response = await self.client.query_points(
-            collection_name=collection,
-            query=query_vector,
-            query_filter=search_filter,
-            limit=limit,
-            score_threshold=score_threshold,
-        )
-
-        # Convert to search results
-        results = limit_to_token_budget(
-            [self._point_to_search_result(point) for point in response.points], max_tokens
-        )
-
-        logger.debug(f"Found {len(results)} memories for query in collection {collection}")
-        return results
-
-    async def aget(
-        self,
-        config: dict[str, Any],
-        memory_id: str,
-        **kwargs,
-    ) -> MemorySearchResult | None:
-        """Get a specific memory by ID."""
-        user_id, _thread_id, collection = self._extract_config_values(config)
-        scoped_user_id = self._require_user_id(config, user_id)
-
-        try:
-            # Ensure collection exists
-            await self._ensure_collection_exists(collection)
-
-            # Get point by ID
-            points = await self.client.retrieve(
-                collection_name=collection,
-                ids=[memory_id],
-            )
-
-            if not points:
-                return None
-
-            point = points[0]
-            result = self._point_to_search_result(point)
-
-            # Verify user access only — thread_id is intentionally not checked
-            # because long-term memory is cross-thread. Skipped under reach "all".
-            if scoped_user_id and result.user_id != scoped_user_id:
-                return None
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Error retrieving memory {memory_id}: {describe_error(e)}")
-            return None
-
-    async def aget_all(
-        self,
-        config: dict[str, Any],
-        limit: int = 100,
-        **kwargs,
-    ) -> list[MemorySearchResult]:
-        """Get all memories for a user."""
-        user_id, _, collection = self._extract_config_values(config)
-        scoped_user_id = self._require_user_id(config, user_id)
-
-        # Ensure collection exists
-        await self._ensure_collection_exists(collection)
-
-        # Build filter (user filter dropped under reach "all").
-        search_filter = self._build_qdrant_filter(user_id=scoped_user_id)
-
-        # Listing needs no vector, so scroll through the filtered points (payloads are
-        # returned by default; scroll points carry no score).
-        points, _next_offset = await self.client.scroll(
-            collection_name=collection,
-            scroll_filter=search_filter,
-            limit=limit,
-        )
-
-        # Convert to search results
-        results = [self._point_to_search_result(point) for point in points]
-
-        logger.debug(f"Found {len(results)} memories for query in collection {collection}")
-        return results
 
     async def aupdate(
         self,
@@ -617,143 +262,56 @@ class QdrantStore(BaseStore):
         metadata: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
-        """Update an existing memory."""
+        """Update a memory's content (re-embedded) and metadata.
+
+        Metadata is merged into the stored metadata unless ``replace_metadata=True``. A
+        ``category`` or ``memory_key`` in ``metadata`` updates it; otherwise it is kept (also
+        with ``replace_metadata=True``). Writes stay reach ``own``: a memory that does not
+        exist or belongs to another user or tenant raises ``ValueError`` (not found), on
+        every reach, as on ``PgVectorStore``. Tenant values never change on update.
+        """
         from qdrant_client.http.models import PointStruct
 
         user_id, _thread_id, collection = self._extract_config_values(config)
         owner = self._require_owner_id(config, user_id)  # writes stay reach own
+        ctx = self._isolation(config, write=True)
 
-        # Get existing memory
-        existing = await self.aget(config, memory_id)
-        if not existing:
+        await self._ensure_collection_exists(collection)
+        point = await self._retrieve_point(collection, memory_id)
+        payload = (getattr(point, "payload", None) or {}) if point is not None else {}
+        # thread_id is not an access-control boundary for long-term memory.
+        if point is None or not payload_matches(payload, owner, ctx.conditions):
             raise ValueError(f"Memory {memory_id} not found")
 
-        # Verify user access only — thread_id is not an access-control boundary
-        # for long-term memory (memories are shared across all threads for a user).
-        if existing.user_id != owner:
-            raise PermissionError("User does not have permission to update this memory")
-
-        # Prepare new content
         text_content = self._prepare_content(content)
         new_vector = await self.embedding.aembed(text_content)
         if not new_vector or len(new_vector) != self.embedding.dimension:
             raise ValueError("Embedding service returned invalid vector")
 
-        # Update payload
-        replace_metadata = kwargs.get("replace_metadata", False)
-        if replace_metadata:
-            updated_metadata = metadata or {}
+        new_metadata = dict(metadata or {})
+        if kwargs.get("replace_metadata", False):
+            updated_metadata = dict(new_metadata)
+            if "memory_key" not in updated_metadata and payload.get("memory_key") is not None:
+                updated_metadata["memory_key"] = payload["memory_key"]
         else:
-            updated_metadata = {**existing.metadata}
-            if metadata:
-                updated_metadata.update(metadata)
+            updated_metadata = {**self._caller_metadata(payload), **new_metadata}
 
-        # Strip system fields from metadata so they don't overwrite the
-        # explicit values we set below (existing.metadata mirrors the full
-        # Qdrant payload, including "content").
-        extra_metadata = {
-            k: v for k, v in updated_metadata.items() if k not in _SYSTEM_PAYLOAD_KEYS
-        }
-
+        reserved = self._reserved_keys
         updated_payload = {
-            **extra_metadata,
+            **{k: v for k, v in updated_metadata.items() if k not in reserved},
+            **{name: payload[name] for name in self.tenant_column_names if name in payload},
             "content": text_content,
-            "user_id": existing.user_id,
-            "thread_id": existing.thread_id,
-            "memory_type": existing.memory_type.value,
-            "category": updated_metadata.get("category", "general"),
+            "user_id": payload.get("user_id"),
+            "thread_id": payload.get("thread_id"),
+            "memory_type": payload.get("memory_type", MemoryType.EPISODIC.value),
+            "category": new_metadata.get("category") or payload.get("category") or "general",
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
-        # Create updated point
-        point = PointStruct(
-            id=memory_id,
-            vector=new_vector,
-            payload=updated_payload,
-        )
-
-        # Update in Qdrant
-        await self.client.upsert(
-            collection_name=collection,
-            points=[point],
-        )
+        new_point = PointStruct(id=memory_id, vector=new_vector, payload=updated_payload)
+        await self.client.upsert(collection_name=collection, points=[new_point])
 
         logger.debug(f"Updated memory {memory_id} in collection {collection}")
-
-    async def adelete(
-        self,
-        config: dict[str, Any],
-        memory_id: str,
-        **kwargs,
-    ) -> None:
-        """Delete a memory by ID."""
-        from qdrant_client.http import models
-
-        user_id, _thread_id, collection = self._extract_config_values(config)
-        self._require_user_id(config, user_id)
-
-        # ``aget`` filters by the same user (thread_id is not an access-control boundary for
-        # long-term memory), so another user's memory is "not found" here.
-        existing = await self.aget(config, memory_id)
-        if not existing:
-            raise ValueError(f"Memory {memory_id} not found")
-
-        # Delete from Qdrant
-        await self.client.delete(
-            collection_name=collection,
-            points_selector=models.PointIdsList(points=[memory_id]),
-        )
-
-        logger.debug(f"Deleted memory {memory_id} from collection {collection}")
-
-    async def aforget_memory(
-        self,
-        config: dict[str, Any],
-        **kwargs,
-    ) -> None:
-        """Delete the memories of one user, optionally narrowed.
-
-        ``user_id`` is required (also under reach ``all``): forgetting is always for a named
-        owner, never the whole collection. With no narrowing every memory of that user in the
-        collection goes. ``thread_id`` (from config), ``memory_type``, ``category`` and
-        ``filters`` (keyword arguments) narrow the delete, all combined with AND. A ``filters``
-        value that cannot be matched exactly raises instead of being skipped, because skipping
-        it would delete more than the caller asked for.
-        """
-        from qdrant_client.http import models
-
-        user_id, thread_id, collection = self._extract_config_values(config)
-        user_id = self._require_owner_id(config, user_id)
-
-        memory_type = kwargs.get("memory_type")
-        if isinstance(memory_type, str):
-            memory_type = MemoryType(memory_type)
-        category = kwargs.get("category")
-        filters = kwargs.get("filters")
-        for key, value in (filters or {}).items():
-            if not isinstance(value, str | int | bool):
-                raise ValueError(
-                    f"Unsupported forget filter {key!r}: only str, int and bool values can be "
-                    "matched exactly"
-                )
-
-        delete_filter = self._build_qdrant_filter(
-            user_id=user_id,
-            thread_id=thread_id,
-            memory_type=memory_type,
-            category=category,
-            filters=filters,
-        )
-        await self.client.delete(
-            collection_name=collection,
-            points_selector=models.FilterSelector(filter=delete_filter),
-        )
-
-        logger.info(
-            f"Deleted memories for user_id={user_id}, thread_id={thread_id}, "
-            f"memory_type={memory_type}, category={category}, filters={filters} "
-            f"in collection {collection}"
-        )
 
     async def aping(self) -> None:
         """Check the Qdrant server is reachable; raise when it is not.

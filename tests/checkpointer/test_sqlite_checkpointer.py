@@ -170,13 +170,13 @@ async def test_cache_value_expires(cp):
 @pytest.mark.asyncio
 async def test_clear_cache_value_returns_old(cp):
     await cp.aput_cache_value("ns", "k", {"x": 2})
-    assert await cp.aclear_cache_value("ns", "k") == {"x": 2}
+    assert await cp.aclear_cache_value("ns", "k") is True
     assert await cp.aget_cache_value("ns", "k") is None
 
 
 @pytest.mark.asyncio
 async def test_clear_cache_value_missing(cp):
-    assert await cp.aclear_cache_value("ns", "nope") is None
+    assert await cp.aclear_cache_value("ns", "nope") is False
 
 
 @pytest.mark.asyncio
