@@ -184,6 +184,7 @@ async def test_session_cancel_cancels_the_running_tool():
         async for _ in agent.arun(queue, {"thread_id": "t1"}):
             pass
 
+    gc.collect()  # flush coroutines leaked by earlier tests before recording
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         session = asyncio.create_task(consume())
@@ -199,4 +200,5 @@ async def test_session_cancel_cancels_the_running_tool():
     assert client.tool_responses == []
     leftover = [t for t in asyncio.all_tasks() if "_run_tool" in repr(t.get_coro())]
     assert leftover == []
-    assert not [w for w in caught if "never awaited" in str(w.message)]
+    unawaited = [str(w.message) for w in caught if "never awaited" in str(w.message)]
+    assert not [m for m in unawaited if "_run_tool" in m or "hang'" in m]
