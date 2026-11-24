@@ -1,19 +1,16 @@
-"""Tool-call machinery: the ledger, branch merge and node-call helpers.
+"""Tool-call machinery: the ledger, branch merge and tool-call helpers.
 
 A durable ledger of finished calls (so a replayed node does not fire a tool twice), isolated
 state per parallel branch, and a deterministic merge of the branches back into the shared
-state. ``ToolRunner`` runs a ToolNode step with it; the node handlers use the node-call
-helpers; ``LiveAgent`` uses the ledger helpers and
+state. ``ToolRunner`` runs a ToolNode step with it; ``LiveAgent`` uses the ledger helpers and
 :meth:`ToolRuntimeMixin._invoke_tool_metered` for realtime tool calls.
 """
 
-import inspect
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import NodeError, NodeTimeoutError
 from tenxgraph.core.graph.tool_node._helpers import generic_tool_failure
 from tenxgraph.core.graph.utils.guards import execute_with_guards, resolve_timeout
@@ -26,12 +23,10 @@ from tenxgraph.core.graph.utils.tool_dispatch import (
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.core.state.stream_emitter import StreamEmitter
-from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.storage.checkpointer import BaseCheckpointer
-from tenxgraph.utils import CallbackContext, InvocationType, metrics
+from tenxgraph.utils import metrics
 from tenxgraph.utils.constants import DEFAULT_TOOL_TIMEOUT_SECONDS
-from tenxgraph.utils.log_safety import error_details, log_safe
+from tenxgraph.utils.log_safety import log_safe
 
 
 logger = logging.getLogger("tenxgraph.graph")
@@ -46,7 +41,7 @@ async def _last_item(items: AsyncIterator[Any]) -> Any:
 
 
 class ToolRuntimeMixin:
-    """Ledger, parallel-merge and node-call helpers. The host provides ``name`` and ``func``."""
+    """Ledger and parallel-merge helpers. The host provides ``name`` and ``func``."""
 
     name: str
     func: Any
@@ -277,54 +272,6 @@ class ToolRuntimeMixin:
             error_code="NODE_002",
             context={"node_name": self.name},
         )
-
-    def _node_callback_context(self, config: dict[str, Any], function_name: str) -> CallbackContext:
-        """The callback context of a function or agent node call."""
-        return CallbackContext(
-            invocation_type=InvocationType.AI,
-            node_name=self.name,
-            function_name=function_name,
-            metadata={"config": public_config(config)},
-        )
-
-    def _publish_node_start(
-        self, config: dict[str, Any], state: AgentState, function_name: str
-    ) -> EventModel:
-        """Publish the NODE_EXECUTION event of a function or agent node call."""
-        last_message = state.context[-1] if state.context and len(state.context) > 0 else None
-        event = EventModel.default(
-            config,
-            data={"state": state},
-            event=Event.NODE_EXECUTION,
-            content_type=[ContentType.STATE],
-            node_name=self.name,
-            extra={
-                "node": self.name,
-                "function_name": function_name,
-                "last_message": last_message,
-            },
-        )
-        publish_event(event)
-        return event
-
-    def _publish_node_recovered(self, event: EventModel, recovery_result: Any) -> None:
-        """Publish END for a node call that an ``on_error`` callback recovered."""
-        logger.info("Node '%s' recovered from error using callback result", self.name)
-        event.event_type = EventType.END
-        event.data["message"] = recovery_result
-        event.content_type = [ContentType.MESSAGE, ContentType.STATE]
-        publish_event(event)
-
-    def _publish_node_failed(
-        self, event: EventModel, error: Exception, config: dict[str, Any]
-    ) -> None:
-        """Publish ERROR for a node call no callback recovered; the caller re-raises."""
-        logger.error("Node '%s' could not recover from error", self.name)
-        event.event_type = EventType.ERROR
-        event.data["error"] = str(error)
-        event.data.update(error_details(error, config))
-        event.content_type = [ContentType.ERROR, ContentType.STATE]
-        publish_event(event)
 
     async def _get_recorded_tool_result(
         self,
@@ -592,15 +539,6 @@ class ToolRuntimeMixin:
             if isinstance(outcome, dict):
                 outcome.pop("state", None)
 
-    # Class-level cache for function signatures to avoid repeated inspection
-    _signature_cache: dict[Callable, inspect.Signature] = {}
-
-    def _get_cached_signature(self, func: Callable) -> inspect.Signature:
-        """Get cached signature for a function, computing it if not cached."""
-        if func not in self._signature_cache:
-            self._signature_cache[func] = inspect.signature(func)
-        return self._signature_cache[func]
-
     def _get_last_tool_message(self, state: AgentState) -> Message:
         """Return the latest context message required for tool execution."""
         if state.context and len(state.context) > 0:
@@ -613,69 +551,3 @@ class ToolRuntimeMixin:
             error_code="NODE_003",
             context={"node_name": self.name},
         )
-
-    def _prepare_input_data(
-        self,
-        state: "AgentState",
-        config: dict[str, Any],
-    ) -> dict:
-        """
-        Prepare input data for function invocation, handling injectable parameters.
-        Uses cached function signature to avoid repeated inspection overhead.
-
-        Args:
-            state (AgentState): Current agent state.
-            config (dict): Node configuration.
-
-        Returns:
-            dict: Input data for function call.
-
-        Raises:
-            TypeError: If required parameters are missing.
-        """
-        # Use cached signature inspection for performance
-        sig = self._get_cached_signature(self.func)  # type: ignore[arg-type]  # Tool node won't come here
-        input_data = {}
-        default_data: dict[str, Any] = {
-            "state": state,
-            "config": config,
-        }
-
-        # Collect all required parameters (excluding *args/**kwargs)
-        required_params = []
-        for param_name, param in sig.parameters.items():
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
-                continue
-            if param.default is inspect.Parameter.empty:
-                required_params.append((param_name, param))
-
-        # If function has exactly one required parameter and it's not 'state' or 'config',
-        # assume it should receive the state (common pattern for simple lambdas like lambda s: s)
-        if len(required_params) == 1:
-            param_name, param = required_params[0]
-            if param_name not in ["state", "config"]:
-                input_data[param_name] = state
-                return input_data
-
-        # Otherwise, handle standard named parameters
-        for param_name, param in sig.parameters.items():
-            # Skip *args/**kwargs
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
-                continue
-
-            # check its state, config
-            if param_name in ["state", "config"]:
-                input_data[param_name] = default_data[param_name]
-            # Include regular function arguments
-            elif param.default is inspect.Parameter.empty:
-                raise TypeError(
-                    f"Missing required parameter '{param_name}' for function '{self.func}'"
-                )
-
-        return input_data

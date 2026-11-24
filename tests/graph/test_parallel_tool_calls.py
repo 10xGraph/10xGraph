@@ -1,18 +1,18 @@
-"""Tests for parallel tool calls in StreamNodeHandler and InvokeNodeHandler."""
+"""Tests for parallel tool calls through the NodeRunner."""
 
 import asyncio
 
 import pytest
 
 from tenxgraph.core.graph.tool_node import ToolNode
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 
+from .tool_guard_helpers import run_node
+
 
 class TestParallelToolCalls:
-    """Test parallel tool execution in StreamNodeHandler."""
+    """Test parallel tool execution in streaming mode."""
 
     @pytest.mark.asyncio
     async def test_parallel_tool_calls_basic(self):
@@ -81,16 +81,13 @@ class TestParallelToolCalls:
             },
         ]
 
-        # Create handler and execute
-        handler = StreamNodeHandler("test_node", tool_node)
+        # Execute
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
         # Collect results
-        results = []
-        async for chunk in handler.stream(config, state):
-            if isinstance(chunk, Message):
-                results.append(chunk)
+        _, node_result = await run_node(tool_node, config, state, streaming=True)
+        results = node_result.messages
 
         # Verify we got all results
         assert len(results) == 3
@@ -163,15 +160,12 @@ class TestParallelToolCalls:
             },
         ]
 
-        handler = StreamNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         state.context_summary = "0"  # Store counter in context_summary
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = []
-        async for chunk in handler.stream(config, state):
-            if isinstance(chunk, Message):
-                results.append(chunk)
+        _, node_result = await run_node(tool_node, config, state, streaming=True)
+        results = node_result.messages
 
         # Verify all tools executed
         assert len(results) == 3
@@ -224,14 +218,11 @@ class TestParallelToolCalls:
             },
         ]
 
-        handler = StreamNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = []
-        async for chunk in handler.stream(config, state):
-            if isinstance(chunk, Message):
-                results.append(chunk)
+        _, node_result = await run_node(tool_node, config, state, streaming=True)
+        results = node_result.messages
 
         # Should get results from both tools (one error, one success)
         assert len(results) == 2
@@ -281,15 +272,12 @@ class TestParallelToolCalls:
             for i in range(3)
         ]
 
-        handler = StreamNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
         start_time = time.time()
-        results = []
-        async for chunk in handler.stream(config, state):
-            if isinstance(chunk, Message):
-                results.append(chunk)
+        _, node_result = await run_node(tool_node, config, state, streaming=True)
+        results = node_result.messages
         elapsed = time.time() - start_time
 
         # Sequential would take 0.6s (3 * 0.2), parallel should take ~0.2s
@@ -329,14 +317,11 @@ class TestParallelToolCalls:
             }
         ]
 
-        handler = StreamNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = []
-        async for chunk in handler.stream(config, state):
-            if isinstance(chunk, Message):
-                results.append(chunk)
+        _, node_result = await run_node(tool_node, config, state, streaming=True)
+        results = node_result.messages
 
         assert len(results) == 1
         assert results[0].content[0].output["result"] == "test"
@@ -354,17 +339,15 @@ class TestParallelToolCalls:
         )
         message.tools_calls = []
 
-        handler = StreamNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
         with pytest.raises(NodeError):
-            async for _ in handler.stream(config, state):
-                pass
+            await run_node(tool_node, config, state, streaming=True)
 
 
 class TestInvokeParallelToolCalls:
-    """Test parallel tool execution in InvokeNodeHandler."""
+    """Test parallel tool execution in invoke mode."""
 
     @pytest.mark.asyncio
     async def test_invoke_parallel_tool_calls_basic(self):
@@ -433,13 +416,13 @@ class TestInvokeParallelToolCalls:
             },
         ]
 
-        # Create handler and execute
-        handler = InvokeNodeHandler("test_node", tool_node)
+        # Execute
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
         # Execute and collect results
-        results = await handler.invoke(config, state)
+        _, node_result = await run_node(tool_node, config, state, streaming=False)
+        results = node_result.messages
 
         # Verify we got all results
         assert isinstance(results, list)
@@ -511,12 +494,12 @@ class TestInvokeParallelToolCalls:
             },
         ]
 
-        handler = InvokeNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         state.context_summary = "0"  # Store counter in context_summary
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = await handler.invoke(config, state)
+        _, node_result = await run_node(tool_node, config, state, streaming=False)
+        results = node_result.messages
 
         # Verify all tools executed
         assert isinstance(results, list)
@@ -570,11 +553,11 @@ class TestInvokeParallelToolCalls:
             },
         ]
 
-        handler = InvokeNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = await handler.invoke(config, state)
+        _, node_result = await run_node(tool_node, config, state, streaming=False)
+        results = node_result.messages
 
         # Should get results from both tools (one error, one success)
         assert isinstance(results, list)
@@ -625,12 +608,12 @@ class TestInvokeParallelToolCalls:
             for i in range(3)
         ]
 
-        handler = InvokeNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
         start_time = time.time()
-        results = await handler.invoke(config, state)
+        _, node_result = await run_node(tool_node, config, state, streaming=False)
+        results = node_result.messages
         elapsed = time.time() - start_time
 
         # Sequential would take 0.6s (3 * 0.2), parallel should take ~0.2s
@@ -671,11 +654,11 @@ class TestInvokeParallelToolCalls:
             }
         ]
 
-        handler = InvokeNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = await handler.invoke(config, state)
+        _, node_result = await run_node(tool_node, config, state, streaming=False)
+        results = node_result.messages
 
         assert isinstance(results, list)
         assert len(results) == 1
@@ -694,12 +677,11 @@ class TestInvokeParallelToolCalls:
         )
         message.tools_calls = []
 
-        handler = InvokeNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
         with pytest.raises(NodeError):
-            await handler.invoke(config, state)
+            await run_node(tool_node, config, state, streaming=False)
 
     @pytest.mark.asyncio
     async def test_invoke_tool_order_preserved(self):
@@ -760,11 +742,11 @@ class TestInvokeParallelToolCalls:
             },
         ]
 
-        handler = InvokeNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = await handler.invoke(config, state)
+        _, node_result = await run_node(tool_node, config, state, streaming=False)
+        results = node_result.messages
 
         # Verify results are in the same order as calls (not completion order)
         assert isinstance(results, list)
@@ -835,14 +817,11 @@ class TestStreamToolOrderPreserved:
             },
         ]
 
-        handler = StreamNodeHandler("test_node", tool_node)
         state = AgentState(context=[message])
         config = {"thread_id": "test_123", "run_id": "run_456"}
 
-        results = []
-        async for chunk in handler.stream(config, state):
-            if isinstance(chunk, Message):
-                results.append(chunk)
+        _, node_result = await run_node(tool_node, config, state, streaming=True)
+        results = node_result.messages
 
         # Verify we got all results
         assert len(results) == 3

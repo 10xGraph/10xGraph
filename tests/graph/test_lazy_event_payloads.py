@@ -69,10 +69,9 @@ class _Collect(BasePublisher):
 _EVENT_CODE = (
     "tenxgraph/runtime/publisher/",
     "tenxgraph/core/graph/tool_node/",
-    "tenxgraph/core/graph/utils/invoke_handler.py",
+    "tenxgraph/core/graph/utils/engine.py",
     "tenxgraph/core/graph/utils/stream_handler.py",
-    "tenxgraph/core/graph/utils/invoke_node_handler.py",
-    "tenxgraph/core/graph/utils/stream_node_handler.py",
+    "tenxgraph/core/graph/utils/node_runner.py",
     "tenxgraph/core/graph/utils/handler_utils.py",
 )
 

@@ -332,25 +332,6 @@ def is_remote_tool_marker(item: Any) -> bool:
     )
 
 
-def split_remote_calls(result: Any) -> tuple[list[Message], Any]:
-    """Separate client-tool placeholders from a node result.
-
-    Returns the placeholders and the result without them, so the rest (for example parallel
-    server tools that finished) is merged into the state as usual.
-    """
-    if is_remote_tool_marker(result):
-        return [result], []
-    if isinstance(result, list):
-        markers = [item for item in result if is_remote_tool_marker(item)]
-        return markers, [item for item in result if not is_remote_tool_marker(item)]
-    if isinstance(result, dict) and isinstance(result.get("messages"), list):
-        markers = [m for m in result["messages"] if is_remote_tool_marker(m)]
-        if markers:
-            kept = [m for m in result["messages"] if not is_remote_tool_marker(m)]
-            return markers, {**result, "messages": kept}
-    return [], result
-
-
 def node_after(
     current_node: str,
     explicit_next: str | None,
@@ -455,7 +436,6 @@ async def pause_for_interrupt[StateT: AgentState](
 async def check_stop_requested[StateT: AgentState](
     state: StateT,
     current_node: str,
-    event: EventModel,
     messages: list[Message],
     config: dict[str, Any],
     callback_mgr: CallbackManager = Inject[CallbackManager],
@@ -470,7 +450,9 @@ async def check_stop_requested[StateT: AgentState](
     continues there and does not run the finished node again. If nothing follows (the graph
     is done) there is nothing left to stop: the request is dropped and the run completes.
 
-    ``last_save`` records the stop save (see :func:`check_and_handle_interrupt`).
+    ``last_save`` records the stop save (see :func:`check_and_handle_interrupt`). The stop is
+    reported once, by the ``graph_interrupt`` lifecycle event (GRAPH_EXECUTION INTERRUPTED,
+    ``node_name`` = the stopped node).
     """
     callback_mgr = fresh(callback_mgr)
     checkpointer = fresh(checkpointer)
@@ -532,11 +514,6 @@ async def check_stop_requested[StateT: AgentState](
         await sync_data(
             state=state, config=config, messages=messages, trim=True, last_save=last_save
         )
-        event.event_type = EventType.INTERRUPTED
-        event.metadata["interrupted"] = "Stop"
-        event.metadata["status"] = "Graph execution stopped by request"
-        event.data["state"] = state
-        publish_event(event)
         return True
     return False
 

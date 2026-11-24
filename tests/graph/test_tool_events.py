@@ -200,7 +200,7 @@ async def test_unknown_tool_sends_start_then_error(mode):
 @pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("scenario", SCENARIOS)
 async def test_event_sequence_matches_the_snapshot(scenario, mode):
-    """Today's sequence per scenario and mode; step 4 of the engine merge makes them equal."""
+    """The merged engine sends one sequence per scenario, the same under ainvoke and astream."""
     recorded = _sequence((await _record(scenario, mode))[0])
     snapshot = json.loads(SNAPSHOT.read_text()) if SNAPSHOT.exists() else {}
     if os.environ.get("UPDATE_EVENT_SNAPSHOT"):
@@ -208,3 +208,4 @@ async def test_event_sequence_matches_the_snapshot(scenario, mode):
         SNAPSHOT.parent.mkdir(exist_ok=True)
         SNAPSHOT.write_text(json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
     assert recorded == snapshot[scenario][mode]
+    assert snapshot[scenario]["ainvoke"] == snapshot[scenario]["astream"]

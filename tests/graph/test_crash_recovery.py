@@ -164,9 +164,7 @@ async def test_crash_recovery_uses_the_cache_not_the_durable_copy(checkpointer):
     old = AgentState(
         context=[Message.text_message("earlier"), Message.text_message("done", role="assistant")]
     )
-    old.execution_meta = ExecutionState(
-        current_node=END, step=2, status=ExecutionStatus.COMPLETED
-    )
+    old.execution_meta = ExecutionState(current_node=END, step=2, status=ExecutionStatus.COMPLETED)
     await checkpointer.aput_state(config, old)
     await seed_crashed(checkpointer, config, node="MODEL", with_call=False)
     app, histories, _ = build(checkpointer)
@@ -199,9 +197,9 @@ async def test_live_run_is_left_alone():
 
 @pytest.mark.asyncio
 async def test_stream_closed_early_is_repaired_on_next_load(checkpointer):
-    """A consumer that closes the stream generator early skips the cancel branch.
+    """A consumer that closes the stream generator early is saved like a cancel.
 
-    The state stays RUNNING and ``_end_run`` clears the marker; the next load must repair it.
+    The state is INTERRUPTED, the marker is cleared, and the next run repairs the history.
     """
     config = {"thread_id": "t-genexit", "user_id": "u1"}
     app, histories, _ = build(checkpointer)
@@ -214,7 +212,7 @@ async def test_stream_closed_early_is_repaired_on_next_load(checkpointer):
 
     cached = await checkpointer.aget_state_cache(config)
     assert cached is not None
-    assert cached.execution_meta.status == ExecutionStatus.RUNNING
+    assert cached.execution_meta.status != ExecutionStatus.RUNNING
     assert await checkpointer.aget_active_run(config) is None
 
     histories.clear()

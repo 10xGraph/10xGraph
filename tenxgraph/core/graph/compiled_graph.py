@@ -6,6 +6,7 @@ import contextvars
 import datetime
 import logging
 from collections.abc import AsyncIterator, Callable, Generator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 
@@ -36,11 +37,17 @@ from tenxgraph.utils.id_generator import BaseIDGenerator
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
+from .utils.engine import GraphEngine, RunResult
 from .utils.id_type_check import check_id_type
-from .utils.invoke_handler import InvokeHandler
 from .utils.run_registry import SHUTDOWN_CANCEL_REASON, RunHandle, RunRegistry, current_run
-from .utils.stream_handler import StreamHandler
-from .utils.utils import FINALIZE_TIMEOUT_SECONDS, _detached_tasks, detach_task, wait_detached
+from .utils.stream_handler import filter_chunk, final_chunk
+from .utils.utils import (
+    FINALIZE_TIMEOUT_SECONDS,
+    _detached_tasks,
+    detach_task,
+    parse_response,
+    wait_detached,
+)
 
 
 if TYPE_CHECKING:
@@ -103,8 +110,7 @@ class CompiledGraph[StateT: AgentState]:
 
     Attributes:
         _state: The initial/template state for graph executions.
-        _invoke_handler: Handler for non-streaming graph execution.
-        _stream_handler: Handler for streaming graph execution.
+        _engine: The graph loop behind both ``ainvoke`` and ``astream``.
         _checkpointer: Optional state persistence backend.
         _publisher: Optional event publishing backend.
         _store: Optional data storage backend.
@@ -159,15 +165,8 @@ class CompiledGraph[StateT: AgentState]:
         self._shutdown_timeout = shutdown_timeout
         self._media_policy: MediaFetchPolicy = media_policy or MediaFetchPolicy()
 
-        # create handlers
-        self._invoke_handler: InvokeHandler[StateT] = InvokeHandler[StateT](
-            nodes=state_graph.nodes,
-            edges=state_graph.edges,
-            interrupt_after=interrupt_after,
-            interrupt_before=interrupt_before,
-            node_aliases=node_aliases,
-        )
-        self._stream_handler: StreamHandler[StateT] = StreamHandler[StateT](
+        # the one graph loop, for both ainvoke and astream
+        self._engine = GraphEngine(
             nodes=state_graph.nodes,
             edges=state_graph.edges,
             interrupt_after=interrupt_after,
@@ -451,11 +450,22 @@ class CompiledGraph[StateT: AgentState]:
             handle, token = self._begin_run(cfg, "invoke")
 
             try:
-                return await self._invoke_handler.invoke(
+                result = RunResult(self._state)
+                steps = self._engine.run(
                     input_data,
                     cfg,
                     self._state,
+                    streaming=False,
+                    response_granularity=response_granularity,
+                )
+                async with aclosing(steps):
+                    async for item in steps:
+                        result = item  # type: ignore[assignment]  # only the result when not streaming
+                return await parse_response(
+                    result.state,
+                    result.messages,
                     response_granularity,
+                    token_usage=result.token_usage,
                 )
             finally:
                 await self._finish_run(cfg, handle, token)
@@ -790,19 +800,27 @@ class CompiledGraph[StateT: AgentState]:
             handle, token = self._begin_run(cfg, "stream")
 
             try:
-                async for chunk in self._stream_handler.stream(
-                    input_data,
-                    cfg,
-                    self._state,
-                    response_granularity,
-                ):
-                    yield chunk
-                    # A consumer may drive each step from a new task (the API's stream wrapper
-                    # does); a hard cancel must reach the task running the run now, and that
-                    # task must resolve from this graph's container too.
-                    handle.task = asyncio.current_task()
-                    if ContainerContext.get_current() is not self._container:
-                        container_token = ContainerContext.set_current(self._container)
+                async with aclosing(
+                    self._engine.run(
+                        input_data,
+                        cfg,
+                        self._state,
+                        streaming=True,
+                        response_granularity=response_granularity,
+                    )
+                ) as items:
+                    async for item in items:
+                        if isinstance(item, RunResult):
+                            if response_granularity == ResponseGranularity.FULL:
+                                yield final_chunk(item, cfg)
+                        elif filter_chunk(item, response_granularity):
+                            yield item
+                        # A consumer may drive each step from a new task (the API's stream
+                        # wrapper does); a hard cancel must reach the task running the run now,
+                        # and that task must resolve from this graph's container too.
+                        handle.task = asyncio.current_task()
+                        if ContainerContext.get_current() is not self._container:
+                            container_token = ContainerContext.set_current(self._container)
             finally:
                 await self._finish_run(cfg, handle, token)
         finally:
