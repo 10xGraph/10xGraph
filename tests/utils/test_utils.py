@@ -512,7 +512,7 @@ class TestIDGenerators:
         assert generator.id_type == IDType.STRING  # noqa: S101
         id_val = generator.generate()
         assert isinstance(id_val, str)  # noqa: S101
-        assert id_val == ""  # noqa: S101
+        assert len(id_val) == 36  # noqa: S101
 
     def test_int_id_generator(self):
         """Test IntIDGenerator."""

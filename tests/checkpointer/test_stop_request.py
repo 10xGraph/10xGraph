@@ -92,7 +92,6 @@ class TestStopRequestConsumption:
         key.
         """
         from tenxgraph.core.graph.utils import handler_utils
-        from tenxgraph.runtime.publisher.events import ContentType, EventModel
 
         cp, callback_mgr = stop_deps
         state = AgentState()
@@ -111,7 +110,6 @@ class TestStopRequestConsumption:
         stopped = await handler_utils.check_stop_requested(
             state,
             "agent",
-            EventModel.default(CONFIG, data={}, content_type=[ContentType.STATE]),
             [],
             CONFIG,
             callback_mgr=callback_mgr,
@@ -129,7 +127,6 @@ class TestStopRequestConsumption:
     @pytest.mark.asyncio
     async def test_no_stop_requested_continues(self, stop_deps, monkeypatch):
         from tenxgraph.core.graph.utils import handler_utils
-        from tenxgraph.runtime.publisher.events import ContentType, EventModel
 
         cp, callback_mgr = stop_deps
         state = AgentState()
@@ -144,7 +141,6 @@ class TestStopRequestConsumption:
         stopped = await handler_utils.check_stop_requested(
             state,
             "agent",
-            EventModel.default(CONFIG, data={}, content_type=[ContentType.STATE]),
             [],
             CONFIG,
             callback_mgr=callback_mgr,

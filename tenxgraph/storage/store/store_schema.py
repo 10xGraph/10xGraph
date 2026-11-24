@@ -1,31 +1,16 @@
-import secrets
-from collections.abc import Awaitable
-from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from injectq import InjectQ
 from pydantic import BaseModel, Field, field_validator
 
 from tenxgraph.core.state import Message
+from tenxgraph.core.state.message import generate_id
 
 
 def _generate_memory_id() -> str:
-    """Generate a memory ID using InjectQ's registered factory (sync-safe).
-
-    Falls back to a ``secrets.token_hex`` value when no generator is registered
-    in the DI container (e.g. in unit tests that run without compiling a graph).
-    Async generators are not awaited here — the secrets fallback is used instead
-    to keep Pydantic default_factory synchronous.
-    """
-    with suppress(Exception):
-        generated_id = InjectQ.get_instance().try_get("generated_id", None)
-        if generated_id is not None and not isinstance(generated_id, Awaitable):
-            str_id = str(generated_id)
-            if str_id:
-                return str_id
-    return secrets.token_hex(16)
+    """A memory id from the bound id generator, else a uuid4 string."""
+    return str(generate_id())
 
 
 def _has_reasoning(message: Message) -> bool:

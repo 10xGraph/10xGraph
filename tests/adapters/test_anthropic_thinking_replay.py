@@ -248,17 +248,18 @@ class _StubConverter(BaseConverter):
 async def test_invoke_agent_node_stamps_node_name_on_reply():
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+    from tenxgraph.core.graph.utils.node_runner import NodeRunner
     from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
     from tenxgraph.utils.callbacks import CallbackManager
 
     agent = MagicMock()
     agent.execute = AsyncMock(return_value=ModelResponseConverter(object(), _StubConverter()))
-    with patch("tenxgraph.core.graph.utils.invoke_node_handler.publish_event"):
-        result = await InvokeNodeHandler("writer", agent)._call_agent_node(
-            AgentState(), {"thread_id": "t"}, CallbackManager()
+    with patch("tenxgraph.core.graph.utils.node_runner.publish_event"):
+        steps = NodeRunner("writer", agent)._run_agent(
+            {"thread_id": "t"}, AgentState(), CallbackManager(), streaming=False
         )
-    assert result["messages"][0].metadata["node_name"] == "writer"
+        result = [item async for item in steps][-1]
+    assert result.messages[0].metadata["node_name"] == "writer"
 
 
 @pytest.mark.asyncio

@@ -8,11 +8,10 @@ across nodes and cases without manual bookkeeping.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 
-@dataclass
-class TokenUsage:
+class TokenUsage(BaseModel):
     """Token counts from a single LLM call or an aggregated group of calls.
 
     Attributes:

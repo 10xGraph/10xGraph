@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from tenxgraph.core.exceptions import NodeTimeoutError
 from tenxgraph.core.graph import ToolNode
 from tenxgraph.core.graph.tool_node.mcp_exec import MCPMixin
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.core.graph.utils.tool_runner import ToolRunner
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.utils import CallbackManager
@@ -186,12 +186,17 @@ class TestNodeHandlerCatchAll:
         msg.tools_calls = [
             {"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
         ]
-        handler = InvokeNodeHandler("tools", ToolNode([]))
+        handler = ToolRunner("tools", ToolNode([]))
         caplog.set_level(logging.ERROR, logger="tenxgraph.graph")
         with patch.object(handler, "_handle_single_tool", AsyncMock(side_effect=RuntimeError(DSN))):
-            result = await handler._call_tools(msg, AgentState(context=[msg]), {})
+            [result] = [
+                i
+                async for i in handler.call_tools(
+                    msg, AgentState(context=[msg]), {}, streaming=False
+                )
+            ]
 
-        text = _texts(result[0])[0]
+        text = _texts(result.messages[0])[0]
         assert DSN not in text
         ref = _reference([text])
         assert text == f"Tool 't' failed with an internal error (reference {ref})."
@@ -203,9 +208,14 @@ class TestNodeHandlerCatchAll:
         msg.tools_calls = [
             {"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
         ]
-        handler = InvokeNodeHandler("tools", ToolNode([]))
+        handler = ToolRunner("tools", ToolNode([]))
         err = NodeTimeoutError(message="Tool 't' exceeded its timeout of 1s and was cancelled")
         with patch.object(handler, "_handle_single_tool", AsyncMock(side_effect=err)):
-            result = await handler._call_tools(msg, AgentState(context=[msg]), {})
+            [result] = [
+                i
+                async for i in handler.call_tools(
+                    msg, AgentState(context=[msg]), {}, streaming=False
+                )
+            ]
 
-        assert "exceeded its timeout of 1s" in _texts(result[0])[0]
+        assert "exceeded its timeout of 1s" in _texts(result.messages[0])[0]

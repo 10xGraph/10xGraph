@@ -23,11 +23,12 @@ from tenxgraph.storage.columns import (
     quote_identifier,
 )
 from tenxgraph.storage.sql_filter import FilterSchema
+from tenxgraph.utils.id_generator import IDType
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_access import _PgAccessMixin
 from ._pg_cache import _PgCacheMixin
-from ._pg_identity import _PgIdentityMixin, _plain_id_type
+from ._pg_identity import _PgIdentityMixin, _to_id_type
 from ._pg_ledger import _PgLedgerMixin
 from ._pg_messages import _PgMessagesMixin
 from ._pg_schema import _PgSchemaMixin
@@ -266,7 +267,7 @@ class PgCheckpointer(
                 "Install with: pip install 10xgraph[pg_checkpoint]"
             )
 
-        self.user_id_type = kwargs.get("user_id_type", "string")
+        self.user_id_type = _to_id_type(kwargs.get("user_id_type", "string"))
         # The id type follows the id generator bound in InjectQ (see ``id_type``). A passed
         # ``id_type`` is still honoured but deprecated.
         self._set_declared_id_type(kwargs.get("id_type"))
@@ -418,7 +419,7 @@ class PgCheckpointer(
     def _set_declared_id_type(self, given: Any) -> None:
         """Keep a passed (deprecated) ``id_type``; without one the id type follows the generator."""
         self._id_type_given = given is not None
-        self._pinned_id_type: str | None = None
+        self._pinned_id_type: IDType | None = None
         if given is None:
             return
         warnings.warn(
@@ -427,7 +428,7 @@ class PgCheckpointer(
             DeprecationWarning,
             stacklevel=3,
         )
-        self._pinned_id_type = _plain_id_type(given)
+        self._pinned_id_type = _to_id_type(given)
 
     def _get_table_name(self, table: str) -> str:
         """

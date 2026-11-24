@@ -26,9 +26,10 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
+
+from pydantic import BaseModel, SkipValidation
 
 from tenxgraph.core.exceptions.tool_denied import ToolDenied
 from tenxgraph.core.state.message import Message
@@ -94,14 +95,13 @@ class InvocationType(StrEnum):
     SKILL = "skill"
 
 
-@dataclass
-class CallbackContext:
+class CallbackContext(BaseModel):
     """Context information passed to callbacks."""
 
     invocation_type: InvocationType
     node_name: str
     function_name: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: SkipValidation[dict[str, Any] | None] = None
 
 
 class BeforeInvokeCallback[T, R](ABC):
@@ -198,15 +198,14 @@ OnErrorCallbackType = Union[
 # ─── Graph Lifecycle Hooks ──────────────────────────────────────────────────
 
 
-@dataclass
-class GraphLifecycleContext:
+class GraphLifecycleContext(BaseModel):
     """Context passed to all graph lifecycle hook methods.
 
     Carries the full config dict so hooks can access thread_id, run_id, and
     any application-specific keys set on the config.
     """
 
-    config: dict[str, Any]
+    config: SkipValidation[dict[str, Any]]
 
     @property
     def thread_id(self) -> str:

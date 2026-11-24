@@ -20,8 +20,10 @@ import http.client
 import ipaddress
 import logging
 import time
-from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict
 
 from tenxgraph.utils import safe_http
 from tenxgraph.utils.log_safety import redact_url  # noqa: F401  (old import path)
@@ -49,8 +51,7 @@ def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
     return False
 
 
-@dataclass(frozen=True)
-class MediaFetchPolicy:
+class MediaFetchPolicy(BaseModel):
     """What the server may download when a message carries an external media URL.
 
     Attributes:
@@ -70,6 +71,8 @@ class MediaFetchPolicy:
             the list is enforced by :meth:`check_url` only. Empty rejects every ``gs://`` URL.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     enabled: bool = True
     allowed_schemes: tuple[str, ...] = ("https", "http")
     allowed_hosts: tuple[str, ...] = ()
@@ -79,7 +82,7 @@ class MediaFetchPolicy:
     timeout: float = 10.0
     allowed_gcs_buckets: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
+    def model_post_init(self, _context: Any) -> None:
         bad = [s for s in self.allowed_schemes if str(s).lower() not in _HARD_SCHEMES]
         if bad:
             raise ValueError(f"allowed_schemes may only contain http and https, got: {bad}")

@@ -1,23 +1,4 @@
-"""Shared mixins for graph and node handler classes.
-
-This module provides lightweight mixins that add common functionality to handler
-classes without changing their core runtime behavior. The mixins follow the
-composition pattern to keep responsibilities explicit and allow handlers to
-inherit only the capabilities they need.
-
-The mixins provide structured logging, configuration management, and other
-cross-cutting concerns that are commonly needed across different handler types.
-By using mixins, the core handler logic remains focused while gaining these
-shared capabilities.
-
-Typical usage:
-    ```python
-    class MyHandler(BaseLoggingMixin, InterruptConfigMixin):
-        def __init__(self):
-            self._set_interrupts(["node1"], ["node2"])
-            self._log_start("Handler initialized")
-    ```
-"""
+"""The steps of the graph loop (``GraphRunMixin``) and ``mirror_last_message``."""
 
 from __future__ import annotations
 
@@ -55,150 +36,20 @@ from .utils import LastSave, call_realtime_sync, get_next_node, load_or_create_s
 logger = logging.getLogger("tenxgraph.graph")
 
 
-class BaseLoggingMixin:
-    """Provides structured logging helpers for handler classes.
-
-    This mixin adds consistent logging capabilities to handler classes without
-    requiring them to manage logger instances directly. It automatically creates
-    loggers based on the module name and provides convenience methods for
-    common logging operations.
-
-    The mixin is designed to be lightweight and non-intrusive, adding only
-    logging functionality without affecting the core behavior of the handler.
-
-    Attributes:
-        _logger: Cached logger instance for the handler class.
-
-    Example:
-        ```python
-        class MyHandler(BaseLoggingMixin):
-            def process(self):
-                self._log_start("Processing started")
-                try:
-                    # Do work
-                    self._log_debug("Work completed successfully")
-                except Exception as e:
-                    self._log_error("Processing failed: %s", e)
-        ```
-    """
-
-    @property
-    def _logger(self) -> logging.Logger:
-        """Get or create a logger instance for this handler.
-
-        Creates a logger using the handler's module name, providing consistent
-        logging across different handler instances while maintaining proper
-        logger hierarchy and configuration.
-
-        Returns:
-            Logger instance configured for this handler's module.
-        """
-        return logging.getLogger("tenxgraph.graph")
-
-    def _log_start(self, msg: str, *args: Any) -> None:
-        """Log an informational message for process start/initialization.
-
-        Args:
-            msg: Log message format string.
-            *args: Arguments for message formatting.
-        """
-        self._logger.info(msg, *args)
-
-    def _log_debug(self, msg: str, *args: Any) -> None:
-        """Log a debug message for detailed execution information.
-
-        Args:
-            msg: Log message format string.
-            *args: Arguments for message formatting.
-        """
-        self._logger.debug(msg, *args)
-
-    def _log_error(self, msg: str, *args: Any) -> None:
-        """Log an error message for exceptional conditions.
-
-        Args:
-            msg: Log message format string.
-            *args: Arguments for message formatting.
-        """
-        self._logger.error(msg, *args)
-
-
-class InterruptConfigMixin:
-    """Manages interrupt configuration for graph-level execution handlers.
-
-    This mixin provides functionality to store and manage interrupt points
-    configuration for graph execution. Interrupts allow graph execution to be
-    paused before or after specific nodes for debugging, human intervention,
-    or checkpoint creation.
-
-    The mixin maintains separate lists for "before" and "after" interrupts,
-    allowing fine-grained control over when graph execution should pause.
-
-    Attributes:
-        interrupt_before: List of node names where execution should pause
-            before node execution begins.
-        interrupt_after: List of node names where execution should pause
-            after node execution completes.
-
-    Example:
-        ```python
-        class GraphHandler(InterruptConfigMixin):
-            def __init__(self):
-                self._set_interrupts(
-                    interrupt_before=["approval_node"], interrupt_after=["data_processing"]
-                )
-        ```
-    """
-
-    interrupt_before: list[str] | None
-    interrupt_after: list[str] | None
-
-    def _set_interrupts(
-        self,
-        interrupt_before: list[str] | None,
-        interrupt_after: list[str] | None,
-    ) -> None:
-        """Configure interrupt points for graph execution control.
-
-        Sets up the interrupt configuration for this handler, defining which
-        nodes should trigger execution pauses. This method normalizes None
-        values to empty lists for consistent handling.
-
-        Args:
-            interrupt_before: List of node names where execution should be
-                interrupted before the node begins execution. Pass None to
-                disable before-interrupts.
-            interrupt_after: List of node names where execution should be
-                interrupted after the node completes execution. Pass None to
-                disable after-interrupts.
-
-        Note:
-            This method should be called during handler initialization to
-            establish the interrupt configuration before graph execution begins.
-        """
-        self.interrupt_before = interrupt_before or []
-        self.interrupt_after = interrupt_after or []
-
-
-def mirror_last_message(event: EventModel, messages: list[Message], stringify: bool) -> None:
-    """Copy the last message's text and blocks onto ``event``.
-
-    ``stringify`` wraps the text in ``str()``, as the stream path has always done.
-    """
+def mirror_last_message(event: EventModel, messages: list[Message]) -> None:
+    """Copy the last message's text (as ``str``) and blocks onto ``event``."""
     if messages:
         last = messages[-1]
         content = last.text() if isinstance(last.content, list) else last.content
-        event.content = str(content) if stringify else content  # type: ignore[assignment]
+        event.content = str(content)
         if isinstance(last.content, list):
             event.content_blocks = last.content
 
 
 class GraphRunMixin:
-    """Steps of the graph loop shared by ``InvokeHandler`` and ``StreamHandler``.
+    """Steps of the graph loop (``GraphEngine``), one method per step.
 
-    Each method is one step both loops take the same way; the loops keep their own
-    control flow and what they hand to the caller (a result or stream chunks). The host
-    class provides the attributes below.
+    The host class provides the attributes below.
     """
 
     nodes: dict[str, Any]
@@ -272,21 +123,24 @@ class GraphRunMixin:
         step: int,
         current_node: str,
     ) -> None:
-        """Record the node and step about to run; the caller publishes ``event``."""
+        """Record the node and step about to run and publish PROGRESS."""
         state.set_current_node(current_node)
         state.execution_meta.step = step
         await call_realtime_sync(state, config)
         event.data["state"] = state
+        event.data["step"] = step
+        event.data["current_node"] = current_node
         event.metadata["step"] = step
         event.metadata["current_node"] = current_node
+        event.metadata["status"] = f"Executing step {step} at node '{current_node}'"
         event.event_type = EventType.PROGRESS
+        publish_event(event)
 
     async def _interrupt_before(
         self,
         current_node: str,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         messages: list[Message],
         last_save: LastSave,
     ) -> bool:
@@ -303,11 +157,6 @@ class GraphRunMixin:
         ):
             return False
         logger.info("Graph execution interrupted before node '%s'", current_node)
-        event.event_type = EventType.INTERRUPTED
-        event.metadata["interrupted"] = "Before"
-        event.metadata["status"] = "Graph execution interrupted before node execution"
-        event.data["interrupted"] = "Before"
-        publish_event(event)
         return True
 
     def _start_node_event(
@@ -340,7 +189,6 @@ class GraphRunMixin:
         current_node: str,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         messages: list[Message],
         last_save: LastSave,
     ) -> None:
@@ -353,19 +201,12 @@ class GraphRunMixin:
             messages=messages,
             last_save=last_save,
         )
-        event.event_type = EventType.INTERRUPTED
-        event.metadata["interrupted"] = "Interrupt"
-        event.metadata["status"] = "Graph execution paused by interrupt()"
-        event.data["interrupted"] = "Interrupt"
-        event.data["interrupt"] = paused.interrupt.model_dump(mode="json")
-        publish_event(event)
 
     async def _stop_mid_node(
         self,
         current_node: str,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         messages: list[Message],
         last_save: LastSave,
     ) -> None:
@@ -375,14 +216,7 @@ class GraphRunMixin:
         reported exactly as a stop seen between nodes.
         """
         logger.info("Node '%s' cancelled by stop request; finalizing run", current_node)
-        await check_stop_requested(
-            state,
-            current_node,
-            event,
-            messages,
-            config,
-            last_save=last_save,
-        )
+        await check_stop_requested(state, current_node, messages, config, last_save=last_save)
 
     def _end_node_event(
         self,
@@ -415,7 +249,6 @@ class GraphRunMixin:
         event: EventModel,
         step: int,
         messages: list[Message],
-        stringify: bool,
     ) -> Any:
         """Run ``on_state_update`` after the node's result is merged, then publish UPDATE."""
         if has_hooks:
@@ -432,7 +265,7 @@ class GraphRunMixin:
         event.event_type = EventType.UPDATE
         event.data["state"] = state
         event.data["messages"] = messages
-        mirror_last_message(event, messages, stringify)
+        mirror_last_message(event, messages)
         event.content_type = [ContentType.STATE, ContentType.MESSAGE]
         publish_event(event)
         return state
@@ -443,7 +276,6 @@ class GraphRunMixin:
         next_node: str | None,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         messages: list[Message],
         last_save: LastSave,
     ) -> tuple[bool, str | None]:
@@ -466,12 +298,6 @@ class GraphRunMixin:
         if next_node is None:
             next_node = get_next_node(current_node, state, self.edges)
         state.set_current_node(next_node)
-
-        event.event_type = EventType.INTERRUPTED
-        event.data["interrupted"] = "After"
-        event.metadata["interrupted"] = "After"
-        event.data["state"] = state
-        publish_event(event)
         return True, next_node
 
     async def _advance(
@@ -567,7 +393,6 @@ class GraphRunMixin:
         step: int,
         current_node: str,
         last_save: LastSave,
-        stringify: bool,
     ) -> tuple[Any, Any]:
         """Mark the run complete, run ``on_graph_end``, save and publish END.
 
@@ -600,7 +425,7 @@ class GraphRunMixin:
         event.event_type = EventType.END
         event.data["state"] = state
         event.data["messages"] = messages
-        mirror_last_message(event, messages, stringify)
+        mirror_last_message(event, messages)
         event.content_type = [ContentType.STATE, ContentType.MESSAGE]
         event.metadata["status"] = "Graph execution completed"
         event.metadata["step"] = step

@@ -11,7 +11,7 @@ from typing import Annotated
 import pytest
 from pydantic import Field
 
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.core.graph.utils.tool_runner import ToolRunner
 from tenxgraph.core.state import AgentState
 
 
@@ -30,18 +30,18 @@ class MultiFieldState(AgentState):
 class TestFieldReducerDiscovery:
     def test_finds_reducer_annotated_on_field(self):
         state = MultiFieldState()
-        assert InvokeNodeHandler._get_field_reducer(state, "counter") is _reduce_sum
+        assert ToolRunner._get_field_reducer(state, "counter") is _reduce_sum
 
     def test_returns_none_for_plain_field(self):
         state = MultiFieldState()
-        assert InvokeNodeHandler._get_field_reducer(state, "alpha") is None
+        assert ToolRunner._get_field_reducer(state, "alpha") is None
 
 
 class TestBranchMerge:
     """_merge_tool_state folds a branch back in, using the pre-tool baseline."""
 
     def setup_method(self):
-        self.handler = InvokeNodeHandler("tools", lambda: None)
+        self.handler = ToolRunner("tools", lambda: None)
 
     def test_disjoint_writes_from_two_branches_both_survive(self):
         """The core H1 regression: A writes alpha, B writes beta -> keep both."""
@@ -154,7 +154,7 @@ class TestSingleToolFastPath:
     @pytest.mark.asyncio
     async def test_no_baseline_means_plain_assignment(self):
         """With one tool there is no race, so merging stays a simple write."""
-        handler = InvokeNodeHandler("tools", lambda: None)
+        handler = ToolRunner("tools", lambda: None)
         target = MultiFieldState(alpha="init")
         branch = MultiFieldState(alpha="changed")
 

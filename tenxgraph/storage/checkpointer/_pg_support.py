@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 
 from tenxgraph.core.state import AgentState
 from tenxgraph.storage.columns import ColumnSpec
+from tenxgraph.utils.id_generator import IDType
 
 
 try:
@@ -158,9 +159,9 @@ class _RedisUnavailable(Exception):
 
 # SQL type mapping for ID types
 ID_TYPE_MAP = {
-    "string": "VARCHAR(255)",
-    "int": "SERIAL",
-    "bigint": "BIGSERIAL",
+    IDType.STRING: "VARCHAR(255)",
+    IDType.INTEGER: "SERIAL",
+    IDType.BIGINT: "BIGSERIAL",
 }
 
 

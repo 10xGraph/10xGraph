@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tenxgraph.core.graph import ToolNode
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.core.graph.utils.tool_runner import ToolRunner
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.prebuilt.tools.handoff import create_handoff_tool
@@ -48,7 +48,7 @@ def rec(monkeypatch):
 
 
 async def _call(node: ToolNode, name: str, config: dict | None = None):
-    handler = InvokeNodeHandler("TOOL", node)
+    handler = ToolRunner("TOOL", node)
     call = {"id": "c1", "type": "function", "function": {"name": name, "arguments": "{}"}}
     return await handler._handle_single_tool(call, AgentState(), config or {"thread_id": "t"})
 

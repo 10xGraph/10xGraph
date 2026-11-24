@@ -60,7 +60,7 @@ class SkillResourceError(ValueError):
     """Raised when a bundled skill file cannot be resolved or read."""
 
 
-@dataclass
+@dataclass(slots=True)
 class ParsedSkillFile:
     """Result of parsing one ``SKILL.md``.
 

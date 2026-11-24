@@ -2,8 +2,8 @@
 
 This module tests:
 - Token usage calculation from agent state
-- Token tracking in StreamHandler
-- Token tracking in InvokeHandler
+- Token tracking in the streaming run
+- Token tracking in the invoke run
 """
 
 import pytest
@@ -166,11 +166,11 @@ class TestCalculateTokenUsage:
 
 
 @pytest.mark.asyncio
-class TestStreamHandlerTokenTracking:
-    """Test token tracking in StreamHandler during graph execution."""
+class TestStreamRunTokenTracking:
+    """Test token tracking in the streaming run during graph execution."""
 
-    async def test_stream_handler_includes_token_usage_in_final_chunk(self):
-        """Test that StreamHandler includes token usage in final stream chunk."""
+    async def test_stream_includes_token_usage_in_final_chunk(self):
+        """Test that the stream includes token usage in final stream chunk."""
         from tenxgraph.core.state.stream_chunks import StreamEvent
 
         # Define a simple node that returns a message with token usage
@@ -223,11 +223,11 @@ class TestStreamHandlerTokenTracking:
 
 
 @pytest.mark.asyncio
-class TestInvokeHandlerTokenTracking:
-    """Test token tracking in InvokeHandler during graph execution."""
+class TestInvokeRunTokenTracking:
+    """Test token tracking in the invoke run during graph execution."""
 
-    async def test_invoke_handler_includes_token_usage_in_response(self):
-        """Test that InvokeHandler includes token usage in response metadata."""
+    async def test_invoke_includes_token_usage_in_response(self):
+        """Test that the invoke run includes token usage in response metadata."""
 
         # Define a simple node that returns a message with token usage
         def agent_node(state: AgentState, config: dict) -> list[Message]:

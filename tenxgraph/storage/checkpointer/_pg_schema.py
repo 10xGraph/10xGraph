@@ -20,6 +20,7 @@ from tenxgraph.storage.columns import (
     rls_policy_name,
     warn_if_rls_bypassed,
 )
+from tenxgraph.utils.id_generator import IDType
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
@@ -37,17 +38,9 @@ logger = logging.getLogger("tenxgraph.checkpointer.pg")
 class _PgSchemaMixin(PgHostBase):
     """Schema: DDL, migrations, indexes and setup of the Postgres tables."""
 
-    def _get_sql_type(self, type_name: str) -> str:
-        """
-        Get SQL type for given configuration type.
-
-        Args:
-            type_name (str): Type name ('string', 'int', 'bigint').
-
-        Returns:
-            str: Corresponding SQL type.
-        """
-        return ID_TYPE_MAP.get(type_name, "VARCHAR(255)")
+    def _get_sql_type(self, id_type: IDType) -> str:
+        """The SQL column type for an id type."""
+        return ID_TYPE_MAP[id_type]
 
     def _get_current_schema_version(self) -> int:
         """Return current expected schema version."""
@@ -78,13 +71,15 @@ class _PgSchemaMixin(PgHostBase):
         # For AUTO INCREMENT types, we need to handle primary key differently
         thread_pk = (
             "thread_id SERIAL PRIMARY KEY"
-            if self.id_type == "int"
+            if self.id_type == IDType.INTEGER
             else f"thread_id {thread_id_type} PRIMARY KEY"
         )
         # Message ids are unique per thread, not globally (see migration v4), so the key
         # is declared as a table constraint on (thread_id, message_id).
         message_col = (
-            "message_id SERIAL" if self.id_type == "int" else f"message_id {message_id_type}"
+            "message_id SERIAL"
+            if self.id_type == IDType.INTEGER
+            else f"message_id {message_id_type}"
         )
 
         return [
@@ -358,8 +353,8 @@ class _PgSchemaMixin(PgHostBase):
                 self._pinned_id_type = self._generator_id_type()
             logger.debug(
                 "Initializing database schema with types: id_type=%s, user_id_type=%s",
-                self.id_type,
-                self.user_id_type,
+                self.id_type.value,
+                self.user_id_type.value,
             )
 
             async def _setup(conn) -> None:
@@ -412,7 +407,7 @@ class _PgSchemaMixin(PgHostBase):
         Compares ``threads.thread_id`` and ``messages.message_id`` (when the tables exist)
         with the id type, so a changed generator fails here and not on a SQL type error later.
         """
-        found = {"integer": "int", "bigint": "bigint"}
+        found = {"integer": IDType.INTEGER, "bigint": IDType.BIGINT}
         for table, column in (("threads", "thread_id"), ("messages", "message_id")):
             data_type = await conn.fetchval(
                 "SELECT data_type FROM information_schema.columns "
@@ -423,11 +418,11 @@ class _PgSchemaMixin(PgHostBase):
             )
             if data_type is None:
                 continue
-            actual = found.get(data_type, "string")
+            actual = found.get(data_type, IDType.STRING)
             if actual != self.id_type:
                 raise ValueError(
                     f"The table {self._get_table_name(table)} has {column} of type "
-                    f"{data_type.upper()}, but the id generator makes {self.id_type} ids. "
+                    f"{data_type.upper()}, but the id generator makes {self.id_type.value} ids. "
                     "Keep the id generator the tables were created with, or migrate the "
                     f"{column} columns (and the thread_id columns of the other tables) to "
                     "the new type."
@@ -521,8 +516,8 @@ class _PgSchemaMixin(PgHostBase):
         logger.info(
             "Setting up PgCheckpointer (async)",
             extra={
-                "id_type": self.id_type,
-                "user_id_type": self.user_id_type,
+                "id_type": self.id_type.value,
+                "user_id_type": self.user_id_type.value,
                 "schema": self.schema,
             },
         )

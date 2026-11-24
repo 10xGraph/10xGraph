@@ -49,7 +49,7 @@ class _MCPTool:
     def __init__(self, name, tags=None):
         self.name = name
         self.description = f"{name} description"
-        self.inputSchema = {"type": "object", "properties": {}}
+        self.input_schema = {"type": "object", "properties": {}}
         self.meta = {"_fastmcp": {"tags": tags or []}}
 
 
@@ -107,6 +107,42 @@ async def test_get_mcp_tool_filters_by_tags_and_tracks_names():
     assert len(tools) == 1
     assert tools[0]["function"]["name"] == "a"
     assert node.mcp_tools == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_get_mcp_tool_reads_current_fastmcp_tags_and_legacy_ones():
+    current = _MCPTool("a")
+    current.meta = {"fastmcp": {"tags": ["core"]}}
+    node = _Node(client=_Client(tools=[current, _MCPTool("b", tags=["core"]), _MCPTool("c")]))
+
+    tools = await node._get_mcp_tool(tags={"core"})
+
+    assert [x["function"]["name"] for x in tools] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_get_mcp_tool_against_a_real_fastmcp_server(monkeypatch):
+    """The schema comes from ``input_schema`` and tags from ``meta["fastmcp"]``, with
+    fastmcp's camelCase shim (``Tool.inputSchema``) turned off."""
+    fastmcp = pytest.importorskip("fastmcp")
+    monkeypatch.setattr(fastmcp.settings, "mcp_camelcase_compat", False)
+    server = fastmcp.FastMCP("schema-check")
+
+    @server.tool(tags={"math"})
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    @server.tool
+    def other() -> str:
+        return "x"
+
+    node = ToolNode([], client=fastmcp.Client(server), mcp_prefix="srv_")
+    tools = await node._get_mcp_tool(tags={"math"})
+
+    assert [x["function"]["name"] for x in tools] == ["srv_add"]
+    params = tools[0]["function"]["parameters"]
+    assert params["properties"] == {"a": {"type": "integer"}, "b": {"type": "integer"}}
+    assert params["required"] == ["a", "b"]
 
 
 @pytest.mark.asyncio
@@ -420,4 +456,5 @@ async def test_tool_start_event_names_the_graph_node():
     start = pub.call_args_list[0].args[0]
     assert start.event_type == "start"
     assert start.metadata["graph_node"] == "TOOL"
-    assert start.node_name == "echo"
+    assert start.node_name == "TOOL"
+    assert start.data["function_name"] == "echo"

@@ -261,7 +261,7 @@ def index_name(prefix: str, column: str) -> str:
     return f"{name[:54]}_{digest}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ColumnSpec:
     """One declared column: its name, type, whether a value is required, and its kind.
 
@@ -413,7 +413,7 @@ class ColumnSpec:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ColumnSet:
     """The tenant and extra columns declared on one backend, in declaration order."""
 
@@ -637,7 +637,7 @@ def write_conditions(
     return [(spec, values.get(spec.name)) for spec in specs]
 
 
-@dataclass
+@dataclass(slots=True)
 class Isolation:
     """Tenant and extra column values for one call, and the tenant isolation they imply.
 

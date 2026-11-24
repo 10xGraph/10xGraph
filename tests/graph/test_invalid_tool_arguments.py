@@ -3,13 +3,13 @@
 import pytest
 
 from tenxgraph.core.graph import StateGraph, ToolNode
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
+from tenxgraph.core.graph.utils.tool_runner import ToolRunner
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.core.state.stream_chunks import StreamEvent
 from tenxgraph.runtime.adapters.llm.tool_arguments import INVALID_TOOL_ARGUMENTS_MESSAGE
 from tenxgraph.utils.constants import END
+from tests.graph.tool_guard_helpers import run_calls
 
 
 BAD_ARGS = ['{"a": ', "[]", '"str"', "42"]
@@ -78,14 +78,16 @@ async def test_stream_returns_error_and_does_not_run_tool(arguments):
             "function": {"name": "optional_tool", "arguments": arguments},
         }
     ]
-    handler = StreamNodeHandler("TOOL", ToolNode([optional_tool]))
-    items = [
-        i async for i in handler._call_tools(msg, AgentState(context=[msg]), {"thread_id": "t"})
-    ]
+    chunks, result = await run_calls(
+        ToolNode([optional_tool]),
+        msg,
+        AgentState(context=[msg]),
+        {"thread_id": "t"},
+        streaming=True,
+    )
     assert log == []
-    messages = [i for i in items if isinstance(i, Message)]
-    assert _outputs(messages) == [INVALID_TOOL_ARGUMENTS_MESSAGE]
-    errors = [i for i in items if getattr(i, "event", None) == StreamEvent.ERROR]
+    assert _outputs(result.messages) == [INVALID_TOOL_ARGUMENTS_MESSAGE]
+    errors = [i for i in chunks if getattr(i, "event", None) == StreamEvent.ERROR]
     assert len(errors) == 1
     assert errors[0].data["tool_call_id"] == "call_1"
 
@@ -115,7 +117,7 @@ async def test_valid_and_empty_arguments_still_run(arguments):
 async def test_invalid_arguments_skip_ledger_and_tool():
     log: list = []
     node = ToolNode([lambda: log.append(1)])
-    handler = InvokeNodeHandler("TOOL", node)
+    handler = ToolRunner("TOOL", node)
     out = await handler._handle_single_tool(
         {"id": "c", "type": "function", "function": {"name": "x", "arguments": '{"a": '}},
         AgentState(),

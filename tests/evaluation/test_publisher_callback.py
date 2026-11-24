@@ -58,7 +58,8 @@ async def test_callback_publishes_tool_event():
     event = publisher.publish_mock.await_args.args[0]
     assert event.event == Event.TOOL_EXECUTION
     assert event.event_type == EventType.END
-    assert event.node_name == "get_weather"
+    assert event.node_name == "tool_node"  # the graph node; the tool is function_name
+    assert event.data["function_name"] == "get_weather"
     assert event.content_type == [ContentType.TOOL_RESULT]
     assert event.data["args"] == {"city": "NYC"}
     assert event.data["result"] == "sunny"

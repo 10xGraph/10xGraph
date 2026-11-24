@@ -26,6 +26,7 @@ import sys
 from typing import Any, TypeVar
 
 from injectq import Inject
+from pydantic import TypeAdapter
 
 from tenxgraph.core.authz import public_config
 from tenxgraph.core.exceptions import GraphError
@@ -438,7 +439,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
                     if last_input.role == "user" and (last_ctx is None or last_ctx.role != "user"):
                         from tenxgraph.core.state.message import generate_id
 
-                        new_msg = last_input.model_copy(update={"message_id": generate_id(None)})
+                        new_msg = last_input.model_copy(update={"message_id": generate_id()})
                         existing_state.context = [*existing_state.context, new_msg]
                         logger.info(
                             "Added last user message with new ID to continue conversation "
@@ -539,26 +540,49 @@ async def reload_state[StateT: AgentState](
     return existing_state
 
 
-async def process_node_result[StateT: AgentState](  # noqa: PLR0915
+_field_adapters: dict[tuple[type, str], TypeAdapter] = {}
+
+
+def _validated_field(state: AgentState, name: str, value: Any) -> Any:
+    """``value`` checked against the type of the state field ``name``; ValueError if unknown."""
+    cls = type(state)
+    field = cls.model_fields.get(name)
+    if field is None:
+        known = ", ".join(sorted(cls.model_fields))
+        raise ValueError(f"Unknown state field '{name}' in a node's dict result. Fields: {known}.")
+    adapter = _field_adapters.get((cls, name))
+    if adapter is None:
+        adapter = _field_adapters[(cls, name)] = TypeAdapter(field.annotation)
+    return adapter.validate_python(value)
+
+
+async def process_node_result[StateT: AgentState](  # noqa: PLR0912, PLR0915
     result: Any,
     state: StateT,
     messages: list[Message],
     seen_message_ids: set[str] | None = None,
 ) -> tuple[StateT, list[Message], str | None]:
     """
-    Processes the result from a node execution, updating the agent state, message list,
-    and determining the next node.
+    Applies what a node returned to the agent state and the node's message list.
 
-    Supports:
-    - Handling results of type Command, AgentState, Message, list, str, dict,
-            or other types.
-        - Deduplicating messages by message_id.
-        - Updating the agent state and its context with new messages.
-        - Extracting navigation information (next node) from Command results.
+    Accepted return values (anything else raises ``ValueError``, which fails the node with
+    ``NODE_001``):
+
+    - ``None``: no change.
+    - ``Message``, ``str``, or a ``ModelResponseConverter``: appended as a message (a ``str``
+      becomes an assistant message).
+    - ``list`` of those: each item appended.
+    - ``AgentState``: replaces the state; its new messages are recorded.
+    - ``dict``: a partial state update. Each key is a state field set to the value, validated
+      against the field's type; the key ``"messages"`` (a ``Message`` or a list of them) appends
+      messages. An unknown field name raises ``ValueError``.
+    - ``Command``: ``update`` may be any of the above (``None`` or empty means no change);
+      ``goto`` is returned as the next node.
+
+    Messages are deduplicated by ``message_id``.
 
     Args:
-        result (Any): The output from a node execution. Can be a Command, AgentState, Message,
-            list, str, dict, ModelResponse, or other types.
+        result (Any): The output of the node.
         state (StateT): The current agent state.
         messages (list[Message]): The list of messages accumulated so far.
         seen_message_ids (set[str] | None): Ids of the messages in ``state.context`` before the
@@ -596,9 +620,9 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
 
         else:
             err = f"""
-            Unsupported content type for message: {type(content)}.
-            Supported types are: AgentState, Message, ModelResponseConverter, Command, str,
-            dict (OpenAI style/Native Message).
+            Unsupported node return type: {type(content)}.
+            Supported: None, Message, str, ModelResponseConverter, AgentState, Command,
+            a list of messages, or a dict of state field updates.
             """
             raise ValueError(err)
 
@@ -621,11 +645,29 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
             # otherwise save it
             add_unique_message(msg)
 
+    async def apply_dict(update: dict[str, Any]) -> None:
+        """A partial state update: set the fields, append ``messages``."""
+        update = dict(update)
+        new = update.pop("messages", None)
+        checked = {name: _validated_field(state, name, value) for name, value in update.items()}
+        items = new if isinstance(new, list) else [] if new is None else [new]
+        if not all(isinstance(item, Message) for item in items):
+            raise ValueError("The 'messages' key of a dict result must be a Message or a list.")
+        for name, value in checked.items():
+            setattr(state, name, value)
+        for item in items:
+            add_unique_message(item)
+
     # Process different result types
-    if isinstance(result, Command):
+    if result is None:
+        pass
+
+    elif isinstance(result, Command):
         # Handle state updates
         if result.update:
-            if isinstance(result.update, AgentState):
+            if isinstance(result.update, dict):
+                await apply_dict(result.update)
+            elif isinstance(result.update, AgentState):
                 handle_state_message(state, result.update)  # type: ignore[assignment]
                 state = result.update  # type: ignore[assignment]
             elif isinstance(result.update, list):
@@ -644,12 +686,15 @@ async def process_node_result[StateT: AgentState](  # noqa: PLR0915
     elif isinstance(result, Message):
         add_unique_message(result)
 
+    elif isinstance(result, dict):
+        await apply_dict(result)
+
     elif isinstance(result, list):
         # Handle list of items (convert each to message)
         for item in result:
             await create_and_add_message(item)
     else:
-        # Handle single items (str, dict, model_dump-capable, or other)
+        # A str, a ModelResponseConverter, or an unsupported type (raises)
         await create_and_add_message(result)
 
     # Add new messages to the main list and state context

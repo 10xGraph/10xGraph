@@ -151,7 +151,7 @@ def _label(name: Any) -> str:
     return "(invalid name)"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FilterColumn:
     """A column a filter may name: its (validated) name and declared type."""
 
@@ -167,7 +167,7 @@ class FilterColumn:
         return OPERATORS_BY_TYPE.get(self.type, OTHER_TYPE_OPERATORS)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FilterCondition:
     """One validated condition: a column, an operator and the converted value."""
 

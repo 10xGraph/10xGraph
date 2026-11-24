@@ -78,10 +78,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from injectq import InjectQ
+from pydantic import BaseModel, ConfigDict, SkipValidation
 
 from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.state_graph import StateGraph
@@ -108,12 +108,11 @@ StateT = TypeVar("StateT", bound=AgentState)
 
 
 # ---------------------------------------------------------------------------
-# Configuration dataclass
+# Configuration model
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class SwarmMemberConfig:
+class SwarmMemberConfig(BaseModel):
     """Configuration for a single member of a :class:`SwarmAgent`.
 
     Each member is a **pre-built** agent instance so that callers can
@@ -134,9 +133,19 @@ class SwarmMemberConfig:
             LLM understands when to route here.
     """
 
-    agent: BaseAgent
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    agent: SkipValidation[BaseAgent]
     can_handoff_to: list[str] | None = None  # None = all others
     description: str = ""
+
+    def __init__(
+        self,
+        agent: BaseAgent,
+        can_handoff_to: list[str] | None = None,
+        description: str = "",
+    ) -> None:
+        super().__init__(agent=agent, can_handoff_to=can_handoff_to, description=description)
 
 
 # ---------------------------------------------------------------------------

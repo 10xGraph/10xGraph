@@ -157,7 +157,7 @@ async def test_openai_non_stream_order():
 
 def test_openai_delta_with_text_and_reasoning_puts_reasoning_first():
     chunk = _openai_chunk(content="answer", reasoning="thinking")
-    _, _, message = OpenAIConverter()._process_chunk(chunk, "", "", [], set())
+    _, _, message = OpenAIConverter()._process_chunk(chunk, "", "", [], set(), "m1")
     assert _types(message) == [ReasoningBlock, TextBlock]
     assert message.delta is True
 

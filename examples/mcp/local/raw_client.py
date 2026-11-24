@@ -27,9 +27,9 @@ config = {
 async def main() -> None:
     async with Client(config) as client:
         for tool in await client.list_tools():
-            tags = (tool.meta or {}).get("_fastmcp", {}).get("tags", [])
+            tags = (tool.meta or {}).get("fastmcp", {}).get("tags", [])
             print(f"tool: {tool.name} tags={tags}")
-            print("  schema:", tool.inputSchema)
+            print("  schema:", tool.input_schema)
 
         result = await client.call_tool("get_weather", {"location": "New York"})
         print("data:", result.data)

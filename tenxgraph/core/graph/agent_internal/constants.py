@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from tenxgraph.core.llm.client_factory import CLIENT_CONSTRUCTOR_KWARGS
 
 
-@dataclass(frozen=True, slots=True)
-class RetryConfig:
+class RetryConfig(BaseModel):
     """Configuration for LLM call retry and fallback behaviour.
 
     Attributes:
@@ -52,11 +52,13 @@ class RetryConfig:
     is never retried.
     """
 
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     max_retries: int = 3
     initial_delay: float = 1.0
     max_delay: float = 30.0
     backoff_factor: float = 2.0
-    retryable_status_codes: frozenset[int] = field(
+    retryable_status_codes: frozenset[int] = Field(
         default_factory=lambda: frozenset({429, 500, 502, 503, 529}),
     )
     circuit_breaker_enabled: bool = False

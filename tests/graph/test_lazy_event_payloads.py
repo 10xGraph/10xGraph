@@ -69,10 +69,9 @@ class _Collect(BasePublisher):
 _EVENT_CODE = (
     "tenxgraph/runtime/publisher/",
     "tenxgraph/core/graph/tool_node/",
-    "tenxgraph/core/graph/utils/invoke_handler.py",
+    "tenxgraph/core/graph/utils/engine.py",
     "tenxgraph/core/graph/utils/stream_handler.py",
-    "tenxgraph/core/graph/utils/invoke_node_handler.py",
-    "tenxgraph/core/graph/utils/stream_node_handler.py",
+    "tenxgraph/core/graph/utils/node_runner.py",
     "tenxgraph/core/graph/utils/handler_utils.py",
 )
 
@@ -137,8 +136,12 @@ async def test_listener_gets_plain_payloads_and_one_start_end_per_tool(mode):
     states = [e.data["state"] for e in pub.events if "state" in e.data]
     assert states and all(isinstance(s, dict) for s in states)
 
-    tool = [(e.event_type, e.node_name) for e in pub.events if e.event == "tool_execution"]
-    assert tool == [("start", "lookup"), ("end", "lookup")]
+    tool = [
+        (e.event_type, e.node_name, e.data["function_name"])
+        for e in pub.events
+        if e.event == "tool_execution"
+    ]
+    assert tool == [("start", "TOOL", "lookup"), ("end", "TOOL", "lookup")]
     # Lifecycle events reach the publisher with no hook registered.
     lifecycle = {e.metadata.get("lifecycle") for e in pub.events}
     assert {"graph_start", "graph_end", "state_update", "checkpoint"} <= lifecycle

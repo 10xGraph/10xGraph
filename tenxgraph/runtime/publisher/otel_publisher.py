@@ -706,8 +706,7 @@ class OtelPublisher(BasePublisher):
     def _on_tool_start(self, event: EventModel) -> None:
         from opentelemetry import trace
 
-        # Parent is the span of the graph node running the tool (the tool event's own
-        # node_name is the tool name), else the graph span.
+        # Parent is the span of the graph node running the tool, else the graph span.
         parent = self._registry.get_child(event.run_id, event.metadata.get("graph_node", ""))
         if parent is None:
             parent = self._registry.get_graph(event.run_id)

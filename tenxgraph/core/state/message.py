@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
 import pydantic
-from injectq import DependencyNotFoundError, InjectQ
+from injectq import InjectQ
 from pydantic import BaseModel, Field
 
 from tenxgraph.core.state.message_block import (
@@ -42,63 +42,33 @@ from tenxgraph.core.state.message_block import (
     VideoBlock,
 )
 from tenxgraph.utils.callable_utils import resolve_awaitable_id
+from tenxgraph.utils.id_generator import BaseIDGenerator
 
 
 logger = logging.getLogger("tenxgraph.state")
 
 
-def generate_id(default_id: str | int | None) -> str | int:
+def generate_id(explicit_id: str | int | None = None) -> str | int:
     """
-    Generate a message or tool call ID based on DI context and type.
+    Return the id for a message or tool call.
 
-    Args:
-        default_id (str | int | None): Default ID to use if provided and matches type.
-
-    Returns:
-        str | int: Generated or provided ID, type determined by DI context.
-
-    Raises:
-        None
+    An id passed by the caller wins. Otherwise the ``BaseIDGenerator`` bound in the InjectQ
+    container makes it (an async ``generate()`` is resolved). With no generator bound the id
+    is a uuid4 string.
 
     Example:
         >>> generate_id("abc123")
         'abc123'
-        >>> generate_id(None)
+        >>> generate_id()
         'a-uuid-string'
     """
-    container = InjectQ.get_instance()
-    id_type = container.try_get("generated_id_type", "string")
-    # Called, not resolved: the id generator may be async, and get() refuses async factories.
-    try:
-        generated_id = container.call_factory("generated_id")
-    except DependencyNotFoundError:
-        generated_id = None
-
-    # if user provided an awaitable, resolve it
-    if isinstance(generated_id, Awaitable):
-        generated_id = resolve_awaitable_id(generated_id)
-
-    if generated_id:
-        return generated_id
-
-    if default_id:
-        if id_type == "string" and isinstance(default_id, str):
-            return default_id
-        if id_type in ("int", "bigint") and isinstance(default_id, int):
-            return default_id
-
-    # if not matched or default_id is None, generate new id
-    logger.debug(
-        "Generating new id of type: %s. Default ID not provided or not matched %s",
-        id_type,
-        default_id,
-    )
-
-    if id_type == "int":
-        return uuid4().int >> 96  # type: ignore
-    if id_type == "bigint":
-        return uuid4().int >> 64  # type: ignore
-    return str(uuid4())
+    if explicit_id:
+        return explicit_id
+    generator = InjectQ.get_instance().try_get(BaseIDGenerator, None)  # type: ignore[type-abstract]
+    if generator is None:
+        return str(uuid4())
+    res = resolve_awaitable_id(generator.generate())
+    return res if res else str(uuid4())
 
 
 class TokenUsages(BaseModel):
@@ -151,7 +121,7 @@ class Message(BaseModel):
         {'message_id': 'abc123', 'role': 'user', 'content': [...], ...}
     """
 
-    message_id: str | int = Field(default_factory=lambda: generate_id(None))
+    message_id: str | int = Field(default_factory=generate_id)
     role: Literal["user", "assistant", "system", "tool"]
     content: Sequence[ContentBlock]
     delta: bool = False  # Indicates if this is a delta/partial message

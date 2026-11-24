@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 
 from tenxgraph.core.graph import StateGraph, ToolNode
+from tenxgraph.core.graph.utils.node_runner import NodeRunner
+from tenxgraph.core.graph.utils.tool_runner import ToolRunner
 from tenxgraph.core.state import AgentState, Message, ToolCallBlock
 from tenxgraph.core.state.message_block import ErrorBlock, ToolResultBlock
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
@@ -36,7 +38,7 @@ class FakeMCPTool:
     def __init__(self, name):
         self.name = name
         self.description = f"{name} description"
-        self.inputSchema = {"type": "object", "properties": {}}
+        self.input_schema = {"type": "object", "properties": {}}
         self.meta = {}
 
 
@@ -131,3 +133,25 @@ def tool_messages(state: AgentState) -> list[Message]:
 
 def error_codes(msg: Message) -> list[str | None]:
     return [b.code for b in msg.content or [] if isinstance(b, ErrorBlock)]
+
+
+async def run_calls(tool_node, message, state, config, *, streaming=False, name="tools"):
+    """Run a message's tool calls through the ToolRunner: (stream chunks, ToolRunResult)."""
+    items = [
+        i
+        async for i in ToolRunner(name, tool_node).call_tools(
+            message, state, config, streaming=streaming
+        )
+    ]
+    return items[:-1], items[-1]
+
+
+async def run_node(tool_node, config, state, *, streaming, name="tools"):
+    """Run one ToolNode step through the NodeRunner: (stream chunks, NodeResult)."""
+    items = [
+        i
+        async for i in NodeRunner(name, tool_node).run(
+            config, state, CallbackManager(), streaming=streaming
+        )
+    ]
+    return items[:-1], items[-1]

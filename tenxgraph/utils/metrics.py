@@ -120,7 +120,7 @@ def _otel_histogram(name: str) -> Any:
     return instrument
 
 
-@dataclass
+@dataclass(slots=True)
 class Counter:
     name: str
     value: int = 0
@@ -139,7 +139,7 @@ class Counter:
                 logger.debug("Failed to record OTEL counter %s: %s", self.name, e)
 
 
-@dataclass
+@dataclass(slots=True)
 class TimerMetric:
     name: str
     count: int = 0

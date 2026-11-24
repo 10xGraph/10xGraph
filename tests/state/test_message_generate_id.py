@@ -1,126 +1,91 @@
-"""Tests for generate_id in agentflow/core/state/message.py.
-
-Covers the int/bigint id_type paths, default_id matching, InjectQ override,
-and awaitable resolution - previously uncovered branches.
-
-Uses unittest.mock.patch to replace InjectQ.get_instance on the module level
-so tests are fully isolated from the live InjectQ singleton.
-"""
+"""generate_id: an explicit id wins, else the bound BaseIDGenerator makes it."""
 
 from __future__ import annotations
 
+import warnings
 from unittest.mock import MagicMock, patch
 
-from injectq import DependencyNotFoundError
+import pytest
+
+from tenxgraph.core.state.message import Message, generate_id
+from tenxgraph.utils.id_generator import (
+    AsyncIDGenerator,
+    BaseIDGenerator,
+    DefaultIDGenerator,
+    IDType,
+    IntIDGenerator,
+    UUIDGenerator,
+)
 
 
-from tenxgraph.core.state.message import generate_id
-
-
-def _mock_iq(id_type: str = "string", generated_id=None) -> MagicMock:
-    """Create a mock InjectQ instance with controlled try_get / call_factory behaviour."""
+def _bound(generator: BaseIDGenerator | None):
+    """Patch InjectQ so the given generator is the BaseIDGenerator binding (or none)."""
     mock = MagicMock()
     mock.try_get.side_effect = lambda key, default=None: (
-        id_type if key == "generated_id_type" else default
+        generator if key is BaseIDGenerator else default
     )
-
-    def call_factory(key):
-        if key == "generated_id" and generated_id is not None:
-            return generated_id
-        raise DependencyNotFoundError(key)
-
-    mock.call_factory.side_effect = call_factory
-    return mock
+    return patch("tenxgraph.core.state.message.InjectQ.get_instance", return_value=mock)
 
 
-def _patch(id_type: str = "string", generated_id=None):
-    """Patch InjectQ.get_instance() on the current state.message module."""
-    return patch(
-        "tenxgraph.core.state.message.InjectQ.get_instance",
-        return_value=_mock_iq(id_type=id_type, generated_id=generated_id),
-    )
+class _AsyncExternal(BaseIDGenerator):
+    @property
+    def id_type(self) -> IDType:
+        return IDType.STRING
+
+    async def generate(self) -> str:
+        return "external-1"
 
 
-class TestGenerateIdIntType:
-    def test_generates_int_when_type_is_int(self):
-        with _patch(id_type="int"):
-            result = generate_id(None)
-        assert isinstance(result, int)
-        assert result >= 0
-
-    def test_generates_int_when_type_is_bigint(self):
-        with _patch(id_type="bigint"):
-            result = generate_id(None)
-        assert isinstance(result, int)
-        assert result >= 0
-
-    def test_int_result_smaller_than_int_range(self):
-        """int uses uuid4().int >> 96, giving a ~32-bit value."""
-        with _patch(id_type="int"):
-            result = generate_id(None)
-        assert result < 2**32
-
-    def test_bigint_result_in_64bit_range(self):
-        """bigint uses uuid4().int >> 64, giving a 64-bit value."""
-        with _patch(id_type="bigint"):
-            result = generate_id(None)
-        assert result < 2**64
+def test_default_generator_gives_uuid_strings():
+    value = DefaultIDGenerator().generate()
+    assert isinstance(value, str) and len(value) == 36 and value.count("-") == 4
+    assert DefaultIDGenerator().id_type == IDType.STRING
 
 
-class TestGenerateIdDefaultIdMatching:
-    def test_returns_int_default_when_type_is_int(self):
-        with _patch(id_type="int"):
-            result = generate_id(42)
-        assert result == 42
-
-    def test_returns_int_default_when_type_is_bigint(self):
-        with _patch(id_type="bigint"):
-            result = generate_id(99999)
-        assert result == 99999
-
-    def test_discards_str_default_when_type_is_int(self):
-        """String default_id does not match id_type='int'; a fresh int is generated."""
-        with _patch(id_type="int"):
-            result = generate_id("string-id")
-        assert isinstance(result, int)
-
-    def test_discards_int_default_when_type_is_string(self):
-        """Int default_id does not match id_type='string'; a fresh UUID str is generated."""
-        with _patch(id_type="string"):
-            result = generate_id(123)
-        assert isinstance(result, str)
-
-    def test_returns_str_default_when_type_is_string(self):
-        with _patch(id_type="string"):
-            result = generate_id("my-custom-id")
-        assert result == "my-custom-id"
+def test_no_generator_bound_gives_uuid_string():
+    with _bound(None):
+        value = generate_id()
+    assert isinstance(value, str) and len(value) == 36
 
 
-class TestGenerateIdInjectQOverride:
-    def test_injected_string_id_used_directly(self):
-        with _patch(id_type="string", generated_id="injected-id-xyz"):
-            result = generate_id(None)
-        assert result == "injected-id-xyz"
-
-    def test_injected_id_overrides_default(self):
-        with _patch(id_type="string", generated_id="override"):
-            result = generate_id("should-not-use-this")
-        assert result == "override"
-
-    def test_injected_int_id_used_directly(self):
-        with _patch(id_type="int", generated_id=42):
-            result = generate_id(None)
-        assert result == 42
+def test_explicit_id_wins():
+    with _bound(IntIDGenerator()):
+        assert generate_id("my-id") == "my-id"
+        assert Message.text_message("hi", message_id="m-7").message_id == "m-7"
 
 
-class TestGenerateIdAwaitablePath:
-    def test_awaitable_resolved_in_sync_context(self):
-        """An awaitable generated_id is resolved via asyncio.run()."""
-        async def get_id():
-            return "awaited-id-value"
+def test_bound_generator_makes_the_id():
+    with _bound(IntIDGenerator()):
+        assert isinstance(generate_id(), int)
+        assert isinstance(Message.text_message("hi").message_id, int)
 
-        coro = get_id()
-        with _patch(id_type="string", generated_id=coro):
-            result = generate_id(None)
 
-        assert result == "awaited-id-value"
+def test_async_generator_is_resolved_in_sync_context():
+    with _bound(_AsyncExternal()):
+        assert generate_id() == "external-1"
+
+
+@pytest.mark.asyncio
+async def test_async_generator_is_resolved_inside_a_running_loop():
+    with _bound(_AsyncExternal()):
+        assert generate_id() == "external-1"
+
+
+def test_uuid_generator_warns_and_still_works():
+    with pytest.warns(DeprecationWarning, match="UUIDGenerator"):
+        generator = UUIDGenerator()
+    assert isinstance(generator, DefaultIDGenerator)
+    assert len(generator.generate()) == 36
+
+
+@pytest.mark.asyncio
+async def test_async_id_generator_warns_and_still_works():
+    with pytest.warns(DeprecationWarning, match="AsyncIDGenerator"):
+        generator = AsyncIDGenerator()
+    assert len(await generator.generate()) == 36
+
+
+def test_default_generator_does_not_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        DefaultIDGenerator()

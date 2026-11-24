@@ -90,7 +90,7 @@ class _MCPTool:
     def __init__(self, name):
         self.name = name
         self.description = f"{name} description"
-        self.inputSchema = {"type": "object", "properties": {}}
+        self.input_schema = {"type": "object", "properties": {}}
         self.meta = {}
 
 

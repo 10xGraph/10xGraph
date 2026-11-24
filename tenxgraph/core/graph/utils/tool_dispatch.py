@@ -1,6 +1,6 @@
 """Guards applied when a ToolNode dispatches the tool calls of a model message.
 
-Shared by the invoke and stream node handlers so both paths enforce the same rules:
+Used by the ToolNode tool runner (invoke and stream alike) to enforce the same rules:
 which ``transfer_to_*`` calls count as handoffs, which calls the model was allowed
 to make, how many may run at once, and where a ``Command`` may send the run.
 """

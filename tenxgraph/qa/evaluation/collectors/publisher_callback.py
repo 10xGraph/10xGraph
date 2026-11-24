@@ -98,7 +98,7 @@ class PublisherCallback(AfterInvokeCallback):
             return EventModel(
                 event=Event.TOOL_EXECUTION,
                 event_type=EventType.END,
-                node_name=context.function_name or context.node_name or "",
+                node_name=context.node_name or "",
                 data={
                     "function_name": context.function_name,
                     "args": dict(call_args) if isinstance(call_args, dict) else {},

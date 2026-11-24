@@ -7,7 +7,7 @@ import pytest
 from tenxgraph.core.exceptions import ToolDenied
 from tenxgraph.core.graph import ToolNode
 from tenxgraph.core.graph.tool_node.denial import TOOL_DENIED_CODE, TOOL_DENIED_META
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
+from tenxgraph.core.graph.utils.tool_runner import ToolRunner
 from tenxgraph.core.state import AgentState, Message, StreamEvent
 from tenxgraph.runtime.publisher.events import Event, EventType
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer
@@ -198,7 +198,7 @@ async def test_denied_result_replays_from_the_ledger_as_denied():
     config = {"thread_id": "deny-ledger", "user_id": "u1"}
 
     # The node's single call through the handler, twice, like a replay after a crash.
-    handler = InvokeNodeHandler("TOOL", tool_node)
+    handler = ToolRunner("TOOL", tool_node)
     call = {"id": "c1", "type": "function", "function": {"name": "refund", "arguments": "{}"}}
     first = await handler._handle_single_tool(
         call, AgentState(), config, origin_message_id="asst-1", checkpointer=cp

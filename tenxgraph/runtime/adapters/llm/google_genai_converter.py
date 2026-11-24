@@ -108,10 +108,6 @@ class GoogleGenAIConverter(BaseConverter):
         model_version = response.model_version or ""
         finish_reason = candidate.finish_reason if candidate else "UNKNOWN"
 
-        created_date = datetime.now().timestamp()
-        if hasattr(response, "create_time") and response.create_time:
-            created_date = response.create_time.timestamp()
-
         parsed = getattr(response, "parsed", None)
 
         metadata = {
@@ -124,10 +120,10 @@ class GoogleGenAIConverter(BaseConverter):
         mark_stop_issue(metadata, finish_reason, "Google GenAI")
 
         return Message(
-            message_id=generate_id(getattr(response, "response_id", None)),
+            message_id=generate_id(),
             role="assistant",
             content=order_blocks(blocks),
-            timestamp=created_date,
+            timestamp=datetime.now().timestamp(),
             metadata=metadata,
             usages=usages,
             raw=None,  # Google GenAI responses are Pydantic models
@@ -138,7 +134,7 @@ class GoogleGenAIConverter(BaseConverter):
     def _create_empty_message(self) -> Message:
         """Create an empty assistant message."""
         return Message(
-            message_id=generate_id(None),
+            message_id=generate_id(),
             role="assistant",
             content=[],
             timestamp=datetime.now().timestamp(),
@@ -195,7 +191,7 @@ class GoogleGenAIConverter(BaseConverter):
         """Process function call part."""
         if hasattr(part, "function_call") and part.function_call:
             func_call = part.function_call
-            tool_call_id = generate_id(None)
+            tool_call_id = generate_id()
 
             # Parse args - they should be a dict
             args = dict(func_call.args) if func_call.args else {}
@@ -297,7 +293,7 @@ class GoogleGenAIConverter(BaseConverter):
             # Handle function calls
             if hasattr(part, "function_call") and part.function_call:
                 func_call = part.function_call
-                tool_call_id = generate_id(None)
+                tool_call_id = generate_id()
 
                 # Parse args - they should be a dict
                 args = dict(func_call.args) if func_call.args else {}
@@ -341,6 +337,7 @@ class GoogleGenAIConverter(BaseConverter):
         accumulated_reasoning_content: str,
         tool_calls: list,
         tool_ids: set,
+        message_id: str | int,
     ) -> tuple[str, str, list, int, Message | None]:
         """
         Process a single chunk from a Google GenAI streaming response.
@@ -352,6 +349,7 @@ class GoogleGenAIConverter(BaseConverter):
             accumulated_reasoning_content (str): Accumulated reasoning content so far.
             tool_calls (list): List of tool calls detected so far.
             tool_ids (set): Set of tool call IDs to avoid duplicates.
+            message_id: The id shared by every message of this response.
 
         Returns:
             tuple: Updated accumulated content, reasoning, tool calls, sequence,
@@ -381,7 +379,7 @@ class GoogleGenAIConverter(BaseConverter):
                 tool_calls.append(tool_call)
 
         output_message = Message(
-            message_id=generate_id(None),
+            message_id=message_id,
             role="assistant",
             content=order_blocks(content_blocks),
             tools_calls=tool_calls if tool_calls else None,
@@ -441,6 +439,8 @@ class GoogleGenAIConverter(BaseConverter):
         seq = 0
         finish_reason: Any = None
         stream_usage: TokenUsages | None = None
+        # One id for every delta message and the final message of this response.
+        message_id = generate_id()
 
         is_awaitable = inspect.isawaitable(stream)
 
@@ -466,6 +466,7 @@ class GoogleGenAIConverter(BaseConverter):
                             accumulated_reasoning_content,
                             tool_calls,
                             tool_ids,
+                            message_id,
                         )
                     )
 
@@ -510,7 +511,7 @@ class GoogleGenAIConverter(BaseConverter):
         )
         message = Message(
             role="assistant",
-            message_id=generate_id(None),
+            message_id=message_id,
             content=blocks,
             delta=False,
             tools_calls=tool_calls if tool_calls else None,

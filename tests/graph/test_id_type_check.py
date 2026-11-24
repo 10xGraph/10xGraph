@@ -1,4 +1,4 @@
-"""compile() and the first run refuse an id generator the checkpointer's id columns cannot hold."""
+"""The first run refuses an id generator the checkpointer's id columns cannot hold."""
 
 from unittest.mock import patch
 
@@ -14,7 +14,6 @@ from tenxgraph.utils.id_generator import (
     BigIntIDGenerator,
     DefaultIDGenerator,
     IntIDGenerator,
-    UUIDGenerator,
 )
 
 
@@ -45,45 +44,33 @@ def test_declared_id_type_is_none_without_a_declaration():
 @pytest.mark.parametrize(
     ("id_type", "generator"),
     [
-        ("string", UUIDGenerator()),
+        ("string", DefaultIDGenerator()),
         ("int", IntIDGenerator()),
         ("bigint", BigIntIDGenerator()),
         ("bigint", IntIDGenerator()),
     ],
 )
-def test_matching_generator_compiles(id_type, generator):
-    _graph(generator).compile(checkpointer=_pg(id_type))
-
-
-def test_text_setup_with_integer_generator_is_refused_at_compile():
-    with pytest.raises(
-        ValueError, match=r"makes bigint ids.*stores string ids.*id_type=\"bigint\""
-    ):
-        _graph(BigIntIDGenerator()).compile(checkpointer=_pg("string"))
-
-
-def test_integer_setup_with_string_generator_is_refused_at_compile():
-    with pytest.raises(
-        ValueError, match=r"makes string ids.*stores bigint ids.*id_type=\"string\""
-    ):
-        _graph(UUIDGenerator()).compile(checkpointer=_pg("bigint"))
-
-
-def test_int_column_refuses_bigint_ids():
-    with pytest.raises(ValueError, match=r"id_type=\"bigint\""):
-        _graph(BigIntIDGenerator()).compile(checkpointer=_pg("int"))
+def test_matching_generator_passes(id_type, generator):
+    check_id_type(_pg(id_type), generator)
 
 
 def test_no_checkpointer_declaration_never_raises():
-    _graph(BigIntIDGenerator()).compile(checkpointer=InMemoryCheckpointer())
-    check_id_type(InMemoryCheckpointer(), UUIDGenerator())
+    check_id_type(InMemoryCheckpointer(), BigIntIDGenerator())
 
 
-def test_default_generator_is_left_to_the_first_run():
-    graph = _graph()
-    graph.compile(checkpointer=_pg("bigint"))
-    with pytest.raises(ValueError, match="makes string ids"):
+def test_explicit_id_type_that_disagrees_with_the_generator_raises():
+    with pytest.raises(
+        ValueError, match=r"makes bigint ids.*stores string ids.*id_type=\"bigint\""
+    ):
+        check_id_type(_pg("string"), BigIntIDGenerator())
+    with pytest.raises(ValueError, match=r"makes string ids.*stores bigint ids"):
         check_id_type(_pg("bigint"), DefaultIDGenerator())
+    with pytest.raises(ValueError, match=r"id_type=\"bigint\""):
+        check_id_type(_pg("int"), BigIntIDGenerator())
+
+
+def test_compile_does_not_check_the_generator():
+    _graph(BigIntIDGenerator()).compile(checkpointer=_pg("string"))
 
 
 @pytest.mark.asyncio

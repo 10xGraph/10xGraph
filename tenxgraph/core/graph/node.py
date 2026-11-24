@@ -17,8 +17,7 @@ from typing import TYPE_CHECKING, Any, Union
 
 from injectq import Inject
 
-from tenxgraph.core.graph.utils.invoke_node_handler import InvokeNodeHandler
-from tenxgraph.core.graph.utils.stream_node_handler import StreamNodeHandler
+from tenxgraph.core.graph.utils.node_runner import NodeResult, NodeRunner
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.stream_chunks import StreamChunk
 from tenxgraph.utils import (
@@ -92,15 +91,7 @@ class Node:
         )
         self.name = name
         self.func = func
-        self.invoke_handler = InvokeNodeHandler(
-            name,
-            func,
-        )
-
-        self.stream_handler = StreamNodeHandler(
-            name,
-            func,
-        )
+        self.runner = NodeRunner(name, func)
 
     async def execute(
         self,
@@ -151,11 +142,10 @@ class Node:
             'context_manager', 'publisher', and other framework services.
         """
         callback_mgr = fresh(callback_mgr)
-        return await self.invoke_handler.invoke(
-            config,
-            state,
-            callback_mgr,
-        )
+        result = NodeResult(state)
+        async for item in self.runner.run(config, state, callback_mgr, streaming=False):
+            result = item  # type: ignore[assignment]  # only the result when not streaming
+        return _result_dict(result)
 
     async def stream(
         self,
@@ -199,11 +189,17 @@ class Node:
             The streaming capability is determined by the node function's implementation.
         """
         callback_mgr = fresh(callback_mgr)
-        result = self.stream_handler.stream(
-            config,
-            state,
-            callback_mgr,
-        )
+        async for item in self.runner.run(config, state, callback_mgr, streaming=True):
+            if isinstance(item, NodeResult):
+                yield {"is_non_streaming": True, **_result_dict(item)}
+            else:
+                yield item
 
-        async for item in result:
-            yield item  # type: ignore
+
+def _result_dict(result: NodeResult) -> dict[str, Any]:
+    """The node result as ``execute`` / ``stream`` return it (client-tool placeholders last)."""
+    return {
+        "state": result.state,
+        "messages": [*result.messages, *result.remote_calls],
+        "next_node": result.next_node,
+    }
