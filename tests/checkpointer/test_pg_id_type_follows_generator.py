@@ -10,7 +10,7 @@ from injectq import InjectQ
 
 from tenxgraph.core.state import Message
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
-from tenxgraph.utils.id_generator import BaseIDGenerator, BigIntIDGenerator, IntIDGenerator
+from tenxgraph.utils.id_generator import BaseIDGenerator, BigIntIDGenerator, IDType, IntIDGenerator
 
 
 DSN = "postgresql://test:test@localhost/test"
@@ -31,16 +31,16 @@ def _threads_sql(cp: PgCheckpointer) -> str:
 
 
 def test_no_generator_means_string():
-    assert _mock_cp().id_type == "string"
+    assert _mock_cp().id_type == IDType.STRING
 
 
 def test_generator_bound_after_construction_is_used():
     cp = _mock_cp()
     _bind(BigIntIDGenerator())
-    assert cp.id_type == "bigint"
+    assert cp.id_type == IDType.BIGINT
     assert "thread_id BIGSERIAL PRIMARY KEY" in _threads_sql(cp)
     _bind(IntIDGenerator())
-    assert cp.id_type == "int"
+    assert cp.id_type == IDType.INTEGER
 
 
 def test_id_type_is_fixed_once_the_schema_is_initialized():
@@ -48,16 +48,16 @@ def test_id_type_is_fixed_once_the_schema_is_initialized():
     _bind(BigIntIDGenerator())
     cp._pinned_id_type = cp._generator_id_type()
     _bind(IntIDGenerator())
-    assert cp.id_type == "bigint"
+    assert cp.id_type == IDType.BIGINT
 
 
 def test_passed_id_type_warns_and_wins():
     _bind(BigIntIDGenerator())
     with pytest.warns(DeprecationWarning, match="id_type is deprecated and removed in 2.0"):
         cp = _mock_cp(id_type="string")
-    assert cp.id_type == "string"
+    assert cp.id_type == IDType.STRING
     with pytest.warns(DeprecationWarning):
-        assert _mock_cp(id_type="integer").id_type == "int"
+        assert _mock_cp(id_type="integer").id_type == IDType.INTEGER
 
 
 def test_no_id_type_does_not_warn(recwarn):
@@ -149,8 +149,8 @@ async def test_real_generator_bound_after_construction_makes_bigint_columns(pg_s
     _bind(BigIntIDGenerator())  # after construction, before first use
     try:
         await cp.asetup()
-        assert await _column_type(pool, schema, "threads", "thread_id") == "bigint"
-        assert await _column_type(pool, schema, "messages", "message_id") == "bigint"
+        assert await _column_type(pool, schema, "threads", "thread_id") == IDType.BIGINT
+        assert await _column_type(pool, schema, "messages", "message_id") == IDType.BIGINT
         cfg = {"thread_id": 7, "user_id": "u"}
         message = Message.text_message("hi")
         message.message_id = 9

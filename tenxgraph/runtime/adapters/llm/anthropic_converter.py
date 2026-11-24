@@ -200,7 +200,7 @@ class AnthropicConverter(BaseConverter):
         logger.debug("Creating message from Anthropic response with id: %s", response_id)
 
         return Message(
-            message_id=generate_id(response_id),
+            message_id=generate_id(),
             role=getattr(response, "role", "assistant") or "assistant",
             content=blocks,
             timestamp=datetime.now().timestamp(),
@@ -237,7 +237,7 @@ class AnthropicConverter(BaseConverter):
 
         text = explanation or "The model declined to respond to this request."
         return Message(
-            message_id=generate_id(getattr(response, "id", None)),
+            message_id=generate_id(),
             role="assistant",
             content=[TextBlock(text=text)],
             timestamp=datetime.now().timestamp(),
@@ -284,7 +284,8 @@ class AnthropicConverter(BaseConverter):
         stop_reason: str | None = None
         refusal_details: Any = None
         model = ""
-        response_id: str | None = None
+        # One id for every delta message and the final message of this response.
+        message_id = generate_id()
         usage_obj: Any = None
 
         metadata: dict[str, Any] = dict(meta or {})
@@ -304,7 +305,7 @@ class AnthropicConverter(BaseConverter):
 
                 if etype == "message_start":
                     message_obj = getattr(event, "message", None)
-                    response_id = getattr(message_obj, "id", None)
+                    metadata["response_id"] = str(getattr(message_obj, "id", None) or "")
                     model = getattr(message_obj, "model", "") or ""
                     usage_obj = getattr(message_obj, "usage", None)
 
@@ -335,9 +336,7 @@ class AnthropicConverter(BaseConverter):
                         piece = getattr(delta, "text", "") or ""
                         accumulated_text += piece
                         if piece:
-                            yield self._chunk_message(
-                                [TextBlock(text=piece)], metadata, response_id
-                            )
+                            yield self._chunk_message([TextBlock(text=piece)], metadata, message_id)
 
                     elif dtype == "thinking_delta":
                         piece = getattr(delta, "thinking", "") or ""
@@ -347,7 +346,7 @@ class AnthropicConverter(BaseConverter):
                             open_block["thinking"] += piece
                         if piece:
                             yield self._chunk_message(
-                                [ReasoningBlock(summary=piece)], metadata, response_id
+                                [ReasoningBlock(summary=piece)], metadata, message_id
                             )
 
                     elif dtype == "signature_delta":
@@ -424,7 +423,7 @@ class AnthropicConverter(BaseConverter):
         )
 
         yield Message(
-            message_id=generate_id(response_id),
+            message_id=message_id,
             role="assistant",
             content=blocks,
             delta=False,
@@ -451,11 +450,11 @@ class AnthropicConverter(BaseConverter):
     def _chunk_message(
         blocks: list[Any],
         metadata: dict[str, Any],
-        response_id: str | None,
+        message_id: str | int,
     ) -> Message:
         """Build an incremental (delta) message for a stream chunk."""
         return Message(
-            message_id=generate_id(response_id),
+            message_id=message_id,
             role="assistant",
             content=blocks,
             delta=True,

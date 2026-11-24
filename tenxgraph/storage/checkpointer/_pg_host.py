@@ -16,14 +16,15 @@ if TYPE_CHECKING:
     from tenxgraph.storage.columns import ColumnSet, Isolation
     from tenxgraph.storage.sql_filter import FilterSchema
     from tenxgraph.utils import ThreadInfo
+    from tenxgraph.utils.id_generator import IDType
 
     from .base_checkpointer import BaseCheckpointer
     from .pg_checkpointer import _RedisBreaker
 
     class _PgHost(BaseCheckpointer[Any]):
         # Set in PgCheckpointer.__init__ (mixins set the setup-state ones).
-        user_id_type: str
-        _pinned_id_type: str | None
+        user_id_type: IDType
+        _pinned_id_type: IDType | None
         _id_type_given: bool
         cache_ttl: int
         redis_key_prefix: str

@@ -439,7 +439,7 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
                     if last_input.role == "user" and (last_ctx is None or last_ctx.role != "user"):
                         from tenxgraph.core.state.message import generate_id
 
-                        new_msg = last_input.model_copy(update={"message_id": generate_id(None)})
+                        new_msg = last_input.model_copy(update={"message_id": generate_id()})
                         existing_state.context = [*existing_state.context, new_msg]
                         logger.info(
                             "Added last user message with new ID to continue conversation "

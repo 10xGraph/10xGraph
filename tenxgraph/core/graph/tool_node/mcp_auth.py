@@ -13,7 +13,8 @@ from __future__ import annotations
 import contextvars
 import typing as t
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict
 
 from tenxgraph.core.authz import Identity, UserCredential, get_credential, get_identity
 
@@ -27,8 +28,7 @@ except ImportError:  # pragma: no cover - optional
     _AuthBase = object
 
 
-@dataclass(frozen=True)
-class MCPAuthContext:
+class MCPAuthContext(BaseModel):
     """What ``mcp_auth`` knows about the MCP request it is asked to authenticate.
 
     Attributes:
@@ -40,6 +40,8 @@ class MCPAuthContext:
         thread_id: The run's thread id, or None.
         run_id: The run id, or None.
     """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     identity: Identity | None
     credential: UserCredential | None

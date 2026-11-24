@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.agent_internal.circuit_breaker import CircuitBreakerOpenError
@@ -161,7 +162,7 @@ class TestRetryConfig:
 
     def test_frozen(self):
         cfg = RetryConfig()
-        with pytest.raises(AttributeError):
+        with pytest.raises(ValidationError):
             cfg.max_retries = 10  # type: ignore[misc]
 
     def test_default_retry_config_constant(self):
@@ -479,13 +480,16 @@ class TestCallLLMWithRetryExhausted:
             side_effect=_FakeAPIStatusError(503, "always_unavailable"),
         )
 
-        with patch(
-            "tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock
+        with (
+            patch(
+                "tenxgraph.core.graph.agent_internal.execution.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(_FakeAPIStatusError, match="always_unavailable"),
         ):
-            with pytest.raises(_FakeAPIStatusError, match="always_unavailable"):
-                await agent._call_llm_with_retry(
-                    [{"role": "user", "content": "Hi"}],
-                )
+            await agent._call_llm_with_retry(
+                [{"role": "user", "content": "Hi"}],
+            )
 
         # 1 initial + 2 retries = 3
         assert agent._call_llm.await_count == 3
@@ -540,13 +544,16 @@ class TestCallLLMFallbackModels:
 
         _patch_call(mock_call_llm)
 
-        with patch(
-            "tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock
+        with (
+            patch(
+                "tenxgraph.core.graph.agent_internal.execution.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch.object(Agent, "_create_client", return_value=_mock_openai_client()),
         ):
-            with patch.object(Agent, "_create_client", return_value=_mock_openai_client()):
-                result = await agent._call_llm_with_retry(
-                    [{"role": "user", "content": "Hi"}],
-                )
+            result = await agent._call_llm_with_retry(
+                [{"role": "user", "content": "Hi"}],
+            )
 
         assert result is fallback_response
         # 2 primary attempts + 1 fallback attempt = 3
@@ -600,14 +607,17 @@ class TestCallLLMFallbackModels:
             side_effect=_FakeAPIStatusError(503, "all_down"),
         )
 
-        with patch(
-            "tenxgraph.core.graph.agent_internal.execution.asyncio.sleep", new_callable=AsyncMock
+        with (
+            patch(
+                "tenxgraph.core.graph.agent_internal.execution.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            patch.object(Agent, "_create_client", return_value=_mock_openai_client()),
         ):
-            with patch.object(Agent, "_create_client", return_value=_mock_openai_client()):
-                with pytest.raises(_FakeAPIStatusError, match="all_down"):
-                    await agent._call_llm_with_retry(
-                        [{"role": "user", "content": "Hi"}],
-                    )
+            with pytest.raises(_FakeAPIStatusError, match="all_down"):
+                await agent._call_llm_with_retry(
+                    [{"role": "user", "content": "Hi"}],
+                )
 
         # primary: 2 attempts + fallback: 2 attempts = 4
         assert agent._call_llm.await_count == 4

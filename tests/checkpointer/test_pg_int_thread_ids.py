@@ -13,11 +13,15 @@ from tenxgraph.utils.id_generator import (
     BaseIDGenerator,
     BigIntIDGenerator,
     IntIDGenerator,
-    UUIDGenerator,
+    DefaultIDGenerator,
 )
 
 
-GENERATORS = {"string": UUIDGenerator(), "int": IntIDGenerator(), "bigint": BigIntIDGenerator()}
+GENERATORS = {
+    "string": DefaultIDGenerator(),
+    "int": IntIDGenerator(),
+    "bigint": BigIntIDGenerator(),
+}
 
 
 def _checkpointer(id_type: str) -> PgCheckpointer:

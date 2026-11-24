@@ -20,7 +20,6 @@ from .base_agent import BaseAgent
 from .edge import Edge
 from .node import Node
 from .tool_node import ToolNode
-from .utils.id_type_check import check_id_type
 from .utils.tenant_check import check_tenant_columns
 
 
@@ -131,7 +130,6 @@ class StateGraph[StateT: AgentState]:
         # Services
         self._publisher: BasePublisher | None = publisher
         self._id_generator: BaseIDGenerator = id_generator or DefaultIDGenerator()
-        self._explicit_id_generator = id_generator is not None
         self._context_manager: BaseContextManager[StateT] | None = context_manager
         # One graph per container: this graph binds its values into the global container, or
         # into the ``container=`` passed in. Two graphs in one process each need their own.
@@ -190,8 +188,8 @@ class StateGraph[StateT: AgentState]:
             self._id_generator,
             allow_concrete=True,
         )
+        # Kept for users who inject them; core reads only the BaseIDGenerator binding.
         self._container.bind("generated_id_type", self._id_generator.id_type)
-        # Allow async method also
         self._container.bind_factory("generated_id", self._id_generator.generate)
 
         # Save BackgroundTaskManager
@@ -529,12 +527,6 @@ class StateGraph[StateT: AgentState]:
             )
 
         check_tenant_columns(checkpointer, store, allow_mismatch=allow_tenant_mismatch)
-        # A graph without its own generator may get one later (the API binds the one named in
-        # 10xgraph.json after compile), so only an explicit generator is checked here; the
-        # first run checks whatever generator is bound by then (CompiledGraph._begin_run).
-        if self._explicit_id_generator:
-            check_id_type(checkpointer, self._id_generator)
-
         # Import the CompiledGraph class
         from .compiled_graph import CompiledGraph
 

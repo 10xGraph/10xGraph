@@ -103,7 +103,7 @@ class OpenAIConverter(BaseConverter):
         mark_stop_issue(metadata, choice.finish_reason, "OpenAI")
 
         return Message(
-            message_id=generate_id(response.id),
+            message_id=generate_id(),
             role=message.role,
             content=order_blocks(blocks),
             parsed_content=parsed,
@@ -142,7 +142,7 @@ class OpenAIConverter(BaseConverter):
     ) -> Message:
         """Build an empty assistant message when no choices were returned."""
         return Message(
-            message_id=generate_id(response.id),
+            message_id=generate_id(),
             role="assistant",
             content=[],
             timestamp=datetime.now().timestamp(),
@@ -412,6 +412,7 @@ class OpenAIConverter(BaseConverter):
         accumulated_reasoning_content: str,
         tool_calls: list,
         tool_ids: set,
+        message_id: str | int,
     ) -> tuple[str, str, Message | None]:
         """
         Process a single chunk from an OpenAI streaming response.
@@ -422,6 +423,7 @@ class OpenAIConverter(BaseConverter):
             accumulated_reasoning_content: Accumulated reasoning content so far.
             tool_calls: List of tool calls detected so far.
             tool_ids: Set of tool call IDs to avoid duplicates.
+            message_id: The id shared by every message of this response.
 
         Returns:
             tuple: Updated accumulated content, reasoning, and Message (if any).
@@ -445,7 +447,7 @@ class OpenAIConverter(BaseConverter):
         self._process_delta_tool_calls(delta, tool_calls, tool_ids, content_blocks)
 
         output_message = Message(
-            message_id=generate_id(chunk.id),
+            message_id=message_id,
             role="assistant",
             content=order_blocks(content_blocks),
             tools_calls=tool_calls,
@@ -555,6 +557,8 @@ class OpenAIConverter(BaseConverter):
         finish_reason: str | None = None
         stream_usage: TokenUsages | None = None
         stream_model: str | None = None
+        # One id for every delta message and the final message of this response.
+        message_id = generate_id()
 
         is_awaitable = inspect.isawaitable(stream)
 
@@ -579,6 +583,7 @@ class OpenAIConverter(BaseConverter):
                 accumulated_reasoning_content,
                 tool_calls,
                 tool_ids,
+                message_id,
             )
             if message:
                 yield message
@@ -613,7 +618,7 @@ class OpenAIConverter(BaseConverter):
 
         message = Message(
             role="assistant",
-            message_id=generate_id(None),
+            message_id=message_id,
             content=blocks,
             delta=False,
             tools_calls=tool_calls,

@@ -10,7 +10,7 @@ from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
 
-from injectq import ContainerContext, DependencyNotFoundError, InjectQ
+from injectq import ContainerContext
 
 from tenxgraph.core.authz import Identity, can_reach, get_identity
 from tenxgraph.core.exceptions.closed_error import GraphClosedError
@@ -20,6 +20,7 @@ from tenxgraph.core.graph.base_agent import BaseAgent
 from tenxgraph.core.graph.tool_node.base import ToolNode
 from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.execution_state import StopRequestStatus
+from tenxgraph.core.state.message import generate_id
 from tenxgraph.core.state.stream_chunks import StreamChunk
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.storage.checkpointer import base_checkpointer
@@ -31,7 +32,7 @@ from tenxgraph.utils import (
     ResponseGranularity,
 )
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
-from tenxgraph.utils.callable_utils import ensure_no_running_loop, resolve_awaitable_id
+from tenxgraph.utils.callable_utils import ensure_no_running_loop
 from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 from tenxgraph.utils.id_generator import BaseIDGenerator
 
@@ -59,16 +60,6 @@ if TYPE_CHECKING:
 StateT = TypeVar("StateT", bound=AgentState)
 
 logger = logging.getLogger("tenxgraph.graph")
-
-
-def _new_id() -> Any:
-    """A fresh id from the graph's id generator (sync or async), else a uuid4 string."""
-    try:
-        # Called, not resolved: get() refuses an async factory.
-        generated_id = InjectQ.get_instance().call_factory("generated_id")
-    except DependencyNotFoundError:
-        return str(uuid4())
-    return resolve_awaitable_id(generated_id) or str(uuid4())
 
 
 def _reset_current_run(token: contextvars.Token) -> None:
@@ -275,7 +266,7 @@ class CompiledGraph[StateT: AgentState]:
         cfg = dict(config or {})
 
         if "thread_id" not in cfg:
-            cfg["thread_id"] = _new_id()
+            cfg["thread_id"] = generate_id()
             # A caller who omits thread_id gets a fresh random one, which means the
             # run cannot be resumed and `stop()` can never target it -- the caller
             # has no way to name it. That is fine for a one-shot script but is
@@ -308,7 +299,7 @@ class CompiledGraph[StateT: AgentState]:
                     DEFAULT_ANONYMOUS_USER_ID,
                 )
         if "run_id" not in cfg:
-            cfg["run_id"] = _new_id()
+            cfg["run_id"] = generate_id()
 
         if "timestamp" not in cfg:
             cfg["timestamp"] = datetime.datetime.now().isoformat()

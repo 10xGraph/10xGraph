@@ -19,10 +19,11 @@ from ._pg_support import (
 logger = logging.getLogger("tenxgraph.checkpointer.pg")
 
 
-def _plain_id_type(value: Any) -> str:
-    """``"string"``, ``"int"`` or ``"bigint"`` for a setup name or an ``IDType``."""
-    plain = str(getattr(value, "value", value))
-    return "int" if plain == "integer" else plain
+def _to_id_type(value: Any) -> IDType:
+    """The ``IDType`` for ``"string"``, ``"int"``, ``"integer"``, ``"bigint"`` or an ``IDType``."""
+    if isinstance(value, IDType):
+        return value
+    return IDType.INTEGER if value == "int" else IDType(value)
 
 
 class _PgIdentityMixin(PgHostBase):
@@ -56,8 +57,8 @@ class _PgIdentityMixin(PgHostBase):
         return self._db_thread_id(thread_id), user_id
 
     @property
-    def id_type(self) -> str:
-        """The id column type: ``"string"``, ``"int"`` or ``"bigint"``.
+    def id_type(self) -> IDType:
+        """The id column type, an ``IDType``.
 
         It follows the ``BaseIDGenerator`` bound in InjectQ (no generator: ``"string"``, the
         default generator makes uuid strings). It is read again on every call until the schema
@@ -69,15 +70,15 @@ class _PgIdentityMixin(PgHostBase):
         return self._generator_id_type()
 
     @staticmethod
-    def _generator_id_type() -> str:
-        """The id type of the bound id generator (``"string"`` when none is bound)."""
+    def _generator_id_type() -> IDType:
+        """The id type of the bound id generator (``IDType.STRING`` when none is bound)."""
         generator = InjectQ.get_instance().try_get(BaseIDGenerator, None)
-        return _plain_id_type(generator.id_type) if generator is not None else "string"
+        return generator.id_type if generator is not None else IDType.STRING
 
     @property
     def declared_id_type(self) -> IDType:
         """The id type of the id columns (``int``, ``bigint``, else text)."""
-        return {"int": IDType.INTEGER, "bigint": IDType.BIGINT}.get(self.id_type, IDType.STRING)
+        return self.id_type
 
     def _check_id(self, value: Any, what: str) -> Any:
         """``value`` unchanged when it has the type the id type expects.
@@ -85,7 +86,7 @@ class _PgIdentityMixin(PgHostBase):
         The ``string`` type takes strings, ``int`` and ``bigint`` take integers. Anything else
         raises ``ValueError`` before any SQL, so no driver error reaches the caller.
         """
-        wants_int = self.id_type in ("int", "bigint")
+        wants_int = self.id_type != IDType.STRING
         ok = (
             (isinstance(value, int) and not isinstance(value, bool))
             if wants_int
@@ -94,7 +95,7 @@ class _PgIdentityMixin(PgHostBase):
         if not ok:
             expected = "an integer" if wants_int else "a string"
             raise ValueError(
-                f"{what} must be {expected} for the {self.id_type!r} id type, "
+                f"{what} must be {expected} for the {self.id_type.value!r} id type, "
                 f"got {type(value).__name__}: {value!r}"
             )
         return value

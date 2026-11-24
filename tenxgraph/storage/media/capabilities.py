@@ -35,7 +35,7 @@ class MediaTransportMode(str, Enum):
     """The model/provider does not support this media type at all."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelMediaCapabilities:
     """Describes what media transports a provider/model supports.
 

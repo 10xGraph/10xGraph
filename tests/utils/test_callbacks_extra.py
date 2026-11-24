@@ -2,6 +2,7 @@
 
 import pytest
 
+from tenxgraph.core.state.message import Message
 from tenxgraph.utils.callbacks import (
     AfterInvokeCallback,
     BaseValidator,
@@ -11,7 +12,6 @@ from tenxgraph.utils.callbacks import (
     InvocationType,
     OnErrorCallback,
 )
-from tenxgraph.core.state.message import Message
 
 
 # Concrete implementations of abstract classes for testing
@@ -74,7 +74,7 @@ class TestBeforeInvokeCallbackAbstract:
     async def test_concrete_implementation_called(self):
         """Test concrete implementation executes."""
         cb = ConcreteBeforeCallback(transform=lambda data: f"modified_{data}")
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         result = await cb(context, "input")
         assert result == "modified_input"
 
@@ -96,7 +96,7 @@ class TestAfterInvokeCallbackAbstract:
     async def test_concrete_implementation_called(self):
         """Test concrete implementation executes."""
         cb = ConcreteAfterCallback(transform=lambda inp, out: f"{inp}+{out}")
-        context = CallbackContext(InvocationType.TOOL, "node")
+        context = CallbackContext(invocation_type=InvocationType.TOOL, node_name="node")
         result = await cb(context, "input", "output")
         assert result == "input+output"
 
@@ -114,7 +114,7 @@ class TestOnErrorCallbackAbstract:
         """Test concrete error callback returns recovery value."""
         recovery_msg = Message.text_message("Recovery message", role="assistant")
         cb = ConcreteErrorCallback(recovery=recovery_msg)
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         result = await cb(context, "input", Exception("error"))
         assert result is recovery_msg
 
@@ -150,7 +150,7 @@ class TestCallbackManagerBeforeInvokeClass:
         """Test execute_before_invoke with class-based callback."""
         manager = CallbackManager()
         cb = ConcreteBeforeCallback(transform=lambda data: f"modified_{data}")
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         manager.register_before_invoke(InvocationType.AI, cb)
         result = await manager.execute_before_invoke(context, "data")
         assert result == "modified_data"
@@ -163,7 +163,7 @@ class TestCallbackManagerBeforeInvokeClass:
         async def async_cb(ctx, data):
             return f"async_{data}"
 
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         manager.register_before_invoke(InvocationType.AI, async_cb)
         result = await manager.execute_before_invoke(context, "input")
         assert result == "async_input"
@@ -173,7 +173,7 @@ class TestCallbackManagerBeforeInvokeClass:
         """Test that exception in before_invoke triggers error handler."""
         manager = CallbackManager()
 
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
 
         def failing_cb(ctx, data):
             raise ValueError("before invoke failed")
@@ -192,7 +192,7 @@ class TestCallbackManagerAfterInvokeClass:
         """Test execute_after_invoke with class-based callback."""
         manager = CallbackManager()
         cb = ConcreteAfterCallback(transform=lambda inp, out: f"{out}_transformed")
-        context = CallbackContext(InvocationType.TOOL, "node")
+        context = CallbackContext(invocation_type=InvocationType.TOOL, node_name="node")
         manager.register_after_invoke(InvocationType.TOOL, cb)
         result = await manager.execute_after_invoke(context, "input", "output")
         assert result == "output_transformed"
@@ -205,7 +205,7 @@ class TestCallbackManagerAfterInvokeClass:
         def sync_cb(ctx, inp, out):
             return f"sync_{out}"
 
-        context = CallbackContext(InvocationType.MCP, "node")
+        context = CallbackContext(invocation_type=InvocationType.MCP, node_name="node")
         manager.register_after_invoke(InvocationType.MCP, sync_cb)
         result = await manager.execute_after_invoke(context, "input", "output")
         assert result == "sync_output"
@@ -218,7 +218,7 @@ class TestCallbackManagerAfterInvokeClass:
         async def async_cb(ctx, inp, out):
             return f"async_{out}"
 
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         manager.register_after_invoke(InvocationType.AI, async_cb)
         result = await manager.execute_after_invoke(context, "in", "out")
         assert result == "async_out"
@@ -227,7 +227,7 @@ class TestCallbackManagerAfterInvokeClass:
     async def test_execute_after_invoke_exception_triggers_error(self):
         """Test exception in after_invoke triggers error handler and re-raises."""
         manager = CallbackManager()
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
 
         def failing_cb(ctx, inp, out):
             raise RuntimeError("after invoke error")
@@ -246,7 +246,7 @@ class TestCallbackManagerOnError:
         manager = CallbackManager()
         recovery = Message.text_message("Recovery", role="assistant")
         cb = ConcreteErrorCallback(recovery=recovery)
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         manager.register_on_error(InvocationType.AI, cb)
         result = await manager.execute_on_error(context, "input", Exception("err"))
         assert result is recovery
@@ -255,7 +255,7 @@ class TestCallbackManagerOnError:
     async def test_execute_on_error_with_sync_callable(self):
         """Test execute_on_error with sync callable."""
         manager = CallbackManager()
-        context = CallbackContext(InvocationType.TOOL, "node")
+        context = CallbackContext(invocation_type=InvocationType.TOOL, node_name="node")
 
         def error_cb(ctx, inp, err):
             return None
@@ -268,7 +268,7 @@ class TestCallbackManagerOnError:
     async def test_execute_on_error_with_async_callable(self):
         """Test execute_on_error with async callable."""
         manager = CallbackManager()
-        context = CallbackContext(InvocationType.MCP, "node")
+        context = CallbackContext(invocation_type=InvocationType.MCP, node_name="node")
 
         async def async_error_cb(ctx, inp, err):
             return None
@@ -281,7 +281,7 @@ class TestCallbackManagerOnError:
     async def test_execute_on_error_callback_failure_logged(self):
         """Test that failing error callbacks are logged but not re-raised."""
         manager = CallbackManager()
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
 
         def bad_error_cb(ctx, inp, err):
             raise RuntimeError("error callback also failed")
@@ -295,7 +295,7 @@ class TestCallbackManagerOnError:
     async def test_execute_on_error_returns_message(self):
         """Test execute_on_error returns Message value."""
         manager = CallbackManager()
-        context = CallbackContext(InvocationType.AI, "node")
+        context = CallbackContext(invocation_type=InvocationType.AI, node_name="node")
         recovery_msg = Message.text_message("Recovered", role="assistant")
 
         async def error_cb(ctx, inp, err):

@@ -37,7 +37,7 @@ from .tool_runtime import ToolRuntimeMixin
 logger = logging.getLogger("tenxgraph.graph")
 
 
-@dataclass
+@dataclass(slots=True)
 class ToolRunResult:
     """What a ToolNode step produced.
 

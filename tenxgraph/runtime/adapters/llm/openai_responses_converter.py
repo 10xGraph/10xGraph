@@ -59,6 +59,8 @@ class _ResponseStreamState:
     current_fc_name: str = ""
     current_fc_args: str = ""
     current_fc_call_id: str = ""
+    # One id for every delta message and the final message of this response.
+    message_id: str | int = field(default_factory=generate_id)
     usages: TokenUsages = field(
         default_factory=lambda: TokenUsages(
             prompt_tokens=0,
@@ -152,7 +154,7 @@ class OpenAIResponsesConverter(BaseConverter):
         status = getattr(response, "status", "completed")
 
         return Message(
-            message_id=generate_id(resp_id),
+            message_id=generate_id(),
             role="assistant",
             content=order_blocks(blocks),
             parsed_content=self._extract_parsed_output(response),
@@ -237,7 +239,7 @@ class OpenAIResponsesConverter(BaseConverter):
         final_blocks = self._build_final_blocks(state)
 
         yield Message(
-            message_id=generate_id(None),
+            message_id=state.message_id,
             role="assistant",
             content=final_blocks,
             delta=False,
@@ -286,14 +288,20 @@ class OpenAIResponsesConverter(BaseConverter):
         """Handle a text delta event."""
         delta_text = getattr(event, "delta", "")
         state.accumulated_text += delta_text
-        return [self._build_delta_message([TextBlock(text=delta_text)] if delta_text else [])]
+        return [
+            self._build_delta_message(
+                [TextBlock(text=delta_text)] if delta_text else [], state.message_id
+            )
+        ]
 
     def _handle_reasoning_delta(self, state: _ResponseStreamState, event: Any) -> list[Message]:
         """Accumulate streaming reasoning text and emit it as a reasoning delta."""
         delta_text = getattr(event, "delta", "")
         state.accumulated_reasoning += delta_text
         return (
-            [self._build_delta_message([ReasoningBlock(summary=delta_text)])] if delta_text else []
+            [self._build_delta_message([ReasoningBlock(summary=delta_text)], state.message_id)]
+            if delta_text
+            else []
         )
 
     def _handle_function_call_argument_delta(
@@ -356,7 +364,8 @@ class OpenAIResponsesConverter(BaseConverter):
                         args=parse_tool_arguments(raw_args, tool_name=name)[0],
                         id=call_id,
                     )
-                ]
+                ],
+                state.message_id,
             )
         ]
 
@@ -374,31 +383,31 @@ class OpenAIResponsesConverter(BaseConverter):
 
     def _handle_message_item_done(
         self,
-        _state: _ResponseStreamState,
+        state: _ResponseStreamState,
         item: Any,
     ) -> list[Message]:
         """Emit media blocks from completed message items."""
         media_blocks = self._extract_media_from_message_item(item)
         if not media_blocks:
             return []
-        return [self._build_delta_message(media_blocks)]
+        return [self._build_delta_message(media_blocks, state.message_id)]
 
     def _handle_image_item_done(
         self,
-        _state: _ResponseStreamState,
+        state: _ResponseStreamState,
         item: Any,
     ) -> list[Message]:
         """Emit an image block from image generation events."""
         img_block = self._extract_image_generation(item)
         if not img_block:
             return []
-        return [self._build_delta_message([img_block])]
+        return [self._build_delta_message([img_block], state.message_id)]
 
     @staticmethod
-    def _build_delta_message(content: list) -> Message:
+    def _build_delta_message(content: list, message_id: str | int) -> Message:
         """Build a streaming delta message."""
         return Message(
-            message_id=generate_id(None),
+            message_id=message_id,
             role="assistant",
             content=content,
             delta=True,

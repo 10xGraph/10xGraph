@@ -61,10 +61,10 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from injectq import InjectQ
+from pydantic import BaseModel, ConfigDict, SkipValidation
 
 from tenxgraph.core.graph.agent import Agent
 from tenxgraph.core.graph.base_agent import BaseAgent
@@ -111,12 +111,11 @@ can do or ask what the user needs."""
 
 
 # ---------------------------------------------------------------------------
-# WorkerConfig dataclass
+# WorkerConfig model
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class WorkerConfig:
+class WorkerConfig(BaseModel):
     """Configuration for a single worker in a :class:`SupervisorTeamAgent`.
 
     Each worker is a **pre-built** agent instance so that callers can
@@ -132,8 +131,13 @@ class WorkerConfig:
             delegate here.
     """
 
-    agent: BaseAgent
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    agent: SkipValidation[BaseAgent]
     description: str = ""
+
+    def __init__(self, agent: BaseAgent, description: str = "") -> None:
+        super().__init__(agent=agent, description=description)
 
 
 # ---------------------------------------------------------------------------

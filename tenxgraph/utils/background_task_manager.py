@@ -9,8 +9,9 @@ import asyncio
 import logging
 import time
 from collections.abc import Coroutine
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, SkipValidation
 
 from tenxgraph.utils import metrics
 
@@ -32,14 +33,13 @@ DROP_WARNING_INTERVAL_SECONDS = 5.0
 CANCEL_GRACE_SECONDS = 0.5
 
 
-@dataclass
-class TaskMetadata:
+class TaskMetadata(BaseModel):
     """Metadata for tracking background tasks."""
 
     name: str
     created_at: float
     timeout: float | None = None
-    context: dict[str, Any] | None = None
+    context: SkipValidation[dict[str, Any] | None] = None
 
 
 class BackgroundTaskManager:

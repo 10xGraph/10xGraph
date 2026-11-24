@@ -16,8 +16,9 @@ from __future__ import annotations
 import logging
 import time
 import warnings
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel
 
 
 logger = logging.getLogger("tenxgraph.media.temp_cache")
@@ -37,8 +38,7 @@ CLEANUP_GRACE_SECONDS = 7 * 24 * 60 * 60  # keep the record past expiry so clean
 TEMP_CACHE_NAMESPACE = "media:temp"
 
 
-@dataclass
-class TempCacheEntry:
+class TempCacheEntry(BaseModel):
     """Metadata for a single temporary cache entry."""
 
     content_hash: str

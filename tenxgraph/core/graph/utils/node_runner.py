@@ -36,7 +36,7 @@ from .utils import process_node_result
 logger = logging.getLogger("tenxgraph.graph")
 
 
-@dataclass
+@dataclass(slots=True)
 class NodeResult:
     """What one node step produced.
 

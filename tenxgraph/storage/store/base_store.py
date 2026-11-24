@@ -11,12 +11,10 @@ This module provides a clean, modern interface for memory stores with:
 import logging
 from abc import ABC, abstractmethod
 from typing import Any
-from uuid import uuid4
-
-from injectq import InjectQ
 
 from tenxgraph.core.authz import filter_columns, owner_id
 from tenxgraph.core.state import Message
+from tenxgraph.core.state.message import generate_id
 from tenxgraph.utils import run_coroutine
 from tenxgraph.utils.validators import has_unstorable_text
 
@@ -239,17 +237,8 @@ class BaseStore(ABC):
                 )
 
     async def generate_framework_id(self) -> str:
-        """Generate a unique ID using the framework's DI-registered ID generator.
-
-        Uses the ``generated_id`` factory bound in the InjectQ container
-        (registered by ``StateGraph.compile()`` via ``BaseIDGenerator``). Falls
-        back to a ``uuid4`` value when the DI context is not
-        available (e.g. in unit tests that don't compile a graph).
-        """
-        generated_id = await InjectQ.get_instance().atry_get("generated_id")
-        if not generated_id:
-            return str(uuid4())
-        return str(generated_id)
+        """Generate a unique ID using the ``BaseIDGenerator`` bound in InjectQ (uuid4 when none)."""
+        return str(generate_id())
 
     # --- Core Memory Operations ---
 

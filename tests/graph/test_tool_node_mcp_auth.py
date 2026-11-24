@@ -240,7 +240,14 @@ async def test_forward_credential():
     )
     assert await forward_credential(ctx) == {"Authorization": f"DPoP {TOKEN}"}
     assert TOKEN not in repr(ctx)
-    empty = MCPAuthContext(None, None, None, None, None, None)
+    empty = MCPAuthContext(
+        identity=None,
+        credential=None,
+        tool_name=None,
+        server=None,
+        thread_id=None,
+        run_id=None,
+    )
     assert await forward_credential(empty) == {}
 
 

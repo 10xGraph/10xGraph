@@ -49,7 +49,7 @@ class SafeHTTPError(Exception):
     """The request was refused or could not be completed safely."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Response:
     """Final response of :func:`fetch`."""
 

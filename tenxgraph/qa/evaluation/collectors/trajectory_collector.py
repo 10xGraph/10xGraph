@@ -18,9 +18,9 @@ Example:
 
 import logging
 import time
-from dataclasses import dataclass
-from dataclasses import field as datafield
 from typing import Any
+
+from pydantic import BaseModel, Field
 
 from tenxgraph.core.graph.tool_node.constants import INJECTABLE_PARAMS
 from tenxgraph.qa.evaluation.collectors.publisher_callback import PublisherCallback
@@ -34,8 +34,7 @@ from tenxgraph.utils.callbacks import CallbackManager, InvocationType
 logger = logging.getLogger("tenxgraph.evaluation.collectors")
 
 
-@dataclass
-class NodeResponse:
+class NodeResponse(BaseModel):
     """Snapshot of input and output at a single AI node invocation.
 
     input_messages is extracted from input_data["state"].context BEFORE
@@ -54,13 +53,13 @@ class NodeResponse:
     """
 
     node_name: str
-    input_messages: list[dict] = datafield(default_factory=list)
+    input_messages: list[dict] = Field(default_factory=list)
     response_text: str = ""
     has_tool_calls: bool = False
-    tool_call_names: list[str] = datafield(default_factory=list)
+    tool_call_names: list[str] = Field(default_factory=list)
     is_final: bool = False
     timestamp: float = 0.0
-    token_usage: TokenUsage = datafield(default_factory=TokenUsage)
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
 class TrajectoryCollector(BasePublisher):

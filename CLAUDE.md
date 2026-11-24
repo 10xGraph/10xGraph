@@ -27,6 +27,7 @@ persistence, tools, memory, evaluation, and event publishing. Inspired by LangGr
   the README and several docstrings still show pre-refactor paths (see Known Doc Drift).
 - **Surgical edits.** This is `Development Status :: 5 - Production/Stable`. Don't refactor
   module boundaries or rename exports without checking every `__init__.py` that re-exports them.
+- **Data classes: pydantic by default.** Use a pydantic `BaseModel` for anything public, configured, user-facing or serialized (configs, results users read, callback contexts, events, anything exported from a package `__init__` or documented). Use `@dataclass(slots=True)` only for private per-step internal state on the hot path that our own code creates and never serializes.
 - **Keep coverage green.** `pytest` enforces `--cov-fail-under=80`. New code needs tests.
 - **Optional deps are optional.** Provider SDKs, MCP, Postgres, pgvector, Redis, Qdrant, Kafka,
   RabbitMQ, OTEL, a2a are all extras. Guard imports; never make core import a hard optional dep.

@@ -50,7 +50,7 @@ from .utils import LastSave, calculate_token_usage
 logger = logging.getLogger("tenxgraph.graph")
 
 
-@dataclass
+@dataclass(slots=True)
 class RunResult:
     """The end of a run: final state, the run's messages (client-tool placeholders last)."""
 

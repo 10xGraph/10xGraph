@@ -9,9 +9,10 @@ in the correct output directory with timestamped filenames.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 
 from tenxgraph.qa.evaluation.reporters._utils import format_timestamp, safe_stem
 
@@ -23,8 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tenxgraph.evaluation.reporters")
 
 
-@dataclass
-class ReporterOutput:
+class ReporterOutput(BaseModel):
     """Result of running all reporters.
 
     Attributes:
@@ -39,7 +39,7 @@ class ReporterOutput:
     html_path: str | None = None
     junit_path: str | None = None
     console_output: bool = False
-    errors: list[tuple[str, str]] = field(default_factory=list)
+    errors: list[tuple[str, str]] = Field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
