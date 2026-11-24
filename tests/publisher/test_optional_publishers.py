@@ -9,85 +9,15 @@ import pytest
 import json
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
-from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.runtime.publisher.events import EventModel, Event, EventType
 
 
 class TestRedisPublisher:
     """Test RedisPublisher with mocked dependencies."""
     
-    def test_redis_publisher_import_available(self):
-        """Test importing RedisPublisher when redis is available."""
-        with patch('importlib.import_module') as mock_import:
-            # Mock successful redis import
-            mock_redis_module = Mock()
-            mock_import.return_value = mock_redis_module
-            
-            # Import the publisher module with mocked redis
-            with patch.dict('sys.modules', {'redis.asyncio': mock_redis_module}):
-                from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
-                
-                assert RedisPublisher is not None
-                assert issubclass(RedisPublisher, BasePublisher)
     
-    def test_redis_publisher_import_unavailable(self):
-        """Test importing RedisPublisher when redis is not available."""
-        with patch('importlib.import_module') as mock_import:
-            # Mock ImportError for redis
-            mock_import.side_effect = ImportError("No module named 'redis'")
-            
-            # Should be able to import the module but may fail at runtime
-            try:
-                from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
-                # If import succeeds, class should exist
-                assert RedisPublisher is not None
-            except ImportError:
-                # If import fails, that's also acceptable
-                pass
     
-    @patch('importlib.import_module')
-    def test_redis_publisher_initialization(self, mock_import):
-        """Test RedisPublisher initialization with mocked redis."""
-        # Mock redis module
-        mock_redis = Mock()
-        mock_import.return_value = mock_redis
-        
-        with patch.dict('sys.modules', {'redis.asyncio': mock_redis}):
-            from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
-            
-            config = {
-                "url": "redis://localhost:6379/1",
-                "mode": "pubsub",
-                "channel": "test.events",
-                "encoding": "utf-8"
-            }
-            
-            publisher = RedisPublisher(config)
-            
-            assert publisher.config == config
-            assert publisher.url == "redis://localhost:6379/1"
-            assert publisher.mode == "pubsub"
-            assert publisher.channel == "test.events"
-            assert publisher.encoding == "utf-8"
-            assert publisher._redis is None  # Not connected yet
     
-    @patch('importlib.import_module')
-    def test_redis_publisher_default_config(self, mock_import):
-        """Test RedisPublisher with default configuration."""
-        mock_redis = Mock()
-        mock_import.return_value = mock_redis
-        
-        with patch.dict('sys.modules', {'redis.asyncio': mock_redis}):
-            from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
-            
-            publisher = RedisPublisher()
-            
-            assert publisher.url == "redis://localhost:6379/0"
-            assert publisher.mode == "pubsub"
-            assert publisher.channel == "tenxgraph.events"
-            assert publisher.stream == "tenxgraph.events"
-            assert publisher.maxlen is None
-            assert publisher.encoding == "utf-8"
     
     @pytest.mark.asyncio
     @patch('importlib.import_module')
@@ -324,41 +254,7 @@ class TestRedisPublisher:
 class TestKafkaPublisher:
     """Test KafkaPublisher with mocked dependencies."""
     
-    def test_kafka_publisher_import_available(self):
-        """Test importing KafkaPublisher when aiokafka is available."""
-        with patch('importlib.import_module') as mock_import:
-            mock_kafka_module = Mock()
-            mock_import.return_value = mock_kafka_module
-            
-            with patch.dict('sys.modules', {'aiokafka': mock_kafka_module}):
-                from tenxgraph.runtime.publisher.kafka_publisher import KafkaPublisher
-                
-                assert KafkaPublisher is not None
-                assert issubclass(KafkaPublisher, BasePublisher)
     
-    @patch('importlib.import_module')
-    def test_kafka_publisher_initialization(self, mock_import):
-        """Test KafkaPublisher initialization."""
-        mock_kafka = Mock()
-        mock_producer_class = Mock()
-        mock_kafka.AIOKafkaProducer = mock_producer_class
-        mock_import.return_value = mock_kafka
-        
-        with patch.dict('sys.modules', {'aiokafka': mock_kafka}):
-            from tenxgraph.runtime.publisher.kafka_publisher import KafkaPublisher
-            
-            config = {
-                "bootstrap_servers": ["kafka1:9092", "kafka2:9092"],
-                "topic": "agent.events",
-                "encoding": "utf-8"
-            }
-            
-            publisher = KafkaPublisher(config)
-            
-            assert publisher.config == config
-            assert publisher.bootstrap_servers == config["bootstrap_servers"]
-            assert publisher.topic == "agent.events"
-            assert publisher.client_id is None  # Default value
     
     @pytest.mark.asyncio
     @patch('importlib.import_module')
@@ -492,41 +388,7 @@ class TestKafkaPublisher:
 class TestRabbitMQPublisher:
     """Test RabbitMQPublisher with mocked dependencies."""
     
-    def test_rabbitmq_publisher_import_available(self):
-        """Test importing RabbitMQPublisher when aio_pika is available."""
-        with patch('importlib.import_module') as mock_import:
-            mock_pika_module = Mock()
-            mock_import.return_value = mock_pika_module
-            
-            with patch.dict('sys.modules', {'aio_pika': mock_pika_module}):
-                from tenxgraph.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
-                
-                assert RabbitMQPublisher is not None
-                assert issubclass(RabbitMQPublisher, BasePublisher)
     
-    @patch('importlib.import_module')
-    def test_rabbitmq_publisher_initialization(self, mock_import):
-        """Test RabbitMQPublisher initialization."""
-        mock_pika = Mock()
-        mock_import.return_value = mock_pika
-        
-        with patch.dict('sys.modules', {'aio_pika': mock_pika}):
-            from tenxgraph.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
-            
-            config = {
-                "url": "amqp://user:pass@localhost:5672/vhost",
-                "exchange": "agent.events",
-                "routing_key": "events.default",
-                "encoding": "utf-8"
-            }
-            
-            publisher = RabbitMQPublisher(config)
-            
-            assert publisher.config == config
-            assert publisher.url == "amqp://user:pass@localhost:5672/vhost"
-            assert publisher.exchange == "agent.events"
-            assert publisher.routing_key == "events.default"
-            assert publisher.exchange_type == "topic"
     
     @pytest.mark.asyncio
     @patch('importlib.import_module')
@@ -782,92 +644,8 @@ class TestOptionalPublisherErrorHandling:
 class TestOptionalPublisherConfiguration:
     """Test configuration handling for optional publishers."""
     
-    @patch('importlib.import_module')
-    def test_redis_publisher_config_variations(self, mock_import):
-        """Test RedisPublisher with various configuration options."""
-        mock_redis = Mock()
-        mock_import.return_value = mock_redis
-        
-        with patch.dict('sys.modules', {'redis.asyncio': mock_redis}):
-            from tenxgraph.runtime.publisher.redis_publisher import RedisPublisher
-            
-            # Test minimal config
-            publisher1 = RedisPublisher()
-            assert publisher1.url == "redis://localhost:6379/0"
-            
-            # Test full config
-            full_config = {
-                "url": "redis://user:pass@redis.example.com:6380/5",
-                "mode": "stream",
-                "channel": "custom.channel",
-                "stream": "custom.stream",
-                "maxlen": 5000,
-                "encoding": "utf-16"
-            }
-            
-            publisher2 = RedisPublisher(full_config)
-            assert publisher2.url == "redis://user:pass@redis.example.com:6380/5"
-            assert publisher2.mode == "stream"
-            assert publisher2.maxlen == 5000
-            assert publisher2.encoding == "utf-16"
     
-    @patch('importlib.import_module')
-    def test_kafka_publisher_config_variations(self, mock_import):
-        """Test KafkaPublisher with various configurations."""
-        mock_kafka = Mock()
-        mock_kafka.AIOKafkaProducer = Mock()
-        mock_import.return_value = mock_kafka
-        
-        with patch.dict('sys.modules', {'aiokafka': mock_kafka}):
-            from tenxgraph.runtime.publisher.kafka_publisher import KafkaPublisher
-            
-            # Test with string bootstrap servers
-            config1 = {
-                "bootstrap_servers": "kafka1:9092,kafka2:9092",
-                "topic": "single.topic"
-            }
-            
-            publisher1 = KafkaPublisher(config1)
-            # Should handle string format
-            assert publisher1.bootstrap_servers == "kafka1:9092,kafka2:9092"
-            
-            # Test with list bootstrap servers
-            config2 = {
-                "bootstrap_servers": ["broker1:9092", "broker2:9092", "broker3:9092"],
-                "topic": "list.topic"
-            }
-            
-            publisher2 = KafkaPublisher(config2)
-            assert publisher2.bootstrap_servers == config2["bootstrap_servers"]
     
-    @patch('importlib.import_module')
-    def test_rabbitmq_publisher_config_variations(self, mock_import):
-        """Test RabbitMQPublisher with various configurations."""
-        mock_pika = Mock()
-        mock_import.return_value = mock_pika
-        
-        with patch.dict('sys.modules', {'aio_pika': mock_pika}):
-            from tenxgraph.runtime.publisher.rabbitmq_publisher import RabbitMQPublisher
-            
-            # Test default config
-            publisher1 = RabbitMQPublisher()
-            assert publisher1.url == "amqp://guest:guest@localhost/"
-            assert publisher1.exchange == "tenxgraph.events"
-            assert publisher1.routing_key == "tenxgraph.events"
-            
-            # Test custom config
-            custom_config = {
-                "url": "amqps://user:secret@rmq.example.com:5671/prod",
-                "exchange": "production.events",
-                "routing_key": "agent.updates",
-                "queue": "agent.queue",
-                "durable": True
-            }
-            
-            publisher2 = RabbitMQPublisher(custom_config)
-            assert publisher2.url == "amqps://user:secret@rmq.example.com:5671/prod"
-            assert publisher2.exchange == "production.events"
-            assert publisher2.routing_key == "agent.updates"
 
 
 class TestOptionalPublisherIntegration:

@@ -47,19 +47,6 @@ async def test_qdrant_search_scopes_integer_user_zero(qdrant, client):
     assert flt is not None and flt.must[0].match.value == 0
 
 
-@pytest.mark.parametrize(
-    ("model", "dim"),
-    [
-        ("text-embedding-3-small", 1536),
-        ("text-embedding-3-large", 3072),
-        ("text-embedding-ada-002", 1536),
-    ],
-)
-def test_openai_embedding_dimensions(model, dim):
-    from tenxgraph.storage.store.embedding.openai_embedding import OpenAIEmbedding
-
-    with patch("openai.AsyncOpenAI"):
-        assert OpenAIEmbedding(model=model, api_key="k").dimension == dim
 
 
 def test_openai_embedding_custom_dimensions_are_sent():

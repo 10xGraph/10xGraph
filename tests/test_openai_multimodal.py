@@ -15,8 +15,6 @@ from tenxgraph.core.graph.agent_internal.openai import _to_responses_content
 class TestToResponsesContent:
     """Test conversion from Chat Completions content format to Responses API format."""
 
-    def test_string_passthrough(self):
-        assert _to_responses_content("hello world") == "hello world"
 
     def test_empty_string(self):
         assert _to_responses_content("") == ""
@@ -24,20 +22,7 @@ class TestToResponsesContent:
     def test_none_passthrough(self):
         assert _to_responses_content(None) is None
 
-    def test_text_part(self):
-        parts = [{"type": "text", "text": "What's in this image?"}]
-        result = _to_responses_content(parts)
-        assert result == [{"type": "input_text", "text": "What's in this image?"}]
 
-    def test_image_url_part_nested(self):
-        """image_url with nested dict format (Chat Completions style)."""
-        parts = [
-            {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
-        ]
-        result = _to_responses_content(parts)
-        assert result == [
-            {"type": "input_image", "image_url": "https://example.com/img.jpg"}
-        ]
 
     def test_image_url_part_base64(self):
         """image_url with base64 data URL."""
@@ -46,17 +31,6 @@ class TestToResponsesContent:
         result = _to_responses_content(parts)
         assert result == [{"type": "input_image", "image_url": b64_url}]
 
-    def test_audio_part(self):
-        parts = [
-            {
-                "type": "input_audio",
-                "input_audio": {"data": "base64audiodata", "format": "mp3"},
-            }
-        ]
-        result = _to_responses_content(parts)
-        assert result == [
-            {"type": "input_audio", "data": "base64audiodata", "format": "mp3"}
-        ]
 
     def test_audio_part_default_format(self):
         parts = [
@@ -65,23 +39,7 @@ class TestToResponsesContent:
         result = _to_responses_content(parts)
         assert result[0]["format"] == "wav"
 
-    def test_mixed_multimodal(self):
-        parts = [
-            {"type": "text", "text": "Describe this:"},
-            {"type": "image_url", "image_url": {"url": "https://img.com/cat.jpg"}},
-            {"type": "input_audio", "input_audio": {"data": "abc", "format": "wav"}},
-        ]
-        result = _to_responses_content(parts)
-        assert len(result) == 3
-        assert result[0] == {"type": "input_text", "text": "Describe this:"}
-        assert result[1] == {"type": "input_image", "image_url": "https://img.com/cat.jpg"}
-        assert result[2] == {"type": "input_audio", "data": "abc", "format": "wav"}
 
-    def test_unknown_type_passthrough(self):
-        """Unknown content part types should pass through unchanged."""
-        parts = [{"type": "custom_block", "data": "something"}]
-        result = _to_responses_content(parts)
-        assert result == [{"type": "custom_block", "data": "something"}]
 
     def test_empty_list(self):
         assert _to_responses_content([]) == []

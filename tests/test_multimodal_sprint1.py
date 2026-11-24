@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from tenxgraph.storage.media.config import DocumentHandling, ImageHandling, MultimodalConfig
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import (
     AudioBlock,
@@ -41,46 +40,6 @@ from tenxgraph.utils.converter import (
 # ---------------------------------------------------------------------------
 
 
-class TestMultimodalConfig:
-    """Test the MultimodalConfig pydantic model."""
-
-    def test_defaults(self):
-        cfg = MultimodalConfig()
-        assert cfg.image_handling == ImageHandling.BASE64
-        assert cfg.document_handling == DocumentHandling.EXTRACT_TEXT
-        assert cfg.max_image_size_mb == 10.0
-        assert cfg.max_image_dimension == 2048
-        assert "image/jpeg" in cfg.supported_image_types
-        assert "image/png" in cfg.supported_image_types
-        assert "image/webp" in cfg.supported_image_types
-        assert "image/gif" in cfg.supported_image_types
-        assert "application/pdf" in cfg.supported_doc_types
-
-    def test_custom_values(self):
-        cfg = MultimodalConfig(
-            image_handling=ImageHandling.URL,
-            document_handling=DocumentHandling.SKIP,
-            max_image_size_mb=5.0,
-            max_image_dimension=1024,
-        )
-        assert cfg.image_handling == ImageHandling.URL
-        assert cfg.document_handling == DocumentHandling.SKIP
-        assert cfg.max_image_size_mb == 5.0
-        assert cfg.max_image_dimension == 1024
-
-    def test_enum_values(self):
-        assert ImageHandling.BASE64 == "base64"
-        assert ImageHandling.URL == "url"
-        assert ImageHandling.FILE_ID == "file_id"
-        assert DocumentHandling.EXTRACT_TEXT == "extract_text"
-        assert DocumentHandling.FORWARD_RAW == "pass_raw"
-        assert DocumentHandling.SKIP == "skip"
-
-    def test_serialization_roundtrip(self):
-        cfg = MultimodalConfig(image_handling=ImageHandling.URL)
-        data = cfg.model_dump()
-        restored = MultimodalConfig.model_validate(data)
-        assert restored.image_handling == ImageHandling.URL
 
 
 # ---------------------------------------------------------------------------

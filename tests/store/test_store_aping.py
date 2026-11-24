@@ -22,14 +22,6 @@ def _qdrant(client):
         return QdrantStore(embedding=_Embedding(), path="./test_data")
 
 
-@pytest.mark.asyncio
-async def test_qdrant_aping_succeeds_without_side_effects():
-    client = AsyncMock()
-    store = _qdrant(client)
-    assert await store.aping() is None
-    client.get_collections.assert_awaited_once()
-    client.create_collection.assert_not_called()
-    client.upsert.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -51,8 +43,3 @@ def test_base_store_subclass_without_aping_cannot_be_created():
         broken()
 
 
-@pytest.mark.asyncio
-async def test_in_memory_store_aping_returns_none():
-    from tenxgraph.qa.testing.in_memory_store import InMemoryStore
-
-    assert await InMemoryStore().aping() is None

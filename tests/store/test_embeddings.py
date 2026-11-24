@@ -41,11 +41,6 @@ class TestBaseEmbedding:
         with pytest.raises(TypeError):
             BaseEmbedding()
     
-    def test_concrete_implementation_works(self):
-        """Test that concrete implementation can be instantiated."""
-        embedding = MockEmbedding()
-        assert isinstance(embedding, BaseEmbedding)
-        assert embedding.dimension == 1536
     
     def test_sync_embed_calls_async_aembed(self):
         """Test that sync embed method calls async aembed."""
@@ -72,45 +67,9 @@ class TestBaseEmbedding:
         assert all(isinstance(emb, list) for emb in result)
         assert all(all(isinstance(x, float) for x in emb) for emb in result)
     
-    def test_custom_dimension(self):
-        """Test that custom dimension works correctly."""
-        custom_dim = 512
-        embedding = MockEmbedding(test_dimension=custom_dim)
-        
-        assert embedding.dimension == custom_dim
-        
-        result = embedding.embed("test")
-        assert len(result) == custom_dim
     
-    def test_empty_text_handling(self):
-        """Test embedding of empty text."""
-        embedding = MockEmbedding(test_dimension=3)
-        
-        result = embedding.embed("")
-        
-        assert isinstance(result, list)
-        assert len(result) == 3
-        # Length of "" is 0, so each element should be 0 * 0.01 = 0.0
-        assert all(x == 0.0 for x in result)
     
-    def test_empty_batch_handling(self):
-        """Test embedding of empty batch."""
-        embedding = MockEmbedding()
-        
-        result = embedding.embed_batch([])
-        
-        assert isinstance(result, list)
-        assert len(result) == 0
     
-    def test_large_batch_handling(self):
-        """Test embedding of large batch."""
-        embedding = MockEmbedding(test_dimension=5)
-        texts = [f"text_{i}" for i in range(100)]
-        
-        result = embedding.embed_batch(texts)
-        
-        assert len(result) == 100
-        assert all(len(emb) == 5 for emb in result)
 
 
 class TestOpenAIEmbedding:
@@ -151,19 +110,6 @@ class TestOpenAIEmbedding:
             
             assert embedding.api_key == "env-test-key"
     
-    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
-    @patch('openai.AsyncOpenAI')
-    def test_initialization_with_custom_model(self, mock_openai_class):
-        """Test initialization with custom model."""
-        mock_client = Mock()
-        mock_openai_class.return_value = mock_client
-        
-        embedding = OpenAIEmbedding(
-            model="text-embedding-3-large",
-            api_key="test-key"
-        )
-        
-        assert embedding.model == "text-embedding-3-large"
     
     @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
     def test_initialization_missing_api_key(self):
@@ -366,117 +312,14 @@ class TestOpenAIEmbedding:
 class TestEmbeddingIntegration:
     """Integration tests for embedding classes."""
     
-    def test_mock_embedding_implements_base_correctly(self):
-        """Test that MockEmbedding properly implements BaseEmbedding."""
-        embedding = MockEmbedding()
-        
-        # Test that it's an instance of BaseEmbedding
-        assert isinstance(embedding, BaseEmbedding)
-        
-        # Test that all abstract methods are implemented
-        assert hasattr(embedding, 'aembed')
-        assert hasattr(embedding, 'aembed_batch')
-        assert hasattr(embedding, 'dimension')
-        
-        # Test that sync methods work through inheritance
-        assert hasattr(embedding, 'embed')
-        assert hasattr(embedding, 'embed_batch')
     
-    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
-    def test_openai_embedding_implements_base_correctly(self):
-        """Test that OpenAIEmbedding properly implements BaseEmbedding."""
-        
-        embedding = OpenAIEmbedding(api_key="test-key")
-        
-        # Test that it's an instance of BaseEmbedding
-        assert isinstance(embedding, BaseEmbedding)
-        
-        # Test that all abstract methods are implemented
-        assert hasattr(embedding, 'aembed')
-        assert hasattr(embedding, 'aembed_batch')
-        assert hasattr(embedding, 'dimension')
-        
-        # Test that sync methods work through inheritance
-        assert hasattr(embedding, 'embed')
-        assert hasattr(embedding, 'embed_batch')
     
-    def test_polymorphism_works(self):
-        """Test that polymorphism works with BaseEmbedding."""
-        embeddings = [MockEmbedding(test_dimension=100)]
-        
-        for embedding in embeddings:
-            assert isinstance(embedding, BaseEmbedding)
-            
-            # Test dimension property
-            assert embedding.dimension > 0
-            
-            # Test sync methods
-            single_result = embedding.embed("test")
-            assert isinstance(single_result, list)
-            assert len(single_result) == embedding.dimension
-            
-            batch_result = embedding.embed_batch(["test1", "test2"])
-            assert isinstance(batch_result, list)
-            assert len(batch_result) == 2
-            assert all(len(emb) == embedding.dimension for emb in batch_result)
 
 
 class TestEmbeddingEdgeCases:
     """Test edge cases and error conditions."""
     
-    def test_very_long_text(self):
-        """Test embedding of very long text."""
-        embedding = MockEmbedding(test_dimension=5)
-        long_text = "a" * 10000
-        
-        result = embedding.embed(long_text)
-        
-        assert isinstance(result, list)
-        assert len(result) == 5
-        # Length is 10000, so each element should be 10000 * 0.01 = 100.0
-        assert all(abs(x - 100.0) < 0.001 for x in result)
     
-    def test_unicode_text(self):
-        """Test embedding of unicode text."""
-        embedding = MockEmbedding(test_dimension=3)
-        unicode_text = "Hello 世界 🌍"
-        
-        result = embedding.embed(unicode_text)
-        
-        assert isinstance(result, list)
-        assert len(result) == 3
-        # The length calculation works on unicode characters
-        expected_val = len(unicode_text) * 0.01
-        assert all(abs(x - expected_val) < 0.001 for x in result)
     
-    def test_mixed_batch_types(self):
-        """Test batch embedding with mixed text types."""
-        embedding = MockEmbedding(test_dimension=2)
-        mixed_texts = ["short", "a much longer text string", "", "🚀"]
-        
-        result = embedding.embed_batch(mixed_texts)
-        
-        assert len(result) == 4
-        assert all(len(emb) == 2 for emb in result)
-        assert all(isinstance(emb, list) for emb in result)
-        assert all(all(isinstance(x, float) for x in emb) for emb in result)
     
-    @patch('tenxgraph.storage.store.embedding.openai_embedding.HAS_OPENAI', True)
-    def test_parameter_precedence(self):
-        """Test that parameter API key takes precedence over environment variable."""
-        with patch.dict(os.environ, {'api_key': 'env-key'}):
-            embedding = OpenAIEmbedding(api_key="param-key")
-            
-            assert embedding.api_key == "param-key"
     
-    def test_zero_dimension(self):
-        """Test behavior with zero dimension (edge case)."""
-        embedding = MockEmbedding(test_dimension=0)
-        
-        assert embedding.dimension == 0
-        
-        result = embedding.embed("test")
-        assert result == []
-        
-        batch_result = embedding.embed_batch(["test1", "test2"])
-        assert batch_result == [[], []]

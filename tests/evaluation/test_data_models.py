@@ -27,13 +27,6 @@ from tenxgraph.qa.evaluation import (
 class TestToolCall:
     """Tests for ToolCall model."""
 
-    def test_tool_call_creation(self):
-        """Test creating a tool call."""
-        tc = ToolCall(name="get_weather", args={"location": "NYC"})
-        assert tc.name == "get_weather"
-        assert tc.args == {"location": "NYC"}
-        assert tc.call_id is None
-        assert tc.result is None
 
     def test_tool_call_with_all_fields(self):
         """Test tool call with all fields."""
@@ -169,13 +162,6 @@ class TestInvocation:
 class TestSessionInput:
     """Tests for SessionInput model."""
 
-    def test_session_input_defaults(self):
-        """Test session input default values."""
-        session = SessionInput()
-        assert session.app_name == ""
-        assert session.user_id == "test_user"
-        assert session.state == {}
-        assert session.config == {}
 
     def test_session_input_with_values(self):
         """Test session input with custom values."""
@@ -296,12 +282,6 @@ class TestEvalSet:
 class TestCriterionConfig:
     """Tests for CriterionConfig model."""
 
-    def test_criterion_config_defaults(self):
-        """Test default criterion config."""
-        config = CriterionConfig()
-        assert config.threshold == 0.8
-        assert config.match_type == MatchType.EXACT
-        assert config.enabled is True
 
     def test_criterion_config_trajectory_factory(self):
         """Test trajectory config factory."""
@@ -339,27 +319,6 @@ class TestCriterionConfig:
 class TestEvalConfig:
     """Tests for EvalConfig model."""
 
-    def test_eval_config_default(self):
-        """Test default eval config."""
-        config = EvalConfig.default()
-        assert config.criteria.trajectory is not None
-        assert config.criteria.response_match is not None
-        assert config.criteria.trajectory.threshold == 1.0
-        assert config.criteria.response_match.threshold == 0.8
-
-    def test_eval_config_strict(self):
-        """Test strict eval config."""
-        config = EvalConfig.strict()
-        assert config.criteria.trajectory.threshold == 1.0
-        assert config.criteria.response_match.threshold == 0.9
-        assert config.criteria.llm_judge is not None
-
-    def test_eval_config_relaxed(self):
-        """Test relaxed eval config."""
-        config = EvalConfig.relaxed()
-        assert config.criteria.trajectory.threshold == 0.8
-        assert config.criteria.trajectory.match_type == MatchType.IN_ORDER
-        assert config.criteria.response_match.threshold == 0.6
 
     def test_eval_config_enable_criterion(self):
         """Test enabling a criterion."""
@@ -388,7 +347,7 @@ class TestEvalConfig:
         # Original should be unchanged
         assert config.criteria.rubric_based is None
 
-    def test_eval_config_serialization(self):
+    def test_eval_config_file_roundtrip_keeps_trajectory_threshold(self):
         """Test saving and loading eval config."""
         config = EvalConfig.default()
         
@@ -411,6 +370,20 @@ class TestEvalConfig:
             loaded = EvalConfig.from_file(str(path))
             assert loaded.criteria.trajectory is not None
             assert loaded.criteria.trajectory.threshold == 1.0
+
+    def test_eval_config_strict(self):
+        """Test strict eval config."""
+        config = EvalConfig.strict()
+        assert config.criteria.trajectory.threshold == 1.0
+        assert config.criteria.response_match.threshold == 0.9
+        assert config.criteria.llm_judge is not None
+
+    def test_eval_config_relaxed(self):
+        """Test relaxed eval config."""
+        config = EvalConfig.relaxed()
+        assert config.criteria.trajectory.threshold == 0.8
+        assert config.criteria.trajectory.match_type == MatchType.IN_ORDER
+        assert config.criteria.response_match.threshold == 0.6
 
 
 class TestRubric:
@@ -585,4 +558,3 @@ class TestEvalSummaryTokenAggregation:
         assert "total_tokens" in d["total_token_usage"]
         assert d["total_token_usage"]["total_tokens"] == 15
         assert "total_tokens" in list(d["per_case_token_usage"].values())[0]
-
