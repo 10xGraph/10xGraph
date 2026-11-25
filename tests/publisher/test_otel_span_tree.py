@@ -14,11 +14,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from tenxgraph.runtime.publisher import _openinference as oi
+from tenxgraph.runtime.publisher.backends_publisher import BackendsPublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.otel_publisher import (
-    OtelPublisher,
-    _input_message_budget,
-)
+from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher
+from tenxgraph.runtime.publisher.phoenix_publisher import _input_message_budget
 from tenxgraph.utils.constants import START
 
 
@@ -44,11 +43,11 @@ def _evt(event, etype, node="", data=None, metadata=None):
     )
 
 
-def _publisher():
+def _publisher(backends=("phoenix", "logfire")) -> tuple[OtelPublisher, InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    return OtelPublisher(tracer=provider.get_tracer("t")), exporter
+    return BackendsPublisher(backends, tracer=provider.get_tracer("t")), exporter
 
 
 async def _publish(pub, *events):

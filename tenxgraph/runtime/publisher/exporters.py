@@ -54,8 +54,9 @@ from ._backends import (
     _new_tracer_provider,
     _phoenix_project,
 )
+from .backends_publisher import BackendsPublisher, enabled_backends
 from .identity import UserIdMode, validate_user_id_mode
-from .otel_publisher import ObservabilityLevel, setup_tracing
+from .otel_publisher import ObservabilityLevel, attach_publisher
 
 
 logger = logging.getLogger("tenxgraph.runtime.publisher.exporters")
@@ -67,15 +68,32 @@ if TYPE_CHECKING:
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 
+def _instrument(
+    graph: StateGraph | None,
+    backends: list[str],
+    level: ObservabilityLevel,
+    user_id_mode: UserIdMode,
+) -> None:
+    """Attach a ``BackendsPublisher`` writing the keys of ``backends`` to ``graph``.
+
+    ``graph`` is None when only provider configuration is wanted (e.g. the API bootstrap
+    binds the publisher into the DI container itself).
+    """
+    if graph is not None:
+        attach_publisher(graph, BackendsPublisher(backends, level=level, user_id_mode=user_id_mode))
+
+
 def _attach_processor(
     processor: Any,
     graph: StateGraph | None,
     level: ObservabilityLevel,
     tracer_provider: Any,
     user_id_mode: UserIdMode,
+    backend: str,
     project: str | None = None,
 ) -> None:
-    """Add ``processor`` to ``tracer_provider`` (or a new global one) and instrument ``graph``."""
+    """Add ``processor`` to ``tracer_provider`` (or a new global one) and instrument ``graph``
+    with the attribute keys of ``backend``."""
     if tracer_provider is None:
         from opentelemetry import trace
 
@@ -84,11 +102,7 @@ def _attach_processor(
         trace.set_tracer_provider(provider)
     else:
         tracer_provider.add_span_processor(processor)
-
-    # graph is None when only provider configuration is wanted (e.g. the API
-    # bootstrap binds the publisher into the DI container itself).
-    if graph is not None:
-        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+    _instrument(graph, [backend], level, user_id_mode)
 
 
 def setup_logfire(
@@ -101,6 +115,7 @@ def setup_logfire(
     level: ObservabilityLevel = ObservabilityLevel.FULL,
     additional_span_processors: list | None = None,
     user_id_mode: UserIdMode = "raw",
+    backends: list[str] | None = None,
     **configure_kwargs: Any,
 ) -> None:
     """Configure Logfire as the OTEL backend and instrument the graph.
@@ -122,6 +137,9 @@ def setup_logfire(
             the Logfire processor (e.g. a LangSmith OTLP processor).
         user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
             appears on spans (see ``tenxgraph.runtime.publisher.identity``).
+        backends: Backends whose attribute keys the spans carry (see
+            ``BackendsPublisher``). ``["logfire"]`` by default; ``setup_observability``
+            passes every enabled backend when ``additional_span_processors`` export elsewhere.
         **configure_kwargs: Additional keyword arguments forwarded to
             ``logfire.configure()``.
 
@@ -145,10 +163,7 @@ def setup_logfire(
         kwargs["additional_span_processors"] = additional_span_processors
 
     logfire.configure(**kwargs)
-    # graph is None when only provider configuration is wanted (e.g. the API
-    # bootstrap binds the publisher into the DI container itself).
-    if graph is not None:
-        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+    _instrument(graph, backends or ["logfire"], level, user_id_mode)
 
 
 def setup_langsmith(
@@ -194,7 +209,7 @@ def setup_langsmith(
     """
     processor = _build_langsmith_processor(api_key=api_key, project=project, endpoint=endpoint)
 
-    _attach_processor(processor, graph, level, tracer_provider, user_id_mode)
+    _attach_processor(processor, graph, level, tracer_provider, user_id_mode, "langsmith")
 
 
 def setup_phoenix(
@@ -245,7 +260,13 @@ def setup_phoenix(
     processor = _build_phoenix_processor(api_key=api_key, endpoint=endpoint)
 
     _attach_processor(
-        processor, graph, level, tracer_provider, user_id_mode, project=_phoenix_project(project)
+        processor,
+        graph,
+        level,
+        tracer_provider,
+        user_id_mode,
+        "phoenix",
+        project=_phoenix_project(project),
     )
 
 
@@ -278,22 +299,22 @@ def setup_otlp(
     """
     processor = _build_otlp_processor(endpoint=endpoint)
 
-    _attach_processor(processor, graph, level, tracer_provider, user_id_mode)
+    _attach_processor(processor, graph, level, tracer_provider, user_id_mode, "otlp")
 
 
-def setup_observability(  # noqa: PLR0912
-    graph: StateGraph | None, config: dict[str, Any]
-) -> None:
+def setup_observability(graph: StateGraph | None, config: dict[str, Any]) -> None:
     """Unified observability entry point for declarative ``10xgraph.json`` config.
 
     Reads the ``observability`` block and enables Logfire, LangSmith, Phoenix
     and/or a generic OTLP endpoint, ensuring they share one ``TracerProvider`` when more than one is
     active.
 
-    Pass ``graph=None`` to configure the providers/exporters only, without
-    binding an ``OtelPublisher`` onto a graph. The API bootstrap uses this mode
-    because it binds the publisher into the DI container before the graph is
-    compiled (the only reliable attach point).
+    The graph gets a ``BackendsPublisher`` that writes the attribute keys of every
+    enabled backend (one span goes to all exporters). Pass ``graph=None`` to configure
+    the providers/exporters only, without binding a publisher onto a graph. The API
+    bootstrap uses this mode because it binds the publisher (``BackendsPublisher`` with
+    ``enabled_backends(config)``) into the DI container before the graph is compiled
+    (the only reliable attach point).
 
     Expected ``config`` shape (mirrors ``10xgraph.json``)::
 
@@ -396,7 +417,14 @@ def setup_observability(  # noqa: PLR0912
                     "Phoenix's default project.",
                     phoenix_project,
                 )
-        setup_logfire(graph, level=level, user_id_mode=user_id_mode, **logfire_kwargs, **extra)
+        setup_logfire(
+            graph,
+            level=level,
+            user_id_mode=user_id_mode,
+            backends=enabled_backends(config),
+            **logfire_kwargs,
+            **extra,
+        )
         return
 
     from opentelemetry import trace
@@ -405,5 +433,4 @@ def setup_observability(  # noqa: PLR0912
     for processor in processors:
         provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
-    if graph is not None:
-        setup_tracing(graph, level=level, user_id_mode=user_id_mode)
+    _instrument(graph, enabled_backends(config), level, user_id_mode)

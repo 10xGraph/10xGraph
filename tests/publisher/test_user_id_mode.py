@@ -104,7 +104,7 @@ class TestSetupObservability:
 
     def test_passes_through_langsmith(self):
         with (
-            patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as tracing,
+            patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as tracing,
             patch("tenxgraph.runtime.publisher.exporters._build_langsmith_processor"),
             patch("tenxgraph.runtime.publisher.exporters._new_tracer_provider"),
             patch.dict(
@@ -114,7 +114,7 @@ class TestSetupObservability:
             setup_observability(
                 MagicMock(), {"user_id_mode": "hash", "langsmith": {"enabled": True}}
             )
-        assert tracing.call_args.kwargs["user_id_mode"] == "hash"
+        assert tracing.call_args.args[1].user_id_mode == "hash"
 
     def test_passes_through_both(self):
         with (

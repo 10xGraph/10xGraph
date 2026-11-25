@@ -21,7 +21,8 @@ from opentelemetry.trace import StatusCode
 from tenxgraph.core.graph import Agent, StateGraph
 from tenxgraph.core.state import Message
 from tenxgraph.runtime.publisher import _openinference as oi
-from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, setup_tracing
+from tenxgraph.runtime.publisher.backends_publisher import BackendsPublisher
+from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, attach_publisher
 from tenxgraph.utils.constants import END
 
 
@@ -133,7 +134,10 @@ async def _spans(level):
     )
     graph.set_entry_point("MAIN")
     graph.add_edge("MAIN", END)
-    setup_tracing(graph, tracer=provider.get_tracer("t"), level=level)
+    publisher = BackendsPublisher(
+        ["phoenix", "langsmith"], tracer=provider.get_tracer("t"), level=level
+    )
+    attach_publisher(graph, publisher)
     app = graph.compile()
     await app.ainvoke(
         {"messages": [Message.text_message("what?")]},

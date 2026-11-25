@@ -53,9 +53,16 @@ async def test_setup_tracing_emits_spans():
     assert "invoke_agent 10xgraph" in names
     assert "MAIN" in names
     for span in exporter.get_finished_spans():
-        assert span.attributes["langsmith.span.kind"] == "chain"
-        assert span.attributes["langsmith.metadata.thread_id"] == "t1"
+        assert span.attributes[
+            "tenxgraph.graph.thread_id"
+            if span.name.startswith("invoke")
+            else "gen_ai.operation.name"
+        ]
         assert not any(k.startswith("gen_ai.usage.") for k in span.attributes)
+        # A plain OtelPublisher writes no backend dialect.
+        assert not any(
+            k.startswith(("langsmith.", "logfire.", "openinference.")) for k in span.attributes
+        )
 
 
 @pytest.mark.asyncio

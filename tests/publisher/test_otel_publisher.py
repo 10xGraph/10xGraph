@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tenxgraph.runtime.publisher.backends_publisher import BackendsPublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.otel_publisher import (
     ObservabilityLevel,
@@ -359,7 +360,7 @@ def _node_spans(level, start_data, end_data):
     import json
 
     tracer = _install_fake_otel()
-    pub = OtelPublisher(level=level)
+    pub = BackendsPublisher(["phoenix"], level=level)
     pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.START, data={"step": 1}))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data=start_data))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=end_data))
@@ -396,6 +397,15 @@ def test_node_output_omits_absent_keys():
         ObservabilityLevel.STANDARD, {"state": _STATE_IN}, {"state": _STATE_OUT, "next_node": None}
     )
     assert json.loads(node.attrs["output.value"]) == {"state": _STATE_OUT}
+
+
+def test_plain_publisher_node_span_has_no_state():
+    tracer = _install_fake_otel()
+    pub = OtelPublisher(level=ObservabilityLevel.FULL)
+    pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data={"state": _STATE_IN}))
+    pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=_END))
+    node = next(s for s in tracer.spans if s.name == "MAIN")
+    assert not any(k.startswith(("input.", "output.", "openinference.")) for k in node.attrs)
 
 
 def test_node_span_spans_level_has_no_state():

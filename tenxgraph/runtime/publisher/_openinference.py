@@ -13,6 +13,8 @@ from typing import Any
 
 SPAN_KIND = "openinference.span.kind"
 USER_ID = "user.id"
+# JSON string of span metadata, shown by name in Phoenix.
+METADATA = "metadata"
 INPUT_VALUE = "input.value"
 INPUT_MIME = "input.mime_type"
 OUTPUT_VALUE = "output.value"

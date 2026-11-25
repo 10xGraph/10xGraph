@@ -177,7 +177,7 @@ class TestSetupLogfire:
         """Patch everything and call setup_logfire."""
         all_mods = {**fake_otel_mods, "logfire": fake_lf}
         with patch.dict(sys.modules, all_mods):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as mock_setup:
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as mock_setup:
                 from tenxgraph.runtime.publisher.exporters import setup_logfire
 
                 setup_logfire(graph, **kwargs)
@@ -298,12 +298,13 @@ class TestSetupLogfire:
         all_mods = {**mods, "logfire": fake_lf}
 
         with patch.dict(sys.modules, all_mods):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as mock_setup:
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as mock_setup:
                 from tenxgraph.runtime.publisher.exporters import setup_logfire
 
                 setup_logfire(graph, level=ObservabilityLevel.FULL)
-                _, kwargs = mock_setup.call_args
-                assert kwargs["level"] == ObservabilityLevel.FULL
+                publisher = mock_setup.call_args.args[1]
+                assert publisher.level == ObservabilityLevel.FULL
+                assert publisher.backends == ["logfire"]
 
 
 # ── setup_langsmith tests ──────────────────────────────────────────────────────
@@ -316,7 +317,7 @@ class TestSetupLangsmith:
         with patch.dict(sys.modules, mods):
             env = env or {}
             with patch.dict("os.environ", env, clear=False):
-                with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as mock_setup:
+                with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as mock_setup:
                     from tenxgraph.runtime.publisher.exporters import setup_langsmith
 
                     setup_langsmith(graph, **kwargs)
@@ -340,6 +341,7 @@ class TestSetupLangsmith:
         init_kwargs = Exporter.call_args[1]
         assert init_kwargs["headers"]["x-api-key"] == "env-key"
         mock_setup.assert_called_once()
+        assert mock_setup.call_args.args[1].backends == ["langsmith"]
 
     def test_explicit_api_key_overrides_env(self):
         graph = _make_graph()
@@ -541,7 +543,7 @@ class TestSetupObservability:
     def _run_langsmith_only(self, ls_cfg):
         mods = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as tracing:
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as tracing:
                 from tenxgraph.runtime.publisher.exporters import setup_observability
 
                 with self._mock_setup_logfire() as lf:
@@ -697,7 +699,7 @@ class TestSetupPhoenix:
 
     def _run(self, mods, env=None, graph=None, **kwargs):
         with patch.dict(sys.modules, mods), patch.dict("os.environ", env or {}, clear=True):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as mock_setup:
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as mock_setup:
                 from tenxgraph.runtime.publisher.exporters import setup_phoenix
 
                 setup_phoenix(graph, **kwargs)
@@ -766,7 +768,7 @@ class TestSetupObservabilityPhoenix:
     def test_phoenix_only_sets_provider_with_processor(self):
         mods = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {}, clear=True):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing"):
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher"):
                 from tenxgraph.runtime.publisher.exporters import setup_observability
 
                 setup_observability(
@@ -784,19 +786,21 @@ class TestSetupObservabilityPhoenix:
 
         mods = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {}, clear=True):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as st:
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as st:
                 from tenxgraph.runtime.publisher.exporters import setup_observability
 
                 setup_observability(
                     _make_graph(), {"phoenix": {"enabled": True, "endpoint": "http://h:6006"}}
                 )
-        assert st.call_args[1]["level"] == ObservabilityLevel.FULL
+        publisher = st.call_args.args[1]
+        assert publisher.level == ObservabilityLevel.FULL
+        assert publisher.backends == ["phoenix"]
 
     def test_langsmith_and_phoenix_share_one_provider(self):
         mods = _fake_otel_modules()
         graph = _make_graph()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
-            with patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as mock_setup:
+            with patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as mock_setup:
                 from tenxgraph.runtime.publisher.exporters import setup_observability
 
                 setup_observability(
@@ -813,6 +817,8 @@ class TestSetupObservabilityPhoenix:
         assert provider.add_span_processor.call_count == 2
         mods["_fake_trace_mod"].set_tracer_provider.assert_called_once_with(provider)
         mock_setup.assert_called_once()
+        # One span goes to both exporters, so it carries both dialects.
+        assert mock_setup.call_args.args[1].backends == ["phoenix", "langsmith"]
 
     def _run_logfire_phoenix(self, configure, phoenix_cfg):
         mods = _fake_otel_modules()
@@ -927,8 +933,9 @@ class TestOtlp:
         provider = MagicMock()
         with (
             patch("tenxgraph.runtime.publisher.exporters._build_otlp_processor") as build,
-            patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as tracing,
+            patch("tenxgraph.runtime.publisher.exporters.attach_publisher") as tracing,
         ):
             setup_otlp(MagicMock(), endpoint="http://c:4318", tracer_provider=provider)
         provider.add_span_processor.assert_called_once_with(build.return_value)
         tracing.assert_called_once()
+        assert tracing.call_args.args[1].backends == ["otlp"]

@@ -5,6 +5,7 @@ This package exposes publishers that handle event delivery to various outputs,
 such as console, Redis, Kafka, and RabbitMQ.
 """
 
+from .backends_publisher import BackendsPublisher
 from .base_publisher import BasePublisher, PublisherKind
 from .composite_publisher import CompositePublisher
 from .console_publisher import ConsolePublisher
@@ -27,6 +28,7 @@ from .redis_publisher import RedisPublisher
 
 
 __all__ = [
+    "BackendsPublisher",
     "BasePublisher",
     "CompositePublisher",
     "ConsolePublisher",

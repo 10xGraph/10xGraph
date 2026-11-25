@@ -19,8 +19,9 @@ from opentelemetry.trace import StatusCode
 from tenxgraph.core.graph import ToolNode
 from tenxgraph.core.state import AgentState
 from tenxgraph.runtime.publisher import _genai
+from tenxgraph.runtime.publisher.backends_publisher import BackendsPublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, OtelPublisher
+from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
 from tenxgraph.utils import CallbackManager
 
 
@@ -35,7 +36,9 @@ def _setup(level=ObservabilityLevel.FULL):
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    return OtelPublisher(tracer=provider.get_tracer("t"), level=level), exporter
+    # Every backend at once: one span carries the keys of each.
+    backends = ["phoenix", "langsmith", "logfire"]
+    return BackendsPublisher(backends, tracer=provider.get_tracer("t"), level=level), exporter
 
 
 def _evt(event, etype, node="MAIN", data=None, metadata=None, ts=10.0):

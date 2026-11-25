@@ -23,12 +23,11 @@ import asyncio
 import contextlib
 import logging
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from tenxgraph.utils.constants import START
 
 from . import _genai
-from . import _openinference as oi
 from .base_publisher import BasePublisher
 from .composite_publisher import CompositePublisher
 from .events import Event, EventModel, EventType
@@ -66,16 +65,10 @@ from .otel_attributes import (
     GRAPH_THREAD_ID,
     GRAPH_TOTAL_STEPS,
     GRAPH_USER_ID,
-    LANGSMITH_SPAN_KIND,
-    LANGSMITH_THREAD_ID,
-    LANGSMITH_TRACE_NAME,
-    LANGSMITH_USER_ID,
     LIFECYCLE,
-    LOGFIRE_MSG,
     NODE_NAME,
     NODE_STEP,
     PROVIDER_NAME_MAP,
-    SESSION_ID,
     SPAN_UNFINISHED,
     TOOL_DENIED,
     TOOL_NAME,
@@ -98,14 +91,18 @@ logger = logging.getLogger("tenxgraph.otel")
 # ``execute_tool {tool}``, and a node span carries the node's name.
 GRAPH_SPAN_NAME = "invoke_agent 10xgraph"
 
+# The span a backend hook is called for, and when: once after a span starts, once before it ends.
+SpanRole = Literal["graph", "node", "llm", "tool"]
+SpanPhase = Literal["start", "end"]
+
 
 class ObservabilityLevel(StrEnum):
     """Controls how much data OtelPublisher emits as OTEL span attributes/events.
 
     SPANS    — timing and structure only. No I/O data on spans.
-    STANDARD — adds token counts, model name, request params when available, and the graph
-               state on node spans (``input.value`` = state in, ``output.value`` = state
-               after, messages produced, next node).
+    STANDARD — adds token counts, model name, request params when available; with
+               ``PhoenixPublisher`` also the graph state on node spans (``input.value`` =
+               state in, ``output.value`` = state after, messages produced, next node).
     FULL     — adds model input messages, output messages, tool I/O, system prompt.
                The default. Sends message content and graph state to the trace backend;
                use ``STANDARD`` or ``SPANS`` to keep content out.
@@ -138,28 +135,6 @@ def _to_str(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-# Attributes an LLM span can carry besides the indexed input messages (kind, session, user,
-# model, provider, request params, token counts, output message with up to
-# ``oi.MAX_OUTPUT_TOOL_CALLS`` tool calls). The rest of the span attribute limit goes to messages.
-_LLM_RESERVED_ATTRS = 64
-
-
-def _input_message_budget() -> int | None:
-    """How many indexed input-message attributes fit on an LLM span, None for no limit.
-
-    The OTEL SDK keeps at most ``OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`` attributes (default 128)
-    and evicts the oldest when full, which would drop the span kind, model, session and user
-    set first. A limit passed to a TracerProvider in code is not seen; the default is assumed.
-    """
-    try:
-        from opentelemetry.sdk.trace import SpanLimits
-
-        limit = SpanLimits().max_span_attributes
-    except (ImportError, ValueError):
-        limit = 128
-    return None if limit is None else max(limit - _LLM_RESERVED_ATTRS, 0)
 
 
 def _provider_system_name(raw_provider: str) -> str:
@@ -215,6 +190,11 @@ def tool_span_key(tool_call_id: str) -> str:
 class OtelPublisher(BasePublisher):
     """Publisher backend that maps EventModel events to OTEL spans.
 
+    Writes the OTEL GenAI conventions (``gen_ai.*``) and ``tenxgraph.*`` attributes only.
+    The keys a trace backend reads (OpenInference for Phoenix, ``langsmith.*``,
+    ``logfire.*``) come from ``span_attributes``, which ``PhoenixPublisher``,
+    ``LangsmithPublisher``, ``LogfirePublisher`` and ``BackendsPublisher`` override.
+
     Usage (minimal — FULL level, global TracerProvider):
         from tenxgraph.runtime.publisher.otel_publisher import setup_tracing
 
@@ -264,7 +244,41 @@ class OtelPublisher(BasePublisher):
         self._tracer: Tracer | None = None
         self._registry = SpanRegistry()
         self._level = level
-        self._input_message_budget = _input_message_budget()
+
+    @property
+    def level(self) -> ObservabilityLevel:
+        """How much data this publisher puts on spans."""
+        return self._level
+
+    @property
+    def user_id_mode(self) -> UserIdMode:
+        """How ``user_id`` appears on spans (``raw``, ``hash`` or ``mask``)."""
+        return self._user_id_mode
+
+    def span_attributes(
+        self,
+        role: SpanRole,
+        phase: SpanPhase,
+        name: str,
+        event: EventModel,
+        attrs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Backend-specific attributes for one span. The base adds none.
+
+        Called once after a span starts (``phase="start"``) and once before it ends
+        (``phase="end"``), for ``role`` ``graph``, ``node``, ``llm`` or ``tool``. ``name`` is
+        the span name and ``event`` the START or END event. Return ``attrs`` with the
+        backend's keys added; they are set on the span. A subclass for a trace backend
+        (``PhoenixPublisher``, ``LangsmithPublisher``, ``LogfirePublisher``) overrides this,
+        and must honour ``self.level`` for content and ``self.user_id_mode`` for user ids.
+        Not called for an error end, a remote tool's end, or spans ended as unfinished.
+        """
+        return attrs
+
+    def _set_backend_attrs(
+        self, span: Span, role: SpanRole, phase: SpanPhase, name: str, event: EventModel
+    ) -> None:
+        _set_attrs(span, self.span_attributes(role, phase, name, event, {}))
 
     def _get_tracer(self) -> Tracer:
         if self._tracer is None:
@@ -344,7 +358,7 @@ class OtelPublisher(BasePublisher):
             span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
             span.set_attribute(GEN_AI_OPERATION, "invoke_agent")
             _set_common_attrs(span, event, self._user_id_mode)
-            _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, GRAPH_SPAN_NAME)
+            self._set_backend_attrs(span, "graph", "start", GRAPH_SPAN_NAME, event)
             span.set_status(StatusCode.ERROR, "validation_rejected")
             span.add_event("graph.validation_rejected", attributes=_extra_attrs(event))
             span.end(end_time=_ns(event.timestamp))
@@ -357,11 +371,7 @@ class OtelPublisher(BasePublisher):
         span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
         span.set_attribute(GEN_AI_OPERATION, "invoke_agent")
         _set_common_attrs(span, event, self._user_id_mode)
-        _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, GRAPH_SPAN_NAME)
-        if self._level == ObservabilityLevel.FULL:
-            user_text = oi.graph_input_text(event.data)
-            if user_text:
-                _set_attrs(span, {oi.INPUT_VALUE: user_text, oi.INPUT_MIME: oi.TEXT_MIME})
+        self._set_backend_attrs(span, "graph", "start", GRAPH_SPAN_NAME, event)
         self._registry.set_graph(event.run_id, span)
 
     def _on_graph_end(self, event: EventModel) -> None:
@@ -374,10 +384,7 @@ class OtelPublisher(BasePublisher):
         total_steps = event.data.get("total_steps") or event.metadata.get("total_steps")
         if total_steps is not None:
             span.set_attribute(GRAPH_TOTAL_STEPS, total_steps)
-        if self._level == ObservabilityLevel.FULL:
-            answer = oi.graph_output_text(event.data)
-            if answer:
-                _set_attrs(span, {oi.OUTPUT_VALUE: answer, oi.OUTPUT_MIME: oi.TEXT_MIME})
+        self._set_backend_attrs(span, "graph", "end", GRAPH_SPAN_NAME, event)
         span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
@@ -495,15 +502,10 @@ class OtelPublisher(BasePublisher):
             start_time=_ns(event.timestamp),
         )
         span.set_attribute(GEN_AI_OPERATION, "node")
-        _set_kind(span, oi.KIND_CHAIN, event, self._user_id_mode, event.node_name)
         span.set_attribute(NODE_NAME, event.node_name)
         step = event.data.get("step")
         if step is not None:
             span.set_attribute(NODE_STEP, step)
-
-        if self._level != ObservabilityLevel.SPANS:
-            for key, value in oi.node_input_attrs(event.data).items():
-                span.set_attribute(key, value)
 
         if self._level == ObservabilityLevel.FULL:
             input_messages = event.data.get("input_messages") or event.data.get("messages")
@@ -519,6 +521,7 @@ class OtelPublisher(BasePublisher):
                     attributes={"gen_ai.system_prompt": _to_str(system_prompt)},
                 )
 
+        self._set_backend_attrs(span, "node", "start", event.node_name, event)
         self._registry.set_child(event.run_id, event.node_name, span)
 
     def _on_node_end(self, event: EventModel) -> None:
@@ -542,8 +545,6 @@ class OtelPublisher(BasePublisher):
             model = event.metadata.get("model")
             if model:
                 span.set_attribute(GRAPH_MODEL, str(model))
-            for key, value in oi.node_output_attrs(event.data).items():
-                span.set_attribute(key, value)
 
         if self._level == ObservabilityLevel.FULL:
             output_messages = event.data.get("messages")
@@ -553,6 +554,7 @@ class OtelPublisher(BasePublisher):
                     attributes={GEN_AI_COMPLETION: _to_str(output_messages)},
                 )
 
+        self._set_backend_attrs(span, "node", "end", event.node_name, event)
         span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
@@ -592,10 +594,6 @@ class OtelPublisher(BasePublisher):
 
         name = f"chat {model}" if model else "chat"
         span = self._get_tracer().start_span(name, context=ctx, start_time=_ns(event.timestamp))
-        _set_kind(span, oi.KIND_LLM, event, self._user_id_mode, name)
-        if self._level != ObservabilityLevel.SPANS:
-            _set_attrs(span, oi.llm_standard_attrs({}, model, system_name))
-
         # Standard gen_ai attributes
         if system_name:
             span.set_attribute(GEN_AI_SYSTEM, system_name)
@@ -624,14 +622,6 @@ class OtelPublisher(BasePublisher):
                 )
                 semconv_in = _genai.input_messages(input_messages, event.data.get("system_prompt"))
                 span.set_attribute(GEN_AI_INPUT_MESSAGES, _to_str(semconv_in))
-                _set_attrs(
-                    span,
-                    oi.llm_input_attrs(
-                        input_messages,
-                        event.data.get("system_prompt"),
-                        self._input_message_budget,
-                    ),
-                )
             system_prompt = event.data.get("system_prompt")
             if system_prompt:
                 span.add_event(
@@ -639,6 +629,7 @@ class OtelPublisher(BasePublisher):
                     attributes={"gen_ai.system_prompt": _to_str(system_prompt)},
                 )
 
+        self._set_backend_attrs(span, "llm", "start", name, event)
         # key: "llm:{node_name}" — allows multiple LLM calls within one node
         self._registry.set_child(event.run_id, llm_span_key(event.node_name), span)
 
@@ -650,7 +641,6 @@ class OtelPublisher(BasePublisher):
             return
 
         if self._level != ObservabilityLevel.SPANS:
-            _set_attrs(span, oi.llm_standard_attrs(event.data, "", ""))
             inp = event.data.get("input_tokens") or 0
             out = event.data.get("output_tokens") or 0
             if inp:
@@ -693,8 +683,8 @@ class OtelPublisher(BasePublisher):
                 )
             if output_messages:
                 span.set_attribute(GEN_AI_OUTPUT_MESSAGES, _to_str(output_messages))
-            _set_attrs(span, oi.llm_output_attrs(event.data))
 
+        self._set_backend_attrs(span, "llm", "end", _span_name(span), event)
         span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
@@ -719,7 +709,6 @@ class OtelPublisher(BasePublisher):
         name = f"execute_tool {tool_name}" if tool_name else "execute_tool"
         span = self._get_tracer().start_span(name, context=ctx, start_time=_ns(event.timestamp))
         span.set_attribute(GEN_AI_OPERATION, "execute_tool")
-        _set_kind(span, oi.KIND_TOOL, event, self._user_id_mode, name)
         span.set_attribute(GEN_AI_TOOL_NAME, tool_name)
         # The model generates the arguments of a predefined function, local or MCP alike.
         span.set_attribute(GEN_AI_TOOL_TYPE, "function")
@@ -738,8 +727,8 @@ class OtelPublisher(BasePublisher):
                     "tool.input",
                     attributes={"tool.input": _to_str(tool_input)},
                 )
-                _set_attrs(span, oi.tool_input_attrs(tool_input))
 
+        self._set_backend_attrs(span, "tool", "start", name, event)
         if event.metadata.get("is_remote"):
             # The client runs this tool and no END ever arrives, so the span ends now.
             span.set_attribute(TOOL_REMOTE, True)
@@ -761,8 +750,8 @@ class OtelPublisher(BasePublisher):
                     "tool.output",
                     attributes={"tool.output": _to_str(tool_output)},
                 )
-            _set_attrs(span, oi.tool_output_attrs(event.data))
 
+        self._set_backend_attrs(span, "tool", "end", _span_name(span), event)
         if event.metadata.get("denied"):
             span.set_attribute(TOOL_DENIED, True)
         if event.data.get("error"):
@@ -833,25 +822,10 @@ def _record_error(span: Span, event: EventModel, name: str) -> None:
     span.add_event("exception", attributes=attrs)
 
 
-def _set_kind(
-    span: Span, kind: str, event: EventModel, user_id_mode: UserIdMode, display_name: str
-) -> None:
-    """Span kind, display name, session (thread) and user id for OpenInference, Logfire, LangSmith.
-
-    The user id has the same value and mode as the graph user id.
-    """
-    span.set_attribute(oi.SPAN_KIND, kind)
-    span.set_attribute(LANGSMITH_SPAN_KIND, kind.lower())
-    span.set_attribute(LOGFIRE_MSG, display_name)
-    span.set_attribute(LANGSMITH_TRACE_NAME, display_name)
-    # The thread id as session.id on every span, so Phoenix and Langfuse group a thread's runs
-    # and a span filter by session finds node, LLM and tool spans too, not only the root.
-    span.set_attribute(SESSION_ID, str(event.thread_id))
-    span.set_attribute(LANGSMITH_THREAD_ID, str(event.thread_id))
-    if event.user_id is not None:
-        user_id = transform_user_id(event.user_id, user_id_mode)
-        span.set_attribute(oi.USER_ID, user_id)
-        span.set_attribute(LANGSMITH_USER_ID, user_id)
+def _span_name(span: Span) -> str:
+    """The name of an SDK span; ``""`` for a span type that has none."""
+    name = getattr(span, "name", "")
+    return name if isinstance(name, str) else ""
 
 
 def _set_attrs(span: Span, attrs: dict[str, Any]) -> None:
@@ -919,6 +893,16 @@ def setup_tracing(
     """
     _guard()
     publisher = OtelPublisher(tracer=tracer, level=level, user_id_mode=user_id_mode)
+    attach_publisher(graph, publisher)
+    return publisher
+
+
+def attach_publisher(graph: StateGraph, publisher: BasePublisher) -> None:
+    """Add ``publisher`` to the graph's publishers and bind the result in its container.
+
+    Must be called before ``graph.compile()``. A publisher already on the graph is kept:
+    both go into one ``CompositePublisher``.
+    """
     existing = graph._publisher
     if existing is None:
         combined: BasePublisher = publisher
@@ -936,4 +920,3 @@ def setup_tracing(
         allow_none=True,
         allow_concrete=True,
     )
-    return publisher

@@ -2,7 +2,7 @@
 
 A dedicated publisher that calls ``logfire.configure()`` on construction so
 the global TracerProvider is installed before the first span is created.
-All span dispatch logic is inherited from ``OtelPublisher``.
+Span dispatch is inherited from ``OtelPublisher``; this class adds ``logfire.msg``.
 
 Usage::
 
@@ -23,10 +23,33 @@ Requires: pip install '10xgraph[logfire]'
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .exporters import _guard_logfire
-from .otel_publisher import ObservabilityLevel, OtelPublisher
+from ._backends import _guard_logfire
+from .otel_attributes import LOGFIRE_MSG
+from .otel_publisher import ObservabilityLevel, OtelPublisher, SpanPhase, SpanRole
+
+
+if TYPE_CHECKING:
+    from .events import EventModel
+
+
+def logfire_attributes(
+    publisher: OtelPublisher,
+    role: SpanRole,
+    phase: SpanPhase,
+    name: str,
+    event: EventModel,
+    attrs: dict[str, Any],
+) -> dict[str, Any]:
+    """Add ``logfire.msg`` (the span's message in the Logfire UI) when a span starts.
+
+    Logfire's own tracer sets it to the span name too; setting it here keeps the message
+    when spans come from a tracer Logfire did not wrap. Content comes from ``gen_ai.*``.
+    """
+    if phase == "start":
+        attrs[LOGFIRE_MSG] = name
+    return attrs
 
 
 class LogfirePublisher(OtelPublisher):
@@ -97,3 +120,14 @@ class LogfirePublisher(OtelPublisher):
         logfire.configure(**kwargs)
         # OtelPublisher picks up the global TracerProvider set by logfire.configure
         super().__init__(level=level)
+
+    def span_attributes(
+        self,
+        role: SpanRole,
+        phase: SpanPhase,
+        name: str,
+        event: EventModel,
+        attrs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add the Logfire message (see ``logfire_attributes``)."""
+        return logfire_attributes(self, role, phase, name, event, attrs)
