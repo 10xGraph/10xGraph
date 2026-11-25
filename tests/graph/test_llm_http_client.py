@@ -124,7 +124,7 @@ def test_registry_fallback_gets_its_own_http_client(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_registry_google_entry_uploads_media_with_its_own_client(monkeypatch):
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from tenxgraph.core.graph.agent_internal.model_registry import bind_entry, entry_client
     from tenxgraph.storage.media.resolver import MediaRefResolver
