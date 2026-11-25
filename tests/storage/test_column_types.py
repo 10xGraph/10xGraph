@@ -373,9 +373,10 @@ class TestBackendSql:
         }
         await store.astore(cfg, "hello", memory_id="m1")
         sql = conn.sql("fetchrow")[0]
-        n = len(conn.calls[0][2])
-        assert f"${n - 1}::text::jsonb, ${n})" in sql
-        assert conn.calls[0][2][-2:] == ('["a"]', "2026-01-01")
+        # The extra columns come right before origin and expires_at (the last two values).
+        n = len(conn.calls[0][2]) - 2
+        assert f"${n - 1}::text::jsonb, ${n}, ${n + 1}, ${n + 2})" in sql
+        assert conn.calls[0][2][-4:-2] == ('["a"]', "2026-01-01")
 
         conn.fetchrow_results = [
             ValueError(f"invalid input for query argument ${n}: '2026-01-01' (no toordinal)")

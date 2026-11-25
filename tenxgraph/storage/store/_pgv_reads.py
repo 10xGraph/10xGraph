@@ -42,6 +42,7 @@ class _PgvReadsMixin(PgvHostBase):
         params: list[Any] = []
         where = self._scope_where(params, collection, scoped_user_id, tenant=ctx.conditions)
         where.eq("id", str(memory_id))
+        self._add_provenance(where)
         sql = f"SELECT {self._columns()} FROM {self._qualified_table} WHERE {where.sql()}"  # noqa: S608
         row = await self._run(lambda conn: conn.fetchrow(sql, *params), settings=ctx.settings)
         return self._row_to_result(row, 1.0) if row is not None else None
@@ -54,7 +55,8 @@ class _PgvReadsMixin(PgvHostBase):
     ) -> list[MemorySearchResult]:
         """List a user's memories in the collection, newest first.
 
-        ``filters`` (keyword argument) narrows the list, same rules as ``asearch``.
+        ``filters`` and ``origins`` (keyword arguments) narrow the list, same rules as
+        ``asearch``. Expired memories are left out.
         """
         user_id, _thread_id, collection = self._extract_config_values(config)
         scoped_user_id = self._require_user_id(config, user_id)
@@ -62,6 +64,7 @@ class _PgvReadsMixin(PgvHostBase):
         params: list[Any] = []
         where = self._scope_where(params, collection, scoped_user_id, tenant=ctx.conditions)
         self._add_filters(where, filters=kwargs.get("filters"))
+        self._add_provenance(where, kwargs.get("origins"))
         limit_p = where.param(self._check_limit(limit))
         sql = (
             f"SELECT {self._columns()} FROM {self._qualified_table} "  # noqa: S608
@@ -99,6 +102,10 @@ class _PgvReadsMixin(PgvHostBase):
         ``"fallback"``, ``SIMILARITY`` and ``HYBRID`` run as ``TEXT``. See the class docstring
         for what scores and ``score_threshold`` mean in each strategy. ``filters`` narrows
         every strategy (also both candidate lists of ``HYBRID``); see ``_add_filters``.
+
+        Expired memories are never returned, and ``origins`` (keyword argument, a list of
+        ``MemoryOrigin``; ``None`` in it keeps unknown origin) narrows by who wrote them. Both
+        are part of the query, so ``limit`` counts only rows that pass them.
         """
         strategy = self._check_strategy(
             RetrievalStrategy(
@@ -130,6 +137,7 @@ class _PgvReadsMixin(PgvHostBase):
             params, collection, scoped_user_id, alias="m", tenant=ctx.conditions
         )
         self._add_filters(where, memory_type=memory_type, category=category, filters=filters)
+        self._add_provenance(where, kwargs.get("origins"))
 
         if strategy == RetrievalStrategy.TEXT or vector is None:
             sql = self._text_sql(where, query, limit)

@@ -33,7 +33,7 @@ class _PgvWritesMixin(PgvHostBase):
     # Writes
     # ------------------------------------------------------------------
 
-    async def astore(
+    async def astore(  # noqa: PLR0915
         self,
         config: dict[str, Any],
         content: str | Message,
@@ -58,6 +58,11 @@ class _PgvWritesMixin(PgvHostBase):
         Keyword Args:
             memory_id: Id for a new memory (generated when absent).
             memory_key: Stable topic key for the memory (see above).
+            origin: Who wrote it (``MemoryOrigin``); ``None`` stores unknown.
+            expires_at: Timezone-aware time after which the memory is hidden from reads and
+                removed by ``adelete_expired``; ``None`` never expires. A naive datetime raises.
+                A keyed upsert sets both from this write, so remembering a key again revives
+                an expired memory.
         """
         self._refuse_unstorable(
             content=content,
@@ -65,6 +70,7 @@ class _PgvWritesMixin(PgvHostBase):
             category=category,
             memory_key=kwargs.get("memory_key"),
         )
+        origin, expires_at = self._provenance(kwargs)
         user_id, thread_id, collection = self._extract_config_values(config)
         owner = str(self._require_owner_id(config, user_id))
         text, memory_type, clean_metadata = self._prepare(content, memory_type, metadata)
@@ -109,12 +115,16 @@ class _PgvWritesMixin(PgvHostBase):
             columns.append(spec.quoted)
             values.append(spec.placeholder(f"${len(params)}"))
             column_params[len(params)] = spec
+        params.extend([origin.value if origin is not None else None, expires_at])
+        columns.extend(["origin", "expires_at"])
+        values.extend([f"${len(params) - 1}", f"${len(params)}"])
 
         insert = (
             f"INSERT INTO {self._qualified_table} AS m ({', '.join(columns)}) "  # noqa: S608
             f"VALUES ({', '.join(values)}) "
         )
         set_embedding = ", embedding = EXCLUDED.embedding" if self.embedding is not None else ""
+        set_embedding += ", origin = EXCLUDED.origin, expires_at = EXCLUDED.expires_at"
         if memory_key is not None:
             # The key index includes the tenant columns, so a conflict is always a row of this
             # same owner in this same tenant. Extra values present in this write replace the
@@ -202,9 +212,12 @@ class _PgvWritesMixin(PgvHostBase):
         Metadata is merged into the stored metadata unless ``replace_metadata=True``. A
         ``category`` or ``memory_key`` in ``metadata`` updates that column; otherwise it is kept.
         A memory that does not exist or belongs to another user raises ``ValueError`` (not
-        found), as on ``QdrantStore``.
+        found), as on ``QdrantStore``. ``origin`` and ``expires_at`` (keyword arguments)
+        replace the stored values; left out, the stored ones are kept. An expired memory can
+        be updated (for example given a new ``expires_at``).
         """
         self._refuse_unstorable(content=content, metadata=metadata)
+        origin, expires_at = self._provenance(kwargs)
         user_id, _thread_id, collection = self._extract_config_values(config)
         scoped_user_id = self._require_owner_id(config, user_id)  # writes stay reach own
         text = content.text() if isinstance(content, Message) else content
@@ -238,6 +251,8 @@ class _PgvWritesMixin(PgvHostBase):
             placeholder = where.param(ctx.values[spec.name])
             column_params[int(placeholder[1:])] = spec
             set_extra += f", {spec.quoted} = {spec.placeholder(placeholder)}"
+        origin_p = where.param(origin.value if origin is not None else None)
+        expires_p = where.param(expires_at)
         sql = (
             f"UPDATE {self._qualified_table} SET "  # noqa: S608
             f"content = {content_p}, "
@@ -245,6 +260,8 @@ class _PgvWritesMixin(PgvHostBase):
             f"memory_key = COALESCE({key_p}::text, memory_key), "
             f"metadata = CASE WHEN {replace_p}::bool THEN {meta_p}::text::jsonb "
             f"ELSE metadata || {meta_p}::text::jsonb END{set_embedding}{set_extra}, "
+            f"origin = COALESCE({origin_p}::text, origin), "
+            f"expires_at = COALESCE({expires_p}::timestamptz, expires_at), "
             f"updated_at = now() WHERE {where.sql()} RETURNING id"
         )
 
@@ -315,6 +332,37 @@ class _PgvWritesMixin(PgvHostBase):
             thread_id,
             collection,
         )
+
+    async def adelete_expired(self, batch_size: int = 1000, collection: str | None = None) -> int:
+        """Delete every expired memory, over all owners and tenants; return how many.
+
+        Runs one short ``DELETE`` per batch of ``batch_size`` rows (``FOR UPDATE SKIP LOCKED``,
+        row locks only, no long transaction), so it is safe while the store is in use and two
+        runs at once do not block each other. ``collection`` narrows it to one collection.
+        """
+        batch_size = self._check_batch_size(batch_size)
+        table = self._qualified_table
+        params: list[Any] = [batch_size]
+        narrow = ""
+        if collection is not None:
+            params.append(str(collection))
+            narrow = " AND collection = $2"
+        sql = (
+            f"DELETE FROM {table} WHERE (collection, id) IN ("  # noqa: S608
+            f"SELECT collection, id FROM {table} WHERE expires_at <= now(){narrow} "
+            "ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED)"
+        )
+        # Maintenance over every tenant, as in abackfill_embeddings.
+        settings = rls_all_rows_settings(self.columns.tenant) if self.row_level_security else None
+        deleted = 0
+        while True:
+            status = await self._run(lambda conn: conn.execute(sql, *params), settings=settings)
+            count = rows_affected(status)
+            deleted += count
+            if count < batch_size:
+                break
+        logger.info("PgVectorStore deleted %d expired memories", deleted)
+        return deleted
 
     async def abackfill_embeddings(self, batch_size: int = 100) -> int:
         """Embed every memory saved without an embedding; return how many were filled.

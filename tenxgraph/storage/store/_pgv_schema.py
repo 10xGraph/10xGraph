@@ -72,6 +72,8 @@ class _PgvSchemaMixin(PgvHostBase):
                 {embedding_column}metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                origin TEXT,
+                expires_at TIMESTAMPTZ,
                 PRIMARY KEY (collection, id)
             )
             """,
@@ -90,6 +92,8 @@ class _PgvSchemaMixin(PgvHostBase):
         return [
             (f"{self.table}_uid_idx", "(collection, user_id)"),
             (f"{self.table}_tsv_idx", "USING gin (tsv)"),
+            # Serves adelete_expired only; reads filter rows already picked by owner or HNSW.
+            (f"{self.table}_exp_idx", "(expires_at) WHERE expires_at IS NOT NULL"),
         ]
 
     def _key_nulls_clause(self) -> str:

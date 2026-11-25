@@ -25,6 +25,7 @@ import pytest_asyncio
 
 from tenxgraph.storage.columns import MissingColumnValueError
 from tenxgraph.storage.store import PgVectorStore, system_user_id
+from tenxgraph.storage.store.pgvector_store import CURRENT_SCHEMA_VERSION
 from tenxgraph.storage.store.store_schema import RetrievalStrategy
 
 
@@ -104,7 +105,7 @@ class TestSchema:
     async def test_setup_adds_columns_indexes_and_tenant_key(self, pool, table):
         store = _store(pool, table, extra_columns={"public_id": "text"})
         await store.asetup()
-        assert await store.aget_schema_version() == 2
+        assert await store.aget_schema_version() == CURRENT_SCHEMA_VERSION
         assert {"org_id", "project_id", "public_id"} <= await _columns(pool, table)
         indexes = {
             r["indexname"]: r["indexdef"]
@@ -145,7 +146,7 @@ class TestSchema:
 
         store = _store(pool, table)
         await store.asetup()
-        assert await store.aget_schema_version() == 2
+        assert await store.aget_schema_version() == CURRENT_SCHEMA_VERSION
         assert {"org_id", "project_id"} <= await _columns(pool, table)
         # Old rows hold NULL tenant values: invisible to scopes that pick tenant columns...
         assert await store.aget(_cfg(), legacy) is None

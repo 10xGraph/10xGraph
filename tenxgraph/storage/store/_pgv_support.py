@@ -32,7 +32,7 @@ logger = logging.getLogger("tenxgraph.store.pgvector")
 
 # Schema version of the store table. Bump it and add an entry to ``_MIGRATIONS`` when the table
 # changes, so existing databases are upgraded in place by ``asetup()``.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 # Version -> idempotent DDL that brings the table from ``version - 1`` to ``version``. Each
 # statement is a format string with ``{table}`` (the quoted, schema-qualified table name).
@@ -43,7 +43,17 @@ CURRENT_SCHEMA_VERSION = 2
 # setup (``ADD COLUMN IF NOT EXISTS`` + one B-tree index each, only for a column that is
 # missing), which also covers a column declared after the table reached version 2. With
 # nothing declared, version 2 changes nothing in the table.
-_MIGRATIONS: dict[int, list[str]] = {2: []}
+#
+# Version 3 adds ``origin`` (who wrote the memory) and ``expires_at``. Both are nullable with
+# no default, so ``ADD COLUMN`` changes only the catalog (no table rewrite). Their partial index
+# ``<table>_exp_idx`` is built by ``_ensure_indexes`` (concurrently on an existing table).
+_MIGRATIONS: dict[int, list[str]] = {
+    2: [],
+    3: [
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS origin TEXT",
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
+    ],
+}
 
 # Columns the store owns. Tenant and extra columns cannot reuse these names.
 STORE_BUILTIN_COLUMNS = frozenset(
@@ -61,6 +71,8 @@ STORE_BUILTIN_COLUMNS = frozenset(
         "metadata",
         "created_at",
         "updated_at",
+        "origin",
+        "expires_at",
     }
 )
 
@@ -103,7 +115,17 @@ _OPCLASS_TO_METRIC = {opclass: metric for metric, (_op, opclass) in _METRIC_SQL.
 # Keys the store keeps in real columns. They are taken out of caller metadata before it is saved
 # as JSONB, so metadata can never replace them.
 _SYSTEM_METADATA_KEYS = frozenset(
-    {"content", "user_id", "thread_id", "memory_type", "category", "timestamp", "memory_key"}
+    {
+        "content",
+        "user_id",
+        "thread_id",
+        "memory_type",
+        "category",
+        "timestamp",
+        "memory_key",
+        "origin",
+        "expires_at",
+    }
 )
 
 # ``filters`` keys that match a real column (built-ins, plus declared extra columns) are
@@ -121,6 +143,8 @@ _SELECT_COLUMNS = (
     "metadata",
     "created_at",
     "updated_at",
+    "origin",
+    "expires_at",
 )
 
 

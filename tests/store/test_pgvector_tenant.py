@@ -148,8 +148,8 @@ class TestWrites:
         conn.fetchrow_results = [{"id": "m1"}]
         await store.astore(_cfg(public_id="pub"), "hello", memory_id="m1")
         sql = conn.sql("fetchrow")[0]
-        assert '"org_id", "project_id", "public_id") VALUES (' in sql
-        assert conn.calls[0][2][-3:] == ("A", "P1", "pub")
+        assert '"org_id", "project_id", "public_id", origin, expires_at) VALUES (' in sql
+        assert conn.calls[0][2][-5:] == ("A", "P1", "pub", None, None)
         assert (
             'WHERE m.user_id = EXCLUDED.user_id AND m."org_id" IS NOT DISTINCT FROM '
             'EXCLUDED."org_id" AND m."project_id" IS NOT DISTINCT FROM EXCLUDED."project_id"'
@@ -189,7 +189,7 @@ class TestWrites:
             "x",
             memory_id="m1",
         )
-        assert conn.calls[0][2][-2:] == ("A", None)
+        assert conn.calls[0][2][-4:-2] == ("A", None)
         assert 'm."team" IS NOT DISTINCT FROM EXCLUDED."team"' in conn.sql("fetchrow")[0]
 
     async def test_identity_without_optional_tenant_claim_raises_like_the_checkpointer(self):
@@ -327,5 +327,6 @@ class TestSetup:
             "0.7.0" if "extversion" in sql else "vector(4)" if "format_type" in sql else None
         )
         await store.asetup()
-        assert not any("pg_policies" in s or "ADD COLUMN" in s for s in conn.sql())
+        # Only the v3 migration adds columns (origin, expires_at; unquoted, built-in).
+        assert not any("pg_policies" in s or 'ADD COLUMN IF NOT EXISTS "' in s for s in conn.sql())
         assert store._iterative_scan is False  # pgvector 0.7 has no iterative scans

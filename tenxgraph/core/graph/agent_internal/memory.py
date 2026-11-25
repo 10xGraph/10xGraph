@@ -32,6 +32,19 @@ def _warn_unsupported_strategies(memory: MemoryConfig) -> None:
             warn_unsupported_strategy(store, scope.retrieval_strategy or memory.retrieval_strategy)
 
 
+def _refuse_unsupported_provenance(memory: MemoryConfig) -> None:
+    """Raise when an enabled scope sets ``origins`` or ``ttl`` on a known store that would
+    ignore them. A store injected at run time is checked on each memory call instead."""
+    from tenxgraph.storage.store.memory_config import _check_provenance_support
+
+    for scope in (memory.user_memory, memory.agent_memory):
+        if scope is None or not scope.enabled:
+            continue
+        store = scope.store or memory.store
+        if store is not None:
+            _check_provenance_support(store, memory, scope)
+
+
 class AgentMemoryMixin:
     """Memory registration helpers for Agent."""
 
@@ -68,6 +81,7 @@ class AgentMemoryMixin:
                 "set one so shared agent memory has its own owner"
             )
 
+        _refuse_unsupported_provenance(memory)
         self._memory_config = memory
         _warn_unsupported_strategies(memory)
 
@@ -157,8 +171,10 @@ class AgentMemoryMixin:
             _strip_thread_id,
         )
         from tenxgraph.storage.store.memory_config import (
+            _check_provenance_support,
             _memory_scope_config,
             _memory_scope_limit,
+            _memory_scope_origins,
             _memory_scope_retrieval_strategy,
             _memory_scope_score_threshold,
             _memory_scope_store,
@@ -195,7 +211,9 @@ class AgentMemoryMixin:
             if scope_name == "user":
                 search_config = _strip_thread_id(search_config)
 
+            origins = _memory_scope_origins(memory, scope_config)
             try:
+                _check_provenance_support(store, memory, scope_config)
                 results = await store.asearch(
                     search_config,
                     query,
@@ -204,6 +222,7 @@ class AgentMemoryMixin:
                     score_threshold=_memory_scope_score_threshold(memory, scope_config),
                     retrieval_strategy=strategy,
                     **({"max_tokens": memory.max_tokens} if memory.max_tokens else {}),
+                    **({"origins": origins} if origins is not None else {}),
                 )
             except Exception:
                 logger.exception("Memory preload search failed for %s", scope_name)

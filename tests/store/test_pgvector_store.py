@@ -132,6 +132,8 @@ def _row(**overrides):
         "metadata": json.dumps({"source": "chat"}),
         "created_at": None,
         "updated_at": None,
+        "origin": None,
+        "expires_at": None,
         "score": 0.9,
     }
     row.update(overrides)
@@ -524,7 +526,7 @@ class TestStore:
         await store.astore(CFG, "x", memory_id="m")
         _, sql, args = conn.calls[-1]
         assert "embedding" not in sql
-        assert len(args) == 9
+        assert len(args) == 11  # 9 columns plus origin and expires_at
 
 
 @pytest.mark.asyncio
