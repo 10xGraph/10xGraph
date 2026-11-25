@@ -22,7 +22,7 @@ from tenxgraph.runtime.adapters.llm.base_converter import BaseConverter
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher, setup_tracing
+from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher
 from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.runtime.publisher.trace_context import find_span, tool_span, use_trace_span
 from tenxgraph.utils.constants import END
@@ -142,13 +142,12 @@ def _graph(otel, *, fail_llm=False):
         last = state.context[-1] if state.context else None
         return "TOOL" if last is not None and last.tools_calls else END
 
-    graph = StateGraph()
+    graph = StateGraph(publisher=OtelPublisher(tracer=otel.tracer))
     graph.add_node("MAIN", agent)
     graph.add_node("TOOL", ToolNode([], client=_TracingClient(otel.lib)))
     graph.add_conditional_edges("MAIN", route, {"TOOL": "TOOL", END: END})
     graph.add_edge("TOOL", "MAIN")
     graph.set_entry_point("MAIN")
-    setup_tracing(graph, tracer=otel.tracer)
     return graph, patch.object(Agent, "_call_llm", fake_llm)
 
 

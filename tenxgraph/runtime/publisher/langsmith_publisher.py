@@ -7,17 +7,12 @@ created.  Span dispatch is inherited from ``OtelPublisher``; this class adds the
 
 Usage::
 
-    from tenxgraph.runtime.publisher import LangsmithPublisher
+    from tenxgraph.core.graph import StateGraph
+    from tenxgraph.runtime.publisher import ObservabilityLevel, LangsmithPublisher
 
     publisher = LangsmithPublisher(project="my-agent", level=ObservabilityLevel.FULL)
-    graph._publisher = publisher
+    graph = StateGraph(publisher=publisher)
     compiled = graph.compile(...)
-
-Or use the convenience helper which does the same in one call::
-
-    from tenxgraph.runtime.publisher import setup_langsmith
-
-    setup_langsmith(graph, project="my-agent")
 
 Secrets stay in the environment: set ``LANGSMITH_API_KEY`` (or pass ``api_key=``).
 
@@ -29,7 +24,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ._backends import _build_langsmith_processor
-from .identity import transform_user_id
+from .identity import UserIdMode, transform_user_id
 from .otel_attributes import (
     LANGSMITH_SPAN_KIND,
     LANGSMITH_THREAD_ID,
@@ -94,6 +89,8 @@ class LangsmithPublisher(OtelPublisher):
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
 
     Raises:
         ImportError: If ``opentelemetry-exporter-otlp-proto-http`` or
@@ -107,7 +104,7 @@ class LangsmithPublisher(OtelPublisher):
             project="my-agent",
             level=ObservabilityLevel.STANDARD,
         )
-        graph._publisher = publisher
+        graph = StateGraph(publisher=publisher)
         compiled = graph.compile(...)
     """
 
@@ -119,6 +116,7 @@ class LangsmithPublisher(OtelPublisher):
         endpoint: str = "https://api.smith.langchain.com/otel",
         level: ObservabilityLevel = ObservabilityLevel.FULL,
         tracer_provider: Any = None,
+        user_id_mode: UserIdMode = "raw",
     ) -> None:
         processor = _build_langsmith_processor(api_key=api_key, project=project, endpoint=endpoint)
 
@@ -136,7 +134,7 @@ class LangsmithPublisher(OtelPublisher):
             # Bind to the supplied provider explicitly (it may not be global).
             tracer = tracer_provider.get_tracer("10xgraph")
 
-        super().__init__(tracer=tracer, level=level)
+        super().__init__(tracer=tracer, level=level, user_id_mode=user_id_mode)
 
     def span_attributes(
         self,

@@ -29,7 +29,6 @@ from tenxgraph.utils.constants import START
 
 from . import _genai
 from .base_publisher import BasePublisher
-from .composite_publisher import CompositePublisher
 from .events import Event, EventModel, EventType
 from .identity import UserIdMode, transform_user_id, validate_user_id_mode
 from .otel_attributes import (
@@ -82,7 +81,6 @@ from .otel_attributes import (
 if TYPE_CHECKING:
     from opentelemetry.trace import Span, Tracer
 
-    from tenxgraph.core.graph.state_graph import StateGraph
 
 logger = logging.getLogger("tenxgraph.otel")
 
@@ -111,16 +109,6 @@ class ObservabilityLevel(StrEnum):
     SPANS = "spans"
     STANDARD = "standard"
     FULL = "full"
-
-
-def _guard() -> None:
-    """Raise a helpful ImportError if opentelemetry-api is not installed."""
-    try:
-        import opentelemetry  # noqa: F401
-    except ImportError as exc:
-        raise ImportError(
-            "OpenTelemetry is required for tracing. Install with: pip install '10xgraph[otel]'"
-        ) from exc
 
 
 def _ns(ts: float) -> int:
@@ -193,12 +181,13 @@ class OtelPublisher(BasePublisher):
     Writes the OTEL GenAI conventions (``gen_ai.*``) and ``tenxgraph.*`` attributes only.
     The keys a trace backend reads (OpenInference for Phoenix, ``langsmith.*``,
     ``logfire.*``) come from ``span_attributes``, which ``PhoenixPublisher``,
-    ``LangsmithPublisher``, ``LogfirePublisher`` and ``BackendsPublisher`` override.
+    ``LangsmithPublisher`` and ``LogfirePublisher`` override.
 
     Usage (minimal — FULL level, global TracerProvider):
-        from tenxgraph.runtime.publisher.otel_publisher import setup_tracing
+        from tenxgraph.core.graph import StateGraph
+        from tenxgraph.runtime.publisher import OtelPublisher
 
-        setup_tracing(graph)           # call before graph.compile()
+        graph = StateGraph(publisher=OtelPublisher())
         compiled = graph.compile(...)
 
     Usage (FULL level with explicit provider):
@@ -211,7 +200,7 @@ class OtelPublisher(BasePublisher):
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
         trace.set_tracer_provider(provider)
 
-        setup_tracing(graph, level=ObservabilityLevel.FULL)
+        graph = StateGraph(publisher=OtelPublisher(level=ObservabilityLevel.FULL))
         compiled = graph.compile(...)
     """
 
@@ -865,58 +854,3 @@ def _set_request_params(span: Span, params: dict[str, Any]) -> None:
                 span.set_attribute(attr_name, cast_type(val))
         except (TypeError, ValueError):
             pass
-
-
-def setup_tracing(
-    graph: StateGraph,
-    tracer: Tracer | None = None,
-    level: ObservabilityLevel = ObservabilityLevel.FULL,
-    user_id_mode: UserIdMode = "raw",
-) -> OtelPublisher:
-    """Register OtelPublisher as the publisher backend on the graph.
-
-    Must be called before graph.compile() so the publisher is bound in the
-    DI container when the graph is compiled.
-
-    Args:
-        graph: The StateGraph instance to instrument.
-        tracer: Optional explicit Tracer. Uses the global TracerProvider if None.
-        level: How much data to emit. FULL by default (message content and graph
-               state; may contain PII). Use STANDARD or SPANS to keep content out.
-        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``; see ``OtelPublisher``.
-
-    Returns:
-        The OtelPublisher instance.
-
-    Raises:
-        ImportError: If opentelemetry-api is not installed.
-    """
-    _guard()
-    publisher = OtelPublisher(tracer=tracer, level=level, user_id_mode=user_id_mode)
-    attach_publisher(graph, publisher)
-    return publisher
-
-
-def attach_publisher(graph: StateGraph, publisher: BasePublisher) -> None:
-    """Add ``publisher`` to the graph's publishers and bind the result in its container.
-
-    Must be called before ``graph.compile()``. A publisher already on the graph is kept:
-    both go into one ``CompositePublisher``.
-    """
-    existing = graph._publisher
-    if existing is None:
-        combined: BasePublisher = publisher
-    elif isinstance(existing, CompositePublisher):
-        existing.add_publisher(publisher)
-        combined = existing
-    else:
-        combined = CompositePublisher([existing, publisher])
-    graph._publisher = combined
-    # StateGraph.__init__ already bound BasePublisher in the container (None when the
-    # graph had no publisher), and publish_event resolves it from there.
-    graph._container.bind_instance(
-        BasePublisher,
-        combined,
-        allow_none=True,
-        allow_concrete=True,
-    )

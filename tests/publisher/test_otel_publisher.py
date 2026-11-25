@@ -1,11 +1,10 @@
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from tenxgraph.runtime.publisher.backends_publisher import BackendsPublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.otel_publisher import (
     ObservabilityLevel,
@@ -14,8 +13,10 @@ from tenxgraph.runtime.publisher.otel_publisher import (
     _provider_system_name,
     _set_request_params,
     _to_str,
-    setup_tracing,
 )
+from tenxgraph.runtime.publisher.phoenix_publisher import PhoenixPublisher
+
+from ._publishers import without_exporter
 
 
 class _Span:
@@ -206,16 +207,7 @@ def test_llm_handlers_and_error_paths():
 
 
 def test_default_level_is_full():
-    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
-        assert OtelPublisher()._level == ObservabilityLevel.FULL
-
-
-def test_setup_tracing_attaches_publisher():
-    graph = SimpleNamespace(_publisher=None, _container=MagicMock())
-    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
-        pub = setup_tracing(graph)
-    assert graph._publisher is pub
-    graph._container.bind_instance.assert_called_once()
+    assert OtelPublisher()._level == ObservabilityLevel.FULL
 
 
 def test_graph_lifecycle_update_and_error_handlers():
@@ -299,24 +291,6 @@ def test_close_and_sync_close_paths():
     assert pub._is_closed is True
 
 
-def test_guard_raises_when_opentelemetry_missing(monkeypatch):
-    from tenxgraph.runtime.publisher import otel_publisher as op
-
-    real_import = __import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name == "opentelemetry":
-            raise ImportError("missing")
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", _fake_import):
-        with patch.dict(sys.modules, {"opentelemetry": None}):
-            try:
-                op._guard()
-            except ImportError:
-                assert True
-
-
 def test_publish_handles_closed_and_dispatch_exceptions():
     _install_fake_otel()
     pub = OtelPublisher()
@@ -360,7 +334,7 @@ def _node_spans(level, start_data, end_data):
     import json
 
     tracer = _install_fake_otel()
-    pub = BackendsPublisher(["phoenix"], level=level)
+    pub = without_exporter(PhoenixPublisher, level=level)
     pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.START, data={"step": 1}))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data=start_data))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=end_data))

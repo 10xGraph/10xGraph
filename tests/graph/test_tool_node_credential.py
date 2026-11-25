@@ -18,7 +18,7 @@ from tenxgraph.core.graph import StateGraph, ToolNode
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, setup_tracing
+from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, OtelPublisher
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer, SqliteCheckpointer
 from tenxgraph.utils import CallbackManager, InvocationType, tool
 from tenxgraph.utils.callbacks import GraphLifecycleHook
@@ -363,8 +363,8 @@ async def test_otel_full_level_spans_are_clean():
     exporter = memory.InMemorySpanExporter()
     provider = sdk.TracerProvider()
     provider.add_span_processor(export.SimpleSpanProcessor(exporter))
-    graph = _graph(ToolNode([annotated]), [_call("annotated")])
-    setup_tracing(graph, tracer=provider.get_tracer("test"), level=ObservabilityLevel.FULL)
+    publisher = OtelPublisher(tracer=provider.get_tracer("test"), level=ObservabilityLevel.FULL)
+    graph = _graph(ToolNode([annotated]), [_call("annotated")], publisher=publisher)
     app = graph.compile()
     await app.ainvoke({"messages": [Message.text_message("hi")]}, config=_config("t-otel"))
     await app.aclose()

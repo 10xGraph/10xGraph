@@ -15,13 +15,14 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from tenxgraph.runtime.publisher.backends_publisher import BackendsPublisher, enabled_backends
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.identity import transform_user_id
 from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
 from tenxgraph.runtime.publisher.logfire_publisher import LogfirePublisher
 from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, OtelPublisher
 from tenxgraph.runtime.publisher.phoenix_publisher import PhoenixPublisher
+
+from ._publishers import without_exporter
 
 
 OI_KEYS = ("openinference.", "input.", "output.", "llm.", "session.id", "user.id", "metadata")
@@ -83,14 +84,6 @@ def _provider():
     return provider, exporter
 
 
-def _backends(names, level=ObservabilityLevel.FULL, user_id_mode="raw"):
-    provider, exporter = _provider()
-    pub = BackendsPublisher(
-        names, tracer=provider.get_tracer("t"), level=level, user_id_mode=user_id_mode
-    )
-    return _run(pub, exporter)
-
-
 def _has(spans, prefixes) -> bool:
     return any(k.startswith(prefixes) for attrs in spans.values() for k in attrs)
 
@@ -106,12 +99,6 @@ def _assert_basic(spans):
 def test_plain_otel_publisher_writes_no_backend_keys():
     provider, exporter = _provider()
     spans = _run(OtelPublisher(tracer=provider.get_tracer("t")), exporter)
-    _assert_basic(spans)
-    assert not _has(spans, OI_KEYS + LANGSMITH_KEYS + LOGFIRE_KEYS)
-
-
-def test_otlp_backend_is_basic_only():
-    spans = _backends(["otlp"])
     _assert_basic(spans)
     assert not _has(spans, OI_KEYS + LANGSMITH_KEYS + LOGFIRE_KEYS)
 
@@ -176,43 +163,34 @@ def test_logfire_publisher_writes_logfire_only():
     assert [k for a in spans.values() for k in a if k.startswith("logfire.")] == ["logfire.msg"] * 4
 
 
-def test_several_backends_write_each_dialect_on_one_span():
-    spans = _backends(["langsmith", "phoenix"])
-    assert not _has(spans, LOGFIRE_KEYS)
-    llm = spans["chat m1"]
-    assert llm["openinference.span.kind"] == "LLM" and llm["langsmith.span.kind"] == "llm"
-    assert llm["session.id"] == llm["langsmith.metadata.thread_id"] == "t1"
-
-
 @pytest.mark.parametrize("mode", ["hash", "mask"])
-def test_user_id_mode_applies_to_every_backend_key(mode):
-    spans = _backends(["phoenix", "langsmith"], user_id_mode=mode)
+def test_user_id_mode_applies_to_phoenix_and_langsmith_keys(mode):
     expected = transform_user_id("alice42", mode)
     assert expected != "alice42"
-    for attrs in spans.values():
-        assert attrs["user.id"] == attrs["langsmith.metadata.user_id"] == expected
-        assert "alice42" not in json.dumps(attrs)
+    for cls, key in (
+        (PhoenixPublisher, "user.id"),
+        (LangsmithPublisher, "langsmith.metadata.user_id"),
+    ):
+        provider, exporter = _provider()
+        pub = without_exporter(cls, tracer=provider.get_tracer("t"), user_id_mode=mode)
+        for attrs in _run(pub, exporter).values():
+            assert attrs[key] == expected
+            assert "alice42" not in json.dumps(attrs)
 
 
-def test_levels_hide_content_in_every_backend():
-    spans_level = _backends(["phoenix", "langsmith", "logfire"], level=ObservabilityLevel.SPANS)
+def test_levels_hide_phoenix_content():
+    def spans(level):
+        provider, exporter = _provider()
+        pub = without_exporter(PhoenixPublisher, tracer=provider.get_tracer("t"), level=level)
+        return _run(pub, exporter)
+
+    spans_level = spans(ObservabilityLevel.SPANS)
     assert not _has(spans_level, ("input.", "output.", "llm."))
     assert spans_level["chat m1"]["openinference.span.kind"] == "LLM"
-    standard = _backends(["phoenix", "langsmith", "logfire"], level=ObservabilityLevel.STANDARD)
+    standard = spans(ObservabilityLevel.STANDARD)
     llm = standard["chat m1"]
     assert llm["llm.token_count.total"] == 5
     assert not any(k.startswith(("input.", "output.", "llm.input_", "llm.output_")) for k in llm)
     assert "input.value" not in standard["invoke_agent 10xgraph"]
     assert "input.value" not in standard["execute_tool search"]
     assert "input.value" in standard["MAIN"]  # node state is STANDARD
-
-
-def test_unknown_backend_is_refused():
-    with pytest.raises(ValueError, match="nope"):
-        BackendsPublisher(["phoenix", "nope"])
-
-
-def test_enabled_backends_reads_the_config_block():
-    cfg = {"phoenix": {"enabled": True}, "langsmith": {"enabled": False}, "otlp": {"enabled": 1}}
-    assert enabled_backends(cfg) == ["phoenix", "otlp"]
-    assert enabled_backends({}) == []

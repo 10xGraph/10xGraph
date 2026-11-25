@@ -213,7 +213,8 @@ are recorded in `execution_meta.internal_data["active_skills"]` and re-injected 
 `validate_skill()` / `10xgraph skills --validate` check skills against the spec.
 
 **Publishers.** Emit execution events to Console, Redis Pub/Sub, Kafka, RabbitMQ, or OTEL.
-`CompositePublisher` fans out to several. OTEL publisher provides tracing (`setup_tracing`).
+`CompositePublisher` fans out to several. OTEL publisher provides tracing: pass `OtelPublisher`, `PhoenixPublisher`,
+`LangsmithPublisher` or `LogfirePublisher` to `StateGraph(publisher=...)`.
 
 **QA.** `tenxgraph.qa.evaluation` is a full eval framework (criteria incl. LLM-as-judge,
 trajectory matching, rubric, safety, hallucination; datasets; console/JSON/HTML/JUnit reporters;

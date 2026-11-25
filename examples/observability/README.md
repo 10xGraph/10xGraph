@@ -125,7 +125,7 @@ publisher = OtelPublisher(level=ObservabilityLevel.STANDARD)
 agent = ReactAgent(model="gpt-5-mini", tools=[get_inventory], publisher=publisher)
 ```
 
-Pass the publisher when the graph is created. The library also exports `setup_tracing(graph)`, but in the current release it sets the publisher on a `StateGraph` after the graph's dependency container was already built, and no events reach it. Constructor injection works.
+Pass the publisher when the graph is created, with `StateGraph(publisher=...)` or the prebuilt agent's `publisher=` argument. A list of publishers becomes a `CompositePublisher`.
 
 `OtelPublisher` also accepts `user_id_mode="hash"` or `"mask"` to keep raw user ids off spans.
 
@@ -133,9 +133,9 @@ Pass the publisher when the graph is created. The library also exports `setup_tr
 
 `brokers.py` builds one publisher from a config dict, selected with `BROKER`. Redis supports `mode` `pubsub` or `stream`, Kafka takes `bootstrap_servers` and `topic`, and RabbitMQ takes `url`, `exchange` and `routing_key`. Connections open on first use, so a missing broker shows up as a publish error in the logs, not at import.
 
-### Logfire and LangSmith
+### Logfire, LangSmith and Phoenix
 
-`LogfirePublisher(service_name=...)` and `LangsmithPublisher(project=...)` call the backend setup in their constructors and then behave like `OtelPublisher`. `setup_observability(graph, config)` builds the same setup from a `10xgraph.json`-style `observability` block for Logfire and LangSmith.
+`LogfirePublisher(service_name=...)`, `LangsmithPublisher(project=...)` and `PhoenixPublisher(project=...)` set up their backend's exporter in the constructor and then behave like `OtelPublisher`. Pass one to `StateGraph(publisher=...)`. On the API server, the `observability` block of `10xgraph.json` does the same setup for one or several backends at once.
 
 ## Expected output
 

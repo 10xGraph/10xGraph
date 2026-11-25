@@ -249,6 +249,14 @@ class TestLogfirePublisher:
 
         assert pub._level == ObservabilityLevel.FULL
 
+    def test_user_id_mode_passed_to_otel_publisher(self):
+        pub, fake_lf = self._make_publisher(
+            _fake_logfire_module(), _fake_otel_modules(), user_id_mode="mask"
+        )
+        assert pub.user_id_mode == "mask"
+        # It is a publisher setting, not a logfire.configure() argument.
+        assert "user_id_mode" not in fake_lf.configure.call_args[1]
+
     def test_raises_import_error_when_logfire_missing(self):
         # A None entry in sys.modules makes `import logfire` raise ImportError
         with patch.dict(sys.modules, {"logfire": None}):

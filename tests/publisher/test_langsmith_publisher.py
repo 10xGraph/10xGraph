@@ -169,6 +169,16 @@ class TestLangsmithPublisher:
 
         assert pub._level == ObservabilityLevel.FULL
 
+    def test_user_id_mode_passed_to_otel_publisher(self):
+        mods, *_ = _fake_otel_modules()
+        with patch.dict(sys.modules, mods), patch.dict("os.environ", {"LANGSMITH_API_KEY": "k"}):
+            from tenxgraph.runtime.publisher.langsmith_publisher import LangsmithPublisher
+
+            assert LangsmithPublisher(user_id_mode="mask").user_id_mode == "mask"
+            assert LangsmithPublisher().user_id_mode == "raw"
+            with pytest.raises(ValueError, match="raw, hash, mask"):
+                LangsmithPublisher(user_id_mode="bad")  # type: ignore[arg-type]
+
     def test_raises_value_error_when_no_key(self):
         mods, *_ = _fake_otel_modules()
         with patch.dict(sys.modules, mods), patch.dict("os.environ", {}, clear=True):

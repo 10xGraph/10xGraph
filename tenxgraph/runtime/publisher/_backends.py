@@ -1,8 +1,7 @@
-"""Private backend builders and import guards for the OTLP-based observability helpers."""
+"""Private backend builders and import guards for the OTLP-based publishers."""
 
 from __future__ import annotations
 
-import inspect
 import os
 from typing import Any
 
@@ -97,13 +96,6 @@ def _phoenix_project(project: str | None = None) -> str | None:
         or os.environ.get("PHOENIX_PROJECT_NAME")
         or None
     )
-
-
-def _logfire_accepts_resource_attributes() -> bool:
-    """True when the installed ``logfire.configure`` takes ``resource_attributes`` (logfire>=5)."""
-    import logfire
-
-    return "resource_attributes" in inspect.signature(logfire.configure).parameters
 
 
 def _new_tracer_provider(project: str | None = None) -> Any:

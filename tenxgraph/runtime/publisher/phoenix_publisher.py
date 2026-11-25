@@ -8,17 +8,12 @@ OpenInference attributes Phoenix reads (``openinference.span.kind``, ``input.val
 
 Usage::
 
-    from tenxgraph.runtime.publisher import PhoenixPublisher
+    from tenxgraph.core.graph import StateGraph
+    from tenxgraph.runtime.publisher import ObservabilityLevel, PhoenixPublisher
 
     publisher = PhoenixPublisher(project="my-agent", level=ObservabilityLevel.FULL)
-    graph._publisher = publisher
+    graph = StateGraph(publisher=publisher)
     compiled = graph.compile(...)
-
-Or use the convenience helper which does the same in one call::
-
-    from tenxgraph.runtime.publisher import setup_phoenix
-
-    setup_phoenix(graph, project="my-agent")
 
 Secrets stay in the environment: set ``PHOENIX_API_KEY`` (or pass ``api_key=``).
 Local Phoenix needs no key.
@@ -33,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import _openinference as oi
 from ._backends import _build_phoenix_processor, _new_tracer_provider, _phoenix_project
-from .identity import transform_user_id
+from .identity import UserIdMode, transform_user_id
 from .otel_attributes import SESSION_ID
 from .otel_publisher import (
     ObservabilityLevel,
@@ -167,6 +162,8 @@ class PhoenixPublisher(OtelPublisher):
         tracer_provider: An existing ``TracerProvider`` to attach the processor
             to.  When ``None`` a new one is created and set as the global
             provider.
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
 
     Raises:
         ImportError: If ``opentelemetry-exporter-otlp-proto-http`` or
@@ -178,7 +175,7 @@ class PhoenixPublisher(OtelPublisher):
             project="my-agent",
             level=ObservabilityLevel.STANDARD,
         )
-        graph._publisher = publisher
+        graph = StateGraph(publisher=publisher)
         compiled = graph.compile(...)
     """
 
@@ -190,6 +187,7 @@ class PhoenixPublisher(OtelPublisher):
         endpoint: str | None = None,
         level: ObservabilityLevel = ObservabilityLevel.FULL,
         tracer_provider: Any = None,
+        user_id_mode: UserIdMode = "raw",
     ) -> None:
         processor = _build_phoenix_processor(api_key=api_key, endpoint=endpoint)
 
@@ -206,7 +204,7 @@ class PhoenixPublisher(OtelPublisher):
             # Bind to the supplied provider explicitly (it may not be global).
             tracer = tracer_provider.get_tracer("10xgraph")
 
-        super().__init__(tracer=tracer, level=level)
+        super().__init__(tracer=tracer, level=level, user_id_mode=user_id_mode)
 
     def span_attributes(
         self,

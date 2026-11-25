@@ -6,17 +6,12 @@ Span dispatch is inherited from ``OtelPublisher``; this class adds ``logfire.msg
 
 Usage::
 
-    from tenxgraph.runtime.publisher import LogfirePublisher
+    from tenxgraph.core.graph import StateGraph
+    from tenxgraph.runtime.publisher import ObservabilityLevel, LogfirePublisher
 
     publisher = LogfirePublisher(service_name="my-agent", level=ObservabilityLevel.FULL)
-    graph._publisher = publisher
+    graph = StateGraph(publisher=publisher)
     compiled = graph.compile(...)
-
-Or use the convenience helper which does the same in one call::
-
-    from tenxgraph.runtime.publisher import setup_logfire
-
-    setup_logfire(graph, service_name="my-agent")
 
 Requires: pip install '10xgraph[logfire]'
 """
@@ -26,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ._backends import _guard_logfire
+from .identity import UserIdMode
 from .otel_attributes import LOGFIRE_MSG
 from .otel_publisher import ObservabilityLevel, OtelPublisher, SpanPhase, SpanRole
 
@@ -73,6 +69,8 @@ class LogfirePublisher(OtelPublisher):
             contain PII).  Use ``STANDARD`` or ``SPANS`` to keep content out.
         additional_span_processors: Extra ``SpanProcessor`` instances to attach
             alongside the Logfire processor (e.g. a LangSmith OTLP processor).
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
         **configure_kwargs: Additional keyword arguments forwarded verbatim to
             ``logfire.configure()``.
 
@@ -86,7 +84,7 @@ class LogfirePublisher(OtelPublisher):
             send_to_logfire=True,
             level=ObservabilityLevel.STANDARD,
         )
-        graph._publisher = publisher
+        graph = StateGraph(publisher=publisher)
         compiled = graph.compile(...)
     """
 
@@ -99,6 +97,7 @@ class LogfirePublisher(OtelPublisher):
         console: Any = None,
         level: ObservabilityLevel = ObservabilityLevel.FULL,
         additional_span_processors: list | None = None,
+        user_id_mode: UserIdMode = "raw",
         **configure_kwargs: Any,
     ) -> None:
         _guard_logfire()
@@ -119,7 +118,7 @@ class LogfirePublisher(OtelPublisher):
 
         logfire.configure(**kwargs)
         # OtelPublisher picks up the global TracerProvider set by logfire.configure
-        super().__init__(level=level)
+        super().__init__(level=level, user_id_mode=user_id_mode)
 
     def span_attributes(
         self,
