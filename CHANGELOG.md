@@ -128,6 +128,7 @@ From `1.0.0` on, `10xgraph`, `10xgraph-api` and `10xgraph-client` are versioned 
 
 ### Fixed
 
+- A trace backend that is down (Phoenix, LangSmith or plain OTLP over HTTP) no longer floods the log with a retry line per batch. The first failed export logs one `tenxgraph.trace_export` WARNING naming the endpoint, further failures stay silent (the exporter's own lines move to DEBUG), and the first success after a failure logs one INFO.
 - Under `astream`, the tool result of a handoff tool (`create_handoff_tool`) in a hand-built `StateGraph` is now streamed as a `tool` message chunk, as `ainvoke` already returned it.
 - Node-level `before_invoke` / `after_invoke` callbacks no longer fire for the internal `__start__` and `__end__` pseudo-nodes.
 - `astop` no longer mirrors the stop request into the cached state. It wrote a full state copy per stop and could overwrite a newer cached state the run had just written. The stop key is the only record, and the run reads it.
