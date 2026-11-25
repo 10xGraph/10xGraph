@@ -520,7 +520,7 @@ class TestIDGenerators:
         assert generator.id_type == IDType.INTEGER  # noqa: S101
         id_val = generator.generate()
         assert isinstance(id_val, int)  # noqa: S101
-        assert 0 <= id_val <= 2**32 - 1  # noqa: S101
+        assert 0 <= id_val <= 2**31 - 1  # noqa: S101
 
     def test_hex_id_generator(self):
         """Test HexIDGenerator."""
@@ -533,10 +533,15 @@ class TestIDGenerators:
     def test_timestamp_id_generator(self):
         """Test TimestampIDGenerator."""
         generator = TimestampIDGenerator()
-        assert generator.id_type == IDType.INTEGER  # noqa: S101
+        assert generator.id_type == IDType.BIGINT  # noqa: S101
         id_val = generator.generate()
         assert isinstance(id_val, int)  # noqa: S101
-        assert id_val > 0  # noqa: S101
+        assert id_val > 2**31 - 1  # noqa: S101, does not fit a 32-bit column
+
+    def test_int_id_generator_always_fits_signed_32_bit(self):
+        """Every IntIDGenerator id fits a signed 32-bit column."""
+        generator = IntIDGenerator()
+        assert all(0 <= generator.generate() < 2**31 for _ in range(20000))  # noqa: S101
 
     def test_short_id_generator(self):
         """Test ShortIDGenerator."""

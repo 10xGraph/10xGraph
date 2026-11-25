@@ -10,7 +10,13 @@ from injectq import InjectQ
 
 from tenxgraph.core.state import Message
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
-from tenxgraph.utils.id_generator import BaseIDGenerator, BigIntIDGenerator, IDType, IntIDGenerator
+from tenxgraph.utils.id_generator import (
+    BaseIDGenerator,
+    BigIntIDGenerator,
+    IDType,
+    IntIDGenerator,
+    TimestampIDGenerator,
+)
 
 
 DSN = "postgresql://test:test@localhost/test"
@@ -41,6 +47,16 @@ def test_generator_bound_after_construction_is_used():
     assert "thread_id BIGSERIAL PRIMARY KEY" in _threads_sql(cp)
     _bind(IntIDGenerator())
     assert cp.id_type == IDType.INTEGER
+
+
+def test_column_type_for_int_and_timestamp_generators():
+    cp = _mock_cp()
+    _bind(IntIDGenerator())
+    assert cp.id_type == IDType.INTEGER
+    assert "thread_id SERIAL PRIMARY KEY" in _threads_sql(cp)
+    _bind(TimestampIDGenerator())
+    assert cp.id_type == IDType.BIGINT
+    assert "thread_id BIGSERIAL PRIMARY KEY" in _threads_sql(cp)
 
 
 def test_id_type_is_fixed_once_the_schema_is_initialized():
