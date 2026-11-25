@@ -141,6 +141,11 @@ class PgCheckpointer(
               failure (default 5.0). Calls in that window take their cache-miss
               fallback at once instead of each waiting for the connect timeout.
               0 disables the breaker.
+            - redis_key_prefix: Text put in front of every Redis key this checkpointer
+              writes (``state_cache:*`` and ``generic_cache:*``, which holds stop requests
+              and active-run markers), so deployments that share one Redis stay apart.
+              Default ``""`` keeps the unprefixed names. Include the separator yourself,
+              e.g. ``"prod:"``.
             - tenant_columns: Columns on ``threads`` that isolate data, such as
               ``{"org_id": "uuid", "project_id": "text"}`` (a list of names means ``text``
               columns). Set once from the caller when the thread is created and never
