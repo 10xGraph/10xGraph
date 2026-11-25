@@ -33,6 +33,8 @@ from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.interrupt import GraphInterrupt, node_scope, resume_values
 from tenxgraph.utils.logging import log_context_scope
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .error_text import client_error_text
 from .guards import execute_with_guards, node_guards, node_metrics, stream_with_guards
@@ -119,6 +121,7 @@ class GraphEngine(GraphRunMixin):
         response_granularity: ResponseGranularity,
     ) -> AsyncGenerator[StreamChunk | RunResult]:
         """The outer GRAPH_EXECUTION events (START, UPDATE, PROGRESS, END or ERROR)."""
+        _tp0 = _perf_now()  # TEMP-PERF
         logger.info("Starting graph run, streaming=%s", streaming)
         start_time = time.time()
         input_data = input_data or {}
@@ -151,6 +154,7 @@ class GraphEngine(GraphRunMixin):
         event.event_type = EventType.UPDATE
         event.metadata["status"] = "Graph invoked"
         publish_event(event)
+        _perf_done("core_engine_setup", _tp0)  # TEMP-PERF
 
         try:
             event.event_type = EventType.PROGRESS
@@ -420,9 +424,11 @@ class GraphEngine(GraphRunMixin):
                         yield note("graph_invoked", StreamEvent.ERROR, state=state, reason=reason)
                     raise error
 
+            _tp3 = _perf_now()  # TEMP-PERF
             state, trimmed = await self._complete_run(
                 state, config, event, lifecycle_context, messages, step, current_node, last_save
             )
+            _perf_done("core_complete_run", _tp3)  # TEMP-PERF
             run.state = state
             if streaming:
                 yield note(

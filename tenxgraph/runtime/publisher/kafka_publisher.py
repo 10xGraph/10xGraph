@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import logging
 import ssl
 from typing import Any
@@ -173,7 +172,7 @@ class KafkaPublisher(BasePublisher):
             raise RuntimeError("Cannot publish to closed KafkaPublisher")
 
         producer = await self._get_producer()
-        payload = json.dumps(event.model_dump()).encode("utf-8")
+        payload = event.model_dump_json().encode("utf-8")
         return await producer.send_and_wait(self.topic, payload)
 
     async def close(self):

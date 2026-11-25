@@ -159,7 +159,11 @@ class RedisPublisher(BasePublisher):
             raise RuntimeError("Cannot publish to closed RedisPublisher")
 
         client = await self._get_client()
-        payload = json.dumps(event.model_dump()).encode(self.encoding)
+        try:
+            payload = event.model_dump_json().encode(self.encoding)
+        except UnicodeEncodeError:
+            # A non-UTF encoding: ASCII-escaped JSON, as before, encodes in any of them.
+            payload = json.dumps(event.model_dump()).encode(self.encoding)
 
         if self.mode == "stream":
             # XADD to stream

@@ -49,7 +49,9 @@ class _PgMessagesMixin(PgHostBase):
         The primary key is ``(thread_id, message_id)``, so ids are per thread and a
         conflict can only be a re-save of a message in this same thread.
         """
-        messages_table = self._get_table_name("messages")
+        if not messages:
+            return
+        rows = []
         for message in messages:
             meta = {**(metadata or {}), **(message.metadata or {})}
             if message.parsed_content is not None:
@@ -62,9 +64,25 @@ class _PgMessagesMixin(PgHostBase):
                 meta[_TIMESTAMP_KEY] = message.timestamp
                 # Each message sorts by its own time (created_at is TIMESTAMPTZ, UTC).
                 created_at = datetime.fromtimestamp(message.timestamp, tz=UTC)
-            await conn.execute(
-                f"""
-                    INSERT INTO {messages_table} (
+            rows.append(
+                (
+                    self._db_message_id(message.message_id),
+                    thread_id,
+                    message.role,
+                    json.dumps([block.model_dump(mode="json") for block in message.content]),
+                    json.dumps(message.tools_calls) if message.tools_calls else None,
+                    getattr(message, "tool_call_id", None),
+                    message.usages.total_tokens if message.usages else 0,
+                    json.dumps(message.usages.model_dump()) if message.usages else None,
+                    json.dumps(meta),
+                    created_at,
+                )
+            )
+        # One round trip for all rows: asyncpg pipelines executemany. Rows still run one
+        # after another, so a repeated message_id upserts like separate statements did.
+        await conn.executemany(
+            f"""
+                    INSERT INTO {self._get_table_name("messages")} (
                         message_id, thread_id, role, content, tool_calls,
                         tool_call_id, total_tokens, usages, meta, created_at
                     )
@@ -79,17 +97,8 @@ class _PgMessagesMixin(PgHostBase):
                         meta = EXCLUDED.meta,
                         updated_at = NOW()
                     """,  # noqa: S608
-                self._db_message_id(message.message_id),
-                thread_id,
-                message.role,
-                json.dumps([block.model_dump(mode="json") for block in message.content]),
-                json.dumps(message.tools_calls) if message.tools_calls else None,
-                getattr(message, "tool_call_id", None),
-                message.usages.total_tokens if message.usages else 0,
-                json.dumps(message.usages.model_dump()) if message.usages else None,
-                json.dumps(meta),
-                created_at,
-            )
+            rows,
+        )
 
     async def aput_messages(
         self,
@@ -123,15 +132,16 @@ class _PgMessagesMixin(PgHostBase):
         logger.debug("Storing %d messages for thread_id=%s", len(messages), thread_id)
 
         try:
-            # Ensure thread exists
-            await self._ensure_thread_exists(thread_id, user_id, config)
+            isolation = self._isolation(config, write=True)
 
-            # Store messages in batch with retry logic
-            await self._run_query(
-                lambda conn: self._insert_messages(conn, thread_id, messages, metadata),
-                in_transaction=True,
-                settings=self._rls(config, write=True),
-            )
+            async def _store(conn) -> None:
+                # Thread row check and the inserts share one connection and transaction.
+                await self._ensure_thread_row(
+                    conn, thread_id, user_id, config, isolation, lock=False
+                )
+                await self._insert_messages(conn, thread_id, messages, metadata)
+
+            await self._run_query(_store, in_transaction=True, settings=isolation.settings)
             logger.debug("Stored %d messages for thread_id=%s", len(messages), thread_id)
 
         except Exception as e:

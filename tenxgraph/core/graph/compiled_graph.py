@@ -34,6 +34,8 @@ from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.callable_utils import ensure_no_running_loop
 from tenxgraph.utils.constants import DEFAULT_ANONYMOUS_USER_ID
 from tenxgraph.utils.id_generator import BaseIDGenerator
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .node import Node
 from .remote_tool import RemoteToolConfig
@@ -432,12 +434,14 @@ class CompiledGraph[StateT: AgentState]:
         Returns:
             Response dict based on granularity
         """
+        _tp0 = _perf_now()  # TEMP-PERF
         self._refuse_if_closing()
         self._guard_not_realtime()
         self._check_model_choice(config)
         async with ContainerContext.use_async(self._container):
             cfg = self._prepare_config(config, is_stream=False)
             handle, token = self._begin_run(cfg, "invoke")
+            _perf_done("core_run_setup", _tp0)  # TEMP-PERF
 
             try:
                 result = RunResult(self._state)
@@ -451,14 +455,19 @@ class CompiledGraph[StateT: AgentState]:
                 async with aclosing(steps):
                     async for item in steps:
                         result = item  # type: ignore[assignment]  # only the result when not streaming
-                return await parse_response(
+                _tp1 = _perf_now()  # TEMP-PERF
+                _tp_resp = await parse_response(  # TEMP-PERF (was: return await parse_response()
                     result.state,
                     result.messages,
                     response_granularity,
                     token_usage=result.token_usage,
                 )
+                _perf_done("core_parse_response", _tp1)  # TEMP-PERF
+                return _tp_resp  # TEMP-PERF
             finally:
+                _tp2 = _perf_now()  # TEMP-PERF
                 await self._finish_run(cfg, handle, token)
+                _perf_done("core_finish_run", _tp2)  # TEMP-PERF
 
     def _start_heartbeat(self, cfg: dict[str, Any]) -> asyncio.Task | None:
         """Keep this run's active-run marker alive while the run lasts.
@@ -775,6 +784,7 @@ class CompiledGraph[StateT: AgentState]:
         Yields:
             Message objects with incremental content
         """
+        _tp0 = _perf_now()  # TEMP-PERF
         self._refuse_if_closing()
         self._guard_not_realtime()
         self._check_model_choice(config)
@@ -782,6 +792,7 @@ class CompiledGraph[StateT: AgentState]:
         try:
             cfg = self._prepare_config(config, is_stream=True)
             handle, token = self._begin_run(cfg, "stream")
+            _perf_done("core_run_setup", _tp0)  # TEMP-PERF
 
             try:
                 async with aclosing(
@@ -806,7 +817,9 @@ class CompiledGraph[StateT: AgentState]:
                         if ContainerContext.get_current() is not self._container:
                             container_token = ContainerContext.set_current(self._container)
             finally:
+                _tp2 = _perf_now()  # TEMP-PERF
                 await self._finish_run(cfg, handle, token)
+                _perf_done("core_finish_run", _tp2)  # TEMP-PERF
         finally:
             ContainerContext.reset_current(container_token)
 

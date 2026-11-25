@@ -46,6 +46,9 @@ class _Conn:
             return {"v": 0}
         return self.row
 
+    async def executemany(self, sql, rows):
+        self.calls.append(("executemany", " ".join(sql.split()), tuple(rows)))
+
     async def fetchval(self, sql, *args):
         self.calls.append(("fetchval", " ".join(sql.split()), args))
         return self.row.get("user_id") if isinstance(self.row, dict) else self.row
@@ -220,16 +223,34 @@ class TestWritesAndRls:
         conn = _wire(cp, _Conn(row={"user_id": "u1", "org_id": "B", "project_id": "P1"}))
         with pytest.raises(ThreadNotFoundError):
             await cp._ensure_thread_exists("t1", "u1", _cfg(org="A"))
-        assert conn.calls[0][1].startswith('INSERT INTO "public"."threads"')
-        assert conn.calls[1][1] == (
+        # The row exists, so it is read and checked with no insert.
+        assert [c[0] for c in conn.calls] == ["fetchrow"]
+        assert conn.calls[0][1] == (
             'SELECT user_id, "org_id", "project_id" FROM "public"."threads" WHERE thread_id = $1'
         )
+
+    async def test_missing_thread_is_inserted_then_read_back(self):
+        cp = _cp(tenant_columns=TENANTS)
+        conn = _Conn(row=None)
+        real_execute = conn.execute
+
+        async def execute(sql, *args):
+            conn.row = {"user_id": "u1", "org_id": "A", "project_id": "P1"}  # now created
+            return await real_execute(sql, *args)
+
+        conn.execute = execute
+        _wire(cp, conn)
+        await cp._lock_thread_for_write(conn, "t1", "u1", _cfg())
+        kinds = [c[1].split(" ")[0] for c in conn.calls]
+        assert kinds == ["SELECT", "INSERT", "SELECT", "SELECT"]  # read, insert, read, version
+        assert conn.calls[0][1].endswith("FOR UPDATE")
+        assert conn.calls[2][1].endswith("FOR UPDATE")
 
     async def test_lock_reads_tenant_values_for_update(self):
         cp = _cp(tenant_columns=TENANTS)
         conn = _wire(cp, _Conn(row={"user_id": "u1", "org_id": "A", "project_id": "P1"}))
         await cp._lock_thread_for_write(conn, "t1", "u1", _cfg())
-        assert conn.calls[1][1].endswith("WHERE thread_id = $1 FOR UPDATE")
+        assert conn.calls[0][1].endswith("WHERE thread_id = $1 FOR UPDATE")
 
     async def test_old_thread_with_null_tenant_is_forbidden_on_write(self):
         cp = _cp(tenant_columns=TENANTS)

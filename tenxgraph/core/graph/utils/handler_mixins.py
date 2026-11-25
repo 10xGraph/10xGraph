@@ -15,6 +15,8 @@ from tenxgraph.utils import END, START
 from tenxgraph.utils.callbacks import GraphLifecycleContext
 from tenxgraph.utils.interrupt import GraphInterrupt, clear_resume_values
 from tenxgraph.utils.logging import set_log_context
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .error_text import client_error_text
 from .handler_utils import (
@@ -71,7 +73,9 @@ class GraphRunMixin:
     ) -> Any:
         """Load the thread's state, or start a new one from ``default_state``."""
         logger.debug("Loading or creating state from input data")
+        _tp0 = _perf_now()  # TEMP-PERF
         state = await load_or_create_state(input_data, config, default_state)
+        _perf_done("core_load_state", _tp0)  # TEMP-PERF
         logger.debug(
             "State loaded: interrupted=%s, current_node=%s, step=%d",
             state.is_interrupted(),
@@ -262,7 +266,11 @@ class GraphRunMixin:
             )
         publish_state_update(config, current_node, step)
 
-        await call_realtime_sync(state, config)
+        # With per-step saves on, the save in ``_advance`` (or the save of any path that ends
+        # the run before it: remote tools, stop, interrupt, error, cancel) writes this state to
+        # the cache, so writing it here as well adds nothing.
+        if not config.get("durable_checkpoint_every_step", True):
+            await call_realtime_sync(state, config)
         event.event_type = EventType.UPDATE
         event.data["state"] = state
         event.data["messages"] = messages

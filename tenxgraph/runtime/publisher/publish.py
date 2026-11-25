@@ -10,9 +10,12 @@ from pydantic import BaseModel
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher, PublisherKind
 from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.utils import metrics
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 
 logger = logging.getLogger("tenxgraph.publisher")
@@ -35,11 +38,13 @@ async def _publish_event_task(
         timeout = config.get("publish_timeout") if isinstance(config, dict) else None
         if not isinstance(timeout, int | float) or isinstance(timeout, bool):
             timeout = None
+        attrs = {"publisher": type(publisher).__name__}
         try:
-            if timeout:
-                await asyncio.wait_for(publisher.publish(event), timeout=timeout)
-            else:
-                await publisher.publish(event)
+            with metrics.timer("tenxgraph.publish.duration", attributes=attrs):
+                if timeout:
+                    await asyncio.wait_for(publisher.publish(event), timeout=timeout)
+                else:
+                    await publisher.publish(event)
             logger.debug("Published event: %s", event)
         except TimeoutError:
             logger.error("Publishing event timed out after %ss; event dropped", timeout)
@@ -213,6 +218,7 @@ def publish_event(
     if publisher is None:
         return
 
+    _tp0 = _perf_now()  # TEMP-PERF
     # Store the task to prevent it from being garbage collected. May return None
     # when the manager is shedding load (see BackgroundTaskManager.create_task).
     # Snapshot the event first: the run loop reuses one event object and edits its
@@ -244,6 +250,7 @@ def publish_event(
     if any(key in data for key in TRACE_ONLY_ERROR_KEYS):
         kept = {k: v for k, v in data.items() if k not in TRACE_ONLY_ERROR_KEYS}
         plain = snapshot.model_copy(update={"data": kept})
+    _perf_done("core_publish_event_build", _tp0)  # TEMP-PERF
 
     inline, background = _split_inline(publisher)
     for sink in inline:

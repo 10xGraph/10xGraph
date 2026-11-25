@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import quote, unquote
 
+from tenxgraph.utils import metrics
 from tenxgraph.utils.log_safety import describe_error
 
 from ._pg_host import PgHostBase
@@ -96,26 +97,28 @@ class _PgCacheMixin(PgHostBase):
 
         try:
             cache_key = self._get_thread_key(thread_id, user_id, config)
-            data = self._encode_state(state)
-            version = config.get(STATE_VERSION_CONFIG_KEY)
-            if version is not None:
-                data[_CACHE_VERSION_KEY] = version
-            state_json = json.dumps(data)
+            # Timed with the encode, like pg_checkpointer.save_checkpoint.duration.
+            with metrics.timer("pg_checkpointer.save_state_cache.duration"):
+                data = self._encode_state(state)
+                version = config.get(STATE_VERSION_CONFIG_KEY)
+                if version is not None:
+                    data[_CACHE_VERSION_KEY] = version
+                state_json = json.dumps(data)
 
-            # Version-guarded write: never move the cache backwards (see
-            # _CACHE_CAS_LUA). A run that is about to lose its optimistic version
-            # check must not stamp its stale state over a newer committed one.
-            written = await self._redis_call(
-                lambda: self.redis.eval(
-                    _CACHE_CAS_LUA,
-                    1,
-                    cache_key,
-                    state_json,
-                    str(version if version is not None else _NO_VERSION),
-                    str(self.cache_ttl),
-                    _CACHE_VERSION_KEY,
+                # Version-guarded write: never move the cache backwards (see
+                # _CACHE_CAS_LUA). A run that is about to lose its optimistic version
+                # check must not stamp its stale state over a newer committed one.
+                written = await self._redis_call(
+                    lambda: self.redis.eval(
+                        _CACHE_CAS_LUA,
+                        1,
+                        cache_key,
+                        state_json,
+                        str(version if version is not None else _NO_VERSION),
+                        str(self.cache_ttl),
+                        _CACHE_VERSION_KEY,
+                    )
                 )
-            )
             if not written:
                 logger.debug(
                     "Skipped stale cache write for thread_id=%s (version=%s is behind cache)",

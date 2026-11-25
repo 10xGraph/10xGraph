@@ -52,6 +52,8 @@ from tenxgraph.utils.interrupt import (
     pending_interrupt,
     record_resume,
 )
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .run_registry import current_run
 from .tool_dispatch import tool_call_name
@@ -465,7 +467,9 @@ async def check_stop_requested[StateT: AgentState](
         stop_requested = True
     if not stop_requested and checkpointer:
         try:
+            _tp0 = _perf_now()  # TEMP-PERF
             stop_requested = await checkpointer.ais_stop_requested(config)
+            _perf_done("core_stop_check", _tp0)  # TEMP-PERF
         except Exception as e:  # an unreachable cache must not fail the run
             logger.warning("Stop check failed (%r); relying on the in-process stop flag", e)
 

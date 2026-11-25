@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import logging
 import time
 from typing import Any
@@ -211,7 +210,7 @@ class RabbitMQPublisher(BasePublisher):
 
         if not await self._ensure():
             return False  # credentials refused: logged once, event dropped
-        payload = json.dumps(event.model_dump()).encode("utf-8")
+        payload = event.model_dump_json().encode("utf-8")
 
         aio_pika = importlib.import_module("aio_pika")
         message = aio_pika.Message(body=payload)

@@ -97,18 +97,21 @@ class _PgLedgerMixin(PgHostBase):
         reject_unstorable(result)
         thread_id, user_id = self._validate_config(config)
 
-        await self._ensure_thread_exists(thread_id, user_id, config)
-
+        isolation = self._isolation(config, write=True)
         query = f"""
             INSERT INTO {self._get_table_name("tool_executions")}
                 (thread_id, tool_call_id, result)
             VALUES ($1, $2, $3)
             ON CONFLICT (thread_id, tool_call_id) DO NOTHING
             """  # noqa: S608
-        await self._run_query(
-            lambda conn: conn.execute(query, thread_id, str(tool_call_id), json.dumps(result)),
-            settings=self._rls(config, write=True),
-        )
+
+        async def _record(conn) -> None:
+            # One connection for the thread check and the insert. Both statements are
+            # idempotent, so a retry after a lost connection redoes them safely.
+            await self._ensure_thread_row(conn, thread_id, user_id, config, isolation, lock=False)
+            await conn.execute(query, thread_id, str(tool_call_id), json.dumps(result))
+
+        await self._run_query(_record, settings=isolation.settings)
         logger.debug(
             "Recorded tool execution thread_id=%s tool_call_id=%s",
             thread_id,
