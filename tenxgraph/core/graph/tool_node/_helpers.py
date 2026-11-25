@@ -189,7 +189,7 @@ def tool_start_event(
         event_type=EventType.START,
         node_name=graph_node,
         # Kept for tracing, which parents the tool span to this graph node.
-        extra={"graph_node": graph_node},
+        extra={"event_name": "tool.started", "graph_node": graph_node},
     )
     event.content_blocks = [ToolCallBlock(id=tool_call_id, name=name, args=args)]
     event._started_at = time.perf_counter()
@@ -234,6 +234,7 @@ def publish_tool_end(
     if event._started_at is not None:
         event.data["duration_ms"] = (time.perf_counter() - event._started_at) * 1000.0
     event.event_type = event_type
+    event.metadata["event_name"] = "tool.failed" if failed else "tool.completed"
     event.metadata["status"] = status
     kind = ContentType.ERROR if error else ContentType.MESSAGE
     event.content_type = [ContentType.TOOL_RESULT, kind]

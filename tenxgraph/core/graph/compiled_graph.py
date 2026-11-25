@@ -22,6 +22,7 @@ from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.message import generate_id
 from tenxgraph.core.state.stream_chunks import StreamChunk
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
+from tenxgraph.runtime.publisher.publish import flush_buffered
 from tenxgraph.storage.checkpointer import base_checkpointer
 from tenxgraph.storage.checkpointer.base_checkpointer import BaseCheckpointer
 from tenxgraph.storage.media.url_policy import MediaFetchPolicy
@@ -406,13 +407,20 @@ class CompiledGraph[StateT: AgentState]:
             await self._drain_background_tasks()
 
     async def _drain_background_tasks(self) -> None:
-        """Wait up to the shutdown timeout for tracked background tasks to finish."""
+        """Wait up to the shutdown timeout for tracked background tasks to finish, then
+        send what the broker publishers queued and stop their workers (the loop ends)."""
         try:
             await self._task_manager.wait_for_all(
                 timeout=self._shutdown_timeout, return_exceptions=True
             )
         except Exception as e:
             logger.warning("Draining background tasks failed: %s", e)
+        try:
+            await asyncio.wait_for(
+                flush_buffered(self._publisher, stop=True), timeout=self._shutdown_timeout
+            )
+        except TimeoutError:
+            logger.warning("Flushing queued events timed out; the rest is dropped")
 
     async def ainvoke(
         self,
@@ -1233,6 +1241,14 @@ class CompiledGraph[StateT: AgentState]:
         except Exception as e:
             stats["background_tasks"] = {"status": "error", "error": str(e)}
             logger.exception("Error shutting down background tasks: %s", e)
+        # 5b. Send the events the broker publishers queued (their close flushes too, but a
+        # publisher this graph does not own is not closed here).
+        try:
+            await asyncio.wait_for(
+                flush_buffered(self._publisher), timeout=self._shutdown_timeout / 3
+            )
+        except TimeoutError:
+            logger.warning("Flushing queued events timed out; the rest is dropped")
 
         # 6a. Close checkpointer (may have pending writes)
         if self._checkpointer and (skip := self._skip_close()):

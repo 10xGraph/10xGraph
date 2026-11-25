@@ -257,7 +257,7 @@ def _make_llm_end_hook(llm_event: Any, started: float | None = None) -> Any:
 
     def hook(final: Any, error: BaseException | None) -> None:
         from tenxgraph.runtime.publisher.events import EventType
-        from tenxgraph.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import listening, publish_event
 
         data = llm_event.data
         if error is not None:
@@ -273,7 +273,9 @@ def _make_llm_end_hook(llm_event: Any, started: float | None = None) -> Any:
         data["cache_read_tokens"] = getattr(usages, "cache_read_input_tokens", 0) or 0
         data["cache_creation_tokens"] = getattr(usages, "cache_creation_input_tokens", 0) or 0
         data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
-        if error is None and callable(getattr(final, "text", None)):
+        # The output is for the LLM span only; the metrics below need the tokens alone.
+        tracing = listening("observability")
+        if tracing and error is None and callable(getattr(final, "text", None)):
             data["output_response"] = final.text().strip()
             data["output_tool_calls"] = [
                 {
@@ -1061,6 +1063,8 @@ class AgentExecutionMixin:
             event_type=EventType.START,
             content_type=[ContentType.STATE],
             node_name=node_name,
+            # LLM calls are for traces (the LLM span); event consumers get node.completed.
+            tag="observability",
         )
         publish_event(llm_event)
         # Started by the publish above; current around the request so the provider SDK's

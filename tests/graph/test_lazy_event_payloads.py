@@ -133,8 +133,10 @@ async def test_listener_gets_plain_payloads_and_one_start_end_per_tool(mode):
         for p in patches:
             p.stop()
     assert calls["n"] > 0
-    states = [e.data["state"] for e in pub.events if "state" in e.data]
-    assert states and all(isinstance(s, dict) for s in states)
+    # An event publisher gets the state on the run-end event only, as a plain dict.
+    with_state = [e for e in pub.events if "state" in e.data]
+    assert [e.metadata["event_name"] for e in with_state] == ["run.completed"]
+    assert isinstance(with_state[0].data["state"], dict)
 
     tool = [
         (e.event_type, e.node_name, e.data["function_name"])
@@ -142,6 +144,6 @@ async def test_listener_gets_plain_payloads_and_one_start_end_per_tool(mode):
         if e.event == "tool_execution"
     ]
     assert tool == [("start", "TOOL", "lookup"), ("end", "TOOL", "lookup")]
-    # Lifecycle events reach the publisher with no hook registered.
-    lifecycle = {e.metadata.get("lifecycle") for e in pub.events}
-    assert {"graph_start", "graph_end", "state_update", "checkpoint"} <= lifecycle
+    # Run events reach the publisher with no hook registered.
+    names = [e.metadata.get("event_name") for e in pub.events]
+    assert names[0] == "run.started" and names[-1] == "run.completed"

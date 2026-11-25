@@ -14,11 +14,22 @@ Classes:
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from tenxgraph.core.state.message_block import ContentBlock
+
+
+# Who an event is for. ``"all"``: event publishers (``kind="events"``: Kafka, Redis,
+# RabbitMQ, custom) and observability publishers (OTEL, Phoenix, LangSmith, Logfire).
+# ``"observability"``: observability publishers only (spans need it, event consumers do not).
+# ``ConsolePublisher`` gets both. The publisher's ``kind`` decides; there is no setting.
+EventTag = Literal["observability", "all"]
+
+# Domain names (``metadata["event_name"]``) of the events that end a run. Only these carry
+# the run state to event publishers.
+RUN_END_EVENTS = frozenset({"run.completed", "run.failed", "run.interrupted", "run.stopped"})
 
 
 class Event(StrEnum):
@@ -164,6 +175,9 @@ class EventModel(BaseModel):
         default_factory=dict, description="Optional metadata for consumers"
     )
 
+    # Routing only, never dumped: see ``EventTag``.
+    tag: EventTag = Field(default="all", exclude=True, description="Who the event is for")
+
     model_config = ConfigDict(use_enum_values=True)
 
     # perf_counter reading when a tool call began; set by the tool START event, never dumped.
@@ -179,6 +193,7 @@ class EventModel(BaseModel):
         event_type=EventType.START,
         node_name: str = "",
         extra: dict[str, Any] | None = None,
+        tag: EventTag = "all",
     ) -> "EventModel":
         """Create a default EventModel instance with minimal required fields.
 
@@ -190,6 +205,7 @@ class EventModel(BaseModel):
             event_type: Event phase (default: START).
             node_name: Name of the node producing the event.
             extra: Additional metadata.
+            tag: Who the event is for (see ``EventTag``).
 
         Returns:
             EventModel: The created event model instance.
@@ -214,6 +230,7 @@ class EventModel(BaseModel):
             run_id=run_id,
             user_id=user_id,
             metadata=metadata,
+            tag=tag,
         )
 
     @classmethod

@@ -275,12 +275,13 @@ async def validate_message_content(
     try:
         await callback_mgr.execute_validators(message)
     except Exception as e:
-        # Publish the rejection so the event stream captures it.
+        # Publish the rejection: ``input.rejected`` ends the run before it starts.
         if config:
             publish_lifecycle(
                 config,
                 "validation_rejected",
                 {"error": str(e), "rejected_count": len(message)},
+                {"event_name": "input.rejected"},
                 event_type=EventType.ERROR,
                 content_type=ContentType.ERROR,
             )
@@ -786,7 +787,6 @@ async def sync_data(
             messages=messages,
             is_context_trimmed=is_context_trimmed,
         )
-    publish_lifecycle(config, "checkpoint", {}, {"trimmed": is_context_trimmed})
 
     if checkpointer:
         logger.debug("Persisting state and %d messages to checkpointer", len(messages))

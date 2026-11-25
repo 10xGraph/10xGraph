@@ -38,7 +38,7 @@ from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .error_text import client_error_text
 from .guards import execute_with_guards, node_guards, node_metrics, stream_with_guards
-from .handler_mixins import GraphRunMixin
+from .handler_mixins import GraphRunMixin, mirror_last_message
 from .handler_utils import (
     check_stop_requested,
     finalize_cancelled_run,
@@ -102,13 +102,14 @@ class GraphEngine(GraphRunMixin):
         streaming: bool,
         response_granularity: ResponseGranularity = ResponseGranularity.LOW,
     ) -> AsyncIterator[StreamChunk | RunResult]:
-        """Run the graph: chunks while it runs (streaming only), the ``RunResult`` last."""
+        """Run the graph: chunks while it runs (streaming only), the ``RunResult`` last.
+
+        ``response_granularity`` shapes only the caller's response; events do not use it.
+        """
         config = config or {}
         # Every log line of this run carries its ids; the earlier ids come back at the end.
         with log_context_scope(config):
-            async with aclosing(
-                self._run(input_data, config, default_state, streaming, response_granularity)
-            ) as items:
+            async with aclosing(self._run(input_data, config, default_state, streaming)) as items:
                 async for item in items:
                     yield item
 
@@ -118,50 +119,43 @@ class GraphEngine(GraphRunMixin):
         config: dict[str, Any],
         default_state: AgentState,
         streaming: bool,
-        response_granularity: ResponseGranularity,
     ) -> AsyncGenerator[StreamChunk | RunResult]:
-        """The outer GRAPH_EXECUTION events (START, UPDATE, PROGRESS, END or ERROR)."""
+        """The run events: ``run.started``, then ``run.completed`` or ``run.failed``.
+
+        A paused or stopped run ends with ``run.interrupted`` or ``run.stopped`` from where it
+        paused (``fire_interrupt``) and a cancelled one with ``run.stopped``
+        (``finalize_cancelled_run``), so no ``run.completed`` follows them.
+        """
         _tp0 = _perf_now()  # TEMP-PERF
         logger.info("Starting graph run, streaming=%s", streaming)
         start_time = time.time()
         input_data = input_data or {}
         state = await self._load_state(input_data, config, default_state)
 
-        event_config = public_config(config)
-        event_config.pop("user", None)
+        # The state is for observability (the run's input on the trace); event publishers
+        # get it only on the run-end events.
         event = EventModel.default(
             config,
             data={"state": state},
             event=Event.GRAPH_EXECUTION,
             content_type=[ContentType.STATE],
-            node_name=state.execution_meta.current_node,
             extra={
+                "event_name": "run.started",
                 "current_node": state.execution_meta.current_node,
                 "step": state.execution_meta.step,
                 "is_interrupted": state.is_interrupted(),
-                "config": event_config,
-                "response_granularity": getattr(
-                    response_granularity, "value", response_granularity
-                ),
             },
         )
         event.event_type = EventType.START
         publish_event(event)
 
-        # Apply a resume, then fire on_graph_start before execution begins.
-        state, config = await self._start_run(state, input_data, config)
-
-        event.event_type = EventType.UPDATE
-        event.metadata["status"] = "Graph invoked"
-        publish_event(event)
-        _perf_done("core_engine_setup", _tp0)  # TEMP-PERF
-
+        result = RunResult(state)
         try:
-            event.event_type = EventType.PROGRESS
-            event.metadata["status"] = "Graph execution started"
-            publish_event(event)
-
-            result = RunResult(state)
+            # Apply a resume, then fire on_graph_start before execution begins. Inside the
+            # try: a refused resume still ends the run with run.failed.
+            state, config = await self._start_run(state, input_data, config)
+            result.state = state
+            _perf_done("core_engine_setup", _tp0)  # TEMP-PERF
             async with aclosing(self._loop(result, input_data, config, streaming)) as chunks:
                 async for chunk in chunks:
                     yield chunk
@@ -170,28 +164,20 @@ class GraphEngine(GraphRunMixin):
             logger.info("Graph run finished in %.2f seconds", result.time_taken)
 
             state = result.state
-            event.event_type = EventType.END
-            event.metadata.update(
-                {
-                    "status": "Graph execution completed",
-                    "time_taken": result.time_taken,
-                    "state": state,
-                    "step": state.execution_meta.step,
-                    "current_node": state.execution_meta.current_node,
-                    "is_interrupted": state.is_interrupted(),
-                    "total_messages": len(state.context) if state.context else 0,
-                    **result.token_usage,
-                }
-            )
-            event.data["state"] = state
-            event.data["messages"] = result.messages
-            publish_event(event)
+            if not state.is_interrupted():
+                _set_run_end(event, EventType.END, "run.completed", result)
+                event.metadata.update({"time_taken": result.time_taken, **result.token_usage})
+                event.data["messages"] = result.messages
+                mirror_last_message(event, result.messages)
+                event.content_type = [ContentType.STATE, ContentType.MESSAGE]
+                publish_event(event)
             yield result
         except Exception as e:
             logger.exception("Graph execution failed: %s", e)
-            event.event_type = EventType.ERROR
-            event.metadata["status"] = f"Graph execution failed: {e}"
+            _set_run_end(event, EventType.ERROR, "run.failed", result)
+            event.metadata["time_taken"] = time.time() - start_time
             event.data["error"] = str(e)
+            event.content_type = [ContentType.ERROR, ContentType.STATE]
             publish_event(event)
             raise
 
@@ -251,14 +237,6 @@ class GraphEngine(GraphRunMixin):
 
         current_node, step = self._start_node(state, config)
         lifecycle_context = GraphLifecycleContext(config=public_config(config))
-        event = EventModel.default(
-            config,
-            data={"state": state},
-            event=Event.GRAPH_EXECUTION,
-            content_type=[ContentType.STATE],
-            node_name=current_node,
-            extra={"current_node": current_node, "step": step, "max_steps": max_steps},
-        )
 
         def note(
             status: str, kind: StreamEvent = StreamEvent.UPDATES, **fields: Any
@@ -284,7 +262,7 @@ class GraphEngine(GraphRunMixin):
                         yield note("invoking_node", reason=stopped)
                     return
 
-                await self._begin_step(state, config, event, step, current_node)
+                await self._begin_step(state, config, step, current_node)
                 if await self._interrupt_before(
                     current_node, state, config, messages[persisted_upto:], last_save
                 ):
@@ -342,20 +320,12 @@ class GraphEngine(GraphRunMixin):
                 seen.update(m.message_id for m in new)
                 messages.extend(new)
                 state.context = add_messages(state.context, new)
-                self._end_node_event(node_event, next_node, current_node, messages)
+                self._end_node_event(node_event, next_node, current_node, new)
                 if streaming and messages:
                     yield state_chunk()
 
-                state = run.state = await self._publish_node_update(
-                    has_hooks,
-                    lifecycle_context,
-                    current_node,
-                    old_state,
-                    state,
-                    config,
-                    event,
-                    step,
-                    messages,
+                state = run.state = await self._after_node(
+                    has_hooks, lifecycle_context, current_node, old_state, state, config, step
                 )
 
                 if result.remote_calls:
@@ -404,7 +374,6 @@ class GraphEngine(GraphRunMixin):
                     next_node,
                     state,
                     config,
-                    event,
                     step,
                     messages,
                     persisted_upto,
@@ -417,7 +386,7 @@ class GraphEngine(GraphRunMixin):
 
                 if step >= max_steps and current_node != END:
                     error = await self._recursion_limit_hit(
-                        state, config, event, step, max_steps, current_node
+                        state, config, step, max_steps, current_node
                     )
                     if streaming:
                         reason = self.RECURSION_MESSAGE
@@ -426,7 +395,7 @@ class GraphEngine(GraphRunMixin):
 
             _tp3 = _perf_now()  # TEMP-PERF
             state, trimmed = await self._complete_run(
-                state, config, event, lifecycle_context, messages, step, current_node, last_save
+                state, config, lifecycle_context, messages, step, current_node, last_save
             )
             _perf_done("core_complete_run", _tp3)  # TEMP-PERF
             run.state = state
@@ -443,16 +412,13 @@ class GraphEngine(GraphRunMixin):
             # closed by its consumer (GeneratorExit at a yield): save the thread as
             # INTERRUPTED so the next run can use it, then let it go on. Nothing is yielded
             # here, so awaiting during aclose() is allowed.
-            await finalize_cancelled_run(
-                state, config, messages, event, current_node, last_save=last_save
-            )
+            await finalize_cancelled_run(state, config, messages, current_node, last_save=last_save)
             raise
         except Exception as e:
             state = run.state = await self._fail_run(
                 e,
                 state,
                 config,
-                event,
                 lifecycle_context,
                 messages,
                 step,
@@ -463,6 +429,18 @@ class GraphEngine(GraphRunMixin):
                 reason = client_error_text(e)
                 yield note("invoked_graph", StreamEvent.ERROR, state=state, reason=reason)
             raise
+
+
+def _set_run_end(event: EventModel, event_type: EventType, name: str, result: RunResult) -> None:
+    """Turn the run's event into a run-end event carrying the final state."""
+    state = result.state
+    event.event_type = event_type
+    event.metadata["event_name"] = name
+    event.metadata["step"] = state.execution_meta.step
+    event.metadata["current_node"] = state.execution_meta.current_node
+    event.metadata["is_interrupted"] = state.is_interrupted()
+    event.metadata["total_messages"] = len(state.context) if state.context else 0
+    event.data["state"] = state
 
 
 def _chunk(config: dict[str, Any], event: StreamEvent, **fields: Any) -> StreamChunk:

@@ -61,10 +61,10 @@ from .otel_attributes import (
     GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
     GRAPH_MODEL,
     GRAPH_RUN_ID,
+    GRAPH_RUN_STATUS,
     GRAPH_THREAD_ID,
     GRAPH_TOTAL_STEPS,
     GRAPH_USER_ID,
-    LIFECYCLE,
     NODE_NAME,
     NODE_STEP,
     PROVIDER_NAME_MAP,
@@ -140,6 +140,8 @@ class SpanRegistry:
     def __init__(self) -> None:
         self._graph: dict[str, Span] = {}
         self._children: dict[tuple[str, str], Span] = {}
+        # run.recovered arrives before the run's graph span starts; held until it does.
+        self._recovered: dict[str, str] = {}
 
     def set_graph(self, run_id: str, span: Span) -> None:
         self._graph[run_id] = span
@@ -316,8 +318,6 @@ class OtelPublisher(BasePublisher):
                 self._on_node_end(event)
             elif et == EventType.ERROR:
                 self._on_node_error(event)
-            elif et == EventType.UPDATE:
-                self._on_node_update(event)
         elif ev == Event.LLM_CALL:
             if et == EventType.START:
                 self._on_llm_start(event)
@@ -335,35 +335,23 @@ class OtelPublisher(BasePublisher):
 
     # ── Graph span handlers ───────────────────────────────────────────────────
 
-    def _on_graph_start(self, event: EventModel) -> None:
-        from opentelemetry.trace import StatusCode
-
-        lifecycle = event.metadata.get("lifecycle", "")
-        if lifecycle == "validation_rejected":
-            span = self._get_tracer().start_span(
-                GRAPH_SPAN_NAME,
-                start_time=_ns(event.timestamp),
-            )
-            span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
-            span.set_attribute(GEN_AI_OPERATION, "invoke_agent")
-            _set_common_attrs(span, event, self._user_id_mode)
-            self._set_backend_attrs(span, "graph", "start", GRAPH_SPAN_NAME, event)
-            span.set_status(StatusCode.ERROR, "validation_rejected")
-            span.add_event("graph.validation_rejected", attributes=_extra_attrs(event))
-            span.end(end_time=_ns(event.timestamp))
-            return
-
-        span = self._get_tracer().start_span(
-            GRAPH_SPAN_NAME,
-            start_time=_ns(event.timestamp),
-        )
+    def _start_graph_span(self, event: EventModel) -> Span:
+        span = self._get_tracer().start_span(GRAPH_SPAN_NAME, start_time=_ns(event.timestamp))
         span.set_attribute(GEN_AI_SYSTEM, "10xgraph")
         span.set_attribute(GEN_AI_OPERATION, "invoke_agent")
         _set_common_attrs(span, event, self._user_id_mode)
         self._set_backend_attrs(span, "graph", "start", GRAPH_SPAN_NAME, event)
+        return span
+
+    def _on_graph_start(self, event: EventModel) -> None:
+        span = self._start_graph_span(event)
+        dead_run = self._registry._recovered.pop(event.run_id, None)
+        if dead_run is not None:
+            span.add_event("graph.recovered", attributes={"dead_run_id": dead_run})
         self._registry.set_graph(event.run_id, span)
 
     def _on_graph_end(self, event: EventModel) -> None:
+        """``run.completed``: run totals on the graph span, then end it."""
         from opentelemetry.trace import StatusCode
 
         span = self._registry.pop_graph(event.run_id)
@@ -373,107 +361,109 @@ class OtelPublisher(BasePublisher):
         total_steps = event.data.get("total_steps") or event.metadata.get("total_steps")
         if total_steps is not None:
             span.set_attribute(GRAPH_TOTAL_STEPS, total_steps)
+        if self._level != ObservabilityLevel.SPANS:
+            inp = event.metadata.get("total_input_tokens") or 0
+            out = event.metadata.get("total_output_tokens") or 0
+            if inp:
+                span.set_attribute(USAGE_INPUT_TOKENS, int(inp))
+            if out:
+                span.set_attribute(USAGE_OUTPUT_TOKENS, int(out))
+        if self._level == ObservabilityLevel.FULL:
+            self._add_run_content(span, event)
         self._set_backend_attrs(span, "graph", "end", GRAPH_SPAN_NAME, event)
+        span.set_attribute(GRAPH_RUN_STATUS, "completed")
         span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
 
+    def _add_run_content(self, span: Any, event: EventModel) -> None:
+        """The run's messages and system prompt as span events (FULL level)."""
+        messages = event.data.get("messages") or []
+        if messages:
+            span.add_event(
+                "gen_ai.content.completion", attributes={GEN_AI_COMPLETION: _to_str(messages)}
+            )
+        # The system prompt lives in state.context as role="system" messages.
+        context = (event.data.get("state") or {}).get("context") or []
+        system_msgs = [m for m in context if isinstance(m, dict) and m.get("role") == "system"]
+        if system_msgs:
+            span.add_event(
+                "gen_ai.content.system", attributes={GEN_AI_PROMPT: _to_str(system_msgs)}
+            )
+
     def _on_graph_error(self, event: EventModel) -> None:
+        """``run.failed`` ends the graph span with the error. ``input.rejected`` comes before
+        any graph span (the input is checked while the thread loads), so it is a span of its
+        own, started and ended at once."""
         from opentelemetry.trace import StatusCode
 
-        lifecycle = event.metadata.get("lifecycle", "")
-        if lifecycle == "validation_rejected":
+        error_msg = str(event.data.get("error", ""))
+        if event.metadata.get("event_name") == "input.rejected":
+            rejected = self._start_graph_span(event)
+            rejected.set_attribute(GRAPH_RUN_STATUS, "input_rejected")
+            rejected.set_status(StatusCode.ERROR, "input_rejected")
+            rejected.add_event("graph.validation_rejected", attributes={"error": error_msg})
+            rejected.end(end_time=_ns(event.timestamp))
             return
 
         span = self._registry.pop_graph(event.run_id)
         if span is None:
             return
         self._end_unfinished(event)
-        error_msg = event.data.get("error", "")
+        span.set_attribute(GRAPH_RUN_STATUS, "failed")
         span.set_status(StatusCode.ERROR, error_msg)
         span.add_event("graph.error", attributes={"error": error_msg})
         span.end(end_time=_ns(event.timestamp))
 
-    def _end_unfinished(self, event: EventModel) -> None:
-        """End child spans of a finished run that never got an END (interrupt, skipped END)."""
+    def _end_unfinished(self, event: EventModel, *, cancelled: bool = False) -> None:
+        """End child spans of a finished run that never got an END (interrupt, skipped END).
+
+        With ``cancelled`` (``run.stopped``) they end as ERROR "cancelled", the same status a
+        cancelled tool span gets, so a trace shows the cut.
+        """
+        from opentelemetry.trace import StatusCode
+
         for child in self._registry.pop_children(event.run_id):
             child.set_attribute(SPAN_UNFINISHED, True)
+            if cancelled:
+                child.set_status(StatusCode.ERROR, "cancelled")
             child.end(end_time=_ns(event.timestamp))
 
     def _on_graph_interrupted(self, event: EventModel) -> None:
-        span = self._registry.get_graph(event.run_id)
+        """``run.interrupted`` and ``run.stopped`` end the graph span (the run is over until
+        a resume, which is a new run). ``run.recovered`` is a span event on the new run."""
+        from opentelemetry.trace import StatusCode
+
+        name = event.metadata.get("event_name")
+        if name == "run.recovered":
+            dead_run = str(event.data.get("dead_run_id") or "")
+            span = self._registry.get_graph(event.run_id)
+            if span is None:
+                self._registry._recovered[event.run_id] = dead_run
+            else:
+                span.add_event("graph.recovered", attributes={"dead_run_id": dead_run})
+            return
+        span = self._registry.pop_graph(event.run_id)
         if span is None:
             return
+        self._end_unfinished(event, cancelled=name == "run.stopped")
+        status = "stopped" if name == "run.stopped" else "interrupted"
         attrs: dict[str, Any] = {"interrupted": True}
-        interrupted_node = event.data.get("interrupted_node") or event.metadata.get(
-            "interrupted_node", ""
-        )
-        if interrupted_node:
-            attrs["interrupted_node"] = interrupted_node
-        span.add_event("graph.interrupted", attributes=attrs)
+        for key in ("interrupted_node", "interrupt_type", "reason"):
+            value = event.data.get(key) or event.metadata.get(key)
+            if value:
+                attrs[key] = str(value)
+        span.add_event(f"graph.{status}", attributes=attrs)
+        span.set_attribute(GRAPH_RUN_STATUS, status)
+        span.set_status(StatusCode.OK)
+        span.end(end_time=_ns(event.timestamp))
 
     def _on_graph_update(self, event: EventModel) -> None:
         span = self._registry.get_graph(event.run_id)
         if span is None:
             return
-        lifecycle = event.metadata.get("lifecycle", "")
-        if lifecycle == "resume":
+        if event.metadata.get("lifecycle") == "resume":
             resumed_node = event.data.get("resumed_node", "")
             span.add_event("graph.resumed", attributes={"resumed_node": resumed_node})
-        elif lifecycle == "checkpoint":
-            trimmed = event.metadata.get("trimmed", False)
-            span.add_event("graph.checkpoint", attributes={"trimmed": trimmed})
-        elif lifecycle == "graph_start":
-            span.add_event("graph.lifecycle.start")
-        elif lifecycle == "graph_end":
-            total_steps = event.data.get("total_steps", 0)
-            span.add_event("graph.lifecycle.end", attributes={"total_steps": total_steps})
-        elif lifecycle == "graph_error":
-            error_msg = event.data.get("error", "")
-            span.add_event("graph.lifecycle.error", attributes={"error": error_msg})
-        elif lifecycle == "graph_interrupt":
-            interrupt_type = event.metadata.get("interrupt_type", "")
-            span.add_event(
-                "graph.lifecycle.interrupt", attributes={"interrupt_type": interrupt_type}
-            )
-        elif not lifecycle:
-            # Post-node-execution state update: messages + state are present.
-            self._enrich_from_node_output(span, event)
-
-    def _enrich_from_node_output(self, span: Any, event: EventModel) -> None:
-        """Extract token counts, model, system prompt, and output from a state-update event."""
-        messages = event.data.get("messages") or []
-        if not messages:
-            return
-
-        # Token counts come from the last assistant message's usages field.
-        last_msg = messages[-1] if messages else None
-        if last_msg and self._level != ObservabilityLevel.SPANS:
-            usages = last_msg.get("usages") if isinstance(last_msg, dict) else None
-            if usages:
-                inp = usages.get("prompt_tokens") or 0
-                out = usages.get("completion_tokens") or 0
-                if inp:
-                    span.set_attribute(USAGE_INPUT_TOKENS, int(inp))
-                if out:
-                    span.set_attribute(USAGE_OUTPUT_TOKENS, int(out))
-            model = last_msg.get("model") if isinstance(last_msg, dict) else None
-            if model:
-                span.set_attribute(GRAPH_MODEL, str(model))
-
-        if self._level == ObservabilityLevel.FULL:
-            # Output messages from this node turn.
-            span.add_event(
-                "gen_ai.content.completion",
-                attributes={GEN_AI_COMPLETION: _to_str(messages)},
-            )
-            # System prompt lives in state.context as role="system" messages.
-            context = (event.data.get("state") or {}).get("context") or []
-            system_msgs = [m for m in context if isinstance(m, dict) and m.get("role") == "system"]
-            if system_msgs:
-                span.add_event(
-                    "gen_ai.content.system",
-                    attributes={GEN_AI_PROMPT: _to_str(system_msgs)},
-                )
 
     # ── Node span handlers ────────────────────────────────────────────────────
 
@@ -557,15 +547,6 @@ class OtelPublisher(BasePublisher):
             return
         _record_error(span, event, name)
         span.end(end_time=_ns(event.timestamp))
-
-    def _on_node_update(self, event: EventModel) -> None:
-        span = self._registry.get_child(event.run_id, event.node_name)
-        if span is None:
-            return
-        lifecycle = event.metadata.get("lifecycle", "")
-        if lifecycle == "state_update":
-            step = event.data.get("step", 0)
-            span.add_event("node.state_update", attributes={"step": step})
 
     # ── LLM span handlers ────────────────────────────────────────────────────
 
@@ -676,6 +657,11 @@ class OtelPublisher(BasePublisher):
         self._set_backend_attrs(span, "llm", "end", _span_name(span), event)
         span.set_status(StatusCode.OK)
         span.end(end_time=_ns(event.timestamp))
+        # The run's model on the graph span: the last model that answered.
+        graph = self._registry.get_graph(event.run_id)
+        model = event.data.get("response_model") or event.data.get("model")
+        if graph is not None and model and self._level != ObservabilityLevel.SPANS:
+            graph.set_attribute(GRAPH_MODEL, str(model))
 
     def _on_llm_error(self, event: EventModel) -> None:
         self._end_with_error(event, llm_span_key(event.node_name), "llm.error")
@@ -761,6 +747,7 @@ class OtelPublisher(BasePublisher):
                 span.end()
         self._registry._graph.clear()
         self._registry._children.clear()
+        self._registry._recovered.clear()
 
     def sync_close(self) -> None:
         try:
@@ -820,14 +807,6 @@ def _span_name(span: Span) -> str:
 def _set_attrs(span: Span, attrs: dict[str, Any]) -> None:
     for key, value in attrs.items():
         span.set_attribute(key, value)
-
-
-def _extra_attrs(event: EventModel) -> dict[str, Any]:
-    attrs: dict[str, Any] = {}
-    lifecycle = event.metadata.get("lifecycle")
-    if lifecycle:
-        attrs[LIFECYCLE] = lifecycle
-    return attrs
 
 
 def _set_request_params(span: Span, params: dict[str, Any]) -> None:

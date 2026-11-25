@@ -205,10 +205,15 @@ class TestTransparency:
         if tm is not None:
             await tm.wait_for_all(timeout=2.0)
 
+        for _ in range(10):  # the session's last event is sent in a background task
+            await asyncio.sleep(0)
         kinds = {(str(e.event), str(e.event_type)) for e in spy.events}
         # ToolNode publishes tool execution; LiveAgent publishes barge-in.
         assert any(ev == "tool_execution" for ev, _ in kinds)
         assert any(etype == "interrupted" for _, etype in kinds)
+        # The session is one run: run.started first and run.completed last.
+        runs = [e.metadata.get("event_name") for e in spy.events if e.event == "graph_execution"]
+        assert runs == ["run.started", "run.completed"]
 
 
 class TestBargeIn:

@@ -334,8 +334,8 @@ async def test_stream_chunks_and_events_are_clean():
     assert isinstance(SEEN["annotated"], UserCredential)
     for chunk in chunks:
         _assert_clean(_dump(chunk))
-    init = [e for e in publisher.events if "config" in e.metadata]
-    assert init, "the graph start event carries the run config"
+    # The run config is not published at all (run.started carries ids, node and step).
+    assert not [e for e in publisher.events if "config" in e.metadata]
     for event in publisher.events:
         json.dumps(event.model_dump())
         _assert_clean(_dump(event))
