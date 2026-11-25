@@ -4,13 +4,11 @@ import asyncio
 import hashlib
 import hmac
 import ssl
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tenxgraph.runtime.publisher.events import Event, EventType
-from tenxgraph.runtime.publisher.exporters import setup_observability
 from tenxgraph.runtime.publisher.identity import (
     USER_ID_KEY_ENV,
     hash_user_id,
@@ -91,58 +89,6 @@ class TestOtelPublisher:
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="raw, hash, mask"):
             OtelPublisher(user_id_mode="bad")  # type: ignore[arg-type]
-
-
-class TestSetupObservability:
-    def test_passes_through_logfire(self):
-        with (
-            patch.dict(sys.modules, {"logfire": MagicMock()}),
-            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
-        ):
-            setup_observability(MagicMock(), {"user_id_mode": "mask", "logfire": {"enabled": True}})
-        assert lf.call_args.kwargs["user_id_mode"] == "mask"
-
-    def test_passes_through_langsmith(self):
-        with (
-            patch("tenxgraph.runtime.publisher.exporters.setup_tracing") as tracing,
-            patch("tenxgraph.runtime.publisher.exporters._build_langsmith_processor"),
-            patch("tenxgraph.runtime.publisher.exporters._new_tracer_provider"),
-            patch.dict(
-                sys.modules, {"opentelemetry": MagicMock(), "opentelemetry.trace": MagicMock()}
-            ),
-        ):
-            setup_observability(
-                MagicMock(), {"user_id_mode": "hash", "langsmith": {"enabled": True}}
-            )
-        assert tracing.call_args.kwargs["user_id_mode"] == "hash"
-
-    def test_passes_through_both(self):
-        with (
-            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
-            patch("tenxgraph.runtime.publisher.exporters._guard_logfire"),
-            patch("tenxgraph.runtime.publisher.exporters._build_langsmith_processor"),
-        ):
-            setup_observability(
-                MagicMock(),
-                {
-                    "user_id_mode": "hash",
-                    "logfire": {"enabled": True},
-                    "langsmith": {"enabled": True},
-                },
-            )
-        assert lf.call_args.kwargs["user_id_mode"] == "hash"
-
-    def test_default_raw(self):
-        with (
-            patch.dict(sys.modules, {"logfire": MagicMock()}),
-            patch("tenxgraph.runtime.publisher.exporters.setup_logfire") as lf,
-        ):
-            setup_observability(MagicMock(), {"logfire": {"enabled": True}})
-        assert lf.call_args.kwargs["user_id_mode"] == "raw"
-
-    def test_invalid_raises_even_when_disabled(self):
-        with pytest.raises(ValueError, match="raw, hash, mask"):
-            setup_observability(MagicMock(), {"user_id_mode": "bad"})
 
 
 class TestKafkaSecurity:

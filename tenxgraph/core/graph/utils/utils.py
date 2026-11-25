@@ -47,6 +47,7 @@ from tenxgraph.utils import (
     add_messages,
 )
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.validators import has_unstorable_text, strip_unstorable
@@ -274,12 +275,13 @@ async def validate_message_content(
     try:
         await callback_mgr.execute_validators(message)
     except Exception as e:
-        # Publish the rejection so the event stream captures it.
+        # Publish the rejection: ``input.rejected`` ends the run before it starts.
         if config:
             publish_lifecycle(
                 config,
                 "validation_rejected",
                 {"error": str(e), "rejected_count": len(message)},
+                {"event_name": "input.rejected"},
                 event_type=EventType.ERROR,
                 content_type=ContentType.ERROR,
             )
@@ -325,6 +327,16 @@ def reject_nul_messages(messages: list[Any]) -> None:
         )
 
 
+async def _read_saved_state(checkpointer: BaseCheckpointer, config: dict[str, Any]) -> Any:
+    """The thread's saved state: the cached one first, then the durable one; None if none."""
+    logger.debug("Attempting to load existing state from checkpointer")
+    state = await checkpointer.aget_state_cache(config)
+    if not state:
+        logger.debug("No synced state found, trying persistent checkpointer")
+        state = await checkpointer.aget_state(config)
+    return state
+
+
 async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
     input_data: dict[str, Any],
     config: dict[str, Any],
@@ -357,16 +369,22 @@ async def load_or_create_state[StateT: AgentState](  # noqa: PLR0912, PLR0915
         # is dropped here, so a new run cannot erase a stop meant for a run still going.
         # Read the marker first: it names the run that was alive before this one took over, and
         # crash recovery needs it. abegin_run overwrites it.
+        # The marker read must finish before the state read starts: a run that ends in between
+        # saves its final state before it drops its marker, so this order never sees its
+        # RUNNING state together with no marker (a live run taken for a dead one).
         previous_run = await checkpointer.aget_active_run(config)
-        await checkpointer.abegin_run(config)
-
-        logger.debug("Attempting to load existing state from checkpointer")
-        # first check realtime-synced state
-        existing_state: StateT | None = await checkpointer.aget_state_cache(config)
-        if not existing_state:
-            logger.debug("No synced state found, trying persistent checkpointer")
-            # If no synced state, try to get from persistent checkpointer
-            existing_state = await checkpointer.aget_state(config)
+        # The marker write and the state read do not depend on each other: run them together.
+        # Both are always awaited to the end; a failure is raised as it would be one after the
+        # other, the marker write's first.
+        begun, loaded = await asyncio.gather(
+            checkpointer.abegin_run(config),
+            _read_saved_state(checkpointer, config),
+            return_exceptions=True,
+        )
+        for outcome in (begun, loaded):
+            if isinstance(outcome, BaseException):
+                raise outcome
+        existing_state: StateT | None = loaded  # type: ignore[assignment]
 
         if existing_state:
             logger.info(
@@ -773,7 +791,7 @@ async def sync_data(
     new_state = copy_state(state)
     # if context manager is available then utilize it
     if context_manager and trim:
-        new_state = await context_manager.atrim_context(state)
+        new_state = await call_sync_or_async(context_manager.trim_context, state)
         is_context_trimmed = True
 
     # Fire on_checkpoint hook before persisting
@@ -785,7 +803,6 @@ async def sync_data(
             messages=messages,
             is_context_trimmed=is_context_trimmed,
         )
-    publish_lifecycle(config, "checkpoint", {}, {"trimmed": is_context_trimmed})
 
     if checkpointer:
         logger.debug("Persisting state and %d messages to checkpointer", len(messages))

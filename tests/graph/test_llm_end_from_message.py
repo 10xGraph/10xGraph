@@ -17,7 +17,10 @@ async def _end_event(response, converter_key: str, *, stream: bool = False) -> d
     event = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
     converter = ModelResponseConverter(response, converter=converter_key)
     converter.on_stream_end = _make_llm_end_hook(event)
-    with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
+    with (
+        patch("tenxgraph.runtime.publisher.publish.publish_event") as pub,
+        patch("tenxgraph.runtime.publisher.publish.listening", return_value=True),
+    ):
         if stream:
             async for _ in converter.stream({"thread_id": "t"}, node_name="AGENT"):
                 pass

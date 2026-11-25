@@ -196,3 +196,158 @@ async def test_stop_cuts_a_streaming_model_call():
     await asyncio.sleep(0)
     assert not [t for t in asyncio.all_tasks() - before if not t.done()]  # no task leaked
     await app.aclose()
+
+
+class _StopReadCounter(InMemoryCheckpointer):
+    """Counts remote stop-flag reads."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop_reads = 0
+
+    async def ais_stop_requested(self, config):
+        self.stop_reads += 1
+        return await super().ais_stop_requested(config)
+
+
+@pytest.mark.asyncio
+async def test_check_stop_requested_local_only_skips_the_remote_read():
+    checkpointer = MagicMock()
+    checkpointer.ais_stop_requested = AsyncMock(return_value=True)
+
+    stopped = await handler_utils.check_stop_requested(
+        AgentState(),
+        "A",
+        [],
+        {"thread_id": "t"},
+        callback_mgr=MagicMock(),
+        checkpointer=checkpointer,
+        remote=False,
+    )
+
+    assert stopped is False
+    checkpointer.ais_stop_requested.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["ainvoke", "astream"])
+async def test_a_three_node_run_reads_the_stop_flag_once_per_step(mode):
+    checkpointer = _StopReadCounter()
+    app = _three_nodes(checkpointer)
+    data = {"messages": [Message.text_message("go")]}
+    config = {"thread_id": f"t-stop-reads-{mode}"}
+    if mode == "ainvoke":
+        await app.ainvoke(data, config)
+    else:
+        async for _ in app.astream(data, config):
+            pass
+
+    # Four steps (__start__, A, B, C): one read before each. Short nodes are never polled.
+    # Before and after each step (8 reads) before this change.
+    assert checkpointer.stop_reads == 4
+    await app.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_long_node_adds_only_its_mid_node_polls():
+    checkpointer = _StopReadCounter()
+
+    async def slow(state: AgentState):
+        await asyncio.sleep(1.4)
+
+    app = _three_nodes(checkpointer, first=slow)
+    await app.ainvoke({"messages": [Message.text_message("go")]}, {"thread_id": "t-long"})
+
+    # 4 step reads plus one poll at 1 s into the 1.4 s node.
+    assert checkpointer.stop_reads == 5
+    await app.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cross_process_stop_cancels_a_long_node():
+    checkpointer = InMemoryCheckpointer()
+    ran: list[str] = []
+    seen: dict = {}
+
+    async def slow(state: AgentState, config: dict):
+        ran.append("A")
+        seen["config"] = config
+        await asyncio.sleep(10)
+        ran.append("A done")
+
+    app = _three_nodes(checkpointer, first=slow)
+    config = {"thread_id": "t-xproc-long"}
+    run = asyncio.create_task(app.ainvoke({"messages": [Message.text_message("go")]}, config))
+    while not ran:
+        await asyncio.sleep(0.01)
+    # Another process records the stop: only the cache key, not this run's handle.
+    await checkpointer.arequest_stop(seen["config"])
+    started = time.monotonic()
+    await asyncio.wait_for(run, timeout=3)
+
+    assert time.monotonic() - started < 1.5  # within one poll interval
+    assert ran == ["A"]
+    state = await checkpointer.aget_state(config)
+    assert state.execution_meta.interrupt_reason == "stop_requested"
+    assert await checkpointer.ais_stop_requested(config) is False  # consumed
+    await app.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_the_last_node_is_cleared_when_the_run_ends():
+    """Nothing follows the last node: the run completes and the request does not linger."""
+    checkpointer = InMemoryCheckpointer()
+
+    async def last(state: AgentState, config: dict):
+        await checkpointer.arequest_stop(config)
+
+    graph = StateGraph()
+    graph.add_node("A", last)
+    graph.add_edge("A", END)
+    graph.set_entry_point("A")
+    app = graph.compile(checkpointer=checkpointer)
+    config = {"thread_id": "t-stop-last"}
+    await app.ainvoke({"messages": [Message.text_message("go")]}, config)
+
+    state = await checkpointer.aget_state(config)
+    assert state.execution_meta.status == ExecutionStatus.COMPLETED
+    assert await checkpointer.ais_stop_requested(config) is False
+    await app.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_a_node_with_interrupt_after_does_not_leak_into_the_next_run():
+    checkpointer = InMemoryCheckpointer()
+    ran: list[str] = []
+    stop_once = {"done": False}
+
+    async def first(state: AgentState, config: dict):
+        ran.append("A")
+        if not stop_once["done"]:
+            stop_once["done"] = True
+            await checkpointer.arequest_stop(config)
+
+    async def second(state: AgentState):
+        ran.append("B")
+
+    graph = StateGraph()
+    graph.add_node("A", first)
+    graph.add_node("B", second)
+    graph.add_edge("A", "B")
+    graph.add_edge("B", END)
+    graph.set_entry_point("A")
+    app = graph.compile(checkpointer=checkpointer, interrupt_after=["A"])
+    config = {"thread_id": "t-stop-int-after"}
+    await app.ainvoke({"messages": [Message.text_message("go")]}, config)
+
+    assert ran == ["A"]
+    state = await checkpointer.aget_state(config)
+    assert state.is_interrupted()
+    assert await checkpointer.ais_stop_requested(config) is False  # cleared when the run ended
+
+    # The resume runs B: the old request does not stop it.
+    await app.ainvoke({}, config)
+    assert ran == ["A", "B"]
+    state = await checkpointer.aget_state(config)
+    assert state.execution_meta.status == ExecutionStatus.COMPLETED
+    await app.aclose()

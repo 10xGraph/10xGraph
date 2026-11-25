@@ -43,7 +43,7 @@ async def test_upsert_conflicts_on_thread_and_message_id(checkpointer):
     await checkpointer._insert_messages(
         conn, "own-thread", [Message.text_message("hi", message_id="m1")]
     )
-    sql = conn.execute.call_args.args[0]
+    sql = conn.executemany.call_args.args[0]
     assert "ON CONFLICT (thread_id, message_id) DO UPDATE" in sql
     assert "ON CONFLICT (message_id)" not in sql
 
@@ -53,7 +53,9 @@ async def test_rewriting_a_message_in_the_same_thread_still_works(checkpointer):
     conn = AsyncMock()
     messages = [Message.text_message("a", message_id="m1"), Message.text_message("b")]
     await checkpointer._insert_messages(conn, "t1", messages)
-    assert conn.execute.await_count == 2
+    # One pipelined executemany with a row per message.
+    assert conn.executemany.await_count == 1
+    assert len(conn.executemany.call_args.args[1]) == 2
 
 
 @pytest.mark.parametrize("id_type", ["string", "int", "bigint"])
@@ -160,5 +162,5 @@ async def test_upgrade_from_v4_runs_the_reasoning_drop(checkpointer):
 async def test_message_insert_does_not_write_reasoning(checkpointer):
     conn = AsyncMock()
     await checkpointer._insert_messages(conn, "t1", [Message.text_message("hi", message_id="m1")])
-    sql = conn.execute.call_args.args[0]
+    sql = conn.executemany.call_args.args[0]
     assert "reasoning" not in sql

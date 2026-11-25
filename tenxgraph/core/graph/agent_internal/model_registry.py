@@ -197,8 +197,8 @@ def bind_entry(agent: Any, entry: ModelEntry, client: Any) -> Any:
     return bound
 
 
-def entry_attempt(agent: Any, entry: ModelEntry, retry_cfg: RetryConfig | None) -> Any:
-    """Bind ``entry`` with its own client, built once per entry and cached on the Agent.
+def entry_client(agent: Any, entry: ModelEntry) -> Any:
+    """The entry's own client, built once per entry and cached on the Agent.
 
     The client gets only that entry's key, endpoint and backend, never the Agent's.
     """
@@ -208,6 +208,12 @@ def entry_attempt(agent: Any, entry: ModelEntry, retry_cfg: RetryConfig | None) 
         helper = bind_entry(agent, entry, None)
         client = helper._create_client(entry.provider, entry.base_url, entry.use_vertex_ai)
         cache[entry.name] = client
+    return client
+
+
+def entry_attempt(agent: Any, entry: ModelEntry, retry_cfg: RetryConfig | None) -> Any:
+    """Bind ``entry`` with its own cached client."""
+    client = entry_client(agent, entry)
     bound = bind_entry(agent, entry, client)
     bound.client = bound._without_sdk_retries(client, retry_cfg)
     return bound

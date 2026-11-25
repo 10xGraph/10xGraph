@@ -469,7 +469,10 @@ async def test_aput_checkpoint_writes_state_and_messages_atomically(cp):
     assert conn.transaction.call_count == 1
     executed = [c.args[0] for c in conn.execute.await_args_list]
     assert any("states" in sql and "INSERT INTO" in sql for sql in executed)
-    assert any("messages" in sql and "INSERT INTO" in sql for sql in executed)
+    # Messages go in one pipelined executemany on the same connection.
+    inserted = [c.args for c in conn.executemany.await_args_list]
+    assert len(inserted) == 1 and "INSERT INTO" in inserted[0][0] and "messages" in inserted[0][0]
+    assert [row[0] for row in inserted[0][1]] == ["m1"]
     assert config["_checkpoint_version"] == 1
 
 
@@ -483,10 +486,13 @@ async def test_aput_state_prunes_old_versions(cp):
     config = {"thread_id": "t1", "user_id": "u1"}
     await cp.aput_state(config, AgentState())
 
-    deletes = [c.args for c in conn.execute.await_args_list if c.args[0].startswith("DELETE")]
-    assert deletes, "expected a prune DELETE"
+    # The prune DELETE rides in the state INSERT statement (one round trip).
+    writes = [c.args for c in conn.execute.await_args_list if "DELETE FROM" in c.args[0]]
+    assert len(writes) == 1, "expected the prune DELETE with the state INSERT"
+    assert "INSERT INTO" in writes[0][0]
     # New version is 11, keep 3 -> delete version <= 8.
-    assert deletes[0][2] == 8
+    assert writes[0][2] == 11
+    assert writes[0][5] == 8
 
 
 @pytest.mark.asyncio

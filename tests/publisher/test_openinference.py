@@ -21,8 +21,11 @@ from opentelemetry.trace import StatusCode
 from tenxgraph.core.graph import Agent, StateGraph
 from tenxgraph.core.state import Message
 from tenxgraph.runtime.publisher import _openinference as oi
-from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, setup_tracing
+from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
+from tenxgraph.runtime.publisher.phoenix_publisher import PhoenixPublisher
 from tenxgraph.utils.constants import END
+
+from ._publishers import without_exporter
 
 
 SLEEP = 0.15
@@ -122,7 +125,8 @@ async def _spans(level):
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    graph = StateGraph()
+    publisher = without_exporter(PhoenixPublisher, tracer=provider.get_tracer("t"), level=level)
+    graph = StateGraph(publisher=publisher)
     graph.add_node(
         "MAIN",
         _FakeAgent(
@@ -133,7 +137,6 @@ async def _spans(level):
     )
     graph.set_entry_point("MAIN")
     graph.add_edge("MAIN", END)
-    setup_tracing(graph, tracer=provider.get_tracer("t"), level=level)
     app = graph.compile()
     await app.ainvoke(
         {"messages": [Message.text_message("what?")]},
@@ -174,9 +177,6 @@ async def test_full_level_timing_status_kinds_and_content():
         "role": "user",
         "parts": [{"type": "text", "content": "what?"}],
     }
-    assert a["langsmith.span.kind"] == "llm"
-    assert graph.attributes["langsmith.span.kind"] == "chain"
-    assert a["langsmith.metadata.thread_id"] == "t1"
     for s in spans.values():
         if s is not llm:
             assert not any(k.startswith("gen_ai.usage.") for k in s.attributes)

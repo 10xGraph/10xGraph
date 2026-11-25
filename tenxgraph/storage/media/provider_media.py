@@ -101,8 +101,9 @@ async def upload_to_google_file_api(
         mime_type: MIME type of the file.
         display_name: Optional display name for the upload.
         cache: Optional cache to avoid re-uploading the same content.
-        client: Optional ``google.genai.Client`` instance.  If ``None``,
-            a default client is created.
+        client: Optional ``google.genai.Client`` instance, for example the Agent's own
+            client (its ``base_url``, credentials and ``http_client``).  If ``None``,
+            a default client is built from the environment.
 
     Returns:
         A ``google.genai.types.Part`` referencing the uploaded file.
@@ -170,19 +171,13 @@ async def delete_google_uploads(cache: ProviderMediaCache, *, client: Any | None
 
 
 async def _google_upload(client: Any, data: bytes, mime_type: str, display_name: str | None) -> Any:
-    """Perform the actual Google File API upload (sync or async)."""
-    # google-genai SDK uses synchronous upload by default
-    # Wrap in a sync call
-    import asyncio
+    """Upload through the client's async API, so the client's own HTTP transport is used."""
     import io
 
-    def _sync_upload():
-        return client.files.upload(
-            file=io.BytesIO(data),
-            config={"mime_type": mime_type, "display_name": display_name or "upload"},
-        )
-
-    return await asyncio.to_thread(_sync_upload)
+    return await client.aio.files.upload(
+        file=io.BytesIO(data),
+        config={"mime_type": mime_type, "display_name": display_name or "upload"},
+    )
 
 
 def should_use_google_file_api(data_size: int) -> bool:

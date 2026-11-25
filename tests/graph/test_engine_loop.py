@@ -227,7 +227,8 @@ async def test_a_stop_sends_one_graph_interrupted(where, node, mode):
         for e in publisher.events
         if e.event == Event.GRAPH_EXECUTION and e.event_type == EventType.INTERRUPTED
     ]
-    assert [e.node_name for e in interrupted] == [node]
+    assert [e.node_name for e in interrupted] == [""]  # a stop is about the run, not a node
+    assert interrupted[0].data["interrupted_node"] == node
     assert interrupted[0].metadata["interrupt_type"] == "stop"
     saved = await app._checkpointer.aget_state(config)
     assert saved.is_interrupted()

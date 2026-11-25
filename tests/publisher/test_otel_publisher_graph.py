@@ -1,4 +1,4 @@
-"""setup_tracing on a real StateGraph must produce spans (container binding)."""
+"""StateGraph(publisher=OtelPublisher(...)) on a real graph must produce spans."""
 
 import pytest
 
@@ -13,7 +13,7 @@ from tenxgraph.core.graph import StateGraph
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.runtime.publisher import ConsolePublisher
 from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
-from tenxgraph.runtime.publisher.otel_publisher import setup_tracing
+from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher
 from tenxgraph.utils import END
 
 
@@ -43,27 +43,33 @@ async def _run(graph):
 
 
 @pytest.mark.asyncio
-async def test_setup_tracing_emits_spans():
+async def test_otel_publisher_emits_spans():
     tracer, exporter = _tracer()
-    graph = _build()
-    setup_tracing(graph, tracer=tracer)
+    graph = _build(publisher=OtelPublisher(tracer=tracer))
     await _run(graph)
     names = [s.name for s in exporter.get_finished_spans()]
     assert names, "no spans emitted"
     assert "invoke_agent 10xgraph" in names
     assert "MAIN" in names
     for span in exporter.get_finished_spans():
-        assert span.attributes["langsmith.span.kind"] == "chain"
-        assert span.attributes["langsmith.metadata.thread_id"] == "t1"
+        assert span.attributes[
+            "tenxgraph.graph.thread_id"
+            if span.name.startswith("invoke")
+            else "gen_ai.operation.name"
+        ]
         assert not any(k.startswith("gen_ai.usage.") for k in span.attributes)
+        # A plain OtelPublisher writes no backend dialect.
+        assert not any(
+            k.startswith(("langsmith.", "logfire.", "openinference.")) for k in span.attributes
+        )
 
 
 @pytest.mark.asyncio
-async def test_setup_tracing_keeps_existing_publisher():
+async def test_otel_publisher_in_a_list_with_another_publisher():
     tracer, exporter = _tracer()
     console = ConsolePublisher()
-    graph = _build(publisher=console)
-    pub = setup_tracing(graph, tracer=tracer)
+    pub = OtelPublisher(tracer=tracer)
+    graph = _build(publisher=[console, pub])
     assert isinstance(graph._publisher, CompositePublisher)
     assert console in graph._publisher._publishers
     assert pub in graph._publisher._publishers

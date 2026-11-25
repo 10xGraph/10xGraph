@@ -15,11 +15,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from tenxgraph.runtime.publisher import _openinference as oi
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.otel_publisher import (
-    OtelPublisher,
-    _input_message_budget,
-)
+from tenxgraph.runtime.publisher.otel_publisher import OtelPublisher
+from tenxgraph.runtime.publisher.phoenix_publisher import PhoenixPublisher, _input_message_budget
 from tenxgraph.utils.constants import START
+
+from ._publishers import without_exporter
 
 
 @pytest.fixture(autouse=True)
@@ -44,11 +44,11 @@ def _evt(event, etype, node="", data=None, metadata=None):
     )
 
 
-def _publisher():
+def _publisher() -> tuple[OtelPublisher, InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    return OtelPublisher(tracer=provider.get_tracer("t")), exporter
+    return without_exporter(PhoenixPublisher, tracer=provider.get_tracer("t")), exporter
 
 
 async def _publish(pub, *events):
@@ -249,7 +249,6 @@ async def test_span_names_and_operations_follow_genai_conventions():
         "execute_tool browser_navigate",
     }
     assert spans["invoke_agent 10xgraph"]["gen_ai.operation.name"] == "invoke_agent"
-    assert spans["invoke_agent 10xgraph"]["logfire.msg"] == "invoke_agent 10xgraph"
     assert spans["chat claude-haiku-5-5"]["gen_ai.operation.name"] == "chat"
     for node in ("MAIN", "TOOL"):
         assert spans[node]["tenxgraph.node.name"] == node
@@ -260,7 +259,6 @@ async def test_span_names_and_operations_follow_genai_conventions():
     assert tool["gen_ai.tool.call.id"] == "call_1"
     assert tool["gen_ai.tool.type"] == "function"
     assert tool["tenxgraph.tool.type"] == "mcp"
-    assert tool["logfire.msg"] == "execute_tool browser_navigate"
     # Called with no arguments: the input shows ``{}``, not nothing.
     assert tool[oi.INPUT_VALUE] == "{}"
     assert tool[oi.INPUT_MIME] == oi.JSON_MIME

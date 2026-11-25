@@ -2,31 +2,50 @@
 
 A dedicated publisher that calls ``logfire.configure()`` on construction so
 the global TracerProvider is installed before the first span is created.
-All span dispatch logic is inherited from ``OtelPublisher``.
+Span dispatch is inherited from ``OtelPublisher``; this class adds ``logfire.msg``.
 
 Usage::
 
-    from tenxgraph.runtime.publisher import LogfirePublisher
+    from tenxgraph.core.graph import StateGraph
+    from tenxgraph.runtime.publisher import ObservabilityLevel, LogfirePublisher
 
     publisher = LogfirePublisher(service_name="my-agent", level=ObservabilityLevel.FULL)
-    graph._publisher = publisher
+    graph = StateGraph(publisher=publisher)
     compiled = graph.compile(...)
-
-Or use the convenience helper which does the same in one call::
-
-    from tenxgraph.runtime.publisher import setup_logfire
-
-    setup_logfire(graph, service_name="my-agent")
 
 Requires: pip install '10xgraph[logfire]'
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .exporters import _guard_logfire
-from .otel_publisher import ObservabilityLevel, OtelPublisher
+from ._backends import _guard_logfire
+from .identity import UserIdMode
+from .otel_attributes import LOGFIRE_MSG
+from .otel_publisher import ObservabilityLevel, OtelPublisher, SpanPhase, SpanRole
+
+
+if TYPE_CHECKING:
+    from .events import EventModel
+
+
+def logfire_attributes(
+    publisher: OtelPublisher,
+    role: SpanRole,
+    phase: SpanPhase,
+    name: str,
+    event: EventModel,
+    attrs: dict[str, Any],
+) -> dict[str, Any]:
+    """Add ``logfire.msg`` (the span's message in the Logfire UI) when a span starts.
+
+    Logfire's own tracer sets it to the span name too; setting it here keeps the message
+    when spans come from a tracer Logfire did not wrap. Content comes from ``gen_ai.*``.
+    """
+    if phase == "start":
+        attrs[LOGFIRE_MSG] = name
+    return attrs
 
 
 class LogfirePublisher(OtelPublisher):
@@ -50,6 +69,8 @@ class LogfirePublisher(OtelPublisher):
             contain PII).  Use ``STANDARD`` or ``SPANS`` to keep content out.
         additional_span_processors: Extra ``SpanProcessor`` instances to attach
             alongside the Logfire processor (e.g. a LangSmith OTLP processor).
+        user_id_mode: ``"raw"`` (default), ``"hash"`` or ``"mask"``: how ``user_id``
+            appears on spans (see ``tenxgraph.runtime.publisher.identity``).
         **configure_kwargs: Additional keyword arguments forwarded verbatim to
             ``logfire.configure()``.
 
@@ -63,7 +84,7 @@ class LogfirePublisher(OtelPublisher):
             send_to_logfire=True,
             level=ObservabilityLevel.STANDARD,
         )
-        graph._publisher = publisher
+        graph = StateGraph(publisher=publisher)
         compiled = graph.compile(...)
     """
 
@@ -76,6 +97,7 @@ class LogfirePublisher(OtelPublisher):
         console: Any = None,
         level: ObservabilityLevel = ObservabilityLevel.FULL,
         additional_span_processors: list | None = None,
+        user_id_mode: UserIdMode = "raw",
         **configure_kwargs: Any,
     ) -> None:
         _guard_logfire()
@@ -96,4 +118,15 @@ class LogfirePublisher(OtelPublisher):
 
         logfire.configure(**kwargs)
         # OtelPublisher picks up the global TracerProvider set by logfire.configure
-        super().__init__(level=level)
+        super().__init__(level=level, user_id_mode=user_id_mode)
+
+    def span_attributes(
+        self,
+        role: SpanRole,
+        phase: SpanPhase,
+        name: str,
+        event: EventModel,
+        attrs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add the Logfire message (see ``logfire_attributes``)."""
+        return logfire_attributes(self, role, phase, name, event, attrs)

@@ -159,6 +159,12 @@ class TestPhoenixPublisher:
         pub, *_ = _make()
         assert pub._level == ObservabilityLevel.FULL
 
+    def test_user_id_mode_passed_to_otel_publisher(self):
+        pub, *_ = _make(user_id_mode="hash")
+        assert pub.user_id_mode == "hash"
+        pub, *_ = _make()
+        assert pub.user_id_mode == "raw"
+
     def test_raises_import_error_when_otlp_exporter_missing(self):
         mods, *_ = _fake_otel_modules()
         mods["opentelemetry.exporter.otlp.proto.http.trace_exporter"] = None

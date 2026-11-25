@@ -62,6 +62,8 @@ GRAPH_RUN_ID = "tenxgraph.graph.run_id"
 GRAPH_USER_ID = "tenxgraph.graph.user_id"
 GRAPH_TOTAL_STEPS = "tenxgraph.graph.total_steps"
 GRAPH_MODEL = "tenxgraph.graph.model"
+# How the run ended: completed, failed, interrupted, stopped or input_rejected.
+GRAPH_RUN_STATUS = "tenxgraph.graph.run_status"
 
 # ── node span attributes ─────────────────────────────────────────────────────
 NODE_NAME = "tenxgraph.node.name"

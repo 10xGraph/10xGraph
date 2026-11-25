@@ -20,6 +20,7 @@ service containers.
 
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
@@ -143,6 +144,51 @@ class TestAtomicCheckpoint:
         stored = await cp.alist_messages(cfg)
         assert len(stored) == 1
         assert (await cp.aget_state(cfg)) is not None
+
+    async def test_save_uses_one_connection_one_transaction_and_few_statements(self, cp, cfg):
+        """A save on an existing thread: one acquire, one transaction, four statements."""
+        counts = {"acquire": 0, "transaction": 0, "statements": 0}
+        real_pool = await cp._get_pg_pool()
+
+        class _Conn:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def __getattr__(self, name):
+                attr = getattr(self._conn, name)
+                if name in {"execute", "executemany", "fetch", "fetchrow", "fetchval"}:
+                    counts["statements"] += 1
+                if name == "transaction":
+                    counts["transaction"] += 1
+                return attr
+
+        class _Pool:
+            @asynccontextmanager
+            async def acquire(self, **kwargs):
+                counts["acquire"] += 1
+                async with real_pool.acquire(**kwargs) as conn:
+                    yield _Conn(conn)
+
+        def msgs(n):
+            return [Message.text_message(f"m{i}", message_id=str(uuid.uuid4())) for i in range(n)]
+
+        await cp.aput_checkpoint(cfg, AgentState(), msgs(1))  # creates the thread
+        cp._pg_pool = _Pool()
+        try:
+            for _ in range(6):  # past state_history_limit=5, so the prune runs too
+                await cp.aput_checkpoint(cfg, AgentState(), msgs(3))
+        finally:
+            cp._pg_pool = real_pool
+
+        # Per save: lock the thread row, read the version, insert state + prune, insert messages.
+        assert counts == {"acquire": 6, "transaction": 6, "statements": 24}
+        assert len(await cp.alist_messages(cfg, limit=100)) == 19
+        versions = await real_pool.fetch(
+            f"SELECT version FROM {cp._get_table_name('states')} WHERE thread_id = $1 "  # noqa: S608
+            "ORDER BY version",
+            cfg["thread_id"],
+        )
+        assert [r["version"] for r in versions] == [3, 4, 5, 6, 7]
 
 
 class TestUserIsolation:

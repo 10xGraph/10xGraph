@@ -16,4 +16,8 @@ class GraphClosedError(GraphError):
         error_code: str = "GRAPH_CLOSED_001",
         context: dict[str, Any] | None = None,
     ):
-        super().__init__(message=message, error_code=error_code, context=context)
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            context=context,
+        )

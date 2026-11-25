@@ -103,6 +103,16 @@ if TYPE_CHECKING:
         async def _ensure_thread_exists(
             self, thread_id: str | int, user_id: str | int, config: dict[str, Any]
         ) -> None: ...
+        async def _ensure_thread_row(
+            self,
+            conn: Any,
+            thread_id: str | int,
+            user_id: str | int,
+            config: dict[str, Any],
+            isolation: Isolation,
+            *,
+            lock: bool,
+        ) -> None: ...
         def _deserialize_state_payload(
             self, data: dict[str, Any], thread_id: Any = None
         ) -> Any: ...

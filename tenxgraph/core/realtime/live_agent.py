@@ -51,8 +51,9 @@ from tenxgraph.core.realtime.base import (
 from tenxgraph.core.realtime.providers.gemini_live import GeminiLiveClient
 from tenxgraph.core.state import AgentState, Message, TextBlock, add_messages
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
+from tenxgraph.runtime.publisher.publish import listening, publish_event
 from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.utils.callbacks import GraphLifecycleContext
 
 
@@ -264,6 +265,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
         self._session_active = True
         pump_task: asyncio.Task[None] | None = None
         connected = False  # nothing is saved for a session that never reached the provider
+        session_open = False  # run.started published, no run-end event yet
         state = state if state is not None else AgentState()
         try:
             if callback_manager is None:
@@ -291,6 +293,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             # Session start mirrors a graph run: the LIVE node *is* the graph, so
             # on_graph_start fires once here (before any turn) and on_graph_end once at end.
             state = await self._fire_graph_start(callback_manager, config, state)
+            session_open = True
 
             # Closing the input queue ends the session: the pump sets this when it drains the
             # close sentinel, and the receive loop stops once the provider goes idle.
@@ -354,7 +357,18 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             # Balance a turn cut off by session end (no turn_complete arrived), then close out.
             if turn_active:
                 state = await self._fire_turn_end(callback_manager, config, state, turn_index)
+            session_open = False
             await self._fire_graph_end(callback_manager, config, state, turn_index)
+        except BaseException as exc:
+            # The session's run.started needs a run-end event (it ends its trace span).
+            if session_open:
+                if isinstance(exc, Exception):
+                    data = {"error": type(exc).__name__}
+                    self._publish_session(config, EventType.ERROR, "run.failed", state, data)
+                else:
+                    data = {"reason": "cancelled"}
+                    self._publish_session(config, EventType.INTERRUPTED, "run.stopped", state, data)
+            raise
         finally:
             try:
                 try:
@@ -970,7 +984,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             return
         if context_manager is not None:
             try:
-                trimmed = await context_manager.atrim_context(AgentState(context=list(history)))
+                trimmed = await call_sync_or_async(
+                    context_manager.trim_context, AgentState(context=list(history))
+                )
                 history = trimmed.context
             except Exception:
                 logger.warning("context compression failed during reseed; using raw history")
@@ -1038,7 +1054,7 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             state = await cb.fire_on_graph_start(
                 GraphLifecycleContext(config=public_config(config)), state
             )
-        publish_lifecycle(config, "graph_start", {})
+        self._publish_session(config, EventType.START, "run.started", state)
         return state
 
     async def _fire_graph_end(
@@ -1049,7 +1065,8 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             await cb.fire_on_graph_end(
                 GraphLifecycleContext(config=public_config(config)), state, messages, turns
             )
-        publish_lifecycle(config, "graph_end", {"total_steps": turns}, {"total_steps": turns})
+        data = {"total_steps": turns}
+        self._publish_session(config, EventType.END, "run.completed", state, data)
 
     async def _fire_turn_start(
         self, cb: CallbackManager, config: dict[str, Any], state: AgentState, turn_index: int
@@ -1067,6 +1084,29 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             return state
         return await cb.fire_on_turn_end(
             GraphLifecycleContext(config=public_config(config)), state, turn_index
+        )
+
+    def _publish_session(
+        self,
+        config: dict[str, Any],
+        event_type: EventType,
+        name: str,
+        state: AgentState,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Publish a run event of the session (the LIVE node is the graph run)."""
+        if not listening():
+            return
+        publish_event(
+            EventModel.default(
+                config,
+                data={"state": state, **(data or {})},
+                event=Event.GRAPH_EXECUTION,
+                event_type=event_type,
+                content_type=[ContentType.STATE],
+                node_name=getattr(self, "_node_name", "LIVE"),
+                extra={"event_name": name, **(data or {})},
+            )
         )
 
     # ------------------------------------------------------------------ #

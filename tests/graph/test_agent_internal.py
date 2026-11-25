@@ -1255,17 +1255,17 @@ class TestTrimContext:
         original_state = AgentState()
         trimmed_state = AgentState()
         mock_manager = MagicMock()
-        mock_manager.atrim_context = AsyncMock(return_value=trimmed_state)
+        mock_manager.trim_context = AsyncMock(return_value=trimmed_state)
         result = await agent._trim_context(original_state, context_manager=mock_manager)
         assert result is trimmed_state
-        mock_manager.atrim_context.assert_awaited_once_with(original_state)
+        mock_manager.trim_context.assert_awaited_once_with(original_state)
 
     async def test_enabled_manager_attribute_error_returns_state(self):
-        """If the manager doesn't implement atrim_context, return state unchanged."""
+        """If the manager doesn't implement trim_context, return state unchanged."""
         agent = _make_openai_agent()
         agent.trim_context = True
         state = AgentState()
-        bad_manager = MagicMock(spec=[])  # no atrim_context attribute
+        bad_manager = MagicMock(spec=[])  # no trim_context attribute
         result = await agent._trim_context(state, context_manager=bad_manager)
         assert result is state
 
@@ -2549,8 +2549,29 @@ class TestProviderOutputExtraction:
             content=[TextBlock(text="hi"), ToolCallBlock(id="t1", name="f", args={"k": "v"})],
         )
         ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
-        with patch("tenxgraph.runtime.publisher.publish.publish_event") as pub:
+        with (
+            patch("tenxgraph.runtime.publisher.publish.publish_event") as pub,
+            patch("tenxgraph.runtime.publisher.publish.listening", return_value=True),
+        ):
             _make_llm_end_hook(ev)(final, None)
         data = pub.call_args.args[0].data
         assert data["output_response"] == "hi"
         assert data["output_tool_calls"] == [{"id": "t1", "name": "f", "arguments": '{"k": "v"}'}]
+
+    def test_stream_hook_skips_output_when_no_tracing_publisher(self):
+        """The output is built for the LLM span only; tokens (for metrics) always are."""
+        from tenxgraph.core.graph.agent_internal.execution import _make_llm_end_hook
+        from tenxgraph.core.state import Message
+        from tenxgraph.core.state.message_block import TextBlock
+        from tenxgraph.runtime.publisher.events import Event, EventModel, EventType
+
+        final = Message(role="assistant", content=[TextBlock(text="hi")])
+        ev = EventModel(event=Event.LLM_CALL, event_type=EventType.START)
+        with (
+            patch("tenxgraph.runtime.publisher.publish.publish_event") as pub,
+            patch("tenxgraph.runtime.publisher.publish.listening", return_value=False),
+        ):
+            _make_llm_end_hook(ev)(final, None)
+        data = pub.call_args.args[0].data
+        assert "output_response" not in data
+        assert data["input_tokens"] == 0

@@ -95,7 +95,8 @@ async def test_publish_timeout_drops_stalled_event():
 
 
 # G-74: queued events carry a bounded state snapshot
-def _capture_publish(event, config=None):
+def _capture_publish(event, config=None, kind="observability"):
+    """The event a publisher of ``kind`` gets (observability publishers get the state)."""
     captured = []
     task_manager = MagicMock(spec=BackgroundTaskManager)
 
@@ -106,8 +107,53 @@ def _capture_publish(event, config=None):
     task_manager.create_task.side_effect = _capture
     publisher = MagicMock(spec=BasePublisher)
     publisher.config = config or {}
+    publisher.kind = kind
     publish_event(event, publisher, task_manager)
     return captured[0]
+
+
+def test_event_publishers_get_state_on_run_end_events_only():
+    event = EventModel(event=Event.GRAPH_EXECUTION, event_type=EventType.START)
+    event.data["state"] = {"context": [], "k": 1}
+    event.metadata["event_name"] = "run.started"
+    assert "state" not in _capture_publish(event, kind="events").data
+    for name in ("run.completed", "run.failed", "run.interrupted", "run.stopped"):
+        event.metadata["event_name"] = name
+        assert _capture_publish(event, kind="events").data["state"] == {"context": [], "k": 1}
+
+
+def test_observability_only_event_skips_event_publishers_and_builds_nothing():
+    event = EventModel(event=Event.LLM_CALL, event_type=EventType.START, tag="observability")
+    task_manager = MagicMock(spec=BackgroundTaskManager)
+    publisher = MagicMock(spec=BasePublisher)
+    publisher.kind = "events"
+    publish_event(event, publisher, task_manager)
+    task_manager.create_task.assert_not_called()
+    # An observability publisher gets it.
+    assert _capture_publish(event).event == Event.LLM_CALL
+
+
+def test_console_publisher_gets_observability_events():
+    from tenxgraph.runtime.publisher.console_publisher import ConsolePublisher
+    from tenxgraph.runtime.publisher.publish import listening
+
+    console = ConsolePublisher()
+    assert listening("observability", console)
+    task_manager = MagicMock(spec=BackgroundTaskManager)
+    event = EventModel(event=Event.LLM_CALL, event_type=EventType.START, tag="observability")
+    publish_event(event, console, task_manager)
+    task_manager.create_task.assert_called_once()
+    task_manager.create_task.call_args[0][0].close()
+
+
+def test_listening_follows_the_tag():
+    from tenxgraph.runtime.publisher.publish import listening
+
+    events_only = MagicMock(spec=BasePublisher)
+    events_only.kind = "events"
+    assert listening("all", events_only)
+    assert not listening("observability", events_only)
+    assert not listening("all", None)
 
 
 def _big_state(n=500):
@@ -194,6 +240,8 @@ async def test_graph_start_event_state_is_dict_for_invoke_and_stream(mode):
     from tenxgraph.utils.constants import END
 
     class Capture(BasePublisher):
+        kind = "observability"  # gets the state on every event
+
         def __init__(self):
             super().__init__({})
             self.events = []

@@ -18,7 +18,7 @@ from tenxgraph.core.graph import StateGraph, ToolNode
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.message_block import ToolResultBlock
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher
-from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, setup_tracing
+from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, OtelPublisher
 from tenxgraph.storage.checkpointer import InMemoryCheckpointer, SqliteCheckpointer
 from tenxgraph.utils import CallbackManager, InvocationType, tool
 from tenxgraph.utils.callbacks import GraphLifecycleHook
@@ -334,8 +334,8 @@ async def test_stream_chunks_and_events_are_clean():
     assert isinstance(SEEN["annotated"], UserCredential)
     for chunk in chunks:
         _assert_clean(_dump(chunk))
-    init = [e for e in publisher.events if "config" in e.metadata]
-    assert init, "the graph start event carries the run config"
+    # The run config is not published at all (run.started carries ids, node and step).
+    assert not [e for e in publisher.events if "config" in e.metadata]
     for event in publisher.events:
         json.dumps(event.model_dump())
         _assert_clean(_dump(event))
@@ -363,8 +363,8 @@ async def test_otel_full_level_spans_are_clean():
     exporter = memory.InMemorySpanExporter()
     provider = sdk.TracerProvider()
     provider.add_span_processor(export.SimpleSpanProcessor(exporter))
-    graph = _graph(ToolNode([annotated]), [_call("annotated")])
-    setup_tracing(graph, tracer=provider.get_tracer("test"), level=ObservabilityLevel.FULL)
+    publisher = OtelPublisher(tracer=provider.get_tracer("test"), level=ObservabilityLevel.FULL)
+    graph = _graph(ToolNode([annotated]), [_call("annotated")], publisher=publisher)
     app = graph.compile()
     await app.ainvoke({"messages": [Message.text_message("hi")]}, config=_config("t-otel"))
     await app.aclose()

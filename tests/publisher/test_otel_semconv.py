@@ -20,8 +20,11 @@ from tenxgraph.core.graph import ToolNode
 from tenxgraph.core.state import AgentState
 from tenxgraph.runtime.publisher import _genai
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel, OtelPublisher
+from tenxgraph.runtime.publisher.otel_publisher import ObservabilityLevel
+from tenxgraph.runtime.publisher.phoenix_publisher import PhoenixPublisher
 from tenxgraph.utils import CallbackManager
+
+from ._publishers import without_exporter
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +38,8 @@ def _setup(level=ObservabilityLevel.FULL):
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    return OtelPublisher(tracer=provider.get_tracer("t"), level=level), exporter
+    publisher = without_exporter(PhoenixPublisher, tracer=provider.get_tracer("t"), level=level)
+    return publisher, exporter
 
 
 def _evt(event, etype, node="MAIN", data=None, metadata=None, ts=10.0):
@@ -145,18 +149,14 @@ def test_llm_span_attributes_and_graph_node_usage():
     ]
     assert llm["gen_ai.provider.name"] == llm["gen_ai.system"] == "openai"
     assert llm["gen_ai.usage.input_tokens"] == 5
-    assert llm["logfire.msg"] == llm["langsmith.trace.name"] == "chat gpt-4o-mini"
-    assert llm["langsmith.span.kind"] == "llm"
     # Every span carries the thread as session.id, not only the root (Phoenix span filters).
     assert llm["session.id"] == "th1"
 
     node = _by_name(exporter, "MAIN")[0].attributes
     graph = _by_name(exporter, "invoke_agent 10xgraph")[0].attributes
-    for attrs, kind, name in ((node, "chain", "MAIN"), (graph, "chain", "invoke_agent 10xgraph")):
-        assert attrs["langsmith.span.kind"] == kind
-        assert attrs["logfire.msg"] == attrs["langsmith.trace.name"] == name
-        assert attrs["langsmith.metadata.thread_id"] == attrs["session.id"] == "th1"
-        assert attrs["langsmith.metadata.user_id"] == "u1"
+    for attrs in (node, graph):
+        assert attrs["session.id"] == "th1"
+        assert attrs["user.id"] == "u1"
         assert not any(k.startswith("gen_ai.usage.") for k in attrs)
     assert node["tenxgraph.usage.input_tokens"] == 5
     assert node["tenxgraph.usage.output_tokens"] == 2
@@ -186,9 +186,7 @@ def test_parallel_calls_of_one_tool_get_separate_spans():
         )
     tools = _by_name(exporter, "execute_tool search")
     assert len(tools) == 2
-    assert all(s.attributes["langsmith.span.kind"] == "tool" for s in tools)
     assert all(s.attributes["session.id"] == "th1" for s in tools)
-    assert tools[0].attributes["logfire.msg"] == "execute_tool search"
     assert not pub._registry._children
 
 

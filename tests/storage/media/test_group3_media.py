@@ -196,7 +196,7 @@ async def test_google_upload_remembers_remote_name_and_can_delete_it():
     client = MagicMock()
     uploaded = MagicMock(uri="https://g/files/abc", mime_type="text/plain")
     uploaded.name = "files/abc"
-    client.files.upload.return_value = uploaded
+    client.aio.files.upload = AsyncMock(return_value=uploaded)
     cache = ProviderMediaCache()
     await upload_to_google_file_api(b"data", "text/plain", cache=cache, client=client)
     assert cache.remote_ids("google") == ["files/abc"]

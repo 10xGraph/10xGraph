@@ -10,26 +10,28 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import logging
 import ssl
 from typing import Any
 
-from .base_publisher import BasePublisher, close_in_new_loop
+from ._buffered import BufferedPublisher
+from .base_publisher import close_in_new_loop
 from .events import EventModel
 
 
 logger = logging.getLogger("tenxgraph.publisher")
 
 
-class KafkaPublisher(BasePublisher):
+class KafkaPublisher(BufferedPublisher):
     """Publish events to a Kafka topic using aiokafka.
 
     This class provides an asynchronous interface for publishing events to a Kafka topic.
     It uses the aiokafka library to handle the producer operations. The publisher is
     lazily initialized and can be reused for multiple publishes.
 
-    Supports connection pooling and resource limits for production use.
+    Supports connection pooling and resource limits for production use. The message key is
+    the thread id, so a thread's events stay in order on one partition. Graph events are
+    sent in batches (see ``_buffered``): all ``send()`` calls first, then one wait.
 
     Attributes:
         bootstrap_servers: Kafka bootstrap servers.
@@ -60,6 +62,8 @@ class KafkaPublisher(BasePublisher):
                     (and no ``ssl_context``) a default SSLContext is built from them.
                 - sasl_mechanism: e.g. "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512".
                 - sasl_plain_username / sasl_plain_password: SASL credentials.
+                - batch_size / flush_interval_ms / queue_size / publish_timeout: batching
+                    (default 100, 20, 2048, none; see ``_buffered``).
 
         Security options are opt-in: each is passed to ``AIOKafkaProducer`` only when
         set, and the default stays plaintext. They are the developer's choice and are
@@ -158,7 +162,7 @@ class KafkaPublisher(BasePublisher):
             return self._producer
 
     async def publish(self, event: EventModel) -> Any:
-        """Publish an event to the Kafka topic.
+        """Publish one event to the Kafka topic now (graph events go through the batch queue).
 
         Args:
             event: The event to publish.
@@ -173,8 +177,17 @@ class KafkaPublisher(BasePublisher):
             raise RuntimeError("Cannot publish to closed KafkaPublisher")
 
         producer = await self._get_producer()
-        payload = json.dumps(event.model_dump()).encode("utf-8")
-        return await producer.send_and_wait(self.topic, payload)
+        value, key = _message(event)
+        return await producer.send_and_wait(self.topic, value, key=key)
+
+    async def publish_batch(self, events: list[EventModel]) -> Any:
+        """Queue every event with ``send()``, then wait once for all deliveries."""
+        producer = await self._get_producer()
+        futures = []
+        for event in events:
+            value, key = _message(event)
+            futures.append(await producer.send(self.topic, value, key=key))
+        return await asyncio.gather(*futures)
 
     async def close(self):
         """Close the Kafka producer and release resources.
@@ -186,6 +199,7 @@ class KafkaPublisher(BasePublisher):
             logger.debug("KafkaPublisher already closed")
             return
 
+        await self.stop_buffer()
         async with self._producer_lock:
             self._is_closed = True
             if self._producer is not None:
@@ -204,3 +218,9 @@ class KafkaPublisher(BasePublisher):
         active event loop, it logs a warning and skips the operation.
         """
         close_in_new_loop(self)
+
+
+def _message(event: EventModel) -> tuple[bytes, bytes | None]:
+    """The Kafka value and key of an event; the key is the thread id (None when unset)."""
+    key = str(event.thread_id).encode("utf-8") if event.thread_id not in ("", None) else None
+    return event.model_dump_json().encode("utf-8"), key

@@ -102,26 +102,21 @@ class _PgStateMixin(PgHostBase):
             )
 
         new_version = current_version + 1
-        await conn.execute(
-            f"""
-            INSERT INTO {self._get_table_name("states")}
-                (thread_id, version, state_data, meta)
-            VALUES ($1, $2, $3, $4)
-            """,  # noqa: S608
-            thread_id,
-            new_version,
-            state_json,
-            json.dumps(config.get("meta", {})),
+        states = self._get_table_name("states")
+        insert_sql = (
+            f"INSERT INTO {states} (thread_id, version, state_data, meta) "  # noqa: S608
+            "VALUES ($1, $2, $3, $4)"
         )
-
-        # Prune history beyond the retention window (bounded append-only log).
+        params: list[Any] = [thread_id, new_version, state_json, json.dumps(config.get("meta", {}))]
         if self.state_history_limit and self.state_history_limit > 0:
-            await conn.execute(
-                f"DELETE FROM {self._get_table_name('states')} "  # noqa: S608
-                f"WHERE thread_id = $1 AND version <= $2",
-                thread_id,
-                new_version - self.state_history_limit,
+            # Prune history beyond the retention window (bounded append-only log) in the same
+            # statement. The DELETE cannot remove the new row: its version is above the bound.
+            insert_sql = (
+                f"WITH new_row AS ({insert_sql}) "  # noqa: S608
+                f"DELETE FROM {states} WHERE thread_id = $1 AND version <= $5"
             )
+            params.append(new_version - self.state_history_limit)
+        await conn.execute(insert_sql, *params)
 
         return new_version
 

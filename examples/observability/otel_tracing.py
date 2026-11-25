@@ -38,15 +38,13 @@ async def main() -> None:
     configure_tracer_provider()
 
     # SPANS    -> timing and structure only
-    # STANDARD -> adds token counts, model name and request parameters (default)
-    # FULL     -> adds prompts, responses and tool I/O. May contain personal data.
+    # STANDARD -> adds token counts, model name and request parameters
+    # FULL     -> adds prompts, responses and tool I/O (default). May contain personal data.
     publisher = OtelPublisher(level=ObservabilityLevel.STANDARD)
 
     # Pass the publisher when the graph is created: StateGraph(publisher=publisher), or
     # ReactAgent(publisher=publisher) as here. The publisher is bound into the dependency
-    # injection container at that moment. setup_tracing(graph) sets the publisher on an
-    # existing StateGraph afterwards, which does not reach that container in the current
-    # release, so this example avoids it.
+    # injection container at that moment.
     agent = ReactAgent(model="gpt-5-mini", tools=[get_inventory], publisher=publisher)
     app = agent.compile()
 

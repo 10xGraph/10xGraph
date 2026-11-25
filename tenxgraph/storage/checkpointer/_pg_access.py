@@ -214,7 +214,36 @@ class _PgAccessMixin(PgHostBase):
         """
         return column_value_errors({5 + i: spec for i, spec in enumerate(self.columns.all)})
 
-    async def _check_thread_access(
+    async def _read_thread_owner(
+        self, conn, thread_id: str | int, *, lock: bool
+    ) -> tuple[Any, Any]:
+        """``(owner user_id, row)`` of the thread row, ``(None, None)`` when there is none.
+
+        ``row`` holds the tenant columns (``None`` without tenant columns, or for the no-lock
+        read). ``lock=True`` takes the row lock (``FOR UPDATE``) that serializes writers.
+        """
+        threads = self._get_table_name("threads")
+        suffix = " FOR UPDATE" if lock else ""
+        if self.columns.tenant:
+            names = ", ".join(spec.quoted for spec in self.columns.tenant)
+            row = await conn.fetchrow(
+                f"SELECT user_id, {names} FROM {threads} WHERE thread_id = $1{suffix}",  # noqa: S608
+                thread_id,
+            )
+            return (row["user_id"] if row is not None else None), row
+        if lock:
+            owner_row = await conn.fetchrow(
+                f"SELECT user_id FROM {threads} WHERE thread_id = $1 FOR UPDATE",  # noqa: S608
+                thread_id,
+            )
+            return (owner_row["user_id"] if owner_row is not None else None), None
+        owner = await conn.fetchval(
+            f"SELECT user_id FROM {threads} WHERE thread_id = $1",  # noqa: S608
+            thread_id,
+        )
+        return owner, None
+
+    async def _ensure_thread_row(
         self,
         conn,
         thread_id: str | int,
@@ -224,36 +253,50 @@ class _PgAccessMixin(PgHostBase):
         *,
         lock: bool,
     ) -> None:
-        """Read the thread row back and refuse a writer who does not own it.
+        """Create the thread row when absent, then refuse a writer who does not own it.
 
-        Reading what is actually in the table after the insert-if-absent is race-safe: when a
-        concurrent request created the thread, we see the winner's values. Writes always stay
-        ``own`` (``isolation`` comes from ``_isolation(config, write=True)``).
+        Reads the row first, so a thread that exists (every save after the first) costs one
+        statement. Only when the read finds nothing is the row inserted (``ON CONFLICT DO
+        NOTHING``) and read again: the second read sees what is actually in the table, so
+        when a concurrent request created the thread we check the winner's values. Under RLS
+        another tenant's thread is invisible to both reads, and the insert no-ops on it.
 
         Raises:
             ThreadNotFoundError: The thread belongs to another user or tenant.
         """
-        threads = self._get_table_name("threads")
-        suffix = " FOR UPDATE" if lock else ""
-        row = None
-        if self.columns.tenant:
-            names = ", ".join(spec.quoted for spec in self.columns.tenant)
-            row = await conn.fetchrow(
-                f"SELECT user_id, {names} FROM {threads} WHERE thread_id = $1{suffix}",  # noqa: S608
+        owner, row = await self._read_thread_owner(conn, thread_id, lock=lock)
+        if owner is None:
+            insert_sql, insert_params = self._thread_insert_sql(
                 thread_id,
+                config.get("thread_name", f"Thread {thread_id}"),
+                user_id,
+                json.dumps(config.get("thread_meta", {})),
+                isolation,
+                "ON CONFLICT DO NOTHING",
             )
-            owner = row["user_id"] if row is not None else None
-        elif lock:
-            owner_row = await conn.fetchrow(
-                f"SELECT user_id FROM {threads} WHERE thread_id = $1 FOR UPDATE",  # noqa: S608
-                thread_id,
-            )
-            owner = owner_row["user_id"] if owner_row is not None else None
-        else:
-            owner = await conn.fetchval(
-                f"SELECT user_id FROM {threads} WHERE thread_id = $1",  # noqa: S608
-                thread_id,
-            )
+            with self._insert_value_errors():
+                await conn.execute(insert_sql, *insert_params)
+            owner, row = await self._read_thread_owner(conn, thread_id, lock=lock)
+        self._check_thread_owner(owner, row, thread_id, user_id, config, isolation, lock=lock)
+
+    def _check_thread_owner(
+        self,
+        owner: Any,
+        row: Any,
+        thread_id: str | int,
+        user_id: str | int,
+        config: dict[str, Any],
+        isolation: Isolation,
+        *,
+        lock: bool,
+    ) -> None:
+        """Refuse a writer who does not own the thread row read by ``_read_thread_owner``.
+
+        Writes always stay ``own`` (``isolation`` comes from ``_isolation(config, write=True)``).
+
+        Raises:
+            ThreadNotFoundError: The thread belongs to another user or tenant.
+        """
         if owner is None:
             if self.row_level_security:
                 # Under RLS a thread of another tenant is invisible rather than mismatched.
@@ -310,31 +353,15 @@ class _PgAccessMixin(PgHostBase):
         """
         try:
             isolation = self._isolation(config, write=True)
-            insert_sql, insert_params = self._thread_insert_sql(
-                thread_id,
-                config.get("thread_name", f"Thread {thread_id}"),
-                user_id,
-                json.dumps(config.get("thread_meta", {})),
-                isolation,
-                "ON CONFLICT DO NOTHING",
-            )
-
-            async def _check_and_create_thread(conn):
-                # Insert-if-absent, then verify ownership from what is actually
-                # in the table. Checking existence with (thread_id AND user_id)
-                # first was unsafe: for a thread owned by ANOTHER user the
-                # lookup missed, the INSERT silently no-opped on conflict, and
-                # the caller went on to write into that user's thread.
-                # Reading the owner back after the insert is also race-safe:
-                # if a concurrent request created the thread, we observe the
-                # winner's user_id (and tenant values) rather than assuming we created it.
-                with self._insert_value_errors():
-                    await conn.execute(insert_sql, *insert_params)
-                await self._check_thread_access(
+            # Ownership is checked on the row actually in the table, never by looking the
+            # thread up with (thread_id AND user_id): for a thread owned by ANOTHER user that
+            # lookup missed, the insert no-opped on conflict, and the caller wrote into it.
+            await self._run_query(
+                lambda conn: self._ensure_thread_row(
                     conn, thread_id, user_id, config, isolation, lock=False
-                )
-
-            await self._run_query(_check_and_create_thread, settings=isolation.settings)
+                ),
+                settings=isolation.settings,
+            )
 
         except Exception as e:
             logger.error("Failed to ensure thread exists: %s", describe_error(e))
@@ -415,18 +442,10 @@ class _PgAccessMixin(PgHostBase):
             ThreadNotFoundError: If the thread is owned by a different user or tenant.
         """
         isolation = self._isolation(config, write=True)
-        insert_sql, insert_params = self._thread_insert_sql(
-            thread_id,
-            config.get("thread_name", f"Thread {thread_id}"),
-            user_id,
-            json.dumps(config.get("thread_meta", {})),
-            isolation,
-            "ON CONFLICT DO NOTHING",
-        )
-        with self._insert_value_errors():
-            await conn.execute(insert_sql, *insert_params)
-        await self._check_thread_access(conn, thread_id, user_id, config, isolation, lock=True)
+        await self._ensure_thread_row(conn, thread_id, user_id, config, isolation, lock=True)
 
+        # A statement of its own, after the lock is held: in READ COMMITTED it then sees the
+        # version committed by a writer that held the lock before us.
         version_row = await conn.fetchrow(
             f"SELECT COALESCE(MAX(version), 0) AS v "  # noqa: S608
             f"FROM {self._get_table_name('states')} WHERE thread_id = $1",

@@ -40,6 +40,8 @@ class MediaRefResolver:
             internal references will raise.
         media_policy: Policy for downloading external URLs. Defaults to the policy bound by
             ``compile(media_policy=...)``, or ``MediaFetchPolicy()``.
+        google_client: ``google.genai.Client`` used for File API uploads, normally the
+            Agent's own client. If ``None``, a client is built from the environment.
     """
 
     def __init__(
@@ -49,8 +51,10 @@ class MediaRefResolver:
         direct_url_expiration_seconds: int = 3600,
         direct_url_refresh_buffer_seconds: int = 60,
         media_policy: MediaFetchPolicy | None = None,
+        google_client: Any | None = None,
     ) -> None:
         self.media_policy = media_policy
+        self.google_client = google_client
         self.media_store = media_store
         self.cache_backend = cache_backend
         self.direct_url_expiration_seconds = direct_url_expiration_seconds
@@ -350,14 +354,14 @@ class MediaRefResolver:
                 data, mime = await self._retrieve_bytes(ref)
                 from .provider_media import upload_to_google_file_api
 
-                return await upload_to_google_file_api(data, mime)
+                return await upload_to_google_file_api(data, mime, client=self.google_client)
 
             if ref.kind == "data" and ref.data_base64:
                 data = base64.b64decode(ref.data_base64)
                 mime = ref.mime_type or "image/jpeg"
                 from .provider_media import upload_to_google_file_api
 
-                return await upload_to_google_file_api(data, mime)
+                return await upload_to_google_file_api(data, mime, client=self.google_client)
 
         except Exception as exc:
             logger.warning(

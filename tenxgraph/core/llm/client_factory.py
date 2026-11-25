@@ -98,6 +98,8 @@ _PROVIDER_PREFIXES = {
 # ``http_client`` passes straight through to the SDK. It must match the installed
 # openai major: an ``httpx2.AsyncClient`` for openai 3.x, an ``httpx.AsyncClient``
 # for openai 1.x/2.x. See https://github.com/openai/openai-python/blob/main/httpx2.md
+# For Google it becomes ``HttpOptions.httpx_async_client``: an ``httpx.AsyncClient``
+# with google-genai 1.x/2.x, an ``httpx.AsyncClient`` or ``httpx2.AsyncClient`` with 3.x.
 CLIENT_CONSTRUCTOR_KWARGS = frozenset(
     {
         "organization",
@@ -248,7 +250,10 @@ def create_llm_client(
             (only recognised constructor keys are passed through). An
             ``http_client`` must be an ``httpx2.AsyncClient`` with openai 3.x
             (an ``httpx.AsyncClient`` with openai 1.x/2.x); the SDK does not
-            convert between them.
+            convert between them. For ``"google"`` only ``timeout`` and
+            ``http_client`` are read; ``http_client`` must be an
+            ``httpx.AsyncClient`` with google-genai 1.x/2.x (3.x also takes an
+            ``httpx2.AsyncClient``).
 
     Returns:
         An async-capable SDK client instance.
@@ -260,8 +265,10 @@ def create_llm_client(
     if provider == "google":
         return build_google_client(
             use_vertex_ai=use_vertex_ai,
+            api_key=api_key,
             base_url=base_url,
             timeout=extra_kwargs.get("timeout"),
+            http_client=extra_kwargs.get("http_client"),
         )
 
     if provider == "openai":
@@ -292,13 +299,20 @@ def build_google_client(
     location: str | None = None,
     base_url: str | None = None,
     timeout: float | None = None,
+    http_client: Any = None,
 ) -> Any:
     """Build a ``google.genai.Client``; the one Google client builder.
 
-    Used by ``create_llm_client`` (which passes no ``api_key``, ``project`` or ``location``,
-    so the turn-based provider reads them from the environment) and by the Gemini Live
-    client (which takes them as arguments). ``vertexai`` is always passed explicitly, so
+    Used by ``create_llm_client`` (which passes no ``project`` or ``location``, so the
+    turn-based provider reads them from the environment) and by the Gemini Live client
+    (which takes them as arguments). ``vertexai`` is always passed explicitly, so
     ``GOOGLE_GENAI_USE_VERTEXAI`` cannot switch the mode under the caller.
+
+    ``http_client`` is an async httpx client (for example one with a client certificate
+    for mTLS): ``httpx.AsyncClient`` with google-genai 1.x/2.x, ``httpx.AsyncClient`` or
+    ``httpx2.AsyncClient`` with 3.x; the SDK's pydantic check refuses any other type. It
+    becomes ``HttpOptions.httpx_async_client`` and carries every async request, on the
+    Gemini Developer API and on Vertex AI. The SDK does not close it.
     """
     try:
         from google import genai
@@ -310,7 +324,10 @@ def build_google_client(
         ) from exc
 
     # google-genai expresses the request timeout in milliseconds.
-    http_options = HttpOptions(timeout=int((timeout or get_default_llm_timeout()) * 1000))
+    http_options = HttpOptions(
+        timeout=int((timeout or get_default_llm_timeout()) * 1000),
+        httpx_async_client=http_client,
+    )
     if base_url:
         http_options.base_url = base_url
 

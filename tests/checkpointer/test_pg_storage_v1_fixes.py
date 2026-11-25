@@ -124,7 +124,7 @@ async def test_message_upsert_updates_tool_calls_and_meta(monkeypatch):
 
     cp, conn = _make(monkeypatch)
     await cp._insert_messages(conn, "t1", [Message.text_message("x", message_id="m")])
-    sql = conn.execute.call_args.args[0]
+    sql = conn.executemany.call_args.args[0]
     for col in ("tool_calls = EXCLUDED", "role = EXCLUDED", "meta = EXCLUDED"):
         assert col in sql
 

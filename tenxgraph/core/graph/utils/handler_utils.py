@@ -33,7 +33,7 @@ from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.message_block import RemoteToolCallBlock, ToolResultBlock
 from tenxgraph.core.state.reducers import add_messages
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
+from tenxgraph.runtime.publisher.publish import listening, publish_event, publish_lifecycle
 from tenxgraph.storage.checkpointer import BaseCheckpointer
 from tenxgraph.utils import (
     END,
@@ -52,6 +52,8 @@ from tenxgraph.utils.interrupt import (
     pending_interrupt,
     record_resume,
 )
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .run_registry import current_run
 from .tool_dispatch import tool_call_name
@@ -82,7 +84,12 @@ async def fire_interrupt(
     interrupt_type: str,
     state: AgentState,
 ) -> None:
-    """Run the ``on_interrupt`` hooks, then publish the ``graph_interrupt`` lifecycle event."""
+    """Run the ``on_interrupt`` hooks, then publish the run-end event of the pause.
+
+    ``run.stopped`` for a stop request, else ``run.interrupted`` (``before``, ``after``,
+    ``interrupt``, ``remote_tool``), with the paused state and, for ``interrupt()``, the
+    request (id and value).
+    """
     if callback_mgr and callback_mgr._lifecycle_hooks:
         await callback_mgr.fire_on_interrupt(
             GraphLifecycleContext(config=public_config(config)),
@@ -90,41 +97,33 @@ async def fire_interrupt(
             interrupt_type=interrupt_type,
             state=state,
         )
-    publish_lifecycle(
-        config,
-        "graph_interrupt",
-        {"interrupted_node": node, "interrupt_type": interrupt_type},
-        {"interrupt_type": interrupt_type},
-        event_type=EventType.INTERRUPTED,
-        node_name=node,
-    )
-
-
-def publish_state_update(config: dict[str, Any], node: str, step: int) -> None:
-    publish_lifecycle(
-        config,
-        "state_update",
-        {"step": step},
-        {"step": step},
-        event=Event.NODE_EXECUTION,
-        node_name=node,
-    )
-
-
-def publish_graph_end(config: dict[str, Any], total_steps: int) -> None:
-    publish_lifecycle(
-        config, "graph_end", {"total_steps": total_steps}, {"total_steps": total_steps}
-    )
-
-
-def publish_graph_error(config: dict[str, Any], error: str, step: int, node: str) -> None:
-    publish_lifecycle(
-        config,
-        "graph_error",
-        {"error": error, "step": step, "node_name": node},
-        {"step": step},
-        content_type=ContentType.ERROR,
-        node_name=node,
+    if not listening():
+        return
+    stopped = interrupt_type == "stop"
+    data: dict[str, Any] = {
+        "interrupted_node": node,
+        "interrupt_type": interrupt_type,
+        "state": state,
+    }
+    request = pending_interrupt(state) if interrupt_type == "interrupt" else None
+    if request is not None:
+        data["interrupt"] = request.model_dump(mode="json")
+    if stopped:
+        data["reason"] = STOP_REASON
+    publish_event(
+        EventModel.default(
+            config,
+            data=data,
+            event=Event.GRAPH_EXECUTION,
+            event_type=EventType.INTERRUPTED,
+            content_type=[ContentType.STATE],
+            # A stop is about the run; only an interrupt belongs to a node.
+            node_name="" if stopped else node,
+            extra={
+                "event_name": "run.stopped" if stopped else "run.interrupted",
+                "interrupt_type": interrupt_type,
+            },
+        )
     )
 
 
@@ -167,8 +166,13 @@ async def check_interrupted[StateT: AgentState](
             )
             if modified is not None and modified is not state:
                 state = modified  # type: ignore[assignment]
+        # A span event on the run's trace; event consumers see the resume in ``run.started``.
         publish_lifecycle(
-            config, "resume", {"resumed_node": resumed_node}, {"resumed_node": resumed_node}
+            config,
+            "resume",
+            {"resumed_node": resumed_node},
+            {"resumed_node": resumed_node},
+            tag="observability",
         )
 
         # Paused for a client-side tool: the resumed run continues after that node.
@@ -441,6 +445,7 @@ async def check_stop_requested[StateT: AgentState](
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
     resume_after: Callable[[], str] | None = None,
     last_save: LastSave | None = None,
+    remote: bool = True,
 ) -> bool:
     """Check if a stop has been requested externally.
 
@@ -450,8 +455,11 @@ async def check_stop_requested[StateT: AgentState](
     is done) there is nothing left to stop: the request is dropped and the run completes.
 
     ``last_save`` records the stop save (see :func:`check_and_handle_interrupt`). The stop is
-    reported once, by the ``graph_interrupt`` lifecycle event (GRAPH_EXECUTION INTERRUPTED,
-    ``node_name`` = the stopped node).
+    reported once, by ``run.stopped`` (GRAPH_EXECUTION INTERRUPTED, ``node_name`` = the
+    stopped node).
+
+    ``remote=False`` checks only the in-process flags and skips the checkpointer read. The
+    engine passes it after a node: the remote flag is read once per step, before the node.
     """
     callback_mgr = fresh(callback_mgr)
     checkpointer = fresh(checkpointer)
@@ -463,9 +471,11 @@ async def check_stop_requested[StateT: AgentState](
     run = current_run.get()
     if run is not None and run.stop_requested:
         stop_requested = True
-    if not stop_requested and checkpointer:
+    if not stop_requested and remote and checkpointer:
         try:
+            _tp0 = _perf_now()  # TEMP-PERF
             stop_requested = await checkpointer.ais_stop_requested(config)
+            _perf_done("core_stop_check", _tp0)  # TEMP-PERF
         except Exception as e:  # an unreachable cache must not fail the run
             logger.warning("Stop check failed (%r); relying on the in-process stop flag", e)
 
@@ -596,7 +606,6 @@ async def finalize_cancelled_run(
     state: AgentState,
     config: dict[str, Any],
     messages: list[Message],
-    event: EventModel,
     current_node: str,
     reason: str = CANCELLED_REASON,
     last_save: LastSave | None = None,
@@ -604,7 +613,7 @@ async def finalize_cancelled_run(
     """Save a cancelled run as INTERRUPTED so the thread stays usable.
 
     Closes unanswered tool calls, marks the state INTERRUPTED with ``reason``, syncs it to the
-    durable store and then publishes the INTERRUPTED event, in one detached task that finishes
+    durable store and then publishes ``run.stopped``, in one detached task that finishes
     even if this coroutine keeps being cancelled (a level-triggered anyio cancel scope). This
     coroutine waits for that task up to ``FINALIZE_TIMEOUT_SECONDS``, also while cancelled, so
     what runs after it (the run-marker release, the caller's thread lock) sees the save done. If
@@ -644,7 +653,7 @@ async def finalize_cancelled_run(
         finally:
             # After the save, so the event carries the saved state (tool calls closed,
             # interrupt set).
-            _publish_cancel_event(state, event)
+            _publish_cancel_event(state, config, current_node, reason)
 
     # All the work runs in one task of its own. A cancel scope that stays cancelled (anyio,
     # as used by Starlette on a client disconnect) re-raises CancelledError at every await of
@@ -674,13 +683,21 @@ async def finalize_cancelled_run(
         )
 
 
-def _publish_cancel_event(state: AgentState, event: EventModel) -> None:
+def _publish_cancel_event(
+    state: AgentState, config: dict[str, Any], current_node: str, reason: str
+) -> None:
+    """Publish ``run.stopped`` for a cancelled run, with its reason and saved state."""
     try:
-        event.event_type = EventType.INTERRUPTED
-        event.metadata["interrupted"] = "Cancelled"
-        event.metadata["status"] = "Graph execution cancelled"
-        event.data["state"] = state
-        publish_event(event)
+        publish_event(
+            EventModel.default(
+                config,
+                data={"state": state, "reason": reason, "interrupted_node": current_node},
+                event=Event.GRAPH_EXECUTION,
+                event_type=EventType.INTERRUPTED,
+                content_type=[ContentType.STATE],
+                extra={"event_name": "run.stopped", "interrupt_type": "cancel"},
+            )
+        )
     except Exception as e:  # publishing must never mask the cancel
         logger.warning("Could not publish cancel event (%s)", e)
 
@@ -751,16 +768,17 @@ async def recover_crashed_run(
         logger.error("Could not save the repaired thread '%s' (%r)", config.get("thread_id"), e)
     try:
         metrics.counter("tenxgraph.run.recovered").inc()
-        event = EventModel.default(
-            config,
-            data={"state": state, "dead_run_id": dead_run},
-            event=Event.GRAPH_EXECUTION,
-            event_type=EventType.INTERRUPTED,
-            content_type=[ContentType.STATE],
-            node_name=meta.current_node,
+        # Published before the new run's ``run.started`` (the repair happens while the
+        # thread loads); tracing adds it to that run's span once it starts.
+        publish_event(
+            EventModel.default(
+                config,
+                data={"dead_run_id": dead_run},
+                event=Event.GRAPH_EXECUTION,
+                event_type=EventType.INTERRUPTED,
+                content_type=[ContentType.STATE],
+                extra={"event_name": "run.recovered"},
+            )
         )
-        event.metadata["interrupted"] = "Recovered"
-        event.metadata["status"] = "Crashed run recovered"
-        publish_event(event)
     except Exception as e:  # publishing must never block the repair
         logger.warning("Could not publish recovery event (%s)", e)

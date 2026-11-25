@@ -1,8 +1,7 @@
-"""Private backend builders and import guards for the OTLP-based observability helpers."""
+"""Private backend builders and import guards for the OTLP-based publishers."""
 
 from __future__ import annotations
 
-import inspect
 import os
 from typing import Any
 
@@ -72,6 +71,8 @@ def _build_langsmith_processor(
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+    from ._export_health import log_export_health
+
     resolved_key = api_key or os.environ.get("LANGSMITH_API_KEY")
     if not resolved_key:
         raise ValueError(
@@ -85,7 +86,9 @@ def _build_langsmith_processor(
 
     # The LangSmith OTLP endpoint expects /v1/traces
     traces_endpoint = endpoint.rstrip("/") + "/v1/traces"
-    exporter = OTLPSpanExporter(endpoint=traces_endpoint, headers=headers)
+    exporter = log_export_health(
+        OTLPSpanExporter(endpoint=traces_endpoint, headers=headers), "langsmith"
+    )
     return BatchSpanProcessor(exporter)
 
 
@@ -97,13 +100,6 @@ def _phoenix_project(project: str | None = None) -> str | None:
         or os.environ.get("PHOENIX_PROJECT_NAME")
         or None
     )
-
-
-def _logfire_accepts_resource_attributes() -> bool:
-    """True when the installed ``logfire.configure`` takes ``resource_attributes`` (logfire>=5)."""
-    import logfire
-
-    return "resource_attributes" in inspect.signature(logfire.configure).parameters
 
 
 def _new_tracer_provider(project: str | None = None) -> Any:
@@ -146,6 +142,8 @@ def _build_phoenix_processor(
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+    from ._export_health import log_export_health
+
     resolved_key = api_key or os.environ.get("PHOENIX_API_KEY")
     headers: dict[str, str] = {}
     if resolved_key:
@@ -155,7 +153,9 @@ def _build_phoenix_processor(
         endpoint or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT") or "http://localhost:6006"
     ).rstrip("/")
     traces_endpoint = base if base.endswith("/v1/traces") else base + "/v1/traces"
-    exporter = OTLPSpanExporter(endpoint=traces_endpoint, headers=headers)
+    exporter = log_export_health(
+        OTLPSpanExporter(endpoint=traces_endpoint, headers=headers), "phoenix"
+    )
     return BatchSpanProcessor(exporter)
 
 
@@ -186,6 +186,8 @@ def _build_otlp_processor(*, endpoint: str | None = None) -> Any:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+    from ._export_health import log_export_health
+
     if endpoint:
         base = endpoint.rstrip("/")
         endpoint = base if base.endswith("/v1/traces") else base + "/v1/traces"
@@ -194,4 +196,4 @@ def _build_otlp_processor(*, endpoint: str | None = None) -> Any:
             "OTLP tracing needs an endpoint: pass endpoint= or set "
             "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
         )
-    return BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+    return BatchSpanProcessor(log_export_health(OTLPSpanExporter(endpoint=endpoint), "otlp"))

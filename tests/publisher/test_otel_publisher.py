@@ -1,7 +1,7 @@
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,8 +13,10 @@ from tenxgraph.runtime.publisher.otel_publisher import (
     _provider_system_name,
     _set_request_params,
     _to_str,
-    setup_tracing,
 )
+from tenxgraph.runtime.publisher.phoenix_publisher import PhoenixPublisher
+
+from ._publishers import without_exporter
 
 
 class _Span:
@@ -205,68 +207,104 @@ def test_llm_handlers_and_error_paths():
 
 
 def test_default_level_is_full():
-    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
-        assert OtelPublisher()._level == ObservabilityLevel.FULL
+    assert OtelPublisher()._level == ObservabilityLevel.FULL
 
 
-def test_setup_tracing_attaches_publisher():
-    graph = SimpleNamespace(_publisher=None, _container=MagicMock())
-    with patch("tenxgraph.runtime.publisher.otel_publisher._guard", return_value=None):
-        pub = setup_tracing(graph)
-    assert graph._publisher is pub
-    graph._container.bind_instance.assert_called_once()
-
-
-def test_graph_lifecycle_update_and_error_handlers():
-    _install_fake_otel()
+def test_resume_event_then_run_interrupted_closes_the_graph_span():
+    tracer = _install_fake_otel()
     pub = OtelPublisher(level=ObservabilityLevel.STANDARD)
 
     pub._on_graph_start(_evt(Event.GRAPH_EXECUTION, EventType.START))
-    pub._on_graph_update(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, metadata={"lifecycle": "resume"}, data={"resumed_node": "N1"}))
-    pub._on_graph_update(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, metadata={"lifecycle": "checkpoint", "trimmed": True}))
-    pub._on_graph_update(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, metadata={"lifecycle": "graph_start"}))
-    pub._on_graph_update(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, metadata={"lifecycle": "graph_end"}, data={"total_steps": 2}))
-    pub._on_graph_update(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, metadata={"lifecycle": "graph_error"}, data={"error": "x"}))
-    pub._on_graph_update(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, metadata={"lifecycle": "graph_interrupt", "interrupt_type": "before"}))
-    pub._on_graph_interrupted(_evt(Event.GRAPH_EXECUTION, EventType.INTERRUPTED, data={"interrupted_node": "N2"}))
-    pub._on_graph_error(_evt(Event.GRAPH_EXECUTION, EventType.ERROR, data={"error": "boom"}))
-
-
-def test_graph_validation_rejected_and_state_enrichment_paths():
-    _install_fake_otel()
-    pub = OtelPublisher(level=ObservabilityLevel.FULL)
-
-    pub._on_graph_start(
-        _evt(Event.GRAPH_EXECUTION, EventType.START, metadata={"lifecycle": "validation_rejected"})
-    )
-
-    pub._on_graph_start(_evt(Event.GRAPH_EXECUTION, EventType.START))
-    pub._on_graph_update(
+    pub._on_node_start(_evt(Event.NODE_EXECUTION, EventType.START, node="N2"))
+    resume = {"metadata": {"lifecycle": "resume"}, "data": {"resumed_node": "N1"}}
+    pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.UPDATE, **resume))
+    pub._dispatch(
         _evt(
             Event.GRAPH_EXECUTION,
-            EventType.UPDATE,
-            data={
-                "messages": [
-                    {
-                        "role": "assistant",
-                        "content": "ok",
-                        "usages": {"prompt_tokens": 2, "completion_tokens": 3},
-                        "model": "gpt-4o",
-                    }
-                ],
-                "state": {"context": [{"role": "system", "content": "sys"}]},
-            },
+            EventType.INTERRUPTED,
+            data={"interrupted_node": "N2", "interrupt_type": "before"},
+            metadata={"event_name": "run.interrupted"},
         )
     )
+    graph, node = tracer.spans
+    assert ("graph.resumed", {"resumed_node": "N1"}) in graph.events
+    assert graph.ended and graph.status == ("OK", "")
+    assert graph.attrs["tenxgraph.graph.run_status"] == "interrupted"
+    assert [n for n, _ in graph.events][-1] == "graph.interrupted"
+    assert node.ended and node.attrs["tenxgraph.span.unfinished"] is True
+    # A later error for the same run finds no span: nothing is ended twice.
+    pub._on_graph_error(_evt(Event.GRAPH_EXECUTION, EventType.ERROR, data={"error": "boom"}))
+    assert len(tracer.spans) == 2
 
 
-def test_node_tool_error_and_update_handlers():
+def test_input_rejected_is_a_failed_span_of_its_own():
+    tracer = _install_fake_otel()
+    pub = OtelPublisher(level=ObservabilityLevel.FULL)
+    pub._dispatch(
+        _evt(
+            Event.GRAPH_EXECUTION,
+            EventType.ERROR,
+            data={"error": "bad input", "rejected_count": 1},
+            metadata={"lifecycle": "validation_rejected", "event_name": "input.rejected"},
+        )
+    )
+    (span,) = tracer.spans
+    assert span.ended
+    assert span.status == ("ERROR", "input_rejected")
+    assert span.attrs["tenxgraph.graph.run_status"] == "input_rejected"
+    assert pub._registry._graph == {}
+
+
+def test_run_completed_puts_run_totals_on_the_graph_span():
+    tracer = _install_fake_otel()
+    pub = OtelPublisher(level=ObservabilityLevel.FULL)
+    pub._on_graph_start(_evt(Event.GRAPH_EXECUTION, EventType.START))
+    pub._on_llm_start(_evt(Event.LLM_CALL, EventType.START, data={"model": "gpt-4o"}))
+    llm_end = {"model": "gpt-4o", "response_model": "gpt-4o-2024"}
+    pub._on_llm_end(_evt(Event.LLM_CALL, EventType.END, data=llm_end))
+    pub._on_graph_end(
+        _evt(
+            Event.GRAPH_EXECUTION,
+            EventType.END,
+            data={
+                "messages": [{"role": "assistant", "content": "ok"}],
+                "state": {"context": [{"role": "system", "content": "sys"}]},
+            },
+            metadata={"total_input_tokens": 2, "total_output_tokens": 3},
+        )
+    )
+    graph = tracer.spans[0]
+    assert graph.attrs["tenxgraph.graph.model"] == "gpt-4o-2024"
+    assert graph.attrs["tenxgraph.usage.input_tokens"] == 2
+    assert graph.attrs["tenxgraph.usage.output_tokens"] == 3
+    assert graph.attrs["tenxgraph.graph.run_status"] == "completed"
+    names = [n for n, _ in graph.events]
+    assert "gen_ai.content.completion" in names and "gen_ai.content.system" in names
+
+
+def test_run_recovered_before_start_is_added_when_the_span_starts():
+    tracer = _install_fake_otel()
+    pub = OtelPublisher()
+    pub._dispatch(
+        _evt(
+            Event.GRAPH_EXECUTION,
+            EventType.INTERRUPTED,
+            data={"dead_run_id": "old"},
+            metadata={"event_name": "run.recovered"},
+        )
+    )
+    assert tracer.spans == []
+    pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.START))
+    assert ("graph.recovered", {"dead_run_id": "old"}) in tracer.spans[0].events
+    assert pub._registry._recovered == {}
+
+
+def test_node_tool_and_error_handlers():
     _install_fake_otel()
     pub = OtelPublisher(level=ObservabilityLevel.FULL)
 
     pub._on_graph_start(_evt(Event.GRAPH_EXECUTION, EventType.START))
     pub._on_node_start(_evt(Event.NODE_EXECUTION, EventType.START, node="A"))
-    pub._on_node_update(_evt(Event.NODE_EXECUTION, EventType.UPDATE, node="A", metadata={"lifecycle": "state_update"}, data={"step": 1}))
     pub._on_tool_start(_evt(Event.TOOL_EXECUTION, EventType.START, node="A", data={"function_name": "t", "args": {"a": 1}}, metadata={"is_mcp": True}))
     pub._on_tool_end(_evt(Event.TOOL_EXECUTION, EventType.END, node="A", data={"function_name": "t", "message": {"ok": True}}))
     pub._on_tool_error(_evt(Event.TOOL_EXECUTION, EventType.ERROR, node="A", data={"function_name": "t", "error": "bad"}))
@@ -296,24 +334,6 @@ def test_close_and_sync_close_paths():
 
     pub.sync_close()
     assert pub._is_closed is True
-
-
-def test_guard_raises_when_opentelemetry_missing(monkeypatch):
-    from tenxgraph.runtime.publisher import otel_publisher as op
-
-    real_import = __import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name == "opentelemetry":
-            raise ImportError("missing")
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", _fake_import):
-        with patch.dict(sys.modules, {"opentelemetry": None}):
-            try:
-                op._guard()
-            except ImportError:
-                assert True
 
 
 def test_publish_handles_closed_and_dispatch_exceptions():
@@ -359,7 +379,7 @@ def _node_spans(level, start_data, end_data):
     import json
 
     tracer = _install_fake_otel()
-    pub = OtelPublisher(level=level)
+    pub = without_exporter(PhoenixPublisher, level=level)
     pub._dispatch(_evt(Event.GRAPH_EXECUTION, EventType.START, data={"step": 1}))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data=start_data))
     pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=end_data))
@@ -396,6 +416,15 @@ def test_node_output_omits_absent_keys():
         ObservabilityLevel.STANDARD, {"state": _STATE_IN}, {"state": _STATE_OUT, "next_node": None}
     )
     assert json.loads(node.attrs["output.value"]) == {"state": _STATE_OUT}
+
+
+def test_plain_publisher_node_span_has_no_state():
+    tracer = _install_fake_otel()
+    pub = OtelPublisher(level=ObservabilityLevel.FULL)
+    pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.START, node="MAIN", data={"state": _STATE_IN}))
+    pub._dispatch(_evt(Event.NODE_EXECUTION, EventType.END, node="MAIN", data=_END))
+    node = next(s for s in tracer.spans if s.name == "MAIN")
+    assert not any(k.startswith(("input.", "output.", "openinference.")) for k in node.attrs)
 
 
 def test_node_span_spans_level_has_no_state():

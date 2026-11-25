@@ -19,9 +19,10 @@ from redis.exceptions import ResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from tenxgraph.core.state import AgentState
-from tenxgraph.storage.checkpointer import pg_checkpointer as pg
 from tenxgraph.storage.checkpointer import _pg_support as support
+from tenxgraph.storage.checkpointer import pg_checkpointer as pg
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
+from tenxgraph.utils import metrics
 
 
 LOGGER = "tenxgraph.checkpointer.pg"
@@ -335,3 +336,12 @@ async def test_release_closes_redis_while_the_breaker_is_open(clock):
     await cp.arelease()
 
     assert "aclose" in fake.calls
+
+
+@pytest.mark.asyncio
+async def test_state_cache_write_is_timed():
+    name = "pg_checkpointer.save_state_cache.duration"
+    before = metrics.snapshot()["timers"].get(name, {}).get("count", 0)
+    cp, _fake = _cp()
+    assert await cp.aput_state_cache(_cfg(), AgentState()) is True
+    assert metrics.snapshot()["timers"][name]["count"] == before + 1

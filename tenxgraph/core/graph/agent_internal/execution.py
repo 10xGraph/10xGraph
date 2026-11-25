@@ -29,6 +29,7 @@ from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils import metrics
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.utils.converter import (
     TOOL_RESULT_FENCE_LINE,
     convert_messages,
@@ -48,7 +49,14 @@ from .constants import (
     is_default_reasoning,
     reasoning_for,
 )
-from .model_registry import ModelEntry, bind_entry, entry_attempt, named_entry, select_entry
+from .model_registry import (
+    ModelEntry,
+    bind_entry,
+    entry_attempt,
+    entry_client,
+    named_entry,
+    select_entry,
+)
 from .openai import is_endpoint_unsupported, is_reasoning_rejected
 
 
@@ -249,7 +257,7 @@ def _make_llm_end_hook(llm_event: Any, started: float | None = None) -> Any:
 
     def hook(final: Any, error: BaseException | None) -> None:
         from tenxgraph.runtime.publisher.events import EventType
-        from tenxgraph.runtime.publisher.publish import publish_event
+        from tenxgraph.runtime.publisher.publish import listening, publish_event
 
         data = llm_event.data
         if error is not None:
@@ -265,7 +273,9 @@ def _make_llm_end_hook(llm_event: Any, started: float | None = None) -> Any:
         data["cache_read_tokens"] = getattr(usages, "cache_read_input_tokens", 0) or 0
         data["cache_creation_tokens"] = getattr(usages, "cache_creation_input_tokens", 0) or 0
         data["reasoning_tokens"] = getattr(usages, "reasoning_tokens", 0) or 0
-        if error is None and callable(getattr(final, "text", None)):
+        # The output is for the LLM span only; the metrics below need the tokens alone.
+        tracing = listening("observability")
+        if tracing and error is None and callable(getattr(final, "text", None)):
             data["output_response"] = final.text().strip()
             data["output_tool_calls"] = [
                 {
@@ -344,7 +354,7 @@ class AgentExecutionMixin:
             return state
 
         try:
-            new_state = await context_manager.atrim_context(state)
+            new_state = await call_sync_or_async(context_manager.trim_context, state)
             logger.debug("Context trimmed using context manager")
             return new_state
         except AttributeError:
@@ -946,6 +956,9 @@ class AgentExecutionMixin:
         # the entry's model, provider and kwargs; the shared Agent is never changed.
         model_entry = select_entry(self, config)
         run = self if model_entry is None else bind_entry(self, model_entry, None)
+        if model_entry is not None and model_entry.provider == "google":
+            # Large media is uploaded with the entry's own client (its key, endpoint, http_client).
+            run.client = entry_client(self, model_entry)
         entry_kwargs = {} if model_entry is None else {"model_entry": model_entry}
 
         state = await self._trim_context(state)
@@ -1050,6 +1063,8 @@ class AgentExecutionMixin:
             event_type=EventType.START,
             content_type=[ContentType.STATE],
             node_name=node_name,
+            # LLM calls are for traces (the LLM span); event consumers get node.completed.
+            tag="observability",
         )
         publish_event(llm_event)
         # Started by the publish above; current around the request so the provider SDK's
@@ -1138,8 +1153,11 @@ class AgentExecutionMixin:
 
         from tenxgraph.storage.media.resolver import MediaRefResolver
 
-        resolver = MediaRefResolver(media_store=media_store)
         provider = getattr(self, "provider", None)
+        resolver = MediaRefResolver(
+            media_store=media_store,
+            google_client=getattr(self, "client", None) if provider == "google" else None,
+        )
         model = getattr(self, "model", None)
         # Strip provider prefix from model (e.g. "openai/gpt-4o" -> "gpt-4o")
         if model and "/" in model:

@@ -19,16 +19,18 @@ from typing import Any
 from tenxgraph.runtime.publisher.events import EventModel
 from tenxgraph.storage.media.url_policy import redact_url
 
-from .base_publisher import BasePublisher, close_in_new_loop
+from ._buffered import BufferedPublisher
+from .base_publisher import close_in_new_loop
 
 
 logger = logging.getLogger("tenxgraph.publisher")
 
 
-class RedisPublisher(BasePublisher):
+class RedisPublisher(BufferedPublisher):
     """Publish events to Redis via Pub/Sub channel or Stream.
 
-    Supports connection pooling and resource limits for production use.
+    Supports connection pooling and resource limits for production use. Graph events are
+    sent in batches (see ``_buffered``), each batch as one pipeline without a transaction.
 
     TLS is the developer's choice: use a ``rediss://`` URL to encrypt the connection
     (the default ``redis://`` is plaintext).
@@ -64,6 +66,8 @@ class RedisPublisher(BasePublisher):
                 - socket_connect_timeout: Connect timeout in seconds (default: 5.0).
                 - socket_keepalive: Enable TCP keepalive (default: True).
                 - health_check_interval: Health check interval in seconds (default: 30).
+                - batch_size / flush_interval_ms / queue_size / publish_timeout: batching
+                  (default 100, 20, 2048, none; see ``_buffered``).
         """
         super().__init__(config or {})
         self.url: str = self.config.get("url", "redis://localhost:6379/0")
@@ -144,7 +148,7 @@ class RedisPublisher(BasePublisher):
             return self._redis
 
     async def publish(self, event: EventModel) -> Any:
-        """Publish an event to Redis.
+        """Publish one event to Redis now (graph events go through the batch queue).
 
         Args:
             event: The event to publish.
@@ -159,17 +163,31 @@ class RedisPublisher(BasePublisher):
             raise RuntimeError("Cannot publish to closed RedisPublisher")
 
         client = await self._get_client()
-        payload = json.dumps(event.model_dump()).encode(self.encoding)
+        return await self._send(client, self._payload(event))
 
+    async def publish_batch(self, events: list[EventModel]) -> Any:
+        """Send ``events`` in one pipeline (no transaction): one round trip per batch."""
+        client = await self._get_client()
+        async with client.pipeline(transaction=False) as pipe:
+            for event in events:
+                self._send(pipe, self._payload(event))
+            return await pipe.execute()
+
+    def _payload(self, event: EventModel) -> bytes:
+        try:
+            return event.model_dump_json().encode(self.encoding)
+        except UnicodeEncodeError:
+            # A non-UTF encoding: ASCII-escaped JSON, as before, encodes in any of them.
+            return json.dumps(event.model_dump()).encode(self.encoding)
+
+    def _send(self, client: Any, payload: bytes) -> Any:
+        """XADD to the stream or PUBLISH to the channel, on a client or a pipeline."""
         if self.mode == "stream":
-            # XADD to stream
             fields = {"data": payload}
             if self.maxlen is not None:
-                return await client.xadd(self.stream, fields, maxlen=self.maxlen, approximate=True)
-            return await client.xadd(self.stream, fields)
-
-        # Default: Pub/Sub channel
-        return await client.publish(self.channel, payload)
+                return client.xadd(self.stream, fields, maxlen=self.maxlen, approximate=True)
+            return client.xadd(self.stream, fields)
+        return client.publish(self.channel, payload)
 
     async def close(self):
         """Close the Redis client and release connection pool resources.
@@ -180,6 +198,7 @@ class RedisPublisher(BasePublisher):
             logger.debug("RedisPublisher already closed")
             return
 
+        await self.stop_buffer()
         async with self._connection_lock:
             self._is_closed = True
             if self._redis is not None:

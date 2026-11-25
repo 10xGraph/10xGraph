@@ -24,10 +24,13 @@ class BasePublisher(ABC):
 
     Attributes:
         config: Configuration dictionary for the publisher.
-        kind: What the publisher is for. ``"events"`` (default) is an event stream for your
-            own consumers (Kafka, Redis, RabbitMQ, console, custom). ``"observability"`` is
-            an AI tracing backend (OTEL, Logfire, LangSmith, Phoenix). Callers can send an
-            event to one kind only with ``publish_event(..., only=kind)``.
+        kind: What the publisher is for, and so which events it gets (see
+            ``events.EventTag``). ``"events"`` (default) is an event stream for your own
+            consumers (Kafka, Redis, RabbitMQ, custom): it gets the ``"all"`` events (run,
+            node, tool) with the state on run-end events only. ``"observability"`` is an AI
+            tracing backend (OTEL, Logfire, LangSmith, Phoenix): it gets every event, with
+            state and error details. ``ConsolePublisher`` gets every event. Callers can send
+            an event to one kind only with ``publish_event(..., only=kind)``.
         inline: When True, ``publish_event`` calls :meth:`publish_inline` on the caller's
             path instead of scheduling :meth:`publish` as a background task. For in-process
             publishers whose work is quick and must be done before the run goes on (OTEL

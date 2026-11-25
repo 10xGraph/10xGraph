@@ -10,11 +10,13 @@ from tenxgraph.core.exceptions import GraphRecursionError
 from tenxgraph.core.state import AgentState, Message
 from tenxgraph.core.state.agent_state import copy_state
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
-from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
+from tenxgraph.runtime.publisher.publish import publish_event
 from tenxgraph.utils import END, START
 from tenxgraph.utils.callbacks import GraphLifecycleContext
 from tenxgraph.utils.interrupt import GraphInterrupt, clear_resume_values
 from tenxgraph.utils.logging import set_log_context
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 from .error_text import client_error_text
 from .handler_utils import (
@@ -24,9 +26,6 @@ from .handler_utils import (
     check_stop_requested,
     close_unanswered_tool_calls,
     pause_for_interrupt,
-    publish_graph_end,
-    publish_graph_error,
-    publish_state_update,
     resolve_stored_node,
     skip_answered_tool_node,
 )
@@ -71,7 +70,9 @@ class GraphRunMixin:
     ) -> Any:
         """Load the thread's state, or start a new one from ``default_state``."""
         logger.debug("Loading or creating state from input data")
+        _tp0 = _perf_now()  # TEMP-PERF
         state = await load_or_create_state(input_data, config, default_state)
+        _perf_done("core_load_state", _tp0)  # TEMP-PERF
         logger.debug(
             "State loaded: interrupted=%s, current_node=%s, step=%d",
             state.is_interrupted(),
@@ -83,12 +84,11 @@ class GraphRunMixin:
     async def _start_run(
         self, state: Any, input_data: dict[str, Any], config: dict[str, Any]
     ) -> tuple[Any, dict[str, Any]]:
-        """Apply a resume, then run ``on_graph_start`` and publish ``graph_start``."""
+        """Apply a resume, then run ``on_graph_start``."""
         state, config = await check_interrupted(state, input_data, config)
         if self._has_hooks():
             lc_context = GraphLifecycleContext(config=public_config(config))
             state = await self.callback_mgr.fire_on_graph_start(lc_context, state)
-        publish_lifecycle(config, "graph_start", {})
         return state, config
 
     def _start_node(self, state: AgentState, config: dict[str, Any]) -> tuple[str, int]:
@@ -114,28 +114,21 @@ class GraphRunMixin:
                 state,
                 lambda n: get_next_node(n, state, self.edges),
             )
+            # A stop seen before the first step saves the node the run starts at.
+            state.set_current_node(current_node)
         return current_node, step
 
     async def _begin_step(
         self,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         step: int,
         current_node: str,
     ) -> None:
-        """Record the node and step about to run and publish PROGRESS."""
+        """Record the node and step about to run (saved to the state cache)."""
         state.set_current_node(current_node)
         state.execution_meta.step = step
         await call_realtime_sync(state, config)
-        event.data["state"] = state
-        event.data["step"] = step
-        event.data["current_node"] = current_node
-        event.metadata["step"] = step
-        event.metadata["current_node"] = current_node
-        event.metadata["status"] = f"Executing step {step} at node '{current_node}'"
-        event.event_type = EventType.PROGRESS
-        publish_event(event)
 
     async def _interrupt_before(
         self,
@@ -163,7 +156,8 @@ class GraphRunMixin:
     def _start_node_event(
         self, state: AgentState, config: dict[str, Any], step: int, current_node: str
     ) -> tuple[bool, AgentState, EventModel]:
-        """Publish the node START event and scope logs to the node.
+        """Publish the node START event (observability only: it opens the node span) and
+        scope logs to the node. ``__start__`` does no work and publishes nothing.
 
         Returns whether lifecycle hooks exist, the state before the node (a copy only
         when ``on_state_update`` hooks need it) and the node event.
@@ -177,8 +171,10 @@ class GraphRunMixin:
             event_type=EventType.START,
             content_type=[ContentType.STATE],
             node_name=current_node,
+            tag="observability",
         )
-        publish_event(node_event)
+        if current_node != START:
+            publish_event(node_event)
         config["_node_name"] = current_node
         # Narrow the correlation context to the node now executing.
         set_log_context(node=current_node)
@@ -224,22 +220,32 @@ class GraphRunMixin:
         node_event: EventModel,
         next_node: str | None,
         current_node: str,
-        messages: list[Message],
+        new_messages: list[Message],
     ) -> None:
-        """Check the node's goto target and publish the node END event."""
+        """Check the node's goto target and publish ``node.completed`` (NODE END).
+
+        Carries the node's new messages and ``next_node`` (set only when the node chose it,
+        by ``Command`` or a handoff; None means the graph's edges decide). Event publishers
+        get no state; the node span gets the state after the node.
+        """
         # Fail with a clear error instead of a KeyError on an unknown target.
         validate_goto(next_node, self.nodes, current_node)
         logger.debug(
-            "Node result processed, next_node=%s, total_messages=%d",
+            "Node result processed, next_node=%s, new_messages=%d",
             next_node,
-            len(messages),
+            len(new_messages),
         )
+        if current_node == START:
+            return
         node_event.event_type = EventType.END
-        node_event.data["messages"] = messages
+        node_event.tag = "all"
+        node_event.metadata["event_name"] = "node.completed"
+        node_event.data["messages"] = new_messages
+        node_event.data["next_node"] = next_node
         node_event.content_type = [ContentType.MESSAGE]
         publish_event(node_event)
 
-    async def _publish_node_update(
+    async def _after_node(
         self,
         has_hooks: bool,
         lifecycle_context: GraphLifecycleContext,
@@ -247,11 +253,9 @@ class GraphRunMixin:
         old_state_snapshot: AgentState,
         state: Any,
         config: dict[str, Any],
-        event: EventModel,
         step: int,
-        messages: list[Message],
     ) -> Any:
-        """Run ``on_state_update`` after the node's result is merged, then publish UPDATE."""
+        """Run ``on_state_update`` after the node's result is merged."""
         if has_hooks:
             state = await self.callback_mgr.fire_on_state_update(
                 lifecycle_context,
@@ -260,15 +264,12 @@ class GraphRunMixin:
                 new_state=state,
                 step=step,
             )
-        publish_state_update(config, current_node, step)
 
-        await call_realtime_sync(state, config)
-        event.event_type = EventType.UPDATE
-        event.data["state"] = state
-        event.data["messages"] = messages
-        mirror_last_message(event, messages)
-        event.content_type = [ContentType.STATE, ContentType.MESSAGE]
-        publish_event(event)
+        # With per-step saves on, the save in ``_advance`` (or the save of any path that ends
+        # the run before it: remote tools, stop, interrupt, error, cancel) writes this state to
+        # the cache, so writing it here as well adds nothing.
+        if not config.get("durable_checkpoint_every_step", True):
+            await call_realtime_sync(state, config)
         return state
 
     async def _interrupt_after(
@@ -307,7 +308,6 @@ class GraphRunMixin:
         next_node: str | None,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         step: int,
         messages: list[Message],
         persisted_upto: int,
@@ -328,6 +328,11 @@ class GraphRunMixin:
         clear_resume_values(state)
         step += 1
         state.advance_step()
+        # The save below must name the node that runs next: recovery from the durable copy
+        # alone (cache lost) resumes there, and naming the finished node would run it twice.
+        # END is left out, so a completed run still names its last node.
+        if current_node != END:
+            state.set_current_node(current_node)
 
         # Durable per-step checkpoint, so a pod killed mid-run replays at most one node
         # instead of resuming from the last terminal save (or, once the cache is gone,
@@ -344,23 +349,18 @@ class GraphRunMixin:
             persisted_upto = len(messages)
         else:
             await call_realtime_sync(state, config)
-
-        event.event_type = EventType.UPDATE
-        event.metadata["State_Updated"] = "State Updated"
-        event.data["state"] = state
-        publish_event(event)
         return current_node, step, persisted_upto
 
     async def _recursion_limit_hit(
         self,
         state: AgentState,
         config: dict[str, Any],
-        event: EventModel,
         step: int,
         max_steps: int,
         current_node: str,
     ) -> GraphRecursionError:
-        """Park the state for the next turn, publish the error and return it to raise."""
+        """Park the state for the next turn and return the error to raise (the run loop
+        publishes ``run.failed``)."""
         logger.error(self.RECURSION_MESSAGE)
         state.error(self.RECURSION_MESSAGE)
         # The limit is spent for this turn. Park the state at the entry so the
@@ -368,12 +368,6 @@ class GraphRunMixin:
         state.set_current_node(START)
         state.execution_meta.step = 0
         await call_realtime_sync(state, config)
-        event.event_type = EventType.ERROR
-        event.data["state"] = state
-        event.metadata["error"] = self.RECURSION_MESSAGE
-        event.metadata["step"] = step
-        event.metadata["current_node"] = current_node
-        publish_event(event)
         return GraphRecursionError(
             message=f"Graph execution exceeded recursion limit: {max_steps}",
             error_code="RECURSION_001",
@@ -388,14 +382,14 @@ class GraphRunMixin:
         self,
         state: Any,
         config: dict[str, Any],
-        event: EventModel,
         lifecycle_context: GraphLifecycleContext,
         messages: list[Message],
         step: int,
         current_node: str,
         last_save: LastSave,
     ) -> tuple[Any, Any]:
-        """Mark the run complete, run ``on_graph_end``, save and publish END.
+        """Mark the run complete, run ``on_graph_end`` and save (the run loop publishes
+        ``run.completed``).
 
         Returns the final state and whether the context was trimmed.
         """
@@ -414,7 +408,6 @@ class GraphRunMixin:
                 messages=messages,
                 total_steps=step,
             )
-        publish_graph_end(config, step)
 
         is_context_trimmed = await sync_data(
             state=state,
@@ -423,16 +416,6 @@ class GraphRunMixin:
             trim=True,
             last_save=last_save,
         )
-        event.event_type = EventType.END
-        event.data["state"] = state
-        event.data["messages"] = messages
-        mirror_last_message(event, messages)
-        event.content_type = [ContentType.STATE, ContentType.MESSAGE]
-        event.metadata["status"] = "Graph execution completed"
-        event.metadata["step"] = step
-        event.metadata["current_node"] = current_node
-        event.metadata["is_context_trimmed"] = is_context_trimmed
-        publish_event(event)
         return state, is_context_trimmed
 
     async def _fail_run(
@@ -440,14 +423,14 @@ class GraphRunMixin:
         error: Exception,
         state: Any,
         config: dict[str, Any],
-        event: EventModel,
         lifecycle_context: GraphLifecycleContext,
         messages: list[Message],
         step: int,
         current_node: str,
         last_save: LastSave,
     ) -> Any:
-        """Record a failed run: error state, ERROR event, ``on_graph_error``, final save.
+        """Record a failed run: error state, ``on_graph_error``, final save (the run loop
+        publishes ``run.failed``).
 
         Called from the loop's ``except`` block; the caller re-raises. Returns the state
         the hooks left.
@@ -457,15 +440,9 @@ class GraphRunMixin:
         # Close tool calls the failed node never answered, so the saved history is valid.
         await close_unanswered_tool_calls(state, config, messages)
 
-        event.event_type = EventType.ERROR
-        event.metadata["error"] = str(error)
-        event.data["state"] = state
-        publish_event(event)
-
         # Fire on_graph_error hook before persisting the error state
-        error_message = str(error)
         if self._has_hooks():
-            state, error_message = await self.callback_mgr.fire_on_graph_error(
+            state, _ = await self.callback_mgr.fire_on_graph_error(
                 lifecycle_context,
                 error=error,
                 partial_state=state,
@@ -473,7 +450,6 @@ class GraphRunMixin:
                 step=step,
                 node_name=current_node,
             )
-        publish_graph_error(config, error_message, step, current_node)
 
         await sync_data(
             state=state,

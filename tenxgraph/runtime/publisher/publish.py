@@ -7,12 +7,24 @@ from typing import Any
 from injectq import Inject
 from pydantic import BaseModel
 
+from tenxgraph.runtime.publisher._buffered import BufferedPublisher
 from tenxgraph.runtime.publisher.base_publisher import BasePublisher, PublisherKind
 from tenxgraph.runtime.publisher.composite_publisher import CompositePublisher
-from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
+from tenxgraph.runtime.publisher.console_publisher import ConsolePublisher
+from tenxgraph.runtime.publisher.events import (
+    RUN_END_EVENTS,
+    ContentType,
+    Event,
+    EventModel,
+    EventTag,
+    EventType,
+)
+from tenxgraph.utils import metrics
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.log_safety import TRACE_ONLY_ERROR_KEYS
+from tenxgraph.utils.temp_perf import done as _perf_done  # TEMP-PERF
+from tenxgraph.utils.temp_perf import now as _perf_now  # TEMP-PERF
 
 
 logger = logging.getLogger("tenxgraph.publisher")
@@ -35,11 +47,13 @@ async def _publish_event_task(
         timeout = config.get("publish_timeout") if isinstance(config, dict) else None
         if not isinstance(timeout, int | float) or isinstance(timeout, bool):
             timeout = None
+        attrs = {"publisher": type(publisher).__name__}
         try:
-            if timeout:
-                await asyncio.wait_for(publisher.publish(event), timeout=timeout)
-            else:
-                await publisher.publish(event)
+            with metrics.timer("tenxgraph.publish.duration", attributes=attrs):
+                if timeout:
+                    await asyncio.wait_for(publisher.publish(event), timeout=timeout)
+                else:
+                    await publisher.publish(event)
             logger.debug("Published event: %s", event)
         except TimeoutError:
             logger.error("Publishing event timed out after %ss; event dropped", timeout)
@@ -118,26 +132,51 @@ def _select(publisher: BasePublisher, kind: PublisherKind) -> BasePublisher | No
     return publisher if publisher.kind == kind else None
 
 
-def _split_inline(publisher: BasePublisher) -> tuple[list[BasePublisher], BasePublisher | None]:
-    """The ``inline`` publishers in ``publisher``, and the rest (None when nothing is left)."""
+def _leaves(publisher: BasePublisher) -> list[BasePublisher]:
+    """The publishers inside ``publisher`` (composites walked), in order."""
     if isinstance(publisher, CompositePublisher):
-        inline: list[BasePublisher] = []
-        rest: list[BasePublisher] = []
-        for child in publisher._publishers:
-            child_inline, child_rest = _split_inline(child)
-            inline += child_inline
-            if child_rest is not None:
-                rest.append(child_rest)
-        if not inline:
-            return [], publisher
-        return inline, CompositePublisher(rest) if rest else None
-    # ``is True``: a mock or duck-typed publisher without the flag stays in the background.
-    return ([publisher], None) if getattr(publisher, "inline", False) is True else ([], publisher)
+        return [leaf for child in publisher._publishers for leaf in _leaves(child)]
+    return [publisher]
 
 
-def listening(publisher: BasePublisher | None = Inject[BasePublisher]) -> bool:
-    """True when a publisher is bound, so an event built now reaches someone."""
-    return fresh(publisher) is not None
+def _receives(publisher: BasePublisher, tag: EventTag) -> PublisherKind | None:
+    """Which version of an event tagged ``tag`` the publisher gets, or None for none.
+
+    Observability publishers get every event in the observability version (state, error
+    text). Event publishers get ``all`` events in the events version; ``ConsolePublisher``,
+    a debug tool, gets every event in that version.
+    """
+    if getattr(publisher, "kind", "events") == "observability":
+        return "observability"
+    if tag == "all" or isinstance(publisher, ConsolePublisher):
+        return "events"
+    return None
+
+
+def listening(
+    tag: EventTag = "all", publisher: BasePublisher | None = Inject[BasePublisher]
+) -> bool:
+    """True when a bound publisher takes events tagged ``tag``, so one built now reaches
+    someone. Call sites check it before building a costly payload."""
+    publisher = fresh(publisher)
+    return publisher is not None and any(
+        _receives(leaf, tag) is not None for leaf in _leaves(publisher)
+    )
+
+
+async def flush_buffered(publisher: BasePublisher | None, *, stop: bool = False) -> None:
+    """Send what the broker publishers in ``publisher`` have queued; never raises.
+
+    ``stop=True`` also stops their workers (before an event loop closes: sync ``invoke``).
+    """
+    if publisher is None:
+        return
+    for leaf in _leaves(publisher):
+        if isinstance(leaf, BufferedPublisher):
+            try:
+                await (leaf.stop_buffer() if stop else leaf.flush())
+            except Exception as e:
+                logger.error("Flushing %s failed: %s", type(leaf).__name__, e)
 
 
 def _plain(value: Any) -> Any:
@@ -160,9 +199,10 @@ def publish_lifecycle(
     event_type: EventType = EventType.UPDATE,
     content_type: ContentType = ContentType.STATE,
     node_name: str = "",
+    tag: EventTag = "all",
 ) -> None:
     """Publish one lifecycle event (``metadata["lifecycle"]``), whether or not hooks exist."""
-    if not listening():
+    if not listening(tag):
         return
     publish_event(
         EventModel.default(
@@ -173,8 +213,34 @@ def publish_lifecycle(
             node_name=node_name,
             content_type=[content_type],
             extra={"lifecycle": lifecycle, **(extra or {})},
+            tag=tag,
         )
     )
+
+
+def _deliver(
+    event: EventModel,
+    publishers: list[BasePublisher],
+    task_manager: BackgroundTaskManager,
+) -> None:
+    """Hand ``event`` to each publisher: inline ones now, broker ones to their queue, the
+    rest in one background task."""
+    background: list[BasePublisher] = []
+    for publisher in publishers:
+        try:
+            # ``is True``: a mock or duck-typed publisher without the flag stays in the
+            # background.
+            if getattr(publisher, "inline", False) is True:
+                publisher.publish_inline(event)
+            elif isinstance(publisher, BufferedPublisher):
+                publisher.enqueue(event)
+            else:
+                background.append(publisher)
+        except Exception as e:
+            logger.error("Failed to publish event: %s", e)
+    if background:
+        target = background[0] if len(background) == 1 else CompositePublisher(background)
+        task_manager.create_task(_publish_event_task(event, target))
 
 
 def publish_event(
@@ -183,16 +249,23 @@ def publish_event(
     task_manager: BackgroundTaskManager = Inject[BackgroundTaskManager],
     only: PublisherKind | None = None,
 ) -> None:
-    """Publish an event asynchronously using the background task manager.
+    """Publish an event to the bound publishers that take its tag, without waiting.
 
-    Delivery is best-effort: events run as background tasks, and when more than the
-    manager's cap (1000 by default) are pending, new events are shed and a warning is
-    logged. ``CompiledGraph.aclose()`` and sync ``invoke()`` wait for pending events.
-    Publishers with ``inline = True`` (OTEL tracing) get the event right here instead, in
-    order, through ``publish_inline``. ``error_message`` and ``error_traceback`` reach
-    ``"observability"`` publishers only.
+    ``event.tag`` and each publisher's ``kind`` decide who gets it: observability
+    publishers get every event, event publishers get ``"all"`` events,
+    ``ConsolePublisher`` gets every event (see ``EventTag``). When nobody takes the tag
+    nothing is built. Observability publishers get the full event; event publishers get
+    ``data["state"]`` only on run-end events (``RUN_END_EVENTS``), and never
+    ``error_message`` or ``error_traceback`` (they can hold paths, DSNs or SQL).
+
+    Delivery is best-effort. Publishers with ``inline = True`` (OTEL tracing) get the event
+    right here, in order, through ``publish_inline``. Broker publishers (RabbitMQ, Kafka,
+    Redis) queue it and send batches from one worker (see ``_buffered``). Any other
+    publisher gets it in a background task; when more than the task manager's cap (1000 by
+    default) are pending, new events are shed and a warning is logged.
+    ``CompiledGraph.aclose()`` and sync ``invoke()`` wait for pending events.
     Pydantic models (or lists of them) in ``data`` and ``metadata`` are dumped here, so a
-    caller passes live objects and pays for the dump only when a publisher is bound.
+    caller passes live objects and pays for the dump only when a publisher takes them.
     ``data["state"]`` larger than the publisher's ``state_snapshot_limit`` config (JSON
     characters, default 65536; 0 or None disables) is replaced by a bounded summary.
 
@@ -201,62 +274,63 @@ def publish_event(
         publisher: The publisher instance (injected).
         task_manager: The background task manager (injected).
         only: Send to publishers of this ``kind`` only (``"events"`` or ``"observability"``).
-            None (default) sends to every publisher.
+            None (default) sends to every publisher that takes the tag.
     """
     publisher = fresh(publisher)
     task_manager = fresh(task_manager)
-    # No sink bound -> nothing to publish. Spawning a task per event just to
-    # discover there is nowhere to send it cost a task and kept the event alive
-    # for no reason, on the hot path of every node in every run.
     if publisher is not None and only is not None:
         publisher = _select(publisher, only)
     if publisher is None:
         return
+    groups: dict[str, list[BasePublisher]] = {"observability": [], "events": []}
+    for leaf in _leaves(publisher):
+        version = _receives(leaf, event.tag)
+        if version is not None:
+            groups[version].append(leaf)
+    # Nobody takes this tag: build nothing (an LLM payload with only a broker bound).
+    if not groups["observability"] and not groups["events"]:
+        return
 
-    # Store the task to prevent it from being garbage collected. May return None
-    # when the manager is shedding load (see BackgroundTaskManager.create_task).
-    # Snapshot the event first: the run loop reuses one event object and edits its
-    # data, metadata and phase between publishes, so the queued task would otherwise
-    # send the last values for every event.
-    data = {k: _plain(v) for k, v in event.data.items()}
-    # A queued event must not pin a whole run state while the sink is slow, so a large
-    # ``state`` is cut to a bounded summary (see ``bound_state_snapshot``).
-    if "state" in data:
-        state = data["state"]
-        # A live state object keeps changing after this call and is not a dict, so publishers
-        # and the size cap would not see a stable snapshot. Dump it to a plain dict here, for
-        # every call site, so streamed and invoked runs hand publishers the same shape.
-        if not isinstance(state, dict) and callable(getattr(state, "model_dump", None)):
-            state = state.model_dump()
-        data["state"] = bound_state_snapshot(state, _state_limit(publisher))
-    # The same reuse means ``timestamp`` is stale on the second publish of an event, so the
-    # snapshot carries the moment of this publish (publish happens when the thing happens).
-    snapshot = event.model_copy(
-        update={
-            "data": data,
-            "metadata": {k: _plain(v) for k, v in event.metadata.items()},
-            "timestamp": datetime.now().timestamp(),
-        }
+    _tp0 = _perf_now()  # TEMP-PERF
+    # Snapshot the event first: the run loop reuses one event object and edits its data,
+    # metadata and phase between publishes, so a queued copy would otherwise send the last
+    # values for every event. ``timestamp`` is the moment of this publish for the same reason.
+    data = {k: _plain(v) for k, v in event.data.items() if k != "state"}
+    metadata = {k: _plain(v) for k, v in event.metadata.items()}
+    update = {"metadata": metadata, "timestamp": datetime.now().timestamp()}
+    # The state is dumped only when someone gets it: observability publishers, or event
+    # publishers on a run-end event.
+    has_state = "state" in event.data
+    obs_state = has_state and bool(groups["observability"])
+    events_state = (
+        has_state and bool(groups["events"]) and event.metadata.get("event_name") in RUN_END_EVENTS
     )
-    # Exception text and tracebacks (``error_details``) can hold paths, DSNs or SQL, so they
-    # go to observability publishers (trace backends) only; event streams get the type.
-    plain = snapshot
-    if any(key in data for key in TRACE_ONLY_ERROR_KEYS):
+    state = _plain_state(event.data["state"]) if obs_state or events_state else None
+    if groups["observability"]:
+        full = dict(data)
+        if obs_state:
+            full["state"] = bound_state_snapshot(state, _group_limit(groups["observability"]))
+        snapshot = event.model_copy(update={**update, "data": full})
+        _deliver(snapshot, groups["observability"], task_manager)
+    if groups["events"]:
         kept = {k: v for k, v in data.items() if k not in TRACE_ONLY_ERROR_KEYS}
-        plain = snapshot.model_copy(update={"data": kept})
+        if events_state:
+            kept["state"] = bound_state_snapshot(state, _group_limit(groups["events"]))
+        _deliver(event.model_copy(update={**update, "data": kept}), groups["events"], task_manager)
+    _perf_done("core_publish_event_build", _tp0)  # TEMP-PERF
 
-    inline, background = _split_inline(publisher)
-    for sink in inline:
-        try:
-            sink.publish_inline(snapshot if sink.kind == "observability" else plain)
-        except Exception as e:
-            logger.error("Failed to publish event: %s", e)
-    if background is None:
-        return
-    if plain is snapshot:
-        task_manager.create_task(_publish_event_task(snapshot, background))
-        return
-    for kind, version in (("observability", snapshot), ("events", plain)):
-        part = _select(background, kind)  # type: ignore[arg-type]
-        if part is not None:
-            task_manager.create_task(_publish_event_task(version, part))
+
+def _plain_state(state: Any) -> Any:
+    """A live state object keeps changing after the publish and is not a dict, so publishers
+    and the size cap would not see a stable snapshot: dump it to a plain dict here, so
+    streamed and invoked runs hand publishers the same shape."""
+    if not isinstance(state, dict) and callable(getattr(state, "model_dump", None)):
+        return state.model_dump()
+    return state
+
+
+def _group_limit(publishers: list[BasePublisher]) -> int | None:
+    """The ``state_snapshot_limit`` of a single publisher, else the default."""
+    if len(publishers) == 1:
+        return _state_limit(publishers[0])
+    return DEFAULT_STATE_SNAPSHOT_LIMIT

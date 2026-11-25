@@ -27,7 +27,6 @@ from tenxgraph.utils.constants import END, START
 from tenxgraph.utils.interrupt import activate as activate_interrupts
 from tenxgraph.utils.log_safety import error_details
 
-from .handler_mixins import mirror_last_message
 from .handler_utils import is_remote_tool_marker
 from .tool_runner import ToolRunner, ToolRunResult
 from .utils import process_node_result
@@ -122,10 +121,9 @@ class NodeRunner:
         function_name = getattr(self.func, "__name__", str(self.func))
         context = self._callback_context(config, function_name)
         input_data = self._prepare_input_data(state, config)
-        event = self._publish_start(config, state, function_name)
+        event = self._error_event(config, state, function_name)
         try:
             input_data = await callback_mgr.execute_before_invoke(context, input_data)
-            self._publish_status(event, "Function execution started")
             if streaming:
                 yield self._update_chunk("invoking_node", function_name, config)
 
@@ -171,7 +169,6 @@ class NodeRunner:
                     for message in messages:
                         yield self._message_chunk(message, function_name, config)
 
-            self._publish_end(event, state, messages, next_node, "Function execution completed")
             yield NodeResult(state, messages, next_node)
         except Exception as e:
             recovery = await self._recover(callback_mgr, context, input_data, event, e, config)
@@ -190,10 +187,9 @@ class NodeRunner:
         agent_name = type(self.func).__name__
         context = self._callback_context(config, agent_name)
         input_data: dict[str, Any] = {"state": state, "config": config}
-        event = self._publish_start(config, state, agent_name)
+        event = self._error_event(config, state, agent_name)
         try:
             input_data = await callback_mgr.execute_before_invoke(context, input_data)
-            self._publish_status(event, "Agent execution started")
 
             converter = await self.func.execute(state, config)
             messages: list[Message] = []
@@ -217,7 +213,6 @@ class NodeRunner:
                 messages = result.get("messages", messages)
                 next_node = result.get("next_node")
 
-            self._publish_end(event, state, messages, next_node, "Agent execution completed")
             yield NodeResult(state, messages, next_node)
         except Exception as e:
             recovery = await self._recover(callback_mgr, context, input_data, event, e, config)
@@ -234,7 +229,11 @@ class NodeRunner:
         error: Exception,
         config: dict[str, Any],
     ) -> Message:
-        """The ``on_error`` recovery Message, or ``error`` re-raised when there is none."""
+        """The ``on_error`` recovery Message, or ``error`` re-raised when there is none.
+
+        A failure with no recovery publishes the node ERROR (observability only: it ends the
+        node span with the error; event consumers see ``run.failed``).
+        """
         kind = "Agent" if isinstance(self.func, BaseAgent) else "Function"
         logger.warning(
             "Node '%s' execution failed, executing error callbacks: %s", self.name, error
@@ -250,8 +249,6 @@ class NodeRunner:
             publish_event(event)
             raise error
         logger.info("Node '%s' recovered from error using callback result", self.name)
-        status = f"{kind} execution recovered from error"
-        self._publish_end(event, event.data.get("state"), [recovery], None, status)
         return recovery
 
     def _stamp_node_name(self, messages: list[Message]) -> None:
@@ -269,49 +266,22 @@ class NodeRunner:
             metadata={"config": public_config(config)},
         )
 
-    def _publish_start(
+    def _error_event(
         self, config: dict[str, Any], state: AgentState, function_name: str
     ) -> EventModel:
-        """Publish the NODE_EXECUTION start event of a function or agent node call."""
-        last_message = state.context[-1] if state.context else None
-        event = EventModel.default(
+        """The node ERROR event, published by ``_recover`` only when the node fails.
+
+        The node's START and END come from the run loop (``GraphRunMixin``).
+        """
+        return EventModel.default(
             config,
             data={"state": state},
             event=Event.NODE_EXECUTION,
             content_type=[ContentType.STATE],
             node_name=self.name,
-            extra={"node": self.name, "function_name": function_name, "last_message": last_message},
+            extra={"node": self.name, "function_name": function_name},
+            tag="observability",
         )
-        publish_event(event)
-        return event
-
-    @staticmethod
-    def _publish_status(event: EventModel, status: str) -> None:
-        """Publish PROGRESS; the status is in ``metadata["status"]`` and ``content``."""
-        event.event_type = EventType.PROGRESS
-        event.metadata["status"] = event.content = status
-        publish_event(event)
-
-    @staticmethod
-    def _publish_end(
-        event: EventModel,
-        state: Any,
-        messages: list[Message],
-        next_node: str | None,
-        status: str,
-    ) -> None:
-        """Publish END with the step's messages; the last one's text is in ``content``."""
-        event.event_type = EventType.END
-        event.metadata["status"] = status
-        event.data["state"] = state
-        event.data["messages"] = messages
-        event.data["message"] = messages[-1] if messages else None
-        event.data["next_node"] = next_node
-        event.content = ""
-        event.content_blocks = None
-        mirror_last_message(event, messages)
-        event.content_type = [ContentType.MESSAGE, ContentType.STATE]
-        publish_event(event)
 
     def _update_chunk(self, status: str, function_name: str, config: dict[str, Any]) -> StreamChunk:
         return StreamChunk(

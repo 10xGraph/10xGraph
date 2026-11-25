@@ -10,24 +10,26 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import logging
 import time
 from typing import Any
 
 from tenxgraph.storage.media.url_policy import redact_url
 
-from .base_publisher import BasePublisher, close_in_new_loop
+from ._buffered import BufferedPublisher
+from .base_publisher import close_in_new_loop
 from .events import EventModel
 
 
 logger = logging.getLogger("tenxgraph.publisher")
 
 
-class RabbitMQPublisher(BasePublisher):
+class RabbitMQPublisher(BufferedPublisher):
     """Publish events to RabbitMQ using aio-pika.
 
-    Supports connection pooling and resource limits for production use.
+    Supports connection pooling and resource limits for production use. Graph events are
+    sent in batches (see ``_buffered``): each batch is published together, with one wait
+    for the broker's confirms.
 
     TLS is the developer's choice: use an ``amqps://`` URL to encrypt the connection
     (the default ``amqp://`` is plaintext).
@@ -59,9 +61,12 @@ class RabbitMQPublisher(BasePublisher):
                 - durable: Whether exchange is durable (default: True).
                 - connection_timeout: Connection timeout in seconds (default: 10).
                 - heartbeat: Heartbeat interval in seconds (default: 60).
-                - publish_timeout: Optional seconds to wait for one send (default: none).
+                - publish_timeout: Optional seconds to wait for one send or one batch
+                  (default: none).
                 - reconnect_interval: Seconds to wait after a failed connection before the
                   next attempt; events in between are dropped (default: 5).
+                - batch_size / flush_interval_ms / queue_size: batching (default 100, 20,
+                  2048; see ``_buffered``).
         """
         super().__init__(config or {})
         self.url: str = self.config.get("url", "amqp://guest:guest@localhost/")
@@ -194,7 +199,7 @@ class RabbitMQPublisher(BasePublisher):
                 logger.debug("RabbitMQPublisher connection close error", exc_info=True)
 
     async def publish(self, event: EventModel) -> Any:
-        """Publish an event to RabbitMQ.
+        """Publish one event to RabbitMQ now (graph events go through the batch queue).
 
         Args:
             event: The event to publish.
@@ -208,26 +213,40 @@ class RabbitMQPublisher(BasePublisher):
         """
         if self._is_closed:
             raise RuntimeError("Cannot publish to closed RabbitMQPublisher")
-
         if not await self._ensure():
             return False  # credentials refused: logged once, event dropped
-        payload = json.dumps(event.model_dump()).encode("utf-8")
-
-        aio_pika = importlib.import_module("aio_pika")
-        message = aio_pika.Message(body=payload)
-        if self._exchange is None:
-            raise RuntimeError("RabbitMQPublisher exchange not initialized")
         # Optional ``publish_timeout`` (seconds) bounds the send; unset waits for the broker.
         timeout = self.config.get("publish_timeout")
         if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
             timeout = None
-        if timeout:
-            await asyncio.wait_for(
-                self._exchange.publish(message, routing_key=self.routing_key), timeout=timeout
-            )
-        else:
-            await self._exchange.publish(message, routing_key=self.routing_key)
+        await asyncio.wait_for(self._send([event]), timeout=timeout)
         return True
+
+    async def publish_batch(self, events: list[EventModel]) -> Any:
+        """Publish ``events`` together and wait once for all the broker's confirms.
+
+        Returns False when the batch was dropped because the broker refused the credentials.
+        """
+        if not await self._ensure():
+            return False
+        await self._send(events)
+        return True
+
+    async def _send(self, events: list[EventModel]) -> None:
+        if self._exchange is None:
+            raise RuntimeError("RabbitMQPublisher exchange not initialized")
+        aio_pika = importlib.import_module("aio_pika")
+        exchange = self._exchange
+        # Each publish waits for its confirm; gathering them waits once for the batch.
+        await asyncio.gather(
+            *(
+                exchange.publish(
+                    aio_pika.Message(body=e.model_dump_json().encode("utf-8")),
+                    routing_key=self.routing_key,
+                )
+                for e in events
+            )
+        )
 
     async def close(self):
         """Close the RabbitMQ connection and channel, releasing resources.
@@ -241,6 +260,7 @@ class RabbitMQPublisher(BasePublisher):
             logger.debug("RabbitMQPublisher already closed")
             return
 
+        await self.stop_buffer()
         self._is_closed = True
         await self._discard_connection()
         logger.info("RabbitMQPublisher closed successfully")
