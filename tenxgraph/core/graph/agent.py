@@ -204,7 +204,10 @@ class Agent(
                     fallback_models = ["gpt-4o-mini", ("gemini-2.0-flash", "google")]
 
                 A string that names a ``model_registry`` entry is that entry, with its
-                own client and settings.
+                own client and settings. A fallback on the same provider reuses the
+                Agent's ``http_client``; with an ``http_client`` set, a ``(model,
+                provider)`` fallback on another provider raises ``ValueError``: give it a
+                registry entry with its own ``http_client``.
 
             model_registry: Optional named models the run config can pick from, as
                 ``{name: entry}``. An entry takes the model keys the Agent takes:
@@ -358,6 +361,18 @@ class Agent(
                     self.fallback_models.append((entry, None))  # inherit provider
                 else:
                     self.fallback_models.append(tuple(entry))  # type: ignore[arg-type]
+        # The http_client is built for this provider's SDK (httpx or httpx2) and endpoint (CA,
+        # client cert), so a fallback on another provider cannot use it. Refuse it here instead
+        # of failing, or leaving without mTLS, at call time.
+        if "http_client" in self.llm_kwargs:
+            for fb_model, fb_provider in self.fallback_models:
+                if fb_provider is not None and fb_provider != self.provider:
+                    raise ValueError(
+                        f"fallback ({fb_model!r}, {fb_provider!r}) is on another provider "
+                        f"than the Agent's http_client ({self.provider!r}). Give it its own "
+                        "http_client in a model_registry entry and name that entry in "
+                        "fallback_models."
+                    )
 
         logger.info(
             f"Agent initialized: model={self.model}, provider={self.provider}, "

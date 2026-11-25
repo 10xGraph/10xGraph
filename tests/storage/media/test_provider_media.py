@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from tenxgraph.storage.media.provider_media import (
     ProviderMediaCache,
     should_use_google_file_api,
@@ -66,7 +66,7 @@ async def test_upload_to_google_file_api():
     mock_upload_res = MagicMock()
     mock_upload_res.uri = "gs://test-bucket/file-1"
     mock_upload_res.mime_type = "image/png"
-    mock_client.files.upload.return_value = mock_upload_res
+    mock_client.aio.files.upload = AsyncMock(return_value=mock_upload_res)
 
     # Mock google.genai.types.Part
     with patch("google.genai.types.Part", _Part):
@@ -80,14 +80,14 @@ async def test_upload_to_google_file_api():
         assert res_uncached == {"uri": "gs://test-bucket/file-1", "mime": "image/png"}
 
         # Call again -> should hit cache and not call upload
-        mock_client.files.upload.reset_mock()
+        mock_client.aio.files.upload.reset_mock()
         res_cached = await upload_to_google_file_api(b"data", "image/png", cache=cache, client=mock_client)
         assert res_cached == {"uri": "gs://test-bucket/file-1", "mime": "image/png"}
-        mock_client.files.upload.assert_not_called()
+        mock_client.aio.files.upload.assert_not_called()
 
         # 3. Default client creation test (mocking client = None)
         mock_genai_client = MagicMock()
-        mock_genai_client.files.upload.return_value = mock_upload_res
+        mock_genai_client.aio.files.upload = AsyncMock(return_value=mock_upload_res)
         with patch("google.genai.Client", return_value=mock_genai_client):
             res_default_client = await upload_to_google_file_api(b"data_other", "image/png", client=None)
             assert res_default_client == {"uri": "gs://test-bucket/file-1", "mime": "image/png"}
@@ -106,3 +106,26 @@ def test_openai_helpers():
         "file_id": "file-2",
         "tools": [{"type": "file_search"}]
     }
+
+
+@pytest.mark.asyncio
+async def test_resolver_uploads_with_the_agents_google_client():
+    import base64
+
+    from tenxgraph.storage.media.resolver import MediaRefResolver
+
+    class _Ref:
+        kind = "data"
+        data_base64 = base64.b64encode(b"x" * 10).decode()
+        mime_type = "application/pdf"
+        url = None
+
+    uploaded = MagicMock(uri="https://g/files/1", mime_type="application/pdf")
+    client = MagicMock()
+    client.aio.files.upload = AsyncMock(return_value=uploaded)
+    with patch("google.genai.Client") as default_client:
+        part = await MediaRefResolver(google_client=client)._transport_provider_file(_Ref(), "google")
+    assert part.file_data.file_uri == "https://g/files/1"
+    client.aio.files.upload.assert_awaited_once()
+    client.files.upload.assert_not_called()
+    default_client.assert_not_called()

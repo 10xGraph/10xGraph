@@ -49,7 +49,14 @@ from .constants import (
     is_default_reasoning,
     reasoning_for,
 )
-from .model_registry import ModelEntry, bind_entry, entry_attempt, named_entry, select_entry
+from .model_registry import (
+    ModelEntry,
+    bind_entry,
+    entry_attempt,
+    entry_client,
+    named_entry,
+    select_entry,
+)
 from .openai import is_endpoint_unsupported, is_reasoning_rejected
 
 
@@ -947,6 +954,9 @@ class AgentExecutionMixin:
         # the entry's model, provider and kwargs; the shared Agent is never changed.
         model_entry = select_entry(self, config)
         run = self if model_entry is None else bind_entry(self, model_entry, None)
+        if model_entry is not None and model_entry.provider == "google":
+            # Large media is uploaded with the entry's own client (its key, endpoint, http_client).
+            run.client = entry_client(self, model_entry)
         entry_kwargs = {} if model_entry is None else {"model_entry": model_entry}
 
         state = await self._trim_context(state)
@@ -1139,8 +1149,11 @@ class AgentExecutionMixin:
 
         from tenxgraph.storage.media.resolver import MediaRefResolver
 
-        resolver = MediaRefResolver(media_store=media_store)
         provider = getattr(self, "provider", None)
+        resolver = MediaRefResolver(
+            media_store=media_store,
+            google_client=getattr(self, "client", None) if provider == "google" else None,
+        )
         model = getattr(self, "model", None)
         # Strip provider prefix from model (e.g. "openai/gpt-4o" -> "gpt-4o")
         if model and "/" in model:
