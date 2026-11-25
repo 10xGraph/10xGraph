@@ -255,6 +255,8 @@ class GraphEngine(GraphRunMixin):
             yield note("invoking_graph")
         try:
             while current_node != END and step < max_steps:
+                # The one remote stop read per step. It runs after the previous step's save, so
+                # a stop that arrived while that node ran or while it was saved is seen here.
                 if await check_stop_requested(
                     state, current_node, messages, config, last_save=last_save
                 ):
@@ -344,7 +346,8 @@ class GraphEngine(GraphRunMixin):
                         yield note("node_invoked", reason=reason, pause="remote_tool")
                     return
 
-                # The node finished, so a stop now is saved at the node that follows it.
+                # The node finished, so a stop now is saved at the node that follows it. Only the
+                # in-process flags: the remote one is read at the top of the next step.
                 if await check_stop_requested(
                     state,
                     current_node,
@@ -352,6 +355,7 @@ class GraphEngine(GraphRunMixin):
                     config,
                     resume_after=partial(node_after, current_node, next_node, state, self.edges),
                     last_save=last_save,
+                    remote=False,
                 ):
                     if streaming:
                         yield note("node_invoked", reason=stopped)

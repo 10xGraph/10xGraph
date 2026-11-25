@@ -445,6 +445,7 @@ async def check_stop_requested[StateT: AgentState](
     checkpointer: BaseCheckpointer = Inject[BaseCheckpointer],
     resume_after: Callable[[], str] | None = None,
     last_save: LastSave | None = None,
+    remote: bool = True,
 ) -> bool:
     """Check if a stop has been requested externally.
 
@@ -456,6 +457,9 @@ async def check_stop_requested[StateT: AgentState](
     ``last_save`` records the stop save (see :func:`check_and_handle_interrupt`). The stop is
     reported once, by ``run.stopped`` (GRAPH_EXECUTION INTERRUPTED, ``node_name`` = the
     stopped node).
+
+    ``remote=False`` checks only the in-process flags and skips the checkpointer read. The
+    engine passes it after a node: the remote flag is read once per step, before the node.
     """
     callback_mgr = fresh(callback_mgr)
     checkpointer = fresh(checkpointer)
@@ -467,7 +471,7 @@ async def check_stop_requested[StateT: AgentState](
     run = current_run.get()
     if run is not None and run.stop_requested:
         stop_requested = True
-    if not stop_requested and checkpointer:
+    if not stop_requested and remote and checkpointer:
         try:
             _tp0 = _perf_now()  # TEMP-PERF
             stop_requested = await checkpointer.ais_stop_requested(config)

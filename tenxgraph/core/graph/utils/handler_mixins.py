@@ -114,6 +114,8 @@ class GraphRunMixin:
                 state,
                 lambda n: get_next_node(n, state, self.edges),
             )
+            # A stop seen before the first step saves the node the run starts at.
+            state.set_current_node(current_node)
         return current_node, step
 
     async def _begin_step(
@@ -326,6 +328,11 @@ class GraphRunMixin:
         clear_resume_values(state)
         step += 1
         state.advance_step()
+        # The save below must name the node that runs next: recovery from the durable copy
+        # alone (cache lost) resumes there, and naming the finished node would run it twice.
+        # END is left out, so a completed run still names its last node.
+        if current_node != END:
+            state.set_current_node(current_node)
 
         # Durable per-step checkpoint, so a pod killed mid-run replays at most one node
         # instead of resuming from the last terminal save (or, once the cache is gone,
