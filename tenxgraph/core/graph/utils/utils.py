@@ -47,6 +47,7 @@ from tenxgraph.utils import (
     add_messages,
 )
 from tenxgraph.utils.background_task_manager import BackgroundTaskManager
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.utils.callbacks import CallbackManager, GraphLifecycleContext
 from tenxgraph.utils.injection import fresh
 from tenxgraph.utils.validators import has_unstorable_text, strip_unstorable
@@ -773,7 +774,7 @@ async def sync_data(
     new_state = copy_state(state)
     # if context manager is available then utilize it
     if context_manager and trim:
-        new_state = await context_manager.atrim_context(state)
+        new_state = await call_sync_or_async(context_manager.trim_context, state)
         is_context_trimmed = True
 
     # Fire on_checkpoint hook before persisting

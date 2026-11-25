@@ -1255,17 +1255,17 @@ class TestTrimContext:
         original_state = AgentState()
         trimmed_state = AgentState()
         mock_manager = MagicMock()
-        mock_manager.atrim_context = AsyncMock(return_value=trimmed_state)
+        mock_manager.trim_context = AsyncMock(return_value=trimmed_state)
         result = await agent._trim_context(original_state, context_manager=mock_manager)
         assert result is trimmed_state
-        mock_manager.atrim_context.assert_awaited_once_with(original_state)
+        mock_manager.trim_context.assert_awaited_once_with(original_state)
 
     async def test_enabled_manager_attribute_error_returns_state(self):
-        """If the manager doesn't implement atrim_context, return state unchanged."""
+        """If the manager doesn't implement trim_context, return state unchanged."""
         agent = _make_openai_agent()
         agent.trim_context = True
         state = AgentState()
-        bad_manager = MagicMock(spec=[])  # no atrim_context attribute
+        bad_manager = MagicMock(spec=[])  # no trim_context attribute
         result = await agent._trim_context(state, context_manager=bad_manager)
         assert result is state
 

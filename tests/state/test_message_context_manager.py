@@ -1,4 +1,5 @@
 import pytest
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.core.state.message_context_manager import MessageContextManager
 from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.message import Message
@@ -86,7 +87,7 @@ async def test_async_trim_context(system_msg):
     ctx = make_context(system_msg, 5)
     state = AgentState(context=ctx)
     mgr = MessageContextManager(max_messages=2)
-    new_state = await mgr.atrim_context(state)
+    new_state = await call_sync_or_async(mgr.trim_context, state)
     assert sum(1 for m in new_state.context if m.role == "user") == 2
 
 def test_no_trim_needed(system_msg):

@@ -65,17 +65,5 @@ async def test_cumulative_summary_is_compacted_when_it_grows_too_large():
         "tenxgraph.core.state.summary_context_manager.call_llm",
         AsyncMock(return_value=("short", 0, 0, 0)),
     ):
-        await mgr.atrim_context(state)
+        await mgr.trim_context(state)
     assert state.context_summary == "short"
-
-
-def test_sync_trim_in_running_loop_raises_instead_of_asyncio_run():
-    import asyncio
-
-    mgr = SummaryContextManager("gpt-4o-mini")
-
-    async def go():
-        with pytest.raises(RuntimeError, match="atrim_context"):
-            mgr.trim_context(AgentState())
-
-    asyncio.run(go())

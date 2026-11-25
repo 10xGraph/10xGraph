@@ -138,12 +138,12 @@ _CALL_LLM = "tenxgraph.core.state.summary_context_manager.call_llm"
 
 
 @pytest.mark.anyio(loop_scope="function")
-async def test_atrim_context_openai():
+async def test_trim_context_openai():
     mgr = SummaryContextManager("gpt-4o-mini", max_messages=5, keep_recent=2)
     state = AgentState(context=_conv(4))  # 9 messages → triggers max_messages=5
 
     with patch(_CALL_LLM, new=AsyncMock(return_value=("Summary text.", 10, 5, 0))) as mock_call:
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     assert result.context_summary == "Summary text."
     assert len(result.context) <= len(_conv(4))
@@ -151,12 +151,12 @@ async def test_atrim_context_openai():
 
 
 @pytest.mark.anyio
-async def test_atrim_context_google():
+async def test_trim_context_google():
     mgr = SummaryContextManager("gemini-2.0-flash", max_messages=5, keep_recent=2)
     state = AgentState(context=_conv(4))
 
     with patch(_CALL_LLM, new=AsyncMock(return_value=("Google summary.", 8, 4, 0))) as mock_call:
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     assert result.context_summary == "Google summary."
     mock_call.assert_called_once()
@@ -169,7 +169,7 @@ async def test_rolling_summary_appended():
     state = AgentState(context=_conv(4), context_summary="Previous summary.")
 
     with patch(_CALL_LLM, new=AsyncMock(return_value=("New chunk.", 10, 5, 0))):
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     assert result.context_summary == "Previous summary.\n\nNew chunk."
 
@@ -181,7 +181,7 @@ async def test_no_summarize_when_below_threshold():
     original_context = list(state.context)
 
     with patch(_CALL_LLM, new=AsyncMock()) as mock_call:
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     mock_call.assert_not_called()
     assert result.context == original_context
@@ -196,7 +196,7 @@ async def test_llm_failure_leaves_context_unchanged():
     original_len = len(state.context)
 
     with patch(_CALL_LLM, new=AsyncMock(side_effect=RuntimeError("API down"))):
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     assert len(result.context) == original_len
     assert result.context_summary is None
@@ -210,7 +210,7 @@ async def test_token_budget_triggers_with_long_messages():
     state = AgentState(context=msgs)
 
     with patch(_CALL_LLM, new=AsyncMock(return_value=("Compressed.", 20, 10, 0))):
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     assert result.context_summary == "Compressed."
 
@@ -245,7 +245,7 @@ async def test_remove_tool_msgs_strips_before_threshold():
 
     mgr = SummaryContextManager("gpt-4o-mini", max_messages=3, remove_tool_msgs=True)
     state = AgentState(context=msgs)
-    result = await mgr.atrim_context(state)
+    result = await mgr.trim_context(state)
 
     # Tool messages stripped from retained context
     assert all(m.role != "tool" for m in result.context)
@@ -271,7 +271,7 @@ async def test_remove_tool_msgs_then_summarizes():
     state = AgentState(context=msgs)
 
     with patch(_CALL_LLM, new=AsyncMock(return_value=("Summary.", 10, 5, 0))):
-        result = await mgr.atrim_context(state)
+        result = await mgr.trim_context(state)
 
     assert result.context_summary == "Summary."
     assert all(m.role != "tool" for m in result.context)

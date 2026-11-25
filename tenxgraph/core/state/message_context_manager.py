@@ -133,23 +133,3 @@ class MessageContextManager(BaseContextManager[S]):
         if trimmed_messages is not None:
             state.context = trimmed_messages
         return state
-
-    async def atrim_context(self, state: S) -> S:
-        """
-        Asynchronous version of trim_context.
-
-        If `remove_tool_msgs` is True, also removes:
-        - AI messages that contain tool calls (intermediate tool-calling messages)
-        - Tool result messages (role="tool")
-
-        Args:
-            state (AgentState): The agent state containing the context to trim.
-
-        Returns:
-            S: The updated agent state with trimmed context.
-        """
-        messages = state.context
-        trimmed_messages = self._trim(messages)
-        if trimmed_messages is not None:
-            state.context = trimmed_messages
-        return state

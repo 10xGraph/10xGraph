@@ -26,7 +26,6 @@ from tenxgraph.core.state.agent_state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.core.state.message import Message
 from tenxgraph.core.state.reducers import remove_tool_messages
-from tenxgraph.utils.callable_utils import run_coroutine
 
 
 S = TypeVar("S", bound=AgentState)
@@ -252,7 +251,7 @@ class SummaryContextManager(BaseContextManager[S]):
     # BaseContextManager interface
     # ------------------------------------------------------------------
 
-    async def atrim_context(self, state: S) -> S:
+    async def trim_context(self, state: S) -> S:
         messages = state.context
         if not messages:
             return state
@@ -304,6 +303,3 @@ class SummaryContextManager(BaseContextManager[S]):
             len(state.context_summary),
         )
         return state
-
-    def trim_context(self, state: S) -> S:
-        return run_coroutine(self.atrim_context(state))

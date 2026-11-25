@@ -29,6 +29,7 @@ from tenxgraph.core.state import AgentState
 from tenxgraph.core.state.base_context import BaseContextManager
 from tenxgraph.runtime.adapters.llm.model_response_converter import ModelResponseConverter
 from tenxgraph.utils import metrics
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.utils.converter import (
     TOOL_RESULT_FENCE_LINE,
     convert_messages,
@@ -344,7 +345,7 @@ class AgentExecutionMixin:
             return state
 
         try:
-            new_state = await context_manager.atrim_context(state)
+            new_state = await call_sync_or_async(context_manager.trim_context, state)
             logger.debug("Context trimmed using context manager")
             return new_state
         except AttributeError:

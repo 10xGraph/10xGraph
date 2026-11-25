@@ -53,6 +53,7 @@ from tenxgraph.core.state import AgentState, Message, TextBlock, add_messages
 from tenxgraph.runtime.publisher.events import ContentType, Event, EventModel, EventType
 from tenxgraph.runtime.publisher.publish import publish_event, publish_lifecycle
 from tenxgraph.utils import CallbackManager
+from tenxgraph.utils.callable_utils import call_sync_or_async
 from tenxgraph.utils.callbacks import GraphLifecycleContext
 
 
@@ -970,7 +971,9 @@ class LiveAgent(AgentSkillsMixin, AgentMemoryMixin, BaseAgent):
             return
         if context_manager is not None:
             try:
-                trimmed = await context_manager.atrim_context(AgentState(context=list(history)))
+                trimmed = await call_sync_or_async(
+                    context_manager.trim_context, AgentState(context=list(history))
+                )
                 history = trimmed.context
             except Exception:
                 logger.warning("context compression failed during reseed; using raw history")
