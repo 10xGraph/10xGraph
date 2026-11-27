@@ -1,8 +1,9 @@
 """One runner for a graph node, under invoke and stream alike.
 
 ``NodeRunner.run`` runs one step of a node: a function node, an agent node, or a ToolNode
-(through ``ToolRunner``). It yields ``StreamChunk``s (only when streaming) and last a
-``NodeResult``. Under invoke no chunk is built and an agent node makes a non-streaming LLM
+(through ``ToolRunner``). It yields ``StreamChunk``s (only when streaming) and one
+``NodeResult``: last, except that the message chunks of a function node's returned value
+follow it. Under invoke no chunk is built and an agent node makes a non-streaming LLM
 call (``converter.invoke()``); under stream it reads ``converter.stream()``.
 """
 
@@ -68,7 +69,7 @@ class NodeRunner:
         *,
         streaming: bool,
     ) -> AsyncIterator[StreamChunk | NodeResult]:
-        """Run the node; chunks while it runs (streaming only), the ``NodeResult`` last.
+        """Run the node; chunks while it runs (streaming only) and one ``NodeResult``.
 
         Raises ``NodeError`` (``NODE_001``) when the node fails and no ``on_error``
         callback recovered it.
@@ -157,6 +158,7 @@ class NodeRunner:
                         messages.append(item)
                     yield self._message_chunk(item, function_name, config)
                 self._stamp_node_name(messages)
+                yield NodeResult(state, messages, next_node)
             else:
                 # Command(update=None) and a bare None add nothing; any other value must be a
                 # supported one (process_node_result raises for the rest: NODE_001).
@@ -165,11 +167,13 @@ class NodeRunner:
                         result, state, messages, seen_ids
                     )
                 self._stamp_node_name(messages)
+                # The result goes first: process_node_result already wrote these messages to
+                # the live context, so the engine must know the node finished before a closed
+                # stream (at one of the chunks below) can cancel the run.
+                yield NodeResult(state, messages, next_node)
                 if streaming:
                     for message in messages:
                         yield self._message_chunk(message, function_name, config)
-
-            yield NodeResult(state, messages, next_node)
         except Exception as e:
             recovery = await self._recover(callback_mgr, context, input_data, event, e, config)
             if streaming:

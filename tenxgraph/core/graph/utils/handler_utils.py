@@ -609,6 +609,7 @@ async def finalize_cancelled_run(
     current_node: str,
     reason: str = CANCELLED_REASON,
     last_save: LastSave | None = None,
+    resume_at: str | None = None,
 ) -> None:
     """Save a cancelled run as INTERRUPTED so the thread stays usable.
 
@@ -624,9 +625,12 @@ async def finalize_cancelled_run(
     saves of the run never race. When it saved the COMPLETED state, the run is over and stays
     completed: nothing is marked INTERRUPTED.
 
-    The saved position stays at ``current_node``. What the next call does with it is decided on
-    load (decision D1): a new user message starts a new turn, a call with no new input resumes
-    at this node.
+    ``resume_at`` is passed when ``current_node`` had finished but the run had not moved past
+    it yet: it is the node that follows. As with a stop, the run is then saved at that node and
+    the step counted, so a call with no new input does not run the finished node again. When it
+    is END the run is over and is saved COMPLETED, not INTERRUPTED. Without it the saved position
+    is the state's current node. What the next call does with it is decided on load (decision
+    D1): a new user message starts a new turn, a call with no new input resumes there.
     """
     # A hard cancel by ``aclose()`` is recorded as a shutdown, not a plain cancel.
     run = current_run.get()
@@ -641,8 +645,19 @@ async def finalize_cancelled_run(
         if last_save is not None and last_save.finished_completed():
             logger.info("Run on thread '%s' was cancelled after its final save", thread_id)
             return
+        if resume_at == END:
+            logger.info("Run on thread '%s' was cancelled after its last node", thread_id)
+            clear_resume_values(state)
+            state.complete()
+            await sync_data(state=state, config=config, messages=messages, trim=True)
+            return
         try:
             await close_unanswered_tool_calls(state, config, messages)
+            if resume_at is not None:
+                # The node finished: its interrupt() answers are spent and the run moves on.
+                clear_resume_values(state)
+                state.set_current_node(resume_at)
+                state.advance_step()
             state.set_interrupt(
                 current_node,
                 reason,

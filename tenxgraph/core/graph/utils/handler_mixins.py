@@ -333,6 +333,11 @@ class GraphRunMixin:
         # END is left out, so a completed run still names its last node.
         if current_node != END:
             state.set_current_node(current_node)
+        elif not state.is_interrupted():
+            # The run completes next and ``_complete_run`` saves the state and every message.
+            # A step save here would name the finished node as RUNNING, so a crash before the
+            # completed save would resume at it and store its output twice.
+            return current_node, step, persisted_upto
 
         # Durable per-step checkpoint, so a pod killed mid-run replays at most one node
         # instead of resuming from the last terminal save (or, once the cache is gone,
