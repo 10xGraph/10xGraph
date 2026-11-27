@@ -250,6 +250,17 @@ class GraphEngine(GraphRunMixin):
             meta = {"node": current_node, "step": step}
             return _chunk(config, StreamEvent.STATE, state=state, metadata=meta)
 
+        def merge(result: NodeResult) -> list[Message]:
+            """Add the node's new messages (deduped) to the run and the context."""
+            new = [m for m in result.messages if not m.delta and m.message_id not in seen]
+            seen.update(m.message_id for m in new)
+            messages.extend(new)
+            state.context = add_messages(state.context, new)
+            return new
+
+        # The node's result from the moment it arrives until ``_advance`` moved past the node:
+        # a cancel in that window must not save the run at the node that already finished.
+        done: NodeResult | None = None
         stopped = "Graph execution stopped by request"
         if streaming:
             yield note("invoking_graph")
@@ -287,7 +298,8 @@ class GraphEngine(GraphRunMixin):
                         ) as items:
                             async for item in items:
                                 if isinstance(item, NodeResult):
-                                    result = item
+                                    result = done = item
+                                    state = run.state = item.state
                                 else:
                                     yield item
                 except GraphInterrupt as paused:
@@ -317,11 +329,8 @@ class GraphEngine(GraphRunMixin):
                 next_node = result.next_node
                 if streaming:
                     yield state_chunk()
-                # Merge this node's output only (deduped), so the next node sees it.
-                new = [m for m in result.messages if not m.delta and m.message_id not in seen]
-                seen.update(m.message_id for m in new)
-                messages.extend(new)
-                state.context = add_messages(state.context, new)
+                # Merge this node's output only, so the next node sees it.
+                new = merge(result)
                 self._end_node_event(node_event, next_node, current_node, new)
                 if streaming and messages:
                     yield state_chunk()
@@ -333,6 +342,8 @@ class GraphEngine(GraphRunMixin):
                 if result.remote_calls:
                     # The client runs these calls; the run resumes after this node once their
                     # results arrive. The placeholders go back to the caller, not the context.
+                    # A cancel from here on keeps the position at this node.
+                    done = None
                     await interrupt_graph(
                         current_node,
                         state,
@@ -383,6 +394,7 @@ class GraphEngine(GraphRunMixin):
                     persisted_upto,
                     last_save,
                 )
+                done = None
                 if streaming:
                     yield note("node_invoked", state=state)
                 if paused_after:
@@ -416,7 +428,18 @@ class GraphEngine(GraphRunMixin):
             # closed by its consumer (GeneratorExit at a yield): save the thread as
             # INTERRUPTED so the next run can use it, then let it go on. Nothing is yielded
             # here, so awaiting during aclose() is allowed.
-            await finalize_cancelled_run(state, config, messages, current_node, last_save=last_save)
+            resume_at = None
+            if current_node == END:
+                resume_at = END  # every node ran; only the completed save was left
+            elif done is not None:
+                # The node finished: save its output and, as a stop does, the node after it,
+                # unless ``_advance`` already counted the step (it then names that node).
+                merge(done)
+                if state.execution_meta.step == step:
+                    resume_at = node_after(current_node, done.next_node, state, self.edges)
+            await finalize_cancelled_run(
+                state, config, messages, current_node, last_save=last_save, resume_at=resume_at
+            )
             raise
         except Exception as e:
             state = run.state = await self._fail_run(

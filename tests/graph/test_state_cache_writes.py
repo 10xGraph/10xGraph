@@ -82,14 +82,16 @@ async def _run(durable: bool) -> _CountingCheckpointer:
 async def test_durable_steps_write_the_cache_twice_per_node():
     checkpointer = await _run(durable=True)
     # Four steps (__start__, MAIN, TOOL, MAIN). Per step: node start + per-step save, then
-    # the final save. Before the node-end write was dropped this was 13.
-    assert checkpointer.cache_writes == 9
-    assert checkpointer.checkpoint_writes == 5
+    # the final save. The last step has no per-step save: the final save follows it. Before
+    # the node-end write was dropped this was 13.
+    assert checkpointer.cache_writes == 8
+    assert checkpointer.checkpoint_writes == 4
 
 
 @pytest.mark.asyncio
 async def test_without_durable_steps_the_node_end_write_stays():
     checkpointer = await _run(durable=False)
-    # Per step: node start, node end, step advance (4 steps), then the final save.
-    assert checkpointer.cache_writes == 13
+    # Per step: node start, node end, step advance (4 steps, the last has no advance write:
+    # the final save follows it), then the final save.
+    assert checkpointer.cache_writes == 12
     assert checkpointer.checkpoint_writes == 1
