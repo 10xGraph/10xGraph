@@ -428,7 +428,7 @@ class GraphEngine(GraphRunMixin):
             # closed by its consumer (GeneratorExit at a yield): save the thread as
             # INTERRUPTED so the next run can use it, then let it go on. Nothing is yielded
             # here, so awaiting during aclose() is allowed.
-            resume_at = None
+            resume_at: str | None = None
             if current_node == END:
                 resume_at = END  # every node ran; only the completed save was left
             elif done is not None:
