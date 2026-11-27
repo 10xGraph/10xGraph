@@ -94,10 +94,11 @@ class UUIDGenerator(DefaultIDGenerator):
 
 
 class IntIDGenerator(BaseIDGenerator):
-    """ID generator that produces 32-bit random integers.
+    """ID generator that produces random integers that fit a signed 32-bit column.
 
-    Generates cryptographically secure random integers using secrets.randbits(32).
-    Values range from 0 to 2^32 - 1 (4,294,967,295).
+    Generates cryptographically secure random integers using secrets.randbits(31).
+    Values range from 0 to 2^31 - 1 (2,147,483,647), the largest signed 32-bit value, so
+    every id fits the ``INTEGER`` column a ``PgCheckpointer`` creates for it.
     """
 
     @property
@@ -105,12 +106,12 @@ class IntIDGenerator(BaseIDGenerator):
         return IDType.INTEGER
 
     def generate(self) -> int:
-        """Generate a new 32-bit random integer.
+        """Generate a new random integer that fits a signed 32-bit column.
 
         Returns:
-            int: A random integer between 0 and 4,294,967,295 (inclusive).
+            int: A random integer between 0 and 2,147,483,647 (inclusive).
         """
-        return secrets.randbits(32)
+        return secrets.randbits(31)
 
 
 class HexIDGenerator(BaseIDGenerator):
@@ -137,12 +138,13 @@ class TimestampIDGenerator(BaseIDGenerator):
     """ID generator that produces integer IDs based on current time in microseconds.
 
     Generates IDs by multiplying current Unix timestamp by 1e6, resulting in
-    integers that are sortable by creation time. Typical size is 16-17 digits.
+    integers that are sortable by creation time. Typical size is 16-17 digits, which needs
+    a 64-bit column, so ``id_type`` is ``BIGINT``.
     """
 
     @property
     def id_type(self) -> IDType:
-        return IDType.INTEGER
+        return IDType.BIGINT
 
     def generate(self) -> int:
         """Generate a new integer ID based on current microseconds.
