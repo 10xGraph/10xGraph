@@ -6,6 +6,8 @@ S2/S6: catalog-first index DDL, invalid-index rebuild, ``CONCURRENTLY``, the set
 The Postgres behaviour itself is covered in tests/integration/test_store_review_fixes_real.py.
 """
 
+import asyncio
+
 import pytest
 
 from tenxgraph.storage.columns import (
@@ -27,6 +29,10 @@ class _Conn:
         self.catalog_rows = list(catalog_rows)
         self.fail_on = fail_on
         self.executed = []
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
 
     async def fetch(self, sql, *args):
         return self.catalog_rows
@@ -187,3 +193,20 @@ class TestDdlSession:
         with pytest.raises(KeyError):
             async with ddl_session(conn, lock_key=7, timeout=None, owner="X"):
                 raise KeyError("boom")
+        assert conn.terminated
+
+    async def test_clean_release_keeps_the_connection(self):
+        conn = _Conn()
+        async with ddl_session(conn, lock_key=7, timeout=None, owner="X"):
+            pass
+        assert not conn.terminated
+
+    async def test_cancel_during_release_terminates_and_reraises(self):
+        # Pools skip asyncpg's reset query, so a connection that may still hold the
+        # session lock must be closed rather than returned to the pool.
+        conn = _Conn(fail_on="RESET")
+        conn.fail_on_error = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            async with ddl_session(conn, lock_key=7, timeout=None, owner="X"):
+                pass
+        assert conn.terminated

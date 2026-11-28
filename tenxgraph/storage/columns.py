@@ -990,9 +990,8 @@ async def ddl_session(
     ``lock_timeout`` is set, so a second process waits for the first one's setup instead of
     timing out on it. Every DDL statement after that waits at most ``timeout`` seconds for a
     table lock; hitting it raises :class:`SetupLockTimeoutError`. On exit the lock is released
-    and ``lock_timeout`` reset. If that fails (a broken or cancelled connection), Postgres
-    releases the lock when the session ends, and a pooled connection is reset on release
-    (asyncpg runs ``pg_advisory_unlock_all()`` and ``RESET ALL``).
+    and ``lock_timeout`` reset. If that fails (a broken or cancelled connection), the
+    connection is terminated and Postgres releases the lock when the session ends.
     """
     await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
     try:
@@ -1014,8 +1013,14 @@ async def ddl_session(
         try:
             await conn.execute("RESET lock_timeout")
             await conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
-        except Exception as exc:  # the session ends with the connection; the lock goes with it
+        except BaseException as exc:
+            # Pools built with DEFAULT_POOL_CONFIG skip asyncpg's RESET ALL and
+            # pg_advisory_unlock_all() on release, so a connection that may still hold the lock
+            # or lock_timeout is closed: Postgres frees both with the session.
             logger.debug("%s: could not release the setup lock cleanly: %s", owner, exc)
+            conn.terminate()
+            if not isinstance(exc, Exception):
+                raise
 
 
 def is_lock_timeout(exc: BaseException | None) -> bool:

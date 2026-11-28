@@ -156,6 +156,9 @@ class BaseCheckpointer[StateT: AgentState](ABC):
     # False turns the ledger off for every tool: a node replayed after a crash, or resumed
     # after a pause inside it, runs its tools again.
     record_tool_result: bool = True
+    # True when ``aget_state_cache`` already reads the durable state on a cache miss, so a
+    # caller that got nothing from it need not call ``aget_state`` again.
+    cache_miss_reads_durable: bool = False
 
     @property
     def state_type(self) -> type[AgentState]:

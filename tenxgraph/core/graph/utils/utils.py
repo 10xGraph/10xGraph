@@ -331,7 +331,8 @@ async def _read_saved_state(checkpointer: BaseCheckpointer, config: dict[str, An
     """The thread's saved state: the cached one first, then the durable one; None if none."""
     logger.debug("Attempting to load existing state from checkpointer")
     state = await checkpointer.aget_state_cache(config)
-    if not state:
+    # getattr: a checkpointer that is not a BaseCheckpointer subclass may lack the flag.
+    if not state and not getattr(checkpointer, "cache_miss_reads_durable", False):
         logger.debug("No synced state found, trying persistent checkpointer")
         state = await checkpointer.aget_state(config)
     return state

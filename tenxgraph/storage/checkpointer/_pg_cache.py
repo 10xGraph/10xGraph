@@ -33,6 +33,9 @@ logger = logging.getLogger("tenxgraph.checkpointer.pg")
 class _PgCacheMixin(PgHostBase):
     """Redis: breaker-guarded calls, the state cache and generic cache values."""
 
+    # aget_state_cache falls back to the Postgres read on a miss or a Redis error.
+    cache_miss_reads_durable = True
+
     async def _redis_call(self, call: Callable[[], Awaitable[Any]]) -> Any:
         """Run one Redis call through the circuit breaker.
 

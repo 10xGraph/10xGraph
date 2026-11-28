@@ -112,7 +112,7 @@ openai = ["openai>=1.93.1,<4"]
 anthropic = ["anthropic>=1.0.0,<2"]
 anthropic-vertex = ["anthropic[vertex]>=1.0.0,<2"]
 anthropic-bedrock = ["anthropic[bedrock]>=1.0.0,<2"]
-pg_checkpoint = ["asyncpg>=0.29.0","redis>=4.2"]
+pg_checkpoint = ["asyncpg>=0.30.0","redis>=4.2"]
 sqlite_checkpoint = ["aiosqlite>=0.19.0"]
 # fastmcp 4 / mcp 2: ToolNode(mcp_auth=...) needs each request sent with the caller's context.
 mcp = ["fastmcp>=4.1.7","mcp>=2.3.0"]
@@ -123,7 +123,7 @@ kafka = ["aiokafka>=0.8.0"]
 rabbitmq = ["aio-pika>=9.0.0"]
 qdrant = ["qdrant-client>=1.10.0"]
 # Postgres + pgvector store (PgVectorStore). Needs the pgvector extension >= 0.7.0 on the server.
-pgvector = ["asyncpg>=0.29.0", "pgvector>=0.5.1"]
+pgvector = ["asyncpg>=0.30.0", "pgvector>=0.5.1"]
 otel = [
     "opentelemetry-api>=1.45.1",
     "opentelemetry-sdk>=1.45.1",

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tenxgraph.core.state import AgentState
+from tenxgraph.storage._pg_common import DEFAULT_POOL_CONFIG
 from tenxgraph.storage.checkpointer.base_checkpointer import STATE_META_KEY
 from tenxgraph.storage.checkpointer.pg_checkpointer import PgCheckpointer
 
@@ -272,7 +273,11 @@ def test_create_pg_pool(cp):
     with patch("asyncpg.create_pool") as mock_create_pool:
         cp._create_pg_pool(pg_pool=None, postgres_dsn="postgres://url", pool_config={"min_size": 5})
         mock_create_pool.assert_called_once_with(
-            dsn="postgres://url", command_timeout=60.0, timeout=30.0, min_size=5
+            dsn="postgres://url",
+            command_timeout=60.0,
+            timeout=30.0,
+            reset=DEFAULT_POOL_CONFIG["reset"],
+            min_size=5,
         )
 
 

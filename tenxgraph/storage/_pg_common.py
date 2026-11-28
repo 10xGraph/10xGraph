@@ -27,11 +27,27 @@ DEFAULT_ACQUIRE_TIMEOUT = 30.0
 #: Seconds a setup DDL statement waits for a table lock before setup fails with
 #: ``SetupLockTimeoutError`` (``ddl_lock_timeout`` option; None waits forever).
 DEFAULT_DDL_LOCK_TIMEOUT = 10.0
-#: Timeouts of a pool the backend builds (a pool you pass in keeps its own settings). Without
-#: them a blackholed Postgres hangs a run instead of failing it.
+
+
+async def _keep_session(conn: Any) -> None:
+    """Pool ``reset`` that sends nothing: saves one round trip per released connection.
+
+    asyncpg still rolls back an open transaction before calling this. The default reset
+    (``pg_advisory_unlock_all(); CLOSE ALL; UNLISTEN *; RESET ALL``) is not needed because the
+    backends leave no session state: RLS and search values use ``set_config(..., true)`` inside
+    a transaction, and ``ddl_session`` unlocks and resets ``lock_timeout`` itself, or terminates
+    the connection when it cannot.
+    """
+
+
+#: Settings of a pool the backend builds (a pool you pass in keeps its own settings). Without
+#: the timeouts a blackholed Postgres hangs a run instead of failing it. Pass
+#: ``pool_config={"reset": None}`` to get asyncpg's full reset back, for example when your own
+#: code borrows the pool and sets session state.
 DEFAULT_POOL_CONFIG: dict[str, Any] = {
     "command_timeout": 60.0,  # per query
     "timeout": 30.0,  # per new connection
+    "reset": _keep_session,
 }
 #: Attempts for an operation that loses its connection (backoff 1s, then 2s).
 MAX_RETRIES = 3

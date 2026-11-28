@@ -172,3 +172,65 @@ async def test_cancel_during_the_load_cancels_both_calls():
         await task
     await asyncio.sleep(0)
     assert not pending_tasks()
+
+
+class DurableFallbackCheckpointer(InMemoryCheckpointer):
+    """Like PgCheckpointer: the cache read already falls back to the durable read."""
+
+    cache_miss_reads_durable = True
+
+    def __init__(self):
+        super().__init__()
+        self.state_reads = 0
+
+    async def aget_state(self, config):
+        self.state_reads += 1
+        return await super().aget_state(config)
+
+    async def aget_state_cache(self, config):
+        return await self.aget_state(config)
+
+
+@pytest.mark.asyncio
+async def test_new_thread_reads_durable_state_once_when_cache_read_falls_back():
+    cp = DurableFallbackCheckpointer()
+    config = {"thread_id": "t-once", "user_id": "u1", "run_id": "r4"}
+
+    await load_or_create_state(new_input(), config, AgentState(), checkpointer=cp)
+
+    assert cp.state_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_new_thread_reads_durable_state_after_a_plain_cache_miss():
+    cp = RecordingCheckpointer()
+    config = {"thread_id": "t-twice", "user_id": "u1", "run_id": "r5"}
+
+    await load_or_create_state(new_input(), config, AgentState(), checkpointer=cp)
+
+    assert cp.log.count("state:start") == 1
+
+
+class DuckTypedCheckpointer:
+    """A checkpointer that does not subclass BaseCheckpointer, so it has no flag."""
+
+    def __init__(self):
+        self.state_reads = 0
+
+    async def aget_state_cache(self, config):
+        return None
+
+    async def aget_state(self, config):
+        self.state_reads += 1
+        return None
+
+
+@pytest.mark.asyncio
+async def test_checkpointer_without_flag_still_reads_durable_state():
+    from tenxgraph.core.graph.utils.utils import _read_saved_state
+
+    cp = DuckTypedCheckpointer()
+    state = await _read_saved_state(cp, {"thread_id": "t-duck", "user_id": "u1"})
+
+    assert state is None
+    assert cp.state_reads == 1
